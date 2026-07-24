@@ -44,7 +44,7 @@ const RULES = [
     tests: /^mobile\/src\/lib\/__tests__\/e2ee\./ },
 
   // Features.
-  { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/lib\/(passkeys|secureToken|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
+  { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|server\/src\/services\/sessions\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/api\/client\.ts|mobile\/src\/lib\/(passkeys|secureToken|deviceId|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
     tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(passkeys|deviceKey|deviceLink)\.)/ },
   { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/safetyNumbers\.ts)/, specs: ['specs/features/households-sharing.md'],
     tests: /^(server\/src\/test\/(householdInvitations|householdKey|keyHygiene|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(safetyNumbers|guardianRecovery)\.)/ },

@@ -3,10 +3,12 @@ import { Platform } from 'react-native';
 import * as Device from 'expo-device';
 import { API_URL } from '../config';
 import { getCachedToken, saveToken } from '../lib/secureToken';
+import { getDeviceId } from '../lib/deviceId';
 
-// Device identity headers (Signal-parity F2/F3): label this device's session
-// row so the Devices list is readable and new-device alerts say WHICH device.
-// Cosmetic only — never an auth factor.
+// Device identity headers (Signal-parity F2/F3): X-Device-Id is the stable
+// per-install UUID the server keys session rows by (one Devices row per
+// install); name/platform label the row so the list is readable and new-device
+// alerts say WHICH device. All labels — never an auth factor.
 const DEVICE_NAME = Device.deviceName || Device.modelName || 'Unknown device';
 const DEVICE_PLATFORM = Platform.OS;
 
@@ -17,11 +19,15 @@ const DEVICE_PLATFORM = Platform.OS;
 //     (RN has no window.location to redirect)
 const api = axios.create({ baseURL: API_URL });
 
-api.interceptors.request.use((config) => {
+api.interceptors.request.use(async (config) => {
   const token = getCachedToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   config.headers['X-Device-Name'] = DEVICE_NAME;
   config.headers['X-Device-Platform'] = DEVICE_PLATFORM;
+  // Best-effort: a request without the id just falls back to the server's
+  // legacy per-sign-in session behavior — never block the request on it.
+  const deviceId = await getDeviceId().catch(() => null);
+  if (deviceId) config.headers['X-Device-Id'] = deviceId;
   return config;
 });
 

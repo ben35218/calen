@@ -36,6 +36,41 @@ test('sign-ins create sessions; revoking one kills its token', async () => {
   assert.equal(alive.body.sessions.length, 1);
 });
 
+test('X-Device-Id sign-ins coalesce to one session row per install', async () => {
+  const u = await registerUser({ firstName: 'Hal', password: 'test-password-1' });
+  const login = (deviceId) => request().post('/api/auth/login')
+    .set('X-Device-Name', 'iPhone').set('X-Device-Platform', 'ios').set('X-Device-Id', deviceId)
+    .send({ email: u.user.email, password: 'test-password-1' });
+
+  // First sign-in from the install: appends a row alongside the registration one.
+  const first = await login('install-aaaa');
+  assert.equal(first.status, 200);
+  const list1 = await request().get('/api/auth/sessions')
+    .set('Authorization', `Bearer ${first.body.token}`);
+  assert.equal(list1.body.sessions.length, 2);
+  const row1 = list1.body.sessions.find((s) => s.current);
+
+  // Re-login from the SAME install: the row is replaced, not appended — same
+  // createdAt, fresh sid — and the install's previous token is revoked.
+  const second = await login('install-aaaa');
+  const list2 = await request().get('/api/auth/sessions')
+    .set('Authorization', `Bearer ${second.body.token}`);
+  assert.equal(list2.body.sessions.length, 2, 'same install must not add a row');
+  const row2 = list2.body.sessions.find((s) => s.current);
+  assert.notEqual(row2._id, row1._id, 're-login mints a fresh sid');
+  assert.equal(row2.createdAt, row1.createdAt, 'the install keeps its first-seen date');
+  const dead = await request().get('/api/auth/sessions')
+    .set('Authorization', `Bearer ${first.body.token}`);
+  assert.equal(dead.status, 401, 're-login revokes the install\'s previous token');
+
+  // A DIFFERENT install id — even with the identical name+platform — appends
+  // its own row (names are non-unique; only the id may coalesce).
+  const other = await login('install-bbbb');
+  const list3 = await request().get('/api/auth/sessions')
+    .set('Authorization', `Bearer ${other.body.token}`);
+  assert.equal(list3.body.sessions.length, 3, 'a new install must get its own row');
+});
+
 async function requestResetCode(email) {
   const User = require('../models/User');
   const bcrypt = require('bcryptjs');

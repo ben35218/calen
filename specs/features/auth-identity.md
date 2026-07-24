@@ -1,7 +1,7 @@
 ---
 title: Auth & identity
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 337a313 (2026-07-24)
 code:
   - mobile/src/screens/auth/
   - mobile/src/store/auth.tsx
@@ -10,7 +10,9 @@ code:
   - server/src/routes/keys.js
   - server/src/models/User.js
   - server/src/models/DeviceLink.js
-  - mobile/src/lib/{passkeys,secureToken,deviceLink,deviceKey}.ts
+  - mobile/src/lib/{passkeys,secureToken,deviceId,deviceLink,deviceKey}.ts
+  - mobile/src/api/client.ts
+  - server/src/services/sessions.js
 tests:
   - server/src/test/authFlows.integration.test.js
   - server/src/test/passwordlessRegister.integration.test.js
@@ -81,8 +83,27 @@ your private key. The key primitives are in
 - **Device linking:** `POST /keys/link/start` + `/link/complete` (+ public
   `GET /keys/link/:linkId`) hand the identity key to a second device without a
   password round-trip (`lib/deviceLink.ts`, `LinkDeviceScreen`).
-- Sessions: `GET /auth/sessions`, `DELETE /auth/sessions/:sid`. Account
-  self-service: `GET /auth/me`, `PUT /auth/email`, `PUT /auth/password`,
+- **Device sessions (F2):** every issued JWT carries the id (`sid`) of a
+  session row on `User.sessions`; deleting the row revokes that token.
+  `GET /auth/sessions`, `DELETE /auth/sessions/:sid`.
+  - **Install identity:** each app install generates a random UUID on first
+    launch, persists it in the keychain (`lib/deviceId.ts`), and sends it as
+    `X-Device-Id` on every request (alongside the cosmetic `X-Device-Name` /
+    `X-Device-Platform` labels). Like the name, it is a label/dedup key only —
+    NEVER an auth factor (the revocation key stays the `sid` in the JWT).
+  - **One row per install:** a sign-in whose `X-Device-Id` matches an existing
+    session row **replaces** that row (fresh `sid`, updated name/`lastSeenAt`,
+    original `createdAt` kept) instead of appending — so the Devices list shows
+    physical devices, not a history of sign-ins, and re-login invalidates the
+    install's previous token (one live token per install). Sign-ins without the
+    header (legacy clients) append as before. The list is capped at
+    `MAX_SESSIONS`, dropping the least-recently-seen row.
+  - **New-device alert (F3):** "unfamiliar device" means no existing row with
+    the same `X-Device-Id`; requests without the header fall back to matching
+    name+platform. MUST NOT coalesce rows on name+platform alone — names like
+    "iPhone" are non-unique and attacker-guessable, and merging on them would
+    both hide a second real device and suppress the takeover alert.
+- Account self-service: `GET /auth/me`, `PUT /auth/email`, `PUT /auth/password`,
   `DELETE /auth/account` (immediate full deletion).
 - The JWT lives in `expo-secure-store` (`lib/secureToken.ts`); an automatic Face
   ID unlock is attempted on token-restore relaunch.
@@ -91,7 +112,8 @@ your private key. The key primitives are in
 
 - **Model:** `User` (email, name, `passwordHash`, `identityPublicKey`,
   `wrappedPrivateKey[]` factor envelopes, `passkeyCredentials[]`, recovery/reset
-  state, `sessions{}`, `householdId`, `personId`), `DeviceLink`.
+  state, `sessions[]` — `{deviceId?, deviceName, platform, createdAt, lastSeenAt}`
+  rows, `householdId`, `personId`), `DeviceLink`.
 - **Endpoints:** `server/src/routes/auth.js`, `authPasskey.js` (mounted under
   `/api/auth`), `keys.js` (`/api/keys`).
 - **Client:** `screens/auth/*` (Login, Register, ForgotPassword), `store/auth.tsx`,
@@ -140,8 +162,10 @@ per-factor ciphertext and every factor KEK is derived client-side. Config:
   and token half-life refresh — `authFlows.integration.test.js`.
 - Passwordless registration and the `hasPassword` flag lifecycle —
   `passwordlessRegister.integration.test.js`.
-- Session create/revoke and new-device reset protection (hold, cancel, window
-  elapse) — `sessions.integration.test.js`.
+- Session create/revoke, per-install coalescing (`X-Device-Id` replace + old
+  token revoked, distinct ids stay separate, legacy no-header append), and
+  new-device reset protection (hold, cancel, window elapse) —
+  `sessions.integration.test.js`.
 - Device linking (one-shot sealed payload, cross-account isolation, expiry,
   validation, slot replacement) — `deviceLink.integration.test.js`.
 - The recovery mandate (`recoverySetupAt` unset → set, idempotent, gated on

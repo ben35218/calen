@@ -76,9 +76,13 @@ const userSchema = new mongoose.Schema({
   // Device sessions (Signal-parity F2). Every issued JWT carries the subdoc id
   // of one of these rows (`sid`); a row's removal revokes that token on its
   // next request. Sid-less tokens predate the registry and are upgraded on the
-  // sliding refresh. Capped (oldest dropped) in services/sessions.js.
+  // sliding refresh. `deviceId` is the client install's stable random UUID
+  // (X-Device-Id) — a sign-in from a known install REPLACES its row instead of
+  // appending, so one physical install = one row. Absent on rows from legacy
+  // clients. Capped (least-recently-seen dropped) in services/sessions.js.
   sessions: {
     type: [new mongoose.Schema({
+      deviceId:   { type: String },
       deviceName: { type: String, default: 'Unknown device' },
       platform:   { type: String, default: '' },
       createdAt:  { type: Date, default: Date.now },

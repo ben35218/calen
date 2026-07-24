@@ -13,33 +13,61 @@ const { sendNewDeviceAlert } = require('./mailer');
 const MAX_SESSIONS = 20;
 
 // Device identity comes from client-sent headers (the mobile api client sets
-// them). Spoofable — fine: they only label the row and tune alert noise; they
-// are never an auth factor. The known-device check for F1 uses the sid.
+// them). Spoofable — fine: they only label/key the rows and tune alert noise;
+// they are never an auth factor (revocation keys on the JWT `sid`). The
+// known-device check for F1 uses the sid. `deviceId` is the install's stable
+// random UUID — unlike the name it is unique per install and unguessable, so
+// it can safely key row coalescing and the familiar-device check.
 function deviceFromReq(req) {
   return {
+    deviceId: (req.get('x-device-id') || '').slice(0, 64) || undefined,
     deviceName: (req.get('x-device-name') || '').slice(0, 80) || 'Unknown device',
     platform: (req.get('x-device-platform') || '').slice(0, 20),
   };
 }
 
 // Create a session row for this sign-in and return its id (the JWT `sid`).
-// `quiet` suppresses the new-device alert (registration: the account is seconds
-// old, there's no one to warn).
+// A sign-in from a known install (matching `deviceId`) REPLACES that install's
+// row — fresh sid (revoking the install's previous token), updated labels and
+// lastSeenAt, original createdAt — so one install = one Devices row. Sign-ins
+// without the header (legacy clients) append as before. `quiet` suppresses the
+// new-device alert (registration: the account is seconds old, no one to warn).
 async function createSession(userId, req, { quiet = false } = {}) {
   const device = deviceFromReq(req);
   const sid = new mongoose.Types.ObjectId();
   const user = await User.findById(userId, 'sessions email firstName pushSubscriptions');
   if (!user) return sid; // account vanished mid-flight; token will 401 anyway
 
-  // An unfamiliar device = no existing session with this name+platform. Checked
-  // BEFORE the new row is added.
-  const familiar = user.sessions.some(
-    (s) => s.deviceName === device.deviceName && s.platform === device.platform,
-  );
+  // This install's existing row, if any. Only ever matched on the unguessable
+  // deviceId — NEVER on name+platform, which are non-unique ("iPhone") and
+  // attacker-choosable: merging on them would hide a second real device and
+  // let an attacker fold into an existing row, suppressing the F3 alert.
+  const existing = device.deviceId
+    ? user.sessions.find((s) => s.deviceId === device.deviceId)
+    : undefined;
 
-  const row = { _id: sid, ...device, createdAt: new Date(), lastSeenAt: new Date() };
-  const sessions = [...user.sessions.map((s) => s.toObject()), row]
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+  // Unfamiliar device (F3 alert trigger) = no row for this install id; legacy
+  // sign-ins without the id fall back to the old name+platform heuristic.
+  // Checked BEFORE the new row is added.
+  const familiar = device.deviceId
+    ? Boolean(existing)
+    : user.sessions.some(
+        (s) => s.deviceName === device.deviceName && s.platform === device.platform,
+      );
+
+  const row = {
+    _id: sid,
+    ...device,
+    createdAt: existing ? existing.createdAt : new Date(),
+    lastSeenAt: new Date(),
+  };
+  const sessions = [
+    ...user.sessions.filter((s) => s !== existing).map((s) => s.toObject()),
+    row,
+  ]
+    // Cap by recency of use, not creation — a long-lived install keeps its
+    // original createdAt and must not be the first row dropped.
+    .sort((a, b) => new Date(a.lastSeenAt) - new Date(b.lastSeenAt))
     .slice(-MAX_SESSIONS);
   await User.updateOne({ _id: userId }, { $set: { sessions } });
   await AuditLog.create({
