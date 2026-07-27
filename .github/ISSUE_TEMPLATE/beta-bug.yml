@@ -16,7 +16,7 @@ body:
       description: "Open TestFlight → Calen; the version and build number are shown near the top (e.g. 1.2.3 (45))."
       placeholder: "1.2.3 (45)"
     validations:
-      required: true
+      required: false
 
   - type: input
     id: device
@@ -25,7 +25,7 @@ body:
       description: "Settings → General → About shows the model and iOS version."
       placeholder: "iPhone 14 Pro, iOS 18.2"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: what-happened
@@ -33,7 +33,7 @@ body:
       label: What happened?
       description: Describe the bug in a sentence or two.
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: steps
@@ -46,7 +46,7 @@ body:
         3. Type a name and hit save
         4. ...
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: expected
@@ -72,7 +72,7 @@ body:
         - "Major — a feature is broken but I can work around it"
         - "Minor — cosmetic or small annoyance"
     validations:
-      required: true
+      required: false
 
   - type: dropdown
     id: frequency
