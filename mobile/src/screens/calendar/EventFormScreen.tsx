@@ -797,6 +797,10 @@ export default function EventFormScreen() {
         // values on update — the route skips undefined fields.
         travelMinutes: form.travelEnabled ? form.travelMinutes ?? null : null,
         travelDistanceKm: form.travelEnabled ? form.travelDistanceKm ?? null : null,
+        // Sealed event content (C3b) set on the Invitees screen; the draft store
+        // is seeded from the fetched event on edit, so re-sealing here preserves
+        // the current value instead of wiping it from `enc`.
+        guestListVisible: getDraftGuestListVisible(),
         reminderMinutes: form.reminderMinutes ?? undefined,
         alert2Minutes:
           form.reminderMinutes !== null && form.alert2Minutes !== null ? form.alert2Minutes : undefined,
@@ -842,17 +846,12 @@ export default function EventFormScreen() {
         const body = sealed ? { ...payload, ...sealed } : await sealUpdate('CalendarEvent', eventId!, payload);
         return calendarApi.updateEvent(eventId!, body);
       }
-      // guestListVisible is a plaintext scope field the server enforces. It is
-      // set on the Invitees screen: sent here on create only (edits PUT it from
-      // that screen directly) and kept OUT of the sealed content subset, so a
-      // later plaintext-only toggle can't be undone by a stale enc merge.
-      const create = { ...payload, guestListVisible: getDraftGuestListVisible() };
       if (useCalKey) {
         const _id = await newObjectId();
         const sealed = await sealForCalendar('CalendarEvent', _id, calType, payload);
-        if (sealed) return calendarApi.createEvent({ _id, ...create, ...sealed });
+        if (sealed) return calendarApi.createEvent({ _id, ...payload, ...sealed });
       }
-      return calendarApi.createEvent(await sealNew('CalendarEvent', create, payload));
+      return calendarApi.createEvent(await sealNew('CalendarEvent', payload));
     },
     onSuccess: async (res) => {
       // A new event sends the invitees queued on its Invitees screen — a draft

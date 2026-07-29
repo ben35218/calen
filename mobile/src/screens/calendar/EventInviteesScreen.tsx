@@ -238,12 +238,14 @@ export default function EventInviteesScreen() {
 
   // Whether invitees can see who else is invited. The live value rides the
   // invitee draft store (EventFormScreen seeds it from the fetched event and
-  // sends it with a draft's create payload). On a saved event a toggle PUTs
-  // right away — plaintext-only, like the scope field itself — with no event
-  // query invalidation, so the form underneath keeps its unsaved edits.
+  // sends it with a draft's create payload). On a saved event a toggle saves
+  // right away — `guestListVisible` is sealed event content (C3b), so the
+  // client re-seals the event rather than PUTting the field plaintext — with
+  // no event query invalidation, so the form underneath keeps its unsaved
+  // edits.
   const guestListVisible = useDraftGuestListVisible();
   const saveGuestList = useMutation({
-    mutationFn: (v: boolean) => calendarApi.updateEvent(eventId!, { guestListVisible: v }),
+    mutationFn: (v: boolean) => calendarApi.setGuestListVisible(eventId!, v),
     onError: (e: any, v) => {
       setDraftGuestListVisible(!v);
       setError(e.response?.data?.error || 'Could not update the guest list setting');

@@ -1442,6 +1442,14 @@ export const calendarApi = {
   createEvent: (data: Record<string, unknown>) => store().create<CalendarEvent>('CalendarEvent', withCalScope(data)),
   updateEvent: (id: string, data: Record<string, unknown>) => store().update<CalendarEvent>('CalendarEvent', id, withCalScope(data)),
   deleteEvent: (id: string) => store().remove('CalendarEvent', id),
+  // Single-field flips on sealed event content (C3b: `guestListVisible` and
+  // `cancelled` live inside `enc`, so a plaintext PUT is rejected by the opaque
+  // store). Re-seal via the replica like pause/resume; HDK lane only, same as
+  // the recurrence helpers below.
+  setGuestListVisible: (id: string, v: boolean) =>
+    reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { guestListVisible: v }),
+  cancelEvent: (id: string) =>
+    reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { cancelled: true }),
   // Recurring-event deletes (Apple-style). The server can't edit sealed content,
   // so each re-seals the whole event (reseal reads the decrypted record from the
   // replica, so callers never reconstruct the recurrence). Both seal under the

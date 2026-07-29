@@ -144,7 +144,7 @@ function EventActionCard({
   // Mark the event cancelled by hand (struck-through on the calendar) — used from
   // the "couldn't confirm" state when the user knows the business did cancel.
   const flagCancelled = useMutation({
-    mutationFn: async () => { if (!event.cancelled) await calendarApi.updateEvent(eventId, { cancelled: true }); await ackLast(); },
+    mutationFn: async () => { if (!event.cancelled) await calendarApi.cancelEvent(eventId); await ackLast(); },
     onSuccess: invalidateAll,
     onError: (e: any) => Alert.alert('Couldn’t update', e?.response?.data?.error || 'Please try again.'),
   });

@@ -81,7 +81,7 @@ export default function InteractionScreen() {
   // IS cancelled.
   const markCancelled = useMutation({
     mutationFn: async () => {
-      await calendarApi.updateEvent(call!.eventId!, { cancelled: true });
+      await calendarApi.cancelEvent(call!.eventId!);
       await callsApi.ack(id);
     },
     onSuccess: () => {

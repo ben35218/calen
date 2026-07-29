@@ -11,8 +11,9 @@ import { InviteeEntry } from './invitees';
 let queued: InviteeEntry[] = [];
 // The "Guests can see guest list" flag rides the same store: the Invitees
 // screen owns the switch (for drafts AND saved events — the form seeds it from
-// the fetched event), and EventFormScreen reads it into the create payload.
-// Saved events PUT the flag straight from the Invitees screen instead.
+// the fetched event), and EventFormScreen reads it into the sealed save
+// payload. Saved events re-seal the flag straight from the Invitees screen
+// (calendarApi.setGuestListVisible) instead.
 let guestListVisible = true;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
