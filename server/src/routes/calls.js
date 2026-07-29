@@ -8,8 +8,42 @@ const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meterCallSeconds } = require('../middleware/usageMeter');
 const { refreshPendingCalls, placeCall, fetchVapiCall, applyVapiToRow, markEventCancelledIfConfirmed } = require('../services/phoneCalls');
+const { suppress } = require('../services/dnc');
 
 const router = express.Router();
+
+// POST /api/calls/vapi/webhook — Vapi posts here when the in-call agent invokes
+// the record_do_not_call tool (spec: ai-assistant.md do-not-call). It carries no
+// user session, so it is UNAUTHENTICATED and mounted ABOVE `requireAuth`;
+// instead it's authenticated by the shared VAPI_WEBHOOK_SECRET echoed back in
+// the X-Vapi-Secret header — the same before-auth + shared-secret pattern the
+// RevenueCat billing webhook uses. The number suppressed is the one Vapi
+// actually dialed (`call.customer.number`), taken server-side — never a
+// model-supplied number.
+router.post('/vapi/webhook', async (req, res) => {
+  try {
+    const expected = process.env.VAPI_WEBHOOK_SECRET;
+    if (expected && req.get('X-Vapi-Secret') !== expected) {
+      return res.status(401).json({ error: 'Invalid webhook secret' });
+    }
+    const msg = req.body?.message || {};
+    const toolCalls = msg.toolCallList || msg.toolCalls || [];
+    const isOptOut = (t) => (t.function?.name || t.name) === 'record_do_not_call';
+    const dialed = msg.call?.customer?.number || msg.customer?.number;
+    if (dialed && toolCalls.some(isOptOut)) {
+      await suppress(dialed, { source: 'callee-request', note: 'Requested during the call.' });
+    }
+    // Vapi expects a results array keyed by each toolCallId.
+    const results = toolCalls
+      .filter(isOptOut)
+      .map((t) => ({ toolCallId: t.id, result: "Recorded — this number won't be called again." }));
+    res.json({ results });
+  } catch (err) {
+    console.error('Vapi webhook error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.use(requireAuth);
 
 // Assistant-placed phone calls. The mobile app polls the list for the
@@ -110,6 +144,7 @@ router.post('/cancel-event', requireAiEnabled, meterCallSeconds(), async (req, r
     });
     res.status(201).json(serialize(row));
   } catch (err) {
+    if (err.code === 'DNC_SUPPRESSED') return res.status(403).json({ error: err.message });
     console.error('Cancel-event call error:', err);
     res.status(500).json({ error: err.message });
   }
@@ -188,6 +223,7 @@ router.post('/event-action', requireAiEnabled, meterCallSeconds(), async (req, r
     });
     res.status(201).json(serialize(row));
   } catch (err) {
+    if (err.code === 'DNC_SUPPRESSED') return res.status(403).json({ error: err.message });
     console.error('Event-action call error:', err);
     res.status(500).json({ error: err.message });
   }

@@ -10,6 +10,7 @@ import {
   sortByCalendarOrder,
 } from '../../lib/calendarPrefs';
 import { Hint } from '../../components/ui';
+import { useOwnedAddons } from '../../lib/addons';
 import { colors, spacing, radius } from '../../theme';
 
 // Lets the user recolour and reorder each calendar; both persist and flow
@@ -18,12 +19,14 @@ export default function CalendarColorsScreen() {
   const { colors: calColors, setColor, resetColor } = useCalendarColors();
   const { calendars: holidayCals } = useHolidayCalendars();
   const { order, setOrder } = useCalendarOrder();
+  const { isUnlocked } = useOwnedAddons();
   // Built-in + per-country holiday calendars share the same recolour flow; each
   // holiday calendar's base colour is its reset fallback. The user's saved order
   // wins; unordered calendars (e.g. a freshly added one) trail in natural order.
+  // Locked add-on calendars are excluded — the household doesn't have them.
   const items = sortByCalendarOrder(
     [
-      ...CALENDARS.map((c) => ({ id: c.id, name: c.name, color: c.color })),
+      ...CALENDARS.filter((c) => isUnlocked(c.id)).map((c) => ({ id: c.id, name: c.name, color: c.color })),
       ...holidayCals.map((c) => ({ id: c.id, name: c.name, color: c.color })),
     ],
     order

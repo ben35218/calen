@@ -10,6 +10,7 @@ import { useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../..
 import { eventColor, ymd } from '../../lib/calendar';
 import { mdiName } from '../../lib/recurrence';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
+import { occasionTitle, occasionNoun, occasionIcon } from '../../lib/occasions';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -65,8 +66,8 @@ export default function CalendarSearchScreen() {
       const start = t.ranges?.[0]?.start;
       out.push({ key: `trip-${t.id}`, title: t.name, subtitle: 'Trip', color: t.color || calColors.trips, icon: 'bag-suitcase', date: start ? ld(start) : '', nav: () => nav.navigate('TripDetail', { id: t.id }) });
     }
-    for (const b of data.birthdays ?? []) {
-      out.push({ key: `b-${b.id}`, title: `${b.name}'s Birthday`, subtitle: 'Birthday', color: calColors.birthdays, icon: 'cake-variant', date: ld(b.date), nav: () => nav.navigate('CalendarDay', { date: ld(b.date) }) });
+    for (const o of data.occasions ?? []) {
+      out.push({ key: `occ-${o.id}`, title: occasionTitle(o), subtitle: occasionNoun(o), color: calColors.birthdays, icon: occasionIcon(o.kind), date: ld(o.date), nav: () => nav.navigate('CalendarDay', { date: ld(o.date) }) });
     }
     for (const cal of holidayCals) {
       const color = calColors[cal.id] ?? cal.color;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { startTransition, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getAllHolidayIds,
@@ -48,6 +48,14 @@ const TRIPS_RENAME_KEY = 'hc_trips_rename_migrated';
 // like the other calendar prefs; mirrors Apple Calendar's Compact/Stacked/
 // Details/List modes.
 const DENSITY_KEY = 'hc_month_density';
+// The day view's display mode (its own top-right view switcher). Device-local;
+// mirrors Apple Calendar's Single Day / Multi Day / List day modes.
+const DAY_VIEW_KEY = 'hc_day_view_mode';
+// Calendar-level alert config for the Occasions calendar (birthdays + labeled
+// contact dates). One config for the whole calendar — no per-occasion override.
+// Device-local; on-device reminders (lib/notifications) read it. Defaults: an
+// alert at NOON the day of the occasion AND one 2 weeks (14 days) before.
+const OCCASION_ALERTS_KEY = 'hc_occasion_alert_prefs';
 
 // The built-in calendars the user may delete from the Calendars view (and add
 // back via Add Calendar) — every default, including the "Other" group
@@ -79,7 +87,7 @@ export interface CalendarDef {
 export const CALENDARS: CalendarDef[] = [
   { id: 'activities', name: 'Activities', color: '#388E3C', group: 'basic' },
   { id: 'appointments', name: 'Appointments', color: '#7B1FA2', group: 'basic' },
-  { id: 'birthdays', name: 'Birthdays', color: '#E91E63', group: 'basic' },
+  { id: 'birthdays', name: 'Occasions', color: '#E91E63', group: 'basic' },
   { id: 'weather', name: 'Weather', color: '#0288D1', group: 'basic' },
   { id: 'chores', name: 'Chores', color: '#F57C00', group: 'advanced' },
   { id: 'recipes', name: 'Meals', color: '#00897B', group: 'advanced' },
@@ -232,18 +240,36 @@ export type MonthDensity = 'compact' | 'stacked' | 'details' | 'list';
 const DEFAULT_DENSITY: MonthDensity = 'details';
 const DENSITIES: MonthDensity[] = ['compact', 'stacked', 'details', 'list'];
 
+// The day view's display mode: hour-grid over one day, hour-grid over two days,
+// or the multi-day agenda list.
+export type DayViewMode = 'single' | 'multi' | 'list';
+const DEFAULT_DAY_VIEW: DayViewMode = 'single';
+const DAY_VIEWS: DayViewMode[] = ['single', 'multi', 'list'];
+
+// Calendar-level alert config for the Occasions calendar. `offsets` are days
+// before the occasion (0 = the day of); `time` is the wall-clock `HH:mm` both
+// alerts fire at. Defaults: noon on the day AND two weeks before.
+export interface OccasionAlertPrefs { offsets: number[]; time: string }
+const DEFAULT_OCCASION_ALERTS: OccasionAlertPrefs = { offsets: [0, 14], time: '12:00' };
+
 // ── In-memory state + subscribers ───────────────────────────────────────────
 let visState: VisMap | null = null;
 // Device-local holiday calendars found at load, awaiting one-time upload to the
 // server (see refreshCustomCalendars). Holiday calendars are now derived from
 // customState — this only feeds the migration.
 let pendingLocalHolidayCals: HolidayCalendar[] = [];
+// True when pendingLocalHolidayCals is the FRESH-INSTALL seed (not real legacy
+// data): the seed was minted by us this session, so it's also safe to
+// auto-select the home province/state on it after upload.
+let freshHolidaySeed = false;
 let colorOverrideState: ColorMap = {}; // sparse — only user overrides
 let orderState: string[] | null = null; // sparse — ids the user reordered
 let customState: CustomCalendar[] | null = null;
 let deletedDefaultsState: string[] | null = null;
 let defaultAlertsOffState: string[] | null = null;
 let densityState: MonthDensity | null = null;
+let dayViewState: DayViewMode | null = null;
+let occasionAlertState: OccasionAlertPrefs | null = null;
 const visSubs = new Set<() => void>();
 const colorSubs = new Set<() => void>();
 const orderSubs = new Set<() => void>();
@@ -251,6 +277,8 @@ const customSubs = new Set<() => void>();
 const deletedSubs = new Set<() => void>();
 const defaultAlertsSubs = new Set<() => void>();
 const densitySubs = new Set<() => void>();
+const dayViewSubs = new Set<() => void>();
+const occasionAlertSubs = new Set<() => void>();
 let loaded = false;
 
 // Best-effort country from the device locale (e.g. "en-CA" → CA). Only used
@@ -426,6 +454,7 @@ async function ensureLoaded() {
           AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
         }
         pendingLocalHolidayCals = [seeded];
+        freshHolidaySeed = true;
       }
     }
   } catch {
@@ -463,6 +492,15 @@ async function ensureLoaded() {
     defaultAlertsOffState = [];
   }
   try {
+    const rawOcc = await AsyncStorage.getItem(OCCASION_ALERTS_KEY);
+    const parsedOcc = rawOcc ? JSON.parse(rawOcc) : null;
+    occasionAlertState = parsedOcc && Array.isArray(parsedOcc.offsets) && typeof parsedOcc.time === 'string'
+      ? { offsets: parsedOcc.offsets.filter((n: unknown) => typeof n === 'number'), time: parsedOcc.time }
+      : { ...DEFAULT_OCCASION_ALERTS };
+  } catch {
+    occasionAlertState = { ...DEFAULT_OCCASION_ALERTS };
+  }
+  try {
     const rawCustom = await AsyncStorage.getItem(CUSTOM_KEY);
     const parsed = rawCustom ? JSON.parse(rawCustom) : [];
     // Older caches predate household/outside sharing, server backing, and
@@ -488,6 +526,14 @@ async function ensureLoaded() {
   } catch {
     densityState = DEFAULT_DENSITY;
   }
+  try {
+    const rawDayView = await AsyncStorage.getItem(DAY_VIEW_KEY);
+    dayViewState = DAY_VIEWS.includes(rawDayView as DayViewMode)
+      ? (rawDayView as DayViewMode)
+      : DEFAULT_DAY_VIEW;
+  } catch {
+    dayViewState = DEFAULT_DAY_VIEW;
+  }
   syncColorOverrides();
   visSubs.forEach((fn) => fn());
   colorSubs.forEach((fn) => fn());
@@ -496,6 +542,8 @@ async function ensureLoaded() {
   deletedSubs.forEach((fn) => fn());
   defaultAlertsSubs.forEach((fn) => fn());
   densitySubs.forEach((fn) => fn());
+  dayViewSubs.forEach((fn) => fn());
+  occasionAlertSubs.forEach((fn) => fn());
   // The cache painted instantly; now pull the server truth (incl. calendars
   // housemates shared with us) in the background.
   void refreshCustomCalendars();
@@ -539,6 +587,9 @@ export async function refreshCustomCalendars(): Promise<void> {
     }
     // One-time: upload device-local holiday calendars as server-backed records
     // so they gain sharing/colour and reach housemates. Dedupe by country.
+    // The key of a holiday calendar the FRESH-INSTALL seed just uploaded (vs a
+    // real legacy migration) — the one calendar it's safe to auto-region below.
+    let seededKey: string | null = null;
     if (!(await AsyncStorage.getItem(HOL_MIGRATED_KEY))) {
       const serverCountries = new Set(
         data.filter((r) => r.holiday?.country).map((r) => r.holiday!.country)
@@ -548,6 +599,7 @@ export async function refreshCustomCalendars(): Promise<void> {
         if (serverCountries.has(h.country)) continue;
         try {
           const key = `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+          if (freshHolidaySeed) seededKey = key;
           const res = await customCalendarsApi.create({
             key,
             name: h.name,
@@ -574,6 +626,22 @@ export async function refreshCustomCalendars(): Promise<void> {
       if (visChanged) visSubs.forEach((fn) => fn());
     }
     commitCustom(data.map(fromRecord));
+    // Fresh install (first run): the seed above added the detected country's
+    // holiday calendar bare — now preselect the home province/state when the
+    // saved address already makes it derivable (usually the address comes
+    // later; the AccountScreen save hook handles that case). Only the calendar
+    // the seed itself minted is touched, so no user choice can be overridden.
+    // Lazy require: homeRegion pulls in lib/e2ee (native crypto), which this
+    // module must not load at import time (it's imported by pure-JS tests).
+    if (seededKey) {
+      freshHolidaySeed = false;
+      const seeded = (customState ?? []).find((c) => c.id === seededKey);
+      const { detectHomeRegion } = require('./homeRegion') as typeof import('./homeRegion');
+      const home = await detectHomeRegion();
+      if (seeded?.holiday && home?.country === seeded.holiday.country && home.region) {
+        patchHolidayConfigLocal(seededKey, { selectedRegions: [home.region] });
+      }
+    }
   } catch {
     // Offline / signed out — keep the cache; the next refresh retries.
   }
@@ -611,6 +679,19 @@ async function serverAddHolidayCalendar(country: CountryCode): Promise<string> {
   return data.key;
 }
 
+// Auto-select the detected home province/state on holiday calendars of that
+// country which have no regional picks yet. Never overrides an explicit choice
+// (any non-empty selectedRegions is left alone). Called when the home address
+// is saved and from the first-run seed.
+export async function autoSelectHolidayRegion(country: CountryCode, region: string): Promise<void> {
+  await ensureLoaded();
+  for (const c of customState ?? []) {
+    if (c.mine && c.holiday?.country === country && c.holiday.selectedRegions.length === 0) {
+      patchHolidayConfigLocal(c.id, { selectedRegions: [region] });
+    }
+  }
+}
+
 async function serverRemoveHolidayCalendar(id: string): Promise<void> {
   await customCalendarsApi.remove(id);
   commitCustom((customState ?? []).filter((c) => c.id !== id));
@@ -633,6 +714,13 @@ export async function getAlertMutedCalendarIds(): Promise<Set<string>> {
   ]);
 }
 
+// The Occasions calendar's alert config (calendar-level). lib/notifications
+// reads this to schedule on-device occasion reminders.
+export async function getOccasionAlertPrefs(): Promise<OccasionAlertPrefs> {
+  await ensureLoaded();
+  return occasionAlertState ?? { ...DEFAULT_OCCASION_ALERTS };
+}
+
 // Custom-calendar ids this user can access. Events referencing a custom id
 // outside this set belong to a housemate's unshared calendar and must be
 // hidden — the server can't filter them (calendarType is client-territory
@@ -653,25 +741,44 @@ export async function getSubscribedCalendars(): Promise<CustomCalendar[]> {
 // ── Calendar visibility hook ────────────────────────────────────────────────
 export function useCalendarVisibility() {
   const [vis, setVis] = useState<VisMap>(visState ?? defaultVis());
+  // This hook instance's subscriber, so mutations made HERE can commit their
+  // own screen's update urgently while every other consumer follows in a
+  // transition (see broadcast below).
+  const subRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const sub = () => setVis({ ...(visState ?? defaultVis()) });
+    subRef.current = sub;
     visSubs.add(sub);
     ensureLoaded().then(sub);
     return () => {
+      subRef.current = null;
       visSubs.delete(sub);
     };
   }, []);
 
+  // The toggle must FEEL instant: re-render the screen the user is touching
+  // first (urgent), then let the other mounted consumers — notably the month
+  // grid still mounted beneath the Calendars modal, whose re-render is heavy —
+  // follow as an interruptible transition instead of blocking this commit.
+  function broadcast() {
+    subRef.current?.();
+    startTransition(() => {
+      visSubs.forEach((fn) => {
+        if (fn !== subRef.current) fn();
+      });
+    });
+  }
+
   function setVisible(id: string, visible: boolean) {
     visState = { ...(visState ?? defaultVis()), [id]: visible };
     AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
-    visSubs.forEach((fn) => fn());
+    broadcast();
   }
   function setAll(visible: boolean) {
     visState = Object.fromEntries(CALENDARS.map((c) => [c.id, visible]));
     AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
-    visSubs.forEach((fn) => fn());
+    broadcast();
   }
 
   return { visibility: vis, setVisible, setAll };
@@ -699,6 +806,30 @@ export function useMonthDensity() {
   }
 
   return { density, setDensity };
+}
+
+// ── Day-view mode hook ──────────────────────────────────────────────────────
+// The day view's own switcher mode (Single Day / Multi Day / List), persisted
+// device-local and shared live with every mounted consumer.
+export function useDayViewMode() {
+  const [mode, setModeState] = useState<DayViewMode>(dayViewState ?? DEFAULT_DAY_VIEW);
+
+  useEffect(() => {
+    const sub = () => setModeState(dayViewState ?? DEFAULT_DAY_VIEW);
+    dayViewSubs.add(sub);
+    ensureLoaded().then(sub);
+    return () => {
+      dayViewSubs.delete(sub);
+    };
+  }, []);
+
+  function setMode(next: DayViewMode) {
+    dayViewState = next;
+    AsyncStorage.setItem(DAY_VIEW_KEY, next).catch(() => {});
+    dayViewSubs.forEach((fn) => fn());
+  }
+
+  return { mode, setMode };
 }
 
 // Holiday calendars this user can see (own + shared), to read anywhere (grid,
@@ -963,4 +1094,29 @@ export function useDefaultCalendarAlerts() {
   }
 
   return { mutedIds, setAlertsEnabled };
+}
+
+// ── Occasions calendar-level alert prefs hook ───────────────────────────────
+export function useOccasionAlertPrefs() {
+  const [prefs, setPrefs] = useState<OccasionAlertPrefs>(occasionAlertState ?? { ...DEFAULT_OCCASION_ALERTS });
+
+  useEffect(() => {
+    const sub = () => setPrefs({ ...(occasionAlertState ?? { ...DEFAULT_OCCASION_ALERTS }) });
+    occasionAlertSubs.add(sub);
+    ensureLoaded().then(sub);
+    return () => {
+      occasionAlertSubs.delete(sub);
+    };
+  }, []);
+
+  function setOccasionAlertPrefs(next: OccasionAlertPrefs) {
+    // Normalise: unique, sorted offsets; keep a valid HH:mm time.
+    const offsets = [...new Set(next.offsets.filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b);
+    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(next.time) ? next.time : DEFAULT_OCCASION_ALERTS.time;
+    occasionAlertState = { offsets, time };
+    AsyncStorage.setItem(OCCASION_ALERTS_KEY, JSON.stringify(occasionAlertState)).catch(() => {});
+    occasionAlertSubs.forEach((fn) => fn());
+  }
+
+  return { prefs, setOccasionAlertPrefs };
 }

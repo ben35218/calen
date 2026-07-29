@@ -51,8 +51,17 @@ export interface RecordSyncResult {
 
 // Pull the unified feed once and reconcile it into the per-collection replica.
 // A tombstone (`deleted`) removes the row from its bucket; every other row is
-// decrypted and upserted under its recovered collection. Advances the cursor to
-// the server's clock so the next call is incremental.
+// decrypted and upserted under its recovered collection.
+//
+// Cursor safety: we may only advance the cursor PAST rows we actually
+// reconciled. A content row we couldn't decrypt yet — the household key wasn't
+// held (a sync that raced ahead of unlock right after sign-in, or an
+// account-switch mid-boot) — must be re-pulled next pass, or it's stranded out
+// of the replica for good while it still lives on the server. `since` is
+// exclusive server-side (updatedAt > since) and the feed ascends, so we park the
+// cursor at the last reconciled row BEFORE the first undecryptable content row.
+// (A tombstone whose ciphertext is already gone is expected-undecryptable and
+// permanent — it does NOT hold the cursor back, or the pull would loop forever.)
 export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<RecordSyncResult> {
   const d = { ...defaultDeps, ...deps };
   const since = await d.getCursor();
@@ -62,23 +71,34 @@ export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<R
   const byCollection = new Map<string, Record<string, unknown>[]>();
   let removed = 0;
   let skipped = 0;
+  let firstBlockedAt: string | null = null; // earliest content row we must retry
+  let watermark: string | null = since;     // newest updatedAt safe to commit past
 
   for (const row of records) {
+    const at = row.updatedAt ?? serverTime; // server always sends it; fall back for the type
     if (row.deleted) {
       // A tombstone: we don't know the collection without decrypting, and a
       // deleted row's ciphertext may be gone — so drop it from every bucket it
       // could live in. replica.remove is a no-op where the id isn't present.
       const dec = await d.decrypt(row).catch(() => null);
       if (dec) await d.remove(dec.collection, row._id);
-      else skipped += 1;
+      else skipped += 1; // ciphertext gone — expected, not a retryable block
       removed += 1;
+      if (firstBlockedAt === null) watermark = at;
       continue;
     }
     const dec = await d.decrypt(row).catch(() => null);
-    if (!dec) { skipped += 1; continue; }
+    if (!dec) {
+      // Couldn't decrypt a live content row — key not ready. Block the cursor
+      // here so this row (and everything after it) is re-pulled once unlocked.
+      skipped += 1;
+      if (firstBlockedAt === null) firstBlockedAt = at;
+      continue;
+    }
     const list = byCollection.get(dec.collection) ?? [];
     list.push({ ...dec.record, _id: row._id, updatedAt: row.updatedAt });
     byCollection.set(dec.collection, list);
+    if (firstBlockedAt === null) watermark = at;
   }
 
   let upserted = 0;
@@ -87,7 +107,15 @@ export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<R
     upserted += rows.length;
   }
 
-  await d.setCursor(serverTime);
+  // No blocked row → fully caught up. Otherwise commit only up to the last row
+  // before the block, and only if it's strictly older than the blocked row (so a
+  // same-timestamp block is still re-pulled); if nothing preceded it, leave the
+  // cursor untouched so the whole window retries next pass.
+  if (firstBlockedAt === null) {
+    await d.setCursor(serverTime);
+  } else if (watermark !== null && watermark < firstBlockedAt) {
+    await d.setCursor(watermark);
+  }
   return { upserted, removed, skipped };
 }
 

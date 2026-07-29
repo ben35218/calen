@@ -32,7 +32,7 @@ const taskSchema = new mongoose.Schema({
   // alert on the due date itself. null = no alert. Delivered via push.
   reminderDaysBefore: { type: Number, default: 0 },
   alert2DaysBefore:   { type: Number, default: null },
-  // Wall-clock time of day the alerts fire, `HH:mm` local. null = the 7am
+  // Wall-clock time of day the alerts fire, `HH:mm` local. null = the 9am
   // default (ALERT_HOUR, client-side). Applies to both alert offsets.
   reminderTime:       { type: String, default: null },
   // Who the alert goes to in a shared household: 'everyone' or 'owner' (the

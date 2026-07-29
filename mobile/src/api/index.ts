@@ -40,7 +40,11 @@ export interface User {
   firstName: string;
   lastName?: string;
   role?: 'user' | 'admin';
-  householdId?: string; // used as the RevenueCat app_user_id
+  householdId?: string;
+  // The per-user $4.99 one-time app unlock — the hard paywall keys off this
+  // (mirrored into lib/unlock on every login/refresh). The USER id is the
+  // RevenueCat app_user_id.
+  appUnlocked?: boolean;
   // Whether the account knows a real password. false for passwordless signups —
   // the unlock UI then offers recovery/passkey instead of a password field.
   hasPassword?: boolean;
@@ -60,8 +64,10 @@ export interface PasskeyChallenge {
   challengeId: string;
   challenge: string; // b64url
   rpId: string;
-  // Each registered credential with its E2EE PRF salt (when that credential is
-  // also an unlock factor) so one assertion can sign in AND unlock.
+  // Username-first: each registered credential with its E2EE PRF salt (when that
+  // credential is also an unlock factor) so one assertion signs in AND unlocks.
+  // Usernameless (no email sent): empty — the account and PRF salt aren't known
+  // until the platform picker returns a credential, so E2EE unlocks post-auth.
   allowCredentials: { id: string; prfSalt: string | null }[];
 }
 
@@ -71,8 +77,12 @@ export const authApi = {
   register: (data: { email: string; password: string; firstName: string; lastName?: string; passwordless?: boolean }) =>
     api.post<AuthResponse>('/auth/register', data),
   me: () => api.get<User>('/auth/me'),
-  updateEmail: (data: { email: string; password: string }) => api.put('/auth/email', data),
-  updatePassword: (data: { currentPassword: string; newPassword: string }) =>
+  // `currentPassword` is omitted on the biometric re-auth path (see AccountScreen);
+  // sent only as the no-biometric fallback.
+  updateEmail: (data: { email: string; currentPassword?: string }) => api.put('/auth/email', data),
+  // `currentPassword` is omitted on the biometric re-auth path (see
+  // PrivacyDataScreen); sent only as the no-biometric fallback.
+  updatePassword: (data: { currentPassword?: string; newPassword: string }) =>
     api.put('/auth/password', data),
   // Forgot password: emailed 6-digit code, then reset signs the user in.
   forgotPassword: (data: { email: string }) => api.post<{ ok: boolean }>('/auth/forgot', data),
@@ -81,7 +91,9 @@ export const authApi = {
   // Passkey sign-in + server-verified registration (see routes/authPasskey.js).
   passkeyRegisterOptions: () => api.post<Record<string, unknown>>('/auth/passkey/register-options'),
   passkeyRegister: (response: unknown) => api.post('/auth/passkey/register', response),
-  passkeyChallenge: (data: { email: string }) => api.post<PasskeyChallenge>('/auth/passkey/challenge', data),
+  // Omit `email` for usernameless (discoverable-credential) sign-in — the OS
+  // account picker chooses and the server resolves the user from the assertion.
+  passkeyChallenge: (data: { email?: string } = {}) => api.post<PasskeyChallenge>('/auth/passkey/challenge', data),
   passkeyLogin: (data: { challengeId: string; response: unknown }) =>
     api.post<AuthResponse>('/auth/passkey/login', data),
   // Permanent account + data deletion (Apple 5.1.1(v)). Accounts with a
@@ -650,7 +662,14 @@ export interface Settings {
   timezone?: string;
   // Server-side mirror of the device's AI consent toggle (middleware/aiConsent).
   aiEnabled?: boolean;
+  // Personal default time (HH:mm, local) day-based alerts fire at; null/absent =
+  // the 9am default. Set on the Account screen; honored by the server cron (hour
+  // only) and the on-device scheduler (full HH:mm).
+  dayAlertTime?: string | null;
   homeAddress?: string;
+  // Household default zone (scheduler fallback) — derived client-side from the
+  // home location; write via the `householdTimezone` key on PUT.
+  householdTimezone?: string;
   reminderLeadDays?: number;
   // null when the household hasn't configured a shopping day yet.
   groceryShoppingDay?: number | null;
@@ -709,20 +728,52 @@ export const odometerApi = {
   delete: (_itemId: string, logId: string) => store().remove('OdometerLog', logId),
 };
 
+// A labeled contact value (Apple-Contacts-style multi-value field). See
+// lib/personFields for the normalize/migrate helpers.
+export interface PersonLabeledValue {
+  label: string;
+  value: string;
+}
+export interface PersonRelatedName extends PersonLabeledValue {
+  personId?: string;
+}
+
 export interface Person {
   _id: string;
+  // Canonical, composed display name (source of truth for roster/sort/e-cards).
   name: string;
+  // Structured components (Apple-Contacts First / Last); `name` is recomposed
+  // from them on save. Absent on legacy records — read via personFields.
+  firstName?: string;
+  lastName?: string;
   type: 'family' | 'friend' | 'service' | string;
   accountId?: string;
   relationship?: string;
   birthday?: string;
+  // Multi-value labeled fields (the current shape). `dates` values are YYYY-MM-DD
+  // (anniversary/custom — birthday stays its own single field, driving the
+  // calendar). `company`/`jobTitle` apply to all types (company supersedes the
+  // old service-only businessName).
+  phones?: PersonLabeledValue[];
+  emails?: PersonLabeledValue[];
+  addresses?: PersonLabeledValue[];
+  dates?: PersonLabeledValue[];
+  urls?: PersonLabeledValue[];
+  relatedNames?: PersonRelatedName[];
+  jobTitle?: string;
+  company?: string;
+  notes?: string;
+  // When true, this person's birthday + dates are excluded from the Occasions
+  // calendar (grid, day/list, search, reminders) and the Occasions list. Default
+  // false (shown).
+  occasionsHidden?: boolean;
+  deviceContactId?: string;
+  // Legacy single-value fields — read via lib/personFields.normalizePerson and
+  // cleared on the next save. Kept for records not yet re-edited.
   email?: string;
   phone?: string;
   address?: string;
   businessName?: string;
-  interests?: string[];
-  notes?: string;
-  deviceContactId?: string;
 }
 
 // Raw device contact sent to the AI classifier; results echo back the same key.
@@ -745,7 +796,6 @@ export interface ClassifiedContact {
   phone?: string;
   email?: string;
   birthday?: string;
-  interests?: string[];
   notes?: string;
 }
 
@@ -771,6 +821,71 @@ export const peopleApi = {
   // (spec: ai-assistant.md) — it sends business details into live searches.
   classify: (contacts: ImportContact[], enrich = false) =>
     api.post<{ results: ClassifiedContact[] }>('/people/classify', { contacts, enrich }),
+};
+
+// ----- Occasion e-cards ------------------------------------------------------
+// PLAINTEXT by design: unlike Person content, a scheduled e-card's recipient
+// emails + message are sent to the server in the clear (a documented E2EE
+// exception, like email invites) so it can be delivered on the occasion date
+// while the app is closed. See crypto-e2ee.md "Deliberate plaintext exceptions".
+export interface ECardRecipient { email: string; name?: string }
+
+// A photo embedded in the card email (stored plaintext server-side, like the
+// message). Bytes are fetched via ecardPhotoPath (bearer auth required).
+export interface ECardPhoto { _id: string; contentType: string }
+
+export interface ECard {
+  _id: string;
+  userId: string;
+  householdId?: string;
+  personId?: string;
+  kind: OccasionKind;
+  occasionLabel?: string;
+  month: number;
+  day: number;
+  sendTime: string; // 'HH:mm'
+  template?: string;
+  font?: string; // 'sans' | 'serif' | 'elegant' | 'script'; empty = template default
+  message?: string;
+  // Author overrides for the card's framing lines; blank = the server defaults
+  // (per-recipient "Dear <name>," / the style's sign-off phrase / author's
+  // first name).
+  greeting?: string;
+  signoff?: string;
+  signature?: string;
+  photos?: ECardPhoto[];
+  recipients: ECardRecipient[];
+  active: boolean;
+  lastSentYear?: number | null;
+}
+
+export interface ECardInput {
+  personId?: string;
+  kind: OccasionKind;
+  occasionLabel?: string;
+  month: number;
+  day: number;
+  sendTime?: string;
+  template?: string;
+  font?: string;
+  message?: string;
+  greeting?: string;
+  signoff?: string;
+  signature?: string;
+  recipients: ECardRecipient[];
+}
+
+// Photo upload is multipart (lib/upload's uploadFile, field 'photo') against
+// ecardPhotoUploadPath; the paths live here so screens don't hand-roll them.
+export const ecardPhotoUploadPath = (id: string) => `/ecards/${id}/photos`;
+export const ecardPhotoPath = (id: string, photoId: string) => `/ecards/${id}/photos/${photoId}`;
+
+export const ecardsApi = {
+  list: () => api.get<ECard[]>('/ecards'),
+  create: (data: ECardInput) => api.post<ECard>('/ecards', data),
+  update: (id: string, data: Partial<ECardInput> & { active?: boolean }) => api.patch<ECard>(`/ecards/${id}`, data),
+  remove: (id: string) => api.delete<{ ok: true }>(`/ecards/${id}`),
+  removePhoto: (id: string, photoId: string) => api.delete<ECard>(ecardPhotoPath(id, photoId)),
 };
 
 // ----- Household (sharing) ---------------------------------------------------
@@ -1230,10 +1345,19 @@ export interface CalendarEvent {
   enc?: { alg: string; nonce: string; ct: string };
 }
 
-export interface CalendarBirthday {
+export type OccasionKind = 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
+
+export interface CalendarOccasion {
   id: string;
+  kind: OccasionKind;
   name: string;
+  // Friendly noun for known kinds; the raw contact date label for custom kinds.
+  label: string;
   date: string;
+  personId: string;
+  relationship?: string;
+  // The original year the occasion happened, when a real year is on file.
+  year?: number | null;
 }
 
 export interface CalendarRecipeSchedule {
@@ -1257,7 +1381,7 @@ export interface CalendarData {
   tasks: Task[];
   chores: Chore[];
   events: CalendarEvent[];
-  birthdays: CalendarBirthday[];
+  occasions: CalendarOccasion[];
   recipes: CalendarRecipeSchedule[];
   groceryShopping: { id: string; date: string }[];
   trips: CalendarTripOverlay[];
@@ -1479,44 +1603,60 @@ export interface InvitationGuestList {
   guests: { _id: string; toEmail?: string; toPhone?: string; status: EventInvitation['status'] }[];
 }
 
-export interface BillingSubscription {
-  autoRenew: boolean | null;   // null = unknown (predates lifecycle tracking)
-  expiresAt: string | null;    // renewal date, or access-until date when cancelled
-  billingIssue: boolean;       // payment failed; store grace period running
-  productId: string | null;    // store product id, for matching a package's price
-  managedBy: { userId: string; name: string } | null; // who bought it
+// A purchasable AI-credit pack (consumable IAP). `price` is a USD display
+// fallback — the store's localized price wins whenever RevenueCat packages load.
+export interface CreditPack {
+  productId: string;
+  label: string;
+  price: number;
+  credits: number;
+}
+
+export interface CreditLedgerEntry {
+  kind: 'purchase' | 'starter' | 'refund' | 'admin';
+  credits: number; // signed (refunds/adjustments can be negative)
+  productId: string | null;
+  note: string | null;
+  createdAt: string;
 }
 
 export interface BillingStatus {
-  plan: string;
-  planLabel: string;
-  // Weekly TOKEN budget — the enforced metric shown as a % gauge in the Plan view.
-  tokensUsed: number;
-  weeklyTokenLimit: number | null; // null = unlimited
-  tokenPct: number;                // 0–100 (0 when unlimited)
-  // Weekly assistant CALL-TIME budget — the separate enforced metric for phone
-  // calls, in connected seconds. Its own gauge alongside the token gauge.
-  callSecondsUsed: number;
-  weeklyCallSecondsLimit: number | null; // null = unlimited
-  callSecondsPct: number;                // 0–100 (0 when unlimited)
-  // Per-action counts (analytics / detail; no longer the enforced cap).
+  // The per-user $4.99 one-time app unlock (drives the hard paywall).
+  unlocked: boolean;
+  unlockPrice: number; // USD display fallback
+  // Prepaid AI-credit balance (1 credit = $0.01 retail). `creditBalance` is
+  // whole credits and may be NEGATIVE after a refund — floor display at 0.
+  // `unlimited` = exempt admin account (render "Unlimited", ignore balance).
+  creditBalance: number;
+  creditBalanceMc: number;
+  lowBalance: boolean;
+  unlimited: boolean;
+  packs: CreditPack[];
+  // Per-action counts, always this user's own (analytics — the "By feature"
+  // card; enforcement is the credit balance).
   usage: Record<string, number>;
-  // 'user' = free tier (each member has their own allowance); 'household' = paid
-  // tiers (shared family pool). Determines whether usage is personal or shared.
-  usageScope?: 'user' | 'household';
-  quotas: Record<string, number | null>;
-  resetsAt?: string; // ISO instant of the next weekly usage reset (Wed 5PM ET)
+  usageScope: 'user';
+  resetsAt?: string; // ISO instant of the next weekly ANALYTICS window reset (Wed 5PM ET)
   hasHousehold: boolean;
-  catalog: { key: string; label: string; price: number; weeklyTokenLimit?: number | null; weeklyCallSecondsLimit?: number | null }[];
-  // Subscription lifecycle (paid plans only).
-  subscription?: BillingSubscription;
-  // Per-member share of the pooled weekly tokens (household-scoped plans only).
-  // Relative shares — member counters aren't baselined at a mid-week upgrade.
-  members?: { userId: string; name: string; tokens: number }[];
+  // One-time feature-calendar add-ons this household owns (calendar ids:
+  // 'recipes' | 'maintenance' | 'trips'). lib/addons caches this set on-device;
+  // the feature UIs gate on it (client-side enforcement — the record store is
+  // opaque to the server).
+  addons?: string[];
+  // Display catalog for the Add-ons screen. Prices are USD fallbacks — the
+  // store's localized price wins whenever RevenueCat packages load.
+  addonCatalog?: {
+    items: { key: string; label: string; price: number; description: string }[];
+    bundle: { label: string; price: number; description: string };
+  };
 }
 
 export const billingApi = {
   status: () => api.get<BillingStatus>('/billing/status'),
+  ledger: () => api.get<{ entries: CreditLedgerEntry[] }>('/billing/credits/ledger'),
+  // Claim a FREE add-on (catalog price 0 — Birthdays/Chores): included with
+  // the app but opt-in, unlocked household-wide without a store purchase.
+  claimAddon: (addon: string) => api.post<{ addons: string[] }>('/billing/addons/claim', { addon }),
 };
 
 // ----- Weather ---------------------------------------------------------------

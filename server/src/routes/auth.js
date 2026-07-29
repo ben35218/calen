@@ -7,7 +7,7 @@ const Person = require('../models/Person');
 const Category = require('../models/Category');
 const { requireAuth, signToken } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
-const { sendPasswordResetCode, sendNewDeviceAlert } = require('../services/mailer');
+const { sendPasswordResetCode, sendNewDeviceAlert, sendWelcome } = require('../services/mailer');
 const { deleteUserAndData } = require('../services/accountDeletion');
 const { seedDefaultCategories, seedDefaultSubcategories } = require('../seed');
 const { createSession, revokeSession, deviceFromReq } = require('../services/sessions');
@@ -40,6 +40,9 @@ async function sessionResponse(user, req, { quiet = false } = {}) {
       _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName,
       role: user.role, hasPassword: user.hasPassword !== false,
       e2eePasswordStale: !!user.e2eePasswordStale,
+      // Per-user $4.99 app unlock — the mobile hard paywall keys off this (and
+      // re-caches it on every login/refresh).
+      appUnlocked: !!user.appUnlocked,
     },
   };
 }
@@ -64,6 +67,21 @@ router.post('/register', registerLimiter, async (req, res) => {
     const household = await Household.createForOwner(user._id, `${firstName}'s Household`);
     user.householdId = household._id;
     await user.save();
+
+    // Starter AI credits, so the assistant can be tried before the first pack
+    // purchase. Idempotent (ledger-keyed) and best-effort — a grant failure
+    // must never fail signup.
+    try {
+      const { grantStarterCredits } = require('../services/credits');
+      const { getConfig } = require('../middleware/usageMeter');
+      await grantStarterCredits(user._id, await getConfig());
+    } catch (err) {
+      console.error('[register] starter credit grant failed:', err.message);
+    }
+
+    // Welcome email (onboarding lifecycle). Fire-and-forget — the mailer never
+    // throws, and a mail hiccup must not fail signup.
+    sendWelcome(user).catch(() => {});
 
     // Signal-parity C3b: the server no longer seeds PLAINTEXT content (default
     // categories + subcategories + the self-Person) into per-collection tables —
@@ -258,17 +276,23 @@ router.get('/me', requireAuth, (req, res) => {
   res.json(req.user);
 });
 
-// Change login email — requires the current password to confirm identity.
+// Change login email. Re-auth mirrors password change (biometric-first with a
+// current-password fallback, see specs/features/auth-identity.md): the client
+// confirms a fresh device unlock and omits `currentPassword`, or sends it for
+// server-side verification when biometric isn't available. `currentPassword` is
+// therefore optional; verified with `bcrypt` when present.
 router.put('/email', requireAuth, credChangeLimiter, async (req, res) => {
   try {
     const { email, currentPassword } = req.body;
     const newEmail = email?.trim().toLowerCase();
-    if (!newEmail || !currentPassword) return res.status(400).json({ error: 'email and current password are required' });
+    if (!newEmail) return res.status(400).json({ error: 'email is required' });
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(newEmail)) return res.status(400).json({ error: 'Enter a valid email address' });
 
     const user = await User.findById(req.user._id);
-    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    if (currentPassword) {
+      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    }
 
     if (newEmail === user.email) return res.json({ _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName });
     const taken = await User.findOne({ email: newEmail });
@@ -282,16 +306,24 @@ router.put('/email', requireAuth, credChangeLimiter, async (req, res) => {
   }
 });
 
-// Change password — requires the current password.
+// Change password. Re-auth is biometric-first with a current-password fallback
+// (see specs/features/auth-identity.md): when the client can confirm a fresh
+// device biometric it omits `currentPassword` and the change proceeds on the
+// authenticated session. When biometric isn't available the client sends
+// `currentPassword` and we verify it here. `currentPassword` is therefore
+// optional; when present it MUST match. The biometric branch is enforced
+// on-device, so `requireAuth` + `credChangeLimiter` remain the server gates.
 router.put('/password', requireAuth, credChangeLimiter, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'current and new password are required' });
+    if (!newPassword) return res.status(400).json({ error: 'New password is required' });
     if (newPassword.length < 8) return res.status(400).json({ error: 'New password must be at least 8 characters' });
 
     const user = await User.findById(req.user._id);
-    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    if (currentPassword) {
+      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    }
 
     user.passwordHash = await bcrypt.hash(newPassword, 12);
     user.hasPassword = true;

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, Linking, Share, Image, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -11,6 +12,7 @@ import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { decryptDownloadedFile } from '../../lib/attachments';
 import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar } from '../../components/ui';
+import { formatDisplay } from '../../lib/phone';
 import { EVENT_CALENDAR_TYPES } from '../../lib/calendar';
 import { useCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
@@ -34,6 +36,15 @@ function extForType(fileType?: string): string {
   if (fileType?.includes('webp')) return 'webp';
   if (fileType?.includes('gif')) return 'gif';
   return 'jpg';
+}
+// iOS Uniform Type Identifier for the share/open sheet — helps it pick the right
+// preview + "Open in…" targets. Undefined (Android/unknown) falls back to mime.
+function utiForType(fileType?: string): string | undefined {
+  if (fileType?.includes('pdf')) return 'com.adobe.pdf';
+  if (fileType?.includes('png')) return 'public.png';
+  if (fileType?.includes('heic')) return 'public.heic';
+  if (fileType?.startsWith('image')) return 'public.jpeg';
+  return undefined;
 }
 
 const CALL_TERMINAL = ['ended', 'failed'];
@@ -254,7 +265,7 @@ function EventActionCard({
     <CardRow
       leading={<IconAvatar icon="call" bg={accent} />}
       title="Cancel or Reschedule"
-      subtitle={`Calen will call ${event.phone} and cancel or reschedule this appointment for you`}
+      subtitle={`Calen will call ${formatDisplay(event.phone)} and cancel or reschedule this appointment for you`}
       onPress={onOpen}
     />
   );
@@ -272,7 +283,7 @@ const INVITEE_STATUS: Record<string, { icon: keyof typeof Ionicons.glyphMap; col
 // from the server proxy (/places/staticmap, /places/streetview) which keeps the
 // API key server-side; each hides itself if the image is unavailable. Tapping
 // opens the address in the device's Maps app.
-function LocationCard({ location, onOpen }: { location: string; onOpen: () => void }) {
+function LocationCard({ location, onOpen, onUnavailable }: { location: string; onOpen: () => void; onUnavailable?: () => void }) {
   const [mapOk, setMapOk] = useState(true);
   const [svOk, setSvOk] = useState(true);
   const token = getCachedToken();
@@ -283,7 +294,7 @@ function LocationCard({ location, onOpen }: { location: string; onOpen: () => vo
   if (!mapOk) return null; // no map imagery → the address row above already shows it
   return (
     <TouchableOpacity activeOpacity={0.9} onPress={onOpen} style={styles.mapCard}>
-      <Image source={{ uri: mapUri }} style={styles.mapImage} onError={() => setMapOk(false)} />
+      <Image source={{ uri: mapUri }} style={styles.mapImage} onError={() => { setMapOk(false); onUnavailable?.(); }} />
       {svOk ? (
         <Image source={{ uri: svUri }} style={styles.streetView} onError={() => setSvOk(false)} />
       ) : null}
@@ -299,6 +310,9 @@ export default function EventDetailScreen() {
   const { calendars: customCalendars } = useCustomCalendars();
   const aiEnabled = usePrivacyPrefs().prefs.aiEnabled;
   const [error, setError] = useState('');
+  // Whether the location map imagery loaded — drives the floating "Delete Event"
+  // overlay (Apple-style) vs. the plain full-width button fallback.
+  const [mapAvailable, setMapAvailable] = useState(true);
 
   const eventQ = useQuery({
     queryKey: ['calendar', 'event', eventId],
@@ -365,21 +379,42 @@ export default function EventDetailScreen() {
     onError: (e: any) => setError(e.response?.data?.error || 'Could not delete the event'),
   });
 
-  // Open a saved attachment: encrypted ones download as ciphertext, decrypt
-  // on-device, then share; plaintext ones open directly.
+  // Fetch a saved attachment to a local file: encrypted ones download as
+  // ciphertext and decrypt on-device; plaintext ones (legacy) download to a temp
+  // file. The file is named from the id only (never the user's title, which may
+  // contain characters that break a file:// URI). Returns the local uri.
+  const fetchToFile = async (a: EventAttachment): Promise<string> => {
+    const dlUrl = `${API_URL}/calendar/attachments/${a._id}/download`;
+    const name = `att-${a._id}.${extForType(a.fileType)}`;
+    if (!a.encrypted) {
+      const dl = await downloadAsync(`${dlUrl}?token=${getCachedToken()}`, `${cacheDirectory}${name}`);
+      return dl.uri;
+    }
+    if (!getHDK() || !a.wrappedFileKey) throw new Error('Unlock your account to open this encrypted attachment.');
+    const cipherUri = `${cacheDirectory}dl-att-${a._id}.bin`;
+    const dl = await downloadAsync(dlUrl, cipherUri, { headers: { Authorization: `Bearer ${getCachedToken()}` } });
+    const plainUri = await decryptDownloadedFile(
+      'EventAttachment', a._id, a.keyVersion, a.wrappedFileKey, dl.uri, name,
+    );
+    if (!plainUri) throw new Error('Could not decrypt this attachment.');
+    return plainUri;
+  };
+
+  // Tap an attachment → decrypt on-device, then preview in-app: images and PDFs
+  // render inline in a WebView (RN's <Image> crashes on the new architecture, so
+  // WebView is the reliable in-app path). Any other type falls back to the OS
+  // share sheet (Open in… / Save to Files).
   const openAttachment = useMutation({
     mutationFn: async (a: EventAttachment) => {
-      const dlUrl = `${API_URL}/calendar/attachments/${a._id}/download`;
-      if (!a.encrypted) { await Linking.openURL(`${dlUrl}?token=${getCachedToken()}`); return; }
-      if (!getHDK() || !a.wrappedFileKey) throw new Error('Unlock your account to open this encrypted attachment.');
-      const cipherUri = `${cacheDirectory}dl-att-${a._id}.bin`;
-      const dl = await downloadAsync(dlUrl, cipherUri, { headers: { Authorization: `Bearer ${getCachedToken()}` } });
-      const plainUri = await decryptDownloadedFile(
-        'EventAttachment', a._id, a.keyVersion, a.wrappedFileKey, dl.uri,
-        `${a.title || 'attachment'}.${extForType(a.fileType)}`,
-      );
-      if (!plainUri) throw new Error('Could not decrypt this attachment.');
-      await Share.share({ url: plainUri });
+      const uri = await fetchToFile(a);
+      const previewable = a.fileType?.startsWith('image') || a.fileType?.includes('pdf');
+      if (previewable) {
+        navigation.navigate('AttachmentPreview', { uri, title: a.title, mimeType: a.fileType });
+      } else if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: a.fileType || undefined, UTI: utiForType(a.fileType) });
+      } else {
+        await Share.share({ url: uri });
+      }
     },
     onError: (e: any) => Alert.alert('Could not open attachment', e?.message || 'Please try again.'),
   });
@@ -398,17 +433,24 @@ export default function EventDetailScreen() {
     return `${fmtDay(start)}, ${fmtTime(start)}${end ? ` – ${fmtTime(end)}` : ''}`;
   }, [event]);
 
-  const alertLabel = useMemo(() => {
-    const m = event?.reminderMinutes;
-    if (m == null) return 'None';
+  const fmtAlert = (m: number | null | undefined) => {
+    if (m == null) return null;
     if (m <= 0) return 'At time of event';
     return `${formatDuration(m)} before`;
-  }, [event]);
+  };
+  const alertLabel = useMemo(() => fmtAlert(event?.reminderMinutes) ?? 'None', [event]);
+  const alert2Label = useMemo(() => fmtAlert(event?.alert2Minutes), [event]);
 
   const openInMaps = () => {
     if (!event?.location) return;
     Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`);
   };
+
+  const confirmDelete = () =>
+    Alert.alert('Delete event?', '', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
+    ]);
 
   if (eventQ.isLoading || (!event && !eventQ.isError)) {
     return <CenteredLoader color={accent} />;
@@ -498,7 +540,23 @@ export default function EventDetailScreen() {
           />
         ) : null}
 
-        <CardRow title="Alert" right={<Text style={styles.rightValue}>{alertLabel}</Text>} />
+        {/* Alert + Second alert share one card (divided), mirroring the form's
+            two Alert slots and Apple Calendar's grouped alert block. */}
+        <Card style={styles.alertCard}>
+          <View style={styles.alertRow}>
+            <Text style={styles.alertTitle}>Alert</Text>
+            <Text style={styles.rightValue}>{alertLabel}</Text>
+          </View>
+          {alert2Label ? (
+            <>
+              <View style={styles.alertDivider} />
+              <View style={styles.alertRow}>
+                <Text style={styles.alertTitle}>Second alert</Text>
+                <Text style={styles.rightValue}>{alert2Label}</Text>
+              </View>
+            </>
+          ) : null}
+        </Card>
 
         {/* One event, one appointment: hidden on recurring series, where a
             single call couldn't speak for every occurrence. */}
@@ -528,8 +586,6 @@ export default function EventDetailScreen() {
         ) : null}
       </View>
 
-      {event.location ? <LocationCard location={event.location} onOpen={openInMaps} /> : null}
-
       {event.url ? (
         <View style={styles.rows}>
           <CardRow
@@ -545,21 +601,25 @@ export default function EventDetailScreen() {
         <>
           <SectionTitle>Attachments</SectionTitle>
           <View style={styles.rows}>
-            {attachments.map((a) => (
-              <CardRow
-                key={a._id}
-                leading={<Ionicons name={attachmentIcon(a.fileType)} size={22} color={colors.textMuted} style={styles.attIcon} />}
-                title={a.title}
-                onPress={() => openAttachment.mutate(a)}
-                right={
-                  openAttachment.isPending && openAttachment.variables?._id === a._id ? (
-                    <ActivityIndicator size="small" color={colors.textMuted} />
-                  ) : (
-                    <Ionicons name="download-outline" size={18} color={colors.textMuted} />
-                  )
-                }
-              />
-            ))}
+            {attachments.map((a) => {
+              const busy = openAttachment.isPending && openAttachment.variables?._id === a._id;
+              return (
+                <CardRow
+                  key={a._id}
+                  leading={<Ionicons name={attachmentIcon(a.fileType)} size={22} color={colors.textMuted} style={styles.attIcon} />}
+                  title={a.title}
+                  subtitle="Tap to preview"
+                  onPress={() => openAttachment.mutate(a)}
+                  right={
+                    busy ? (
+                      <ActivityIndicator size="small" color={colors.textMuted} />
+                    ) : (
+                      <Ionicons name="open-outline" size={18} color={colors.textMuted} />
+                    )
+                  }
+                />
+              );
+            })}
           </View>
         </>
       ) : null}
@@ -573,19 +633,33 @@ export default function EventDetailScreen() {
 
       <FormError>{error}</FormError>
 
-      <View style={styles.footer}>
-        <Button
-          title="Delete Event"
-          variant="danger"
-          loading={del.isPending}
-          onPress={() =>
-            Alert.alert('Delete event?', '', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
-            ])
-          }
-        />
-      </View>
+      {/* Apple-style close: the map is the last thing on the page, with the
+          "Delete Event" pill floating over it. Without map imagery (no location,
+          or the tiles failed to load) it falls back to a plain full-width button. */}
+      {event.location && mapAvailable ? (
+        <View style={styles.mapDeleteWrap}>
+          <LocationCard location={event.location} onOpen={openInMaps} onUnavailable={() => setMapAvailable(false)} />
+          <View style={styles.floatingDeleteWrap} pointerEvents="box-none">
+            <TouchableOpacity
+              style={styles.floatingDelete}
+              activeOpacity={0.85}
+              disabled={del.isPending}
+              onPress={confirmDelete}
+            >
+              {del.isPending ? (
+                <ActivityIndicator color={colors.error} />
+              ) : (
+                <Text style={styles.floatingDeleteText}>Delete Event</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.footer}>
+          <Button title="Delete Event" variant="danger" loading={del.isPending} onPress={confirmDelete} />
+        </View>
+      )}
+
     </Screen>
   );
 }
@@ -603,6 +677,15 @@ const styles = StyleSheet.create({
   location: { fontSize: 16, marginTop: 6, lineHeight: 22 },
   when: { fontSize: 15, color: colors.text, marginTop: spacing.md, marginBottom: spacing.lg, lineHeight: 22 },
   rows: { gap: spacing.md },
+  // Alert + Second alert grouped in one card (rows own their padding; a hairline
+  // divides them), matching Apple Calendar's alert block.
+  alertCard: { padding: 0 },
+  alertRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 14, paddingHorizontal: spacing.md,
+  },
+  alertTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
+  alertDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: spacing.md },
   rightRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   rightValue: { fontSize: 16, color: colors.textMuted },
   dot: { width: 12, height: 12, borderRadius: 6 },
@@ -623,6 +706,20 @@ const styles = StyleSheet.create({
   attIcon: { marginRight: spacing.sm },
   notes: { fontSize: 15, color: colors.text, lineHeight: 22, marginTop: spacing.xs },
   footer: { marginTop: spacing.xl },
+  // The map at the page bottom with the "Delete Event" pill floating over it.
+  // The overlay is inset by the map card's own top margin so it centres on the
+  // imagery, not the empty margin above it.
+  mapDeleteWrap: { position: 'relative' },
+  floatingDeleteWrap: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, top: spacing.lg,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  floatingDelete: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.lg, paddingVertical: 12,
+  },
+  floatingDeleteText: { fontSize: 16, fontWeight: '600', color: colors.error },
   cancelledPill: {
     flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
     backgroundColor: colors.error, borderRadius: radius.md,

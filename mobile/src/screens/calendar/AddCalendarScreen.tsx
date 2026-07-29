@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { householdApi, HouseholdMember, CalendarAccess } from '../../api';
+import { householdApi, ecardsApi, HouseholdMember, CalendarAccess } from '../../api';
 import { useAuth } from '../../store/auth';
 import {
   CALENDARS,
@@ -17,12 +17,13 @@ import {
   holidayCalendarSeed,
 } from '../../lib/calendarPrefs';
 import type { CountryCode } from '../../lib/holidays';
+import { detectHomeRegion } from '../../lib/homeRegion';
 import { refreshFeed, getFeedMeta, dropFeedCache, FeedError } from '../../lib/calendarFeeds';
 import { Screen, Input, SectionTitle, Button, SwitchRow, useHeaderCheckButton, ColorPicker } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
-import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
+import { classifyRecipient, composeShareSms, composeShareEmail } from '../../lib/shareInvite';
 
 function memberName(m: HouseholdMember): string {
   const full = [m.firstName, m.lastName].filter(Boolean).join(' ');
@@ -91,6 +92,18 @@ export default function AddCalendarScreen() {
   // skips the Outside section (like subscriptions).
   const isHoliday = !!holidayCountry || !!existing?.holiday;
 
+  // Creating a holiday calendar for the home country preselects the home
+  // province/state (detected from the saved address, client-side). Regions are
+  // edited later on HolidaysScreen, so this only seeds the create payload; if
+  // detection hasn't resolved by save time the address-save hook fills it in.
+  const [homeRegion, setHomeRegion] = useState<string | undefined>();
+  useEffect(() => {
+    if (!holidayCountry) return;
+    detectHomeRegion().then((h) => {
+      if (h?.country === holidayCountry && h.region) setHomeRegion(h.region);
+    });
+  }, [holidayCountry]);
+
   // Selected members as id → access (presence = selected).
   const toMemberMap = (entries?: { userId: string; access: CalendarAccess }[]) =>
     Object.fromEntries((entries ?? []).map((m) => [m.userId, m.access]));
@@ -157,6 +170,18 @@ export default function AddCalendarScreen() {
   });
   const others = (household?.members ?? []).filter((m) => m._id !== user?._id);
 
+  // Deleting the Occasions calendar is a local, reversible hide — it does NOT
+  // cancel the household's scheduled e-cards, which keep sending server-side.
+  // Warn about that on delete and offer a path to manage them. Only the
+  // Occasions calendar (id 'birthdays') schedules e-cards, so scope the query.
+  const isOccasions = defaultDef?.id === 'birthdays';
+  const { data: ecards } = useQuery({
+    queryKey: ['ecards'],
+    queryFn: () => ecardsApi.list().then((r) => r.data),
+    enabled: isOccasions,
+  });
+  const activeECardCount = (ecards ?? []).filter((c) => c.active !== false).length;
+
   const [saving, setSaving] = useState(false);
   const save = async () => {
     const trimmed = name.trim();
@@ -183,8 +208,9 @@ export default function AddCalendarScreen() {
       color,
       alertsEnabled,
       // Seed a new holiday calendar's config (regions/holidays edited later on
-      // HolidaysScreen). Editing a holiday calendar leaves `holiday` untouched.
-      ...(holidayCountry ? { holiday: { country: holidayCountry, selectedRegions: [], disabledIds: [] } } : {}),
+      // HolidaysScreen); the detected home province/state starts selected.
+      // Editing a holiday calendar leaves `holiday` untouched.
+      ...(holidayCountry ? { holiday: { country: holidayCountry, selectedRegions: homeRegion ? [homeRegion] : [], disabledIds: [] } } : {}),
     };
     setSaving(true);
     try {
@@ -206,7 +232,7 @@ export default function AddCalendarScreen() {
       setSaving(false);
     }
   };
-  useHeaderCheckButton(nav, { onPress: save, color, disabled: !name.trim(), loading: saving, enabled: !readOnly });
+  useHeaderCheckButton(nav, { onPress: save, disabled: !name.trim(), loading: saving, enabled: !readOnly });
 
   const toggleMember = (id: string) =>
     setMemberAccess((prev) => {
@@ -221,8 +247,9 @@ export default function AddCalendarScreen() {
   const flipOutsideAccess = (key: string) =>
     setOutside((prev) => prev.map((o) => (outsideKey(o) === key ? { ...o, access: flip(o.access) } : o)));
 
-  // Add an outside person by email or phone; household members belong above. A
-  // phone recipient is texted the invite from this device on add (no SMTP).
+  // Add an outside person by email or phone; household members belong above. The
+  // invite is composed from this device on add — texted (phone) or emailed
+  // (email) from the owner's own apps; the server sends no invite mail/text.
   const addOutsideRecipient = async () => {
     if (!emailDraft.trim()) return;
     const recipient = classifyRecipient(emailDraft);
@@ -237,11 +264,18 @@ export default function AddCalendarScreen() {
     const key = outsideKey(recipient);
     if (outside.some((o) => outsideKey(o) === key)) return;
     setOutside((prev) => [...prev, { ...recipient, access: 'view' }]);
+    const what = name.trim() ? `the “${name.trim()}” calendar` : 'a shared calendar';
     if ('phone' in recipient) {
       try {
-        await composeShareSms(recipient.phone, name.trim() ? `the “${name.trim()}” calendar` : 'a shared calendar');
+        await composeShareSms(recipient.phone, what);
       } catch (e: any) {
         setEmailError(e?.message || 'Added, but the text couldn’t be started.');
+      }
+    } else {
+      try {
+        await composeShareEmail(recipient.email, what);
+      } catch (e: any) {
+        setEmailError(e?.message || 'Added, but the email couldn’t be started.');
       }
     }
   };
@@ -307,19 +341,31 @@ export default function AddCalendarScreen() {
 
   const confirmDelete = () => {
     if (isDefault && defaultDef) {
+      const remove = () => {
+        deleteDefault(defaultDef.id);
+        dismissAfterDefaultDelete(defaultDef.id);
+      };
+      // Deleting the Occasions calendar only hides it here; any scheduled
+      // e-cards still send on their dates. Surface that and offer to manage
+      // them before deleting (they're managed on the Occasions home screen).
+      if (isOccasions && activeECardCount > 0) {
+        Alert.alert(
+          'Delete Occasions calendar?',
+          `It'll be hidden here (you can add it back any time), but your ${activeECardCount} scheduled e-card${activeECardCount === 1 ? '' : 's'} will still send. Manage them first?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Manage e-cards', onPress: () => nav.navigate('Birthdays') },
+            { text: 'Delete anyway', style: 'destructive', onPress: remove },
+          ]
+        );
+        return;
+      }
       Alert.alert(
         `Delete ${defaultDef.name} calendar?`,
         'Its events will be hidden. You can add it back any time with Add Calendar.',
         [
           { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: () => {
-              deleteDefault(defaultDef.id);
-              dismissAfterDefaultDelete(defaultDef.id);
-            },
-          },
+          { text: 'Delete', style: 'destructive', onPress: remove },
         ]
       );
       return;

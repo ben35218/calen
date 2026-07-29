@@ -5,6 +5,8 @@ const PhoneCall = require('../models/PhoneCall');
 const { ASSISTANT_NAME } = require('../config/assistant');
 const { scopeClause } = require('./scope');
 const { recordCallSecondsById } = require('../middleware/usageMeter');
+const { toE164 } = require('./phone');
+const { isSuppressed, suppress, DoNotCallError } = require('./dnc');
 
 // Outbound AI phone calls (Vapi) for the calendar assistant: placement (shared
 // by the chat's call_business tool and the event view's "Call to Cancel" card)
@@ -13,13 +15,21 @@ const { recordCallSecondsById } = require('../middleware/usageMeter');
 // /api/calls which the mobile app polls for the badge), which lands the result
 // within one poll cycle of the call ending.
 
-// Normalize phone to E.164 (+1XXXXXXXXXX for US/CA numbers).
-function toE164(phone) {
-  const digits = String(phone).replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (String(phone).startsWith('+')) return phone;
-  return `+${digits}`;
+// toE164 lives in ./phone (shared with services/dnc.js, which keys its
+// suppression hash on the same normalization); re-exported below for callers
+// that import it from here.
+
+// Server config for the record_do_not_call Vapi tool: the public URL Vapi posts
+// to when the agent captures an opt-out, plus the shared secret it echoes back
+// in X-Vapi-Secret (verified by the webhook). Returns null when no public base
+// URL is configured (local/dev) — the tool is then omitted and the post-call
+// structuredData backstop handles opt-outs on the next refresh.
+function dncToolServer() {
+  const base = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL;
+  if (!base) return null;
+  const url = `${base.replace(/\/+$/, '')}/api/calls/vapi/webhook`;
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+  return secret ? { url, secret } : { url };
 }
 
 /**
@@ -30,6 +40,16 @@ function toE164(phone) {
  * Throws on Vapi/config errors; the caller maps them to tool/HTTP responses.
  */
 async function placeCall({ userId, householdId, event, action, callerName, newDateTime, additionalInstructions, contact }) {
+  const phone = toE164(event.phone);
+
+  // Do-not-call gate (spec: ai-assistant.md) — FIRST, before anything else. This
+  // is the single choke point for every placement path (the two /calls routes and
+  // the chat call_business tool), so one check here refuses a suppressed number
+  // everywhere, before any Vapi request or PhoneCall row. A number the recipient
+  // opted out of is refused even if Vapi is misconfigured. Callers map
+  // DoNotCallError → 403 / a tool error.
+  if (await isSuppressed(phone)) throw new DoNotCallError();
+
   const vapiKey = process.env.VAPI_API_KEY;
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
   if (!vapiKey) throw new Error('VAPI_API_KEY is not configured on the server');
@@ -46,7 +66,10 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
 
   const conduct =
     `Be polite, patient, and professional. Navigate any IVR menus calmly. Keep each reply to one or two short sentences and answer promptly — this is a live phone conversation.\n` +
-    `If the person asks you to wait, hold, or give them a moment, acknowledge once briefly and then wait in silence — never prompt or hurry them.`;
+    `If the person asks you to wait, hold, or give them a moment, acknowledge once briefly and then wait in silence — never prompt or hurry them.\n` +
+    // Do-not-call handling (spec: ai-assistant.md). The intro already discloses
+    // this is an AI assistant; if the recipient wants out, honor it immediately.
+    `If the person asks not to be called again, to be removed from calls, or to stop calling — or otherwise objects to receiving automated calls — do NOT argue or try to persuade them. Acknowledge warmly ("Understood — I'll make sure this number isn't called again. Sorry to have bothered you."), record it with the record_do_not_call tool, and then politely end the call.`;
 
   // The client's own details, offered only on request (identity verification —
   // businesses often ask for the phone number or name on file). Per-call
@@ -85,7 +108,25 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
       (additionalInstructions ? `\nAdditional context: ${additionalInstructions}` : '');
   }
 
-  const phone = toE164(event.phone);
+  // Real-time opt-out capture: when configured with a public base URL, the
+  // record_do_not_call tool posts to our webhook mid-call so a suppression lands
+  // immediately. Without a public URL the tool is omitted and the post-call
+  // structuredData backstop (below) catches it on the next lazy refresh instead.
+  const dncServer = dncToolServer();
+  const dncTool = dncServer && {
+    type: 'function',
+    function: {
+      name: 'record_do_not_call',
+      description:
+        'Record that the person on this call asked not to receive automated calls in the future. Invoke this immediately when they ask to opt out, be removed, or stop being called.',
+      parameters: {
+        type: 'object',
+        properties: { reason: { type: 'string', description: 'Brief reason, if given.' } },
+      },
+    },
+    server: dncServer,
+  };
+
   const { data } = await axios.post(
     'https://api.vapi.ai/call/phone',
     {
@@ -111,6 +152,7 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
           provider: 'anthropic',
           model: 'claude-haiku-4-5-20251001',
           messages: [{ role: 'system', content: systemPrompt }],
+          ...(dncTool ? { tools: [dncTool] } : {}),
         },
         voice: {
           provider: 'cartesia',
@@ -162,6 +204,30 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
             ],
           },
           successEvaluationPlan: { rubric: 'PassFail' },
+          // Do-not-call backstop (spec: ai-assistant.md): extract whether the
+          // recipient asked not to be called again, so the opt-out is honored on
+          // the next lazy refresh even if the real-time record_do_not_call
+          // webhook wasn't wired (no public base URL) or didn't fire. Applied in
+          // applyVapiToRow → maybeSuppressFromAnalysis.
+          structuredDataPlan: {
+            schema: {
+              type: 'object',
+              properties: {
+                doNotCallRequested: {
+                  type: 'boolean',
+                  description: 'True if the person asked not to be called again, to be removed, or to stop receiving automated calls.',
+                },
+              },
+            },
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'From the transcript, output whether the person who was called asked not to receive automated calls in the future (asked to be removed, to stop calling, or not to be called again). Return doNotCallRequested true only if they clearly expressed that.',
+              },
+              { role: 'user', content: 'Transcript:\n\n{{transcript}}' },
+            ],
+          },
         },
         endCallPhrases: ['goodbye', 'bye', 'have a great day', 'take care', 'thank you so much'],
         // Nothing retained at Vapi (spec: ai-assistant.md): no audio recording
@@ -220,18 +286,15 @@ function outcomeFrom(data) {
   return undefined;
 }
 
-// Meter a finished call's connected seconds against the weekly call-time budget,
-// once. Bumps the shared household pool (paid enforcement + fleet analytics) and
-// the per-user counter (free enforcement) by the call's duration. Marks the row
-// `metered` as soon as the call has its final result — even if the duration is 0
-// (never connected) — so lazy refreshes don't re-check it forever. Returns true
-// if it wrote to the row.
+// Meter a finished call's connected seconds, once: bumps the per-user counter
+// and debits the caller's credit balance by the call's duration (calls, like
+// all AI, are billed per-user — no household pool). Marks the row `metered` as
+// soon as the call has its final result — even if the duration is 0 (never
+// connected) — so lazy refreshes don't re-check it forever. Returns true if it
+// wrote to the row.
 function meterCallSecondsUsage(row) {
   if (row.metered || !hasFinalResult(row)) return false;
-  recordCallSecondsById(
-    { householdId: row.householdId, userId: row.userId },
-    row.durationSeconds || 0,
-  );
+  recordCallSecondsById({ userId: row.userId }, row.durationSeconds || 0);
   row.metered = true;
   return true;
 }
@@ -257,7 +320,28 @@ async function applyVapiToRow(row, data) {
     await row.save();
     await markEventCancelledIfConfirmed(row);
   }
+  // Do-not-call backstop (spec: ai-assistant.md): honor a post-call opt-out
+  // detected by the structuredData analysis even if the real-time webhook didn't
+  // fire. Idempotent via suppress()'s upsert, so re-running on later refreshes is
+  // harmless. Non-fatal — a suppression hiccup must not break the list read.
+  await maybeSuppressFromAnalysis(row, data);
   return row;
+}
+
+// Suppress the dialed number when the call analysis flags a do-not-call request.
+async function maybeSuppressFromAnalysis(row, data) {
+  const requested = data.analysis?.structuredData?.doNotCallRequested;
+  if (requested !== true || !row.phone) return;
+  try {
+    await suppress(row.phone, {
+      source: 'callee-request',
+      note: 'Detected in post-call analysis.',
+      userId: row.userId,
+      householdId: row.householdId,
+    });
+  } catch (e) {
+    console.error(`DNC backstop suppression failed for call ${row.callId}:`, e.message);
+  }
 }
 
 // A confirmed cancel marks the event `cancelled`. Signal-parity C3b: `cancelled`

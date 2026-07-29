@@ -13,10 +13,12 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, Trip } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Badge, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
+import { Card, Badge, CenteredLoader, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
 import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useOwnedAddons } from '../../lib/addons';
+import AddonLockedView from '../plan/AddonLockedView';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -43,7 +45,18 @@ function dateSummary(t: Trip) {
   return 'No dates set';
 }
 
+// Add-on gate: Trips is a one-time purchase (see billing-plans spec). Gating at
+// the home screen covers every entry path — Calendars row, deep links, AI
+// navigation, restored nav state.
 export default function TripsScreen() {
+  const { isUnlocked, loaded } = useOwnedAddons();
+  const accent = useCalendarColors().colors.trips;
+  if (!loaded) return <CenteredLoader color={accent} />;
+  if (!isUnlocked('trips')) return <AddonLockedView addon="trips" />;
+  return <TripsHome />;
+}
+
+function TripsHome() {
   const navigation = useNavigation<Nav>();
   const accent = useCalendarColors().colors.trips;
 

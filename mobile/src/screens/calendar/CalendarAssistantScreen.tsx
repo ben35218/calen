@@ -5,12 +5,12 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { peopleApi, householdApi, calendarApi, callsApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import type { AssistantFocusEvent, RootStackParamList } from '../../navigation/types';
 import { loadCalendarSources } from '../../lib/calendarData';
-import { loadForecast } from '../../lib/weather';
+import { loadPassiveForecast } from '../../lib/weatherSource';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { useAuth } from '../../store/auth';
 import { createAliasContext } from '../../lib/aiPayload';
@@ -173,7 +173,7 @@ export default function CalendarAssistantScreen({
           usePersonal
             ? peopleApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Person', p as any))))
             : Promise.resolve([]),
-          loadForecast().catch(() => null),
+          loadPassiveForecast().catch(() => null),
         ]);
         // G1: strip server metadata + alias every id before anything leaves the
         // device — the model reasons over content and opaque aliases only. The
@@ -273,7 +273,7 @@ export default function CalendarAssistantScreen({
       surface="calendar"
       activeAssistant="calendar"
       onSelectAssistant={onSelectAssistant}
-      banner={<AiUsageBanner />}
+      banner={<CreditsBanner />}
       emptyHint={
         focusEvent
           ? `e.g. "Cancel this appointment" or "Reschedule ${focusEvent.title} to next week"`

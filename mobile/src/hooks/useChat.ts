@@ -108,8 +108,9 @@ export function useChat(options: UseChatOptions) {
   const [streamingText, setStreamingText] = useState('');
   const [toolActivity, setToolActivity] = useState('');
   const [error, setError] = useState('');
-  // True when the last turn was refused for hitting the weekly quota (HTTP 402).
-  // Drives a tappable "Upgrade" affordance instead of the useless Retry.
+  // True when the last turn was refused because the prepaid credit balance is
+  // spent (HTTP 402 CREDITS_EXHAUSTED). Drives a tappable "Buy credits"
+  // affordance instead of the useless Retry.
   const [quotaExceeded, setQuotaExceeded] = useState(false);
   const [followups, setFollowups] = useState<string[]>([]);
   // Screens the assistant offered to open this turn (model-driven, via the
@@ -283,7 +284,7 @@ export function useChat(options: UseChatOptions) {
         setQuotaExceeded(overQuota);
         setError(
           overQuota
-            ? 'You’ve reached your weekly AI limit. Upgrade for more.'
+            ? 'You’re out of AI credits. Buy a pack to continue.'
             : 'Sorry, something went wrong.'
         );
       } finally {

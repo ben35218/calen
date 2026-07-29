@@ -20,12 +20,20 @@ export interface AssembleInput {
   groceryAnchor?: string | null;
 }
 
-export interface CalendarBirthday {
+export type OccasionKind = 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
+
+export interface CalendarOccasion {
   id: string;
+  kind: OccasionKind;
   name: string;
-  relationship: string;
+  /** Display label for the occasion: a friendly noun for known kinds, the raw
+   *  contact date label for custom kinds. */
+  label: string;
   date: string;
-  birthYear: number;
+  personId: string;
+  relationship?: string;
+  /** The original year the occasion happened, when a real year is on file. */
+  year?: number | null;
 }
 
 export interface CalendarTripOverlay {
@@ -41,7 +49,7 @@ export interface CalendarData {
   tasks: AnyRecord[];
   chores: AnyRecord[];
   events: AnyRecord[];
-  birthdays: CalendarBirthday[];
+  occasions: CalendarOccasion[];
   recipes: AnyRecord[];
   groceryShopping: { id: string; date: string; weekStart: string }[];
   trips: CalendarTripOverlay[];
@@ -55,5 +63,7 @@ export function estimateDateFromKm(nextDueKm: number, currentKm: number, kmPerDa
 export function computeNextDueKm(task: { intervalKm?: number | null }, serviceKm: number | null | undefined): number | null;
 export function expandRecurringEvent(event: AnyRecord, fromDate: Date, toDate: Date): AnyRecord[];
 export function expandRecurringTaskChore(item: AnyRecord, fromDate: Date, toDate: Date): AnyRecord[];
-export function birthdayOccurrences(birthdayDate: Date | string, fromDate: Date, toDate: Date): string[];
+export function occasionOccurrences(dateValue: Date | string, fromDate: Date, toDate: Date): string[];
+export function occasionKindFromLabel(label: string | null | undefined): OccasionKind;
+export const KNOWN_OCCASION_KINDS: OccasionKind[];
 export function assembleCalendarData(input: AssembleInput): CalendarData;

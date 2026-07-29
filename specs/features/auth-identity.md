@@ -1,7 +1,7 @@
 ---
 title: Auth & identity
 status: current
-last-verified: 337a313 (2026-07-24)
+last-verified: 55bfc65+ (2026-07-29); password AND email change are biometric-first with a current-password fallback — `PUT /auth/password` and `PUT /auth/email` treat `currentPassword` as optional (bcrypt-verified when present), a fresh device unlock via `reauthWithBiometric()` replaces it when the device key cache is armed; email-change client contract fixed to send `currentPassword` (was mismatched `password`) (2026-07-29); flat Account layout + email above phone, tap-to-reveal email change, location action hidden once address set (2026-07-27); account phone uses shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); AI card (aiEnabled/aiUsePersonalInfo toggles) added to Privacy data controls (2026-07-27); registration now sends a `welcome` email and account deletion sends an `account_deleted` confirmation just before purge (both best-effort via the mailer; lifecycle owned by email-lifecycle.md) (2026-07-29); reminders (master toggle + day-based alert time) moved out of `AccountScreen` into a dedicated `RemindersScreen` off the profile hub (2026-07-29); passkey sign-in is now passwordless-first + usernameless — `POST /auth/passkey/challenge` accepts no email (discoverable-credential challenge, empty `allowCredentials`), `/passkey/login` resolves the user from the asserted credential id (new index on `passkeyCredentials.credentialId`), and the LoginScreen leads with the passkey (usernameless when the email field is empty, username-first single-gesture unlock when typed); usernameless E2EE unlock happens post-auth via the device-key cache then a passkey assertion (2026-07-29); RegisterScreen presentation aligned to the login redesign — Calen wordmark header, passkey-consistent copy ("Create account with a passkey"), and the method-hint text fixed from unreadable gray to white on the blue background (presentation only; the passkey-first mode toggle is unchanged) (2026-07-29); LoginScreen tightened to keep the Register footer above the fold on small devices — dropped the redundant "Sign in to your account" subtitle (the passkey button below is self-describing) and trimmed header/divider/wordmark spacing (presentation only) (2026-07-29); RegisterScreen now warns before sign-up that a one-time recovery-code step follows (heads-up so the mandatory `RecoveryCodeModal` reads as expected, not an ambush), and the passkey-failure alert names the TestFlight/beta limitation — passkeys need the associated-domains entitlement absent on those builds, so it points testers to the password path (copy-only; rollback behavior unchanged) (2026-07-29)
 code:
   - mobile/src/screens/auth/
   - mobile/src/store/auth.tsx
@@ -42,17 +42,39 @@ your private key. The key primitives are in
   **recovery-code** enrollment (`RecoveryCodeModal`) and prompts passkey setup.
 - Every account MUST have at least one non-password recovery path (recovery code
   and/or passkey) so a forgotten password isn't total data loss.
+- `RegisterScreen` SHOULD forewarn the user, before they submit, that a one-time
+  recovery-code step follows sign-up — so the mandatory `RecoveryCodeModal` reads
+  as expected rather than an ambush.
+- **Passkey-first registration** (`registerWithPasskey`) creates the account, then
+  enrolls the passkey; if the passkey ceremony doesn't complete, the just-created
+  account is rolled back (`deleteAccount`) so no passwordless account is stranded
+  with only an unsaved recovery code, and the user returns to a clean register
+  screen. On **TestFlight/beta builds this fails every time** — those builds lack
+  the associated-domains entitlement passkeys require — so the failure alert MUST
+  name that limitation and point the user to the password path.
 
 ### Sign-in paths
 
 - **Password:** `POST /auth/login` → JWT; the client derives the KEK and unwraps
   the private key (`store/auth.tsx`).
-- **Passkey:** a single Face ID assertion both signs in and unlocks E2EE.
-  `POST /auth/passkey/challenge` returns each credential's `prfSalt`;
-  `POST /auth/passkey/login` verifies the WebAuthn assertion; the PRF output
-  derives the KEK. Passkeys are also registered as sign-in credentials
-  (`/auth/passkey/register-options` + `/register`, `@simplewebauthn/server`,
-  stored on `User.passkeyCredentials`).
+- **Passkey:** a Face ID assertion signs in, and (when it can) unlocks E2EE in
+  the same gesture. Two modes:
+  - **Usernameless (default, no email typed):** `POST /auth/passkey/challenge`
+    with no `email` issues a discoverable-credential challenge (empty
+    `allowCredentials`; passkeys are registered with `residentKey: 'required'`).
+    The OS account picker chooses; `POST /auth/passkey/login` resolves the user
+    from the returned credential id (indexed on `User.passkeyCredentials.credentialId`,
+    globally unique). The challenge can't carry a `prfSalt` for an unknown user,
+    so the client unlocks E2EE **after** auth via the same path a relaunch uses
+    (biometric device-key cache, then a passkey assertion) — a second Face ID
+    only when the cache is cold.
+  - **Username-first (email typed):** the challenge constrains to that account's
+    credentials and returns each credential's `prfSalt`, so one assertion signs
+    in AND unlocks E2EE (the PRF output derives the KEK). The login screen leads
+    with the passkey and passes a typed email through this path automatically.
+  - Passkeys are also registered as sign-in credentials
+    (`/auth/passkey/register-options` + `/register`, `@simplewebauthn/server`,
+    stored on `User.passkeyCredentials`).
 - **Email-OTP / forgot-password:** `POST /auth/forgot` emails a 6-digit code;
   `POST /auth/reset` consumes it. A reset deliberately leaves the stale password
   envelope in place — the client re-wraps the private key after a passkey/recovery
@@ -71,8 +93,8 @@ your private key. The key primitives are in
   (`expo-screen-capture`) and an app-switcher `PrivacyShield` cover hides content;
   toggled by the `screenSecurity` pref (default on).
 - **App lock** (A4, `useAppLock`): the app can require Face ID again after being
-  backgrounded, with a configurable delay (Never / 0 / 1 / 5 min) in Sign-in &
-  Security.
+  backgrounded, with a configurable delay (Never / 0 / 1 / 5 min) in Privacy &
+  security → Data & privacy controls.
 
 ### Factors, sessions, devices
 
@@ -122,19 +144,77 @@ your private key. The key primitives are in
 ## Profile information architecture
 
 `ProfileHome` is an iOS-style drill-in hub. Identity and credentials are split
-from encryption/recovery across two screens so neither is cluttered:
+from encryption/recovery across two screens so neither is cluttered. **Sign out**
+lives on the `ProfileHome` hub itself (a danger button below the section menu,
+above the legal links), not inside a drill-in section — it's a session action, so
+it stays at the top level rather than collapsing away with the Account card:
 
-- **`AccountScreen`** (`Account`) — identity + location (header-check save),
-  Reminders, Sign-in (email + password change; password change requires the
-  E2EE key unlocked so it can re-wrap), Sign out, Delete account. Deep-link
-  param `{ section?: 'account' | 'reminders' | 'security' }`.
-- **`PrivacyDataScreen`** (`PrivacyData`) — the encryption status hero + inline
-  unlock UI, a **Recovery methods** roll-up (recovery code + Face ID/passkey,
+- **`AccountScreen`** (`Account`) — identity + location (header-check save) and
+  Delete account, laid out **flat** (no expand/collapse sections): a grouped
+  Account card under an "Account" eyebrow, then Delete account. Reminders are a
+  **separate screen** (`RemindersScreen`, route `Reminders`, off the profile
+  hub) — the master on/off toggle + the personal day-based alert time; those
+  controls are self-contained (each saves itself), so that screen has no
+  header-check save. See [features/notifications.md](notifications.md). **Email**
+  is the account's contact
+  identity, so it sits **directly above the phone number** (a shared `PhoneField`
+  with a country picker + as-you-type formatting, stored E.164) in the Account card as
+  a value row with its own change flow. The **whole row is the affordance** — tap
+  it to reveal the inline change form, with a
+  chevron indicating expand state, mirroring the Sign-in → Password card on
+  `PrivacyDataScreen` rather than a separate "Change" button. Changing email
+  re-authenticates with the **same biometric-first, current-password-fallback**
+  pattern as the password change: when the device key cache is armed
+  (`isDeviceKeyEnabled()`) a fresh device unlock (`reauthWithBiometric()`)
+  replaces re-typing the password and the Current-password field is hidden;
+  otherwise the field is shown and the typed value is verified server-side.
+  `PUT /auth/email` treats `currentPassword` as **optional** (bcrypt-verified
+  when present, otherwise the change proceeds on the authenticated session);
+  `requireAuth` + `credChangeLimiter` remain the gates and the biometric branch
+  is enforced on-device (unlike the password change, email touches no E2EE key,
+  so there is no unlock requirement). A passwordless account keeps the existing
+  "not available yet" treatment here — its row is inert (no chevron) with a hint
+  explaining why. **Password
+  change lives on `PrivacyDataScreen`**, not here — it re-wraps the E2EE key and
+  belongs where the unlock UI is. The route takes no params. While the
+  home-address field is **empty**, it offers an opt-in **"Use my current
+  location"** action (`expo-location`, foreground one-shot): device GPS +
+  reverse geocoding *prefill the field only* — nothing reaches the server until
+  the user reviews and saves, and an E2EE household seals the result exactly
+  like a typed address. Once the field holds an address (typed or picked) the
+  action is hidden as redundant. Saving a
+  changed address also re-derives the household's default timezone
+  (see [notifications.md](notifications.md) → Timezone stickiness) and
+  preselects the home province/state on holiday calendars that have no
+  regional picks yet (see [calendar.md](calendar.md) → "Holiday calendars know
+  where home is").
+- **`PrivacyDataScreen`** (`PrivacyData`, titled **"Privacy & security"**) — the
+  encryption status hero + inline
+  unlock UI, a **Sign-in** section (password change, presented as a whole-row
+  tappable card that expands the change form inline — no separate "Change"
+  button — matching the tappable Recovery/Transparency rows; requires the E2EE
+  key unlocked so the new password can re-wrap it, so the Save button is disabled
+  while locked. Re-auth is **biometric-first with a current-password fallback**:
+  when this device has armed the Face ID / Touch ID key cache
+  (`isDeviceKeyEnabled()`), a fresh biometric prompt (`reauthWithBiometric()`)
+  replaces re-typing the current password and the change is sent with no
+  `currentPassword`; otherwise the Current-password field is shown and the typed
+  value is verified server-side. `PUT /auth/password` treats `currentPassword` as
+  **optional** — verified with `bcrypt` when present, and when absent the change
+  proceeds on the authenticated session (`requireAuth` + `credChangeLimiter`
+  remain the gates). The biometric branch is enforced **on-device**, an accepted
+  trade-off vs. the friction of re-typing the password; mandatory E2EE re-wrap
+  still needs the unlocked key client-side, so a bare session token can't reach
+  the user's data), a **Recovery methods** roll-up (recovery code + Face ID/passkey,
   each with a status badge — the non-password backstops, mirroring
-  `useRecoveryHealth`; the password is an everyday unlock, not a recovery
-  method, and a reset password can't decrypt at all), Devices
-  (sessions + held-reset cancel + link-device), and data controls (app lock,
-  screen security, transparency note, encrypted backup). Deep-link param
+  `useRecoveryHealth`), Devices
+  (sessions + held-reset cancel + link-device), and data controls (an
+  **Artificial intelligence** card with the `aiEnabled` / `aiUsePersonalInfo`
+  toggles — see [ai-assistant.md](../features/ai-assistant.md); app lock,
+  screen security, transparency note, encrypted backup). Sign-in sits **above**
+  Recovery methods and password is deliberately kept **out** of that roll-up: a
+  password is an everyday unlock, not a backstop, and a reset password can't
+  decrypt at all — counting it as recovery would give false confidence. Deep-link param
   `{ focus?: 'unlock' | 'recovery' }`; `focus: 'unlock'` auto-presents Face ID
   when a passkey is enrolled. This is the target of the locked-data prompt.
 

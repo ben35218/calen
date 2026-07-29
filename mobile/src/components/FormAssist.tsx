@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, Input } from './ui';
-import AiUsageBanner from './AiUsageBanner';
+import CreditsBanner from './CreditsBanner';
 import CalenChatIcon from './CalenChatIcon';
 import { formAssistApi, FormAssistField } from '../api';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
@@ -72,7 +72,7 @@ export default function FormAssist({
 
   return (
     <>
-      <AiUsageBanner />
+      <CreditsBanner />
       <Pressable
         style={styles.card}
         onPress={!expanded ? () => setExpanded(true) : undefined}

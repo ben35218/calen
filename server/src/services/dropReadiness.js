@@ -27,7 +27,7 @@ const DROP_FIELDS = {
                    'startDate', 'endDate', 'allDay', 'travelMinutes', 'travelDistanceKm',
                    'reminderMinutes', 'alert2Minutes', 'alertAudience', 'guestListVisible',
                    'invitationId', 'cancelled', 'recurrence'],
-  Person:         ['type', 'name', 'relationship', 'birthday', 'interests', 'notes', 'address',
+  Person:         ['type', 'name', 'relationship', 'birthday', 'notes', 'address',
                    'businessName', 'phone', 'email', 'accountId', 'deviceContactId'],
   MaintenanceTask:['itemId', 'categoryId', 'title', 'icon', 'description', 'instructions', 'recurrence',
                    'estimatedDurationMins', 'estimatedCost', 'priority', 'seasonal', 'lastCompletedAt',

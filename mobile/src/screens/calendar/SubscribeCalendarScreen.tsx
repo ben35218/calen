@@ -107,7 +107,6 @@ export default function SubscribeCalendarScreen() {
   };
   useHeaderCheckButton(nav, {
     onPress: save,
-    color,
     disabled: !preview || !name.trim(),
     loading: saving,
     enabled: !!preview,

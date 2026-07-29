@@ -5,7 +5,8 @@
         stroke-linejoin="round" stroke-linecap="round" />
       <circle :cx="lastX" :cy="lastY" r="2" :fill="color" />
     </template>
-    <line v-else :x1="0" :y1="height - 1" :x2="width" :y2="height - 1" stroke="#ccc" stroke-width="1" />
+    <!-- Neutral mid-gray so the flat baseline reads on both light and dark themes. -->
+    <line v-else :x1="0" :y1="height - 1" :x2="width" :y2="height - 1" stroke="rgba(128,128,128,0.5)" stroke-width="1" />
   </svg>
 </template>
 

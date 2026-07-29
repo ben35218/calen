@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, Text, StyleSheet, Alert, Image } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '../../store/auth';
@@ -54,7 +54,11 @@ export default function RegisterScreen() {
       const serverError = e?.response?.data?.error;
       Alert.alert(
         'Couldn’t finish Face ID setup',
-        serverError || e?.message || 'Face ID / passkey setup didn’t complete on this device.',
+        (serverError || e?.message || 'Face ID / passkey setup didn’t complete on this device.') +
+          // TestFlight / beta builds don't ship the associated-domains entitlement
+          // that passkeys need, so Face ID setup fails here every time. Say so, so
+          // testers reach for the password path instead of assuming a bug.
+          '\n\nOn TestFlight and beta builds, passkeys aren’t available yet — use a password for now.',
         [
           { text: 'Try again', onPress: createWithPasskey },
           { text: 'Use a password', style: 'cancel', onPress: () => { setMode('password'); setError(''); } },
@@ -88,7 +92,14 @@ export default function RegisterScreen() {
 
   return (
     <AuthScaffold>
-        <Text style={[authStyles.title, styles.title]}>Create your account</Text>
+        <View style={authStyles.header}>
+          <Image
+            source={require('../../../assets/calen-wordmark.png')}
+            style={styles.wordmark}
+            resizeMode="contain"
+          />
+          <Text style={authStyles.subtitle}>Create your account</Text>
+        </View>
         <Input label="First name" value={firstName} onChangeText={setFirstName} {...authInputProps} />
         <Input label="Last name (optional)" value={lastName} onChangeText={setLastName} {...authInputProps} />
         <Input label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" {...authInputProps} />
@@ -97,11 +108,11 @@ export default function RegisterScreen() {
           // ── Passkey path (preferred) ──────────────────────────────────────
           <>
             <Text style={styles.methodHint}>
-              Sign in with Face ID / Touch ID — no password to remember, and it unlocks your
+              Use a passkey (Face ID / Touch ID) — no password to remember, and it unlocks your
               encrypted data automatically.
             </Text>
             {error ? <Text style={authStyles.error}>{error}</Text> : null}
-            <Button title="Create account with Face ID" onPress={createWithPasskey} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
+            <Button title="Create account with a passkey" onPress={createWithPasskey} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
             <Text
               style={[authStyles.link, styles.altLink]}
               onPress={() => { setMode('password'); setError(''); }}
@@ -135,13 +146,20 @@ export default function RegisterScreen() {
                 style={[authStyles.link, styles.altLink]}
                 onPress={() => { setMode('passkey'); setError(''); }}
               >
-                Use Face ID instead (recommended)
+                Use a passkey instead (recommended)
               </Text>
             ) : (
-              <Text style={styles.methodHint}>Face ID / Touch ID isn’t available on this device.</Text>
+              <Text style={styles.methodHint}>Passkey sign-in isn’t available on this device.</Text>
             )}
           </>
         )}
+
+        {/* Heads-up for the mandatory recovery-code gate that appears the moment
+            the account is created — so it reads as expected, not an ambush. */}
+        <Text style={styles.recoveryHeads}>
+          Next, we’ll show a one-time recovery code. Save it — it’s the only way back
+          into your encrypted data if you lose your sign-in.
+        </Text>
 
         <View style={authStyles.footer}>
           <Text style={authStyles.footerText}>Already have an account? </Text>
@@ -154,7 +172,12 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  title: { marginTop: 0, marginBottom: spacing.lg, textAlign: 'center' },
-  methodHint: { color: '#6b7280', fontSize: 13, textAlign: 'center', marginBottom: spacing.md, lineHeight: 18 },
+  wordmark: { width: 240, height: 95, marginBottom: spacing.sm },
+  // White on the brand-blue auth background (matches authStyles.subtitle) — a
+  // gray hint here is unreadable against the blue.
+  methodHint: { color: 'rgba(255,255,255,0.8)', fontSize: 13, textAlign: 'center', marginBottom: spacing.md, lineHeight: 18 },
   altLink: { textAlign: 'center', marginTop: spacing.md },
+  // Quieter than methodHint — a footnote about the recovery-code step, on the
+  // brand-blue auth background.
+  recoveryHeads: { color: 'rgba(255,255,255,0.7)', fontSize: 12, textAlign: 'center', marginTop: spacing.lg, lineHeight: 17 },
 });

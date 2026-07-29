@@ -119,6 +119,23 @@ const userSchema = new mongoose.Schema({
   },
   // Access role. 'admin' unlocks the monetization/admin web app surfaces.
   role:              { type: String, enum: ['user', 'admin'], default: 'user', index: true },
+
+  // --- Monetization (per-user: unlock + prepaid credits) ---
+  // RevenueCat app_user_id this user is keyed to (the mobile app logs the RC SDK
+  // in with the user id; webhooks carry it back). May hold an aliased anonymous
+  // id from a pre-login purchase.
+  revenueCatId:      { type: String, index: true },
+  // The $4.99 one-time app unlock (non-consumable IAP, entitlement `app_unlock`).
+  // Per-USER: every member buys their own. Granted/revoked only by the webhook
+  // or the admin override POST /monetization-config/unlock.
+  appUnlocked:       { type: Boolean, default: false },
+  appUnlockedAt:     { type: Date },
+  unlockProductId:   { type: String },
+  // Prepaid AI-credit balance in integer MILLICREDITS (1 credit = $0.01 retail =
+  // 1000 Mc). Grants go through CreditLedger.grant (ledgered, idempotent); usage
+  // debits are fire-and-forget $inc's (services/credits.debitUsageMc). May go
+  // NEGATIVE after a refund — enforcement blocks at <= 0, UI floors display at 0.
+  creditBalanceMc:   { type: Number, default: 0 },
   householdId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Household' }, // family the user belongs to
   personId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },    // optional link to the People roster
   firstName:         { type: String, required: true, trim: true },
@@ -136,6 +153,12 @@ const userSchema = new mongoose.Schema({
   // Set by a client that schedules reminders on-device (Phase 5): the server
   // reminder cron then skips this user to avoid double-notifying. See §7.
   localReminders:    { type: Boolean, default: false },
+  // Personal default wall-clock time (`HH:mm`, local) that DAY-BASED alerts
+  // (tasks/chores/birthdays with no per-item reminderTime) fire at. null = the
+  // 9am default (ALERT_HOUR). The reminder cron runs hourly, so it honors only
+  // the HOUR of this value; the on-device scheduler honors the full HH:mm. Set
+  // from the Account screen (personal, like `timezone`).
+  dayAlertTime:      { type: String, default: null },
   // Server-side mirror of the device's AI consent toggle (synced via /settings).
   // middleware/aiConsent.js refuses AI routes when false, so a bypassed client
   // can't ship content to the model for a user who turned AI off.
@@ -151,29 +174,25 @@ const userSchema = new mongoose.Schema({
   lastActiveAt:      { type: Date, index: true },
 
   // Per-user weekly AI-action usage: { 'YYYY-MM-DD': { chat, scan, ... } }, same
-  // shape/keying as Household.usage. On the FREE tier each member gets their own
-  // quota, so metering enforces + displays against this counter rather than the
-  // shared household pool (a family member joining shouldn't shrink everyone's
-  // free allowance). Paid tiers stay pooled on the household. See usageMeter.
-  // NOTE: these per-action counts are analytics-only now — enforcement is by the
-  // weekly TOKEN budget (usageTokens below).
+  // shape/keying as Household.usage. Analytics-only (feeds the "By feature"
+  // breakdown on the Credits screen + admin analytics) — enforcement is the
+  // prepaid credit balance above. See usageMeter.
   usage: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
-  // Per-user weekly TOKEN usage (the enforced metric on the FREE tier):
-  // { 'YYYY-MM-DD': { tokens } } where tokens = input+output+cache read+write.
+  // Per-user weekly TOKEN usage: { 'YYYY-MM-DD': { tokens } } where tokens =
+  // input+output+cache read+write. Analytics-only; credits are the enforced unit.
   usageTokens: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
-  // Per-user weekly assistant CALL-TIME usage in connected seconds (the enforced
-  // metric on the FREE tier): { 'YYYY-MM-DD': { seconds } }. See usageMeter.
+  // Per-user weekly assistant CALL-TIME usage in connected seconds:
+  // { 'YYYY-MM-DD': { seconds } }. Analytics-only. See usageMeter.
   usageCallSeconds: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
-  // AI calls refused with 402 after the weekly budget was exhausted:
+  // AI calls refused with 402 after the credit balance ran out:
   // { 'YYYY-MM-DD': { action: count } }. Analytics-only — feeds the admin
-  // AI-usage abuse view (hammering the API after the cap is the signal).
+  // AI-usage abuse view (hammering the API after the block is the signal).
   usageBlocked: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
 
   timezone:          { type: String, default: 'America/Toronto' },
   homeAddress:       { type: String, default: '' },
   lat:               { type: Number },
   lon:               { type: Number },
-  interests:           [{ type: String, trim: true }],
   aboutMe:             { type: String, trim: true },
   // null = unset; new users don't get a default shopping day (they configure it).
   groceryShoppingDay:  { type: Number, default: null },  // 0=Sun...6=Sat, null=unset
@@ -187,5 +206,10 @@ const userSchema = new mongoose.Schema({
 userSchema.virtual('name').get(function () {
   return [this.firstName, this.lastName].filter(Boolean).join(' ');
 });
+
+// Usernameless passkey sign-in resolves the account from the asserted credential
+// id (POST /auth/passkey/login with no email), so that lookup must be indexed.
+// WebAuthn credential ids are globally unique, so at most one user matches.
+userSchema.index({ 'passkeyCredentials.credentialId': 1 });
 
 module.exports = mongoose.model('User', userSchema);

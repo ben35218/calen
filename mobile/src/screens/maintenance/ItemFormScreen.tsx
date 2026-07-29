@@ -916,6 +916,7 @@ function FieldRenderer({
         onChangeText={onChange}
         placeholder={field.placeholder}
         keyboardType={field.type === 'number' ? 'numeric' : 'default'}
+        clearable={false}
         containerStyle={[fs.headField, fs.rowInputWrap]}
         style={[fs.headInput, fs.rowInput, highlight && fs.headInputHighlight]}
       />

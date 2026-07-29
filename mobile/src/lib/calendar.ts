@@ -1,4 +1,4 @@
-import { CalendarData, CalendarEvent, Task, Chore } from '../api';
+import { CalendarData, CalendarEvent, CalendarOccasion, Task, Chore } from '../api';
 
 // Default calendar category colors (mirrors CalendarView's `calendars`).
 export const CALENDAR_COLORS: Record<string, string> = {
@@ -58,14 +58,14 @@ export interface DayItems {
   chores: Chore[];
   recipes: { title: string; recipeId?: string }[];
   trips: { id: string; name: string; color: string; status?: string }[];
-  birthdays: { id: string; name: string }[];
+  occasions: CalendarOccasion[];
   grocery: boolean;
 }
 
 // All calendar records that touch a given yyyy-MM-dd date.
 export function itemsForDate(data: CalendarData | undefined, dateStr: string): DayItems {
   if (!data) {
-    return { events: [], tasks: [], chores: [], recipes: [], trips: [], birthdays: [], grocery: false };
+    return { events: [], tasks: [], chores: [], recipes: [], trips: [], occasions: [], grocery: false };
   }
 
   const events = (data.events ?? []).filter((e) => {
@@ -88,11 +88,11 @@ export function itemsForDate(data: CalendarData | undefined, dateStr: string): D
     .filter((t) => (t.ranges ?? []).some((r) => dateStr >= localDate(r.start) && dateStr <= localDate(r.end)))
     .map((t) => ({ id: t.id, name: t.name, color: t.color || colorOf('trips'), status: t.status }));
 
-  const birthdays = (data.birthdays ?? []).filter((b) => localDate(b.date) === dateStr).map((b) => ({ id: b.id, name: b.name }));
+  const occasions = (data.occasions ?? []).filter((o) => localDate(o.date) === dateStr);
 
   const grocery = (data.groceryShopping ?? []).some((g) => g.date === dateStr);
 
-  return { events, tasks, chores, recipes, trips, birthdays, grocery };
+  return { events, tasks, chores, recipes, trips, occasions, grocery };
 }
 
 // Up-to-`max` dot colors for a day cell.
@@ -104,7 +104,7 @@ export function dayDots(data: CalendarData | undefined, dateStr: string, max = 4
   if (d.tasks.length) dots.push(CALENDAR_COLORS.maintenance);
   if (d.chores.length) dots.push(CALENDAR_COLORS.chores);
   if (d.recipes.length) dots.push(CALENDAR_COLORS.recipes);
-  if (d.birthdays.length) dots.push(CALENDAR_COLORS.birthdays);
+  if (d.occasions.length) dots.push(CALENDAR_COLORS.birthdays);
   return dots.slice(0, max);
 }
 

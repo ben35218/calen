@@ -7,13 +7,16 @@
 // features/auth-identity.md.
 jest.mock('@household/crypto/adapters/native', () => require('@household/crypto/adapters/web'));
 
-// In-memory device keychain (the Face-ID biometric cache).
+// In-memory device keychain (the Face-ID biometric cache). `mockDeviceEnabled`
+// stands in for whether the cache is armed; `loadDeviceKey` returning non-null
+// stands in for a successful Face ID prompt (null = the user canceled).
 let mockDeviceKey: string | null = null;
+let mockDeviceEnabled = false;
 jest.mock('../deviceKey', () => ({
   saveDeviceKey: async (v: string) => { mockDeviceKey = v; },
   loadDeviceKey: async () => mockDeviceKey,
   clearDeviceKey: async () => { mockDeviceKey = null; },
-  isDeviceKeyEnabled: async () => false,
+  isDeviceKeyEnabled: async () => mockDeviceEnabled,
 }));
 
 // In-memory "server": stores whatever the client uploads, hands it back —
@@ -90,7 +93,7 @@ import {
   unlockWithPassword, unlockWithRecoveryCode, getPendingRecoveryCode,
   sealNew, openRecord, openOpaqueRecord, decryptRecord,
   mintResourceKey, wrapResourceKeyForCollaborator, sealForResource, decryptResourceRecord,
-  publicKeyFingerprint,
+  publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady,
 } from '../e2ee';
 
 const PASSWORD = 'correct horse battery staple';
@@ -184,6 +187,28 @@ test('resource keys: mint, seal, decrypt — and a collaborator can unwrap their
   expect([...unwrapped]).toEqual([...minted!.key]);
 });
 
+// subscribeKeysReady is the signal the app-root re-pull hangs off (store/auth):
+// it must fire the moment the current HDK first becomes held — the transition the
+// first post-sign-in record sync raced ahead of — and NOT re-fire on every ready
+// re-check, or the re-pull/invalidate would loop. Mirrors a relock→unlock relaunch.
+test('subscribeKeysReady fires once when the HDK first lands, not on repeat ready checks', async () => {
+  let fired = 0;
+  const unsub = subscribeKeysReady(() => { fired += 1; });
+  try {
+    lock(); // drops the keypair + every cached HDK, as a relaunch/app-lock would
+    expect(await unlockWithPassword(PASSWORD)).toBe(true);
+    expect(fired).toBe(0); // keypair unlock alone is not "keys ready"
+
+    expect(await ensureHouseholdKey()).toBe('ready'); // absent → held: signal fires
+    expect(fired).toBe(1);
+
+    expect(await ensureHouseholdKey()).toBe('ready'); // already held: no re-fire
+    expect(fired).toBe(1);
+  } finally {
+    unsub();
+  }
+});
+
 test('fingerprints are stable per key and differ across keys', async () => {
   const crypto = await loadHouseholdCrypto();
   const pub = mockServer.enrollment!.identityPublicKey;
@@ -191,4 +216,28 @@ test('fingerprints are stable per key and differ across keys', async () => {
   expect(fp1).toBe(await publicKeyFingerprint(pub));
   const other = crypto.b64(crypto.generateIdentityKeyPair().publicKey);
   expect(await publicKeyFingerprint(other)).not.toBe(fp1);
+});
+
+// reauthWithBiometric backs the biometric-first password change (PrivacyDataScreen):
+// a fresh Face ID prompt in place of re-typing the current password. It always
+// forces the keychain read (proof of presence), independent of the in-memory
+// session, and only succeeds when the cache is armed AND the prompt returns a key.
+describe('reauthWithBiometric', () => {
+  test('false when the biometric cache is not armed', async () => {
+    mockDeviceEnabled = false;
+    mockDeviceKey = 'cached';
+    expect(await reauthWithBiometric()).toBe(false);
+  });
+
+  test('false when armed but the prompt is canceled (no key returned)', async () => {
+    mockDeviceEnabled = true;
+    mockDeviceKey = null;
+    expect(await reauthWithBiometric()).toBe(false);
+  });
+
+  test('true when armed and the Face ID prompt succeeds', async () => {
+    mockDeviceEnabled = true;
+    mockDeviceKey = 'cached';
+    expect(await reauthWithBiometric()).toBe(true);
+  });
 });

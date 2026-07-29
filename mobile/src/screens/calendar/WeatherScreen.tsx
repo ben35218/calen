@@ -1,11 +1,22 @@
-import React from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { OutlookWeek } from '../../api';
-import { loadForecast, loadOutlookWeeks } from '../../lib/weather';
-import { Card } from '../../components/ui';
+import { loadWeatherForAddress, geocodePlace } from '@household/weather';
+import { OutlookWeek, Trip, tripsApi } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import { getOwnedAddonIds } from '../../lib/addons';
+import {
+  WeatherSource, getWeatherSource, setWeatherSource, sourceLabel,
+  loadSourceForecast, loadSourceOutlook, LiveLocationError,
+} from '../../lib/weatherSource';
+import { formatMm } from '../../lib/weatherSummary';
+import { Card, Button, BottomSheet } from '../../components/ui';
+import PlacesAutocomplete from '../../components/PlacesAutocomplete';
+import type { RootStackParamList } from '../../navigation/types';
 import HourlyForecast from '../../components/HourlyForecast';
 import SkyBackground from '../../components/SkyBackground';
 import WeatherIcon from '../../components/WeatherIcon';
@@ -37,8 +48,62 @@ function weekRange(start: string, end: string) {
 // a 7-day forecast strip, and the 90-day seasonal outlook grouped by month.
 export default function WeatherScreen() {
   const insets = useSafeAreaInsets();
-  const weatherQ = useQuery({ queryKey: ['weather'], queryFn: () => loadForecast() });
-  const outlookQ = useQuery({ queryKey: ['weather', 'outlook'], queryFn: () => loadOutlookWeeks() });
+  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  // Where this screen's weather comes from: live device location (default —
+  // the first open triggers the iOS permission ask), the home address, or a
+  // custom place. Chosen from the sheet behind the hero's location chip.
+  const [source, setSource] = useState<WeatherSource | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customDraft, setCustomDraft] = useState('');
+  const closePicker = () => {
+    setPickerOpen(false);
+    setCustomOpen(false);
+    setCustomDraft('');
+  };
+  useEffect(() => { getWeatherSource().then(setSource); }, []);
+  const pickSource = (s: WeatherSource) => {
+    setSource(s);
+    closePicker();
+    void setWeatherSource(s);
+  };
+
+  const sourceKey = !source ? 'pending' : source.kind === 'custom' ? `custom:${source.place}` : source.kind;
+  const weatherQ = useQuery({
+    queryKey: ['weather', 'screen', sourceKey],
+    enabled: !!source,
+    queryFn: () => loadSourceForecast(source!),
+  });
+  const outlookQ = useQuery({
+    queryKey: ['weather', 'outlook', sourceKey],
+    enabled: !!source,
+    queryFn: () => loadSourceOutlook(source!),
+  });
+
+  // Travel-aware: a booked trip whose dates span today puts a destination
+  // forecast card under the home forecast. Fetched client-direct from
+  // open-meteo like the trip detail screen — the destination never touches
+  // our server. Silent (no card) when there is no active trip, the trips
+  // add-on is locked, or the lookup fails.
+  const activeTripQ = useQuery({
+    queryKey: ['weather', 'activeTrip'],
+    queryFn: async (): Promise<Trip | null> => {
+      if (!(await getOwnedAddonIds()).has('trips')) return null;
+      const now = new Date().toISOString().slice(0, 10);
+      const rows = await Promise.all((await tripsApi.list()).data.map((t) => openRecord('Trip', t)));
+      return rows.find((t) =>
+        t.status === 'booked' && t.destination && t.startDate && t.endDate &&
+        String(t.startDate).slice(0, 10) <= now && now <= String(t.endDate).slice(0, 10),
+      ) ?? null;
+    },
+  });
+  const trip = activeTripQ.data;
+  const tripWeatherQ = useQuery({
+    queryKey: ['weather', 'trip', trip?.destination],
+    enabled: !!trip?.destination,
+    queryFn: () => loadWeatherForAddress(trip!.destination!, { geocoder: geocodePlace }),
+  });
 
   const monthGroups = React.useMemo(() => {
     const groups: { label: string; weeks: OutlookWeek[] }[] = [];
@@ -68,18 +133,65 @@ export default function WeatherScreen() {
   return (
     <View style={styles.screen}>
       <SkyBackground weatherCode={w?.current?.weatherCode} />
-      {/* Header is transparent — clear the status bar; the hero's HOME eyebrow
-          sits between the floating back chevron and edit button. */}
-      <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: insets.top + 8 }]}>
-      {weatherQ.isLoading ? (
+      {/* Header is transparent — content clears the status bar AND the nav-bar
+          band (44pt): the location chip must sit below the native bar, whose
+          hit-testing would otherwise swallow its taps. */}
+      <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: insets.top + 52 }]}>
+      {/* The location chip — tap to switch between live / home / custom.
+          Rendered above the branches so a broken source can still be changed. */}
+      {source ? (
+        <TouchableOpacity style={styles.sourceChip} onPress={() => setPickerOpen(true)} activeOpacity={0.7}>
+          <Ionicons
+            name={source.kind === 'live' ? 'navigate' : source.kind === 'home' ? 'home' : 'search'}
+            size={12}
+            color="rgba(255,255,255,0.85)"
+          />
+          <Text style={styles.heroEyebrow}>{sourceLabel(source).toUpperCase()}</Text>
+          <Ionicons name="chevron-down" size={12} color="rgba(255,255,255,0.85)" />
+        </TouchableOpacity>
+      ) : null}
+      {!source || weatherQ.isLoading ? (
         <ActivityIndicator color={BLUE} style={{ marginVertical: spacing.xl }} />
       ) : weatherQ.isError || !w ? (
-        <Card style={styles.card}><Text style={styles.muted}>Weather needs a home address set in Account.</Text></Card>
+        weatherQ.error instanceof LiveLocationError ? (
+          // The live source couldn't produce a fix — explain and offer a way
+          // out rather than a dead screen.
+          <Card style={styles.card}>
+            <Text style={styles.emptyTitle}>Can't use your location</Text>
+            <Text style={styles.muted}>
+              {weatherQ.error.reason === 'denied'
+                ? 'Location access is off for Calen. Allow it in Settings, or use your home address instead.'
+                : 'This build doesn’t include location support yet — reinstall the app, or use your home address instead.'}
+            </Text>
+            {weatherQ.error.reason === 'denied' ? (
+              <View style={styles.emptyBtn}>
+                <Button title="Open Settings" onPress={() => Linking.openSettings()} />
+              </View>
+            ) : null}
+            <View style={styles.emptyBtn}>
+              <Button title="Use home address" variant="ghost" onPress={() => pickSource({ kind: 'home' })} />
+            </View>
+          </Card>
+        ) : /home address/i.test((weatherQ.error as any)?.response?.data?.error ?? (weatherQ.error as any)?.message ?? '') ? (
+          // Missing address is actionable — jump straight to the Account field —
+          // while other failures (offline, provider down) just state themselves.
+          <Card style={styles.card}>
+            <Text style={styles.emptyTitle}>Where's home?</Text>
+            <Text style={styles.muted}>
+              Add your home address and this screen fills with your local forecast — plus weather on
+              the calendar and mowing-day suggestions.
+            </Text>
+            <View style={styles.emptyBtn}>
+              <Button title="Set home address" onPress={() => nav.navigate('Account')} />
+            </View>
+          </Card>
+        ) : (
+          <Card style={styles.card}><Text style={styles.muted}>Couldn't load the weather — check your connection and try again.</Text></Card>
+        )
       ) : (
         <>
           {/* Apple Weather-style hero over the sky — no card. */}
           <View style={styles.hero}>
-            <Text style={styles.heroEyebrow}>HOME</Text>
             {/* Invisible left ° mirrors the real one so the digits themselves stay centered. */}
             <View style={styles.heroTempRow}>
               <Text style={[styles.heroDeg, styles.heroDegHidden]}>°</Text>
@@ -90,7 +202,10 @@ export default function WeatherScreen() {
             {hourlyDay ? (
               <Text style={styles.heroHiLo}>H:{Math.round(hourlyDay.tempMax)}°  L:{Math.round(hourlyDay.tempMin)}°</Text>
             ) : null}
-            <Text style={styles.heroMeta}>Humidity {w.current.humidity}% · Wind {Math.round(w.current.windSpeed)} {w.units.wind}</Text>
+            <Text style={styles.heroMeta}>
+              Humidity {w.current.humidity}% · Wind {Math.round(w.current.windSpeed)} {w.units.wind}
+              {formatMm(w.current.precipitation) ? ` · Rain ${formatMm(w.current.precipitation)} ${w.units.precipitation}` : ''}
+            </Text>
           </View>
 
           {hourlyDay?.hours?.length ? (
@@ -111,7 +226,13 @@ export default function WeatherScreen() {
                 </Text>
                 <View style={styles.dayIconWrap}>
                   <WeatherIcon code={day.weatherCode} size={22} />
-                  {day.precipProbability > 10 ? <Text style={styles.dayPrecip}>{day.precipProbability}%</Text> : null}
+                  {day.precipProbability > 10 ? (
+                    <Text style={styles.dayPrecip}>
+                      {day.precipProbability}%{formatMm(day.precipSum) ? ` · ${formatMm(day.precipSum)}mm` : ''}
+                    </Text>
+                  ) : formatMm(day.precipSum) ? (
+                    <Text style={styles.dayPrecip}>{formatMm(day.precipSum)}mm</Text>
+                  ) : null}
                 </View>
                 <Text style={styles.dayLow}>{Math.round(day.tempMin)}°</Text>
                 <View style={styles.tempTrack}>
@@ -135,6 +256,42 @@ export default function WeatherScreen() {
           </Card>
         </>
       )}
+
+      {/* Destination forecast while a booked trip is underway. */}
+      {trip && tripWeatherQ.data?.current ? (() => {
+        const tw = tripWeatherQ.data;
+        const endStr = String(trip.endDate).slice(0, 10);
+        const tripDays = tw.forecast.filter((d) => d.date >= todayStr && d.date <= endStr).slice(0, 5);
+        return (
+          <Card style={[styles.card, solidCard]}>
+            <View style={styles.weekHeader}>
+              <MaterialCommunityIcons name="airplane" size={14} color="rgba(255,255,255,0.7)" />
+              <Text style={styles.weekHeaderText}>ON YOUR TRIP — {trip.destination!.toUpperCase()}</Text>
+            </View>
+            <View style={styles.tripNowRow}>
+              <WeatherIcon code={tw.current!.weatherCode} size={34} />
+              <View style={styles.tripNowText}>
+                <Text style={styles.tripNowTemp}>{Math.round(tw.current!.temperature)}°</Text>
+                <Text style={styles.tripNowDesc}>{tw.current!.description}</Text>
+              </View>
+            </View>
+            {tripDays.map((day, i) => (
+              <View key={day.date} style={[styles.dayRow, i === 0 && styles.dayRowBorder]}>
+                <Text style={styles.dayName}>
+                  {day.date === todayStr ? 'Today' : new Date(day.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' })}
+                </Text>
+                <View style={styles.dayIconWrap}>
+                  <WeatherIcon code={day.weatherCode} size={22} />
+                  {day.precipProbability > 10 ? <Text style={styles.dayPrecip}>{day.precipProbability}%</Text> : null}
+                </View>
+                <View style={styles.tripDaySpacer} />
+                <Text style={styles.dayLow}>{Math.round(day.tempMin)}°</Text>
+                <Text style={styles.dayHigh}>{Math.round(day.tempMax)}°</Text>
+              </View>
+            ))}
+          </Card>
+        );
+      })() : null}
 
       <Card style={[styles.card, solidCard]}>
         <Text style={styles.outlookTitle}>90-Day Seasonal Outlook</Text>
@@ -167,6 +324,56 @@ export default function WeatherScreen() {
         )}
       </Card>
       </ScrollView>
+
+      {/* Source picker: live location / home address / a typed place. */}
+      <BottomSheet visible={pickerOpen} onClose={closePicker} title="Weather location" avoidKeyboard>
+        <TouchableOpacity style={styles.sourceRow} activeOpacity={0.7} onPress={() => pickSource({ kind: 'live' })}>
+          <Ionicons name="navigate" size={20} color={BLUE} />
+          <View style={styles.sourceRowText}>
+            <Text style={styles.sourceRowTitle}>My location</Text>
+            <Text style={styles.sourceRowSub}>Follows you — uses this device's location</Text>
+          </View>
+          {source?.kind === 'live' ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.sourceRow} activeOpacity={0.7} onPress={() => pickSource({ kind: 'home' })}>
+          <Ionicons name="home" size={20} color={BLUE} />
+          <View style={styles.sourceRowText}>
+            <Text style={styles.sourceRowTitle}>Home</Text>
+            <Text style={styles.sourceRowSub}>Your household's home address</Text>
+          </View>
+          {source?.kind === 'home' ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+        </TouchableOpacity>
+        {/* "Another location": the row toggles an inline Google-Places city
+            search (same picker as trip destinations). Selecting a suggestion
+            IS the confirmation — it applies the source and closes the sheet;
+            free text alone is never accepted. */}
+        <TouchableOpacity style={styles.sourceRow} activeOpacity={0.7} onPress={() => setCustomOpen((o) => !o)}>
+          <Ionicons name="search" size={20} color={BLUE} />
+          <View style={styles.sourceRowText}>
+            <Text style={styles.sourceRowTitle}>Another location</Text>
+            <Text style={styles.sourceRowSub}>
+              {source?.kind === 'custom' ? source.place : 'Search for a city or place'}
+            </Text>
+          </View>
+          {source?.kind === 'custom'
+            ? <Ionicons name="checkmark" size={20} color={BLUE} />
+            : <Ionicons name={customOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />}
+        </TouchableOpacity>
+        {customOpen ? (
+          <PlacesAutocomplete
+            type="city"
+            value={customDraft}
+            onChangeText={setCustomDraft}
+            onSelect={(p) => {
+              setCustomDraft('');
+              setCustomOpen(false);
+              pickSource({ kind: 'custom', place: p.description });
+            }}
+            placeholder="Search for a city or place…"
+            containerStyle={styles.customSearch}
+          />
+        ) : null}
+      </BottomSheet>
     </View>
   );
 }
@@ -178,6 +385,16 @@ const styles = StyleSheet.create({
   // Translucent panels so the sky gradient shows through (Apple Weather style).
   card: { marginBottom: spacing.md, backgroundColor: 'rgba(10,22,40,0.45)', borderColor: 'rgba(255,255,255,0.14)' },
   muted: { color: colors.textMuted, fontSize: 13, paddingVertical: spacing.sm },
+  emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 2 },
+  emptyBtn: { marginTop: spacing.sm },
+  // The tappable location chip above the hero.
+  sourceChip: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: spacing.sm },
+  // Source picker sheet rows.
+  sourceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, paddingVertical: spacing.sm },
+  sourceRowText: { flex: 1, minWidth: 0 },
+  sourceRowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
+  sourceRowSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+  customSearch: { marginTop: 2, marginBottom: 0 },
   // Hero: current conditions floating over the sky, Apple Weather style.
   hero: { alignItems: 'center', paddingTop: spacing.md, paddingBottom: spacing.lg },
   heroEyebrow: { fontSize: 13, fontWeight: '600', letterSpacing: 1.5, color: 'rgba(255,255,255,0.85)', textShadowColor: 'rgba(0,0,0,0.25)', textShadowRadius: 6 },
@@ -201,6 +418,12 @@ const styles = StyleSheet.create({
   tempTrack: { flex: 1, height: 5, borderRadius: 2.5, backgroundColor: 'rgba(0,0,0,0.22)', marginHorizontal: 10 },
   tempFill: { position: 'absolute', top: 0, bottom: 0, borderRadius: 2.5 },
   nowDot: { position: 'absolute', top: -1.5, width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff', borderWidth: 1.5, borderColor: 'rgba(0,0,0,0.35)', marginLeft: -4 },
+  // Trip destination card (travel-aware weather).
+  tripNowRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm },
+  tripNowText: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm },
+  tripNowTemp: { fontSize: 28, fontWeight: '300', color: '#fff' },
+  tripNowDesc: { fontSize: 14, fontWeight: '600', color: '#CFE8FF' },
+  tripDaySpacer: { flex: 1 },
   outlookTitle: { fontSize: 15, fontWeight: '700', color: '#fff', marginBottom: spacing.sm },
   outlookDivider: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.25)' },
   outlookError: { color: '#fff', fontSize: 13, paddingVertical: spacing.sm },

@@ -24,7 +24,7 @@
         <div class="d-flex flex-wrap mb-4" style="gap: 12px">
           <StatCard label="Users" :value="overview.totals.users" />
           <StatCard label="Households" :value="overview.totals.households" />
-          <StatCard label="Paid households" :value="overview.totals.paidHouseholds" color="primary" />
+          <StatCard label="Unlocked users" :value="overview.totals.unlockedUsers" color="primary" />
           <StatCard label="DAU" :value="overview.engagement.dau" />
           <StatCard label="WAU" :value="overview.engagement.wau" />
           <StatCard label="MAU" :value="overview.engagement.mau" />
@@ -187,6 +187,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, h } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { analyticsApi } from '../services/api';
 import { useSnackbar } from '../composables/useSnackbar';
 import SnackbarHost from '../components/SnackbarHost.vue';
@@ -194,15 +195,18 @@ import BarChart from '../components/BarChart.vue';
 import Sparkline from '../components/Sparkline.vue';
 
 // Tiny inline stat card (kept local to avoid another file for a 6-line component).
-const StatCard = (props) => h('div', { class: 'pa-3 rounded-lg', style: 'border:1px solid rgba(0,0,0,0.12); min-width:130px' }, [
+const StatCard = (props) => h('div', { class: 'pa-3 rounded-lg', style: 'border:1px solid rgba(var(--v-theme-on-surface),0.16); min-width:130px' }, [
   h('div', { class: 'text-caption text-medium-emphasis' }, props.label),
   h('div', { class: `text-h6 font-weight-bold ${props.color ? 'text-' + props.color : ''}` }, String(props.value)),
   props.hint ? h('div', { class: 'text-caption text-medium-emphasis' }, props.hint) : null,
 ]);
 StatCard.props = ['label', 'value', 'color', 'hint'];
 
+const route = useRoute();
+const router = useRouter();
 const { snack, fromError } = useSnackbar();
-const tab = ref('overview');
+const TABS = ['overview', 'adoption', 'platforms', 'retention'];
+const tab = ref(TABS.includes(route.query.tab) ? route.query.tab : 'overview');
 const weeks = ref(12);
 
 const overview = ref(null);
@@ -265,6 +269,18 @@ function ensureLoaded(t) {
 }
 function reloadActive() { loaders[tab.value](); }
 
-watch(tab, (t) => ensureLoaded(t));
-onMounted(() => ensureLoaded('overview'));
+// The weeks toggle drives growth AND the adoption/retention series — mark the
+// other tabs stale so they refetch with the new window when (re)visited.
+watch(weeks, () => {
+  for (const t of ['adoption', 'retention']) {
+    if (t === tab.value) loaders[t]();
+    else delete loadedOnce.value[t];
+  }
+});
+
+watch(tab, (t) => {
+  ensureLoaded(t);
+  router.replace({ query: { ...route.query, ...(t === 'overview' ? { tab: undefined } : { tab: t }) } });
+});
+onMounted(() => ensureLoaded(tab.value));
 </script>

@@ -5,7 +5,8 @@ import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, invitationsApi, placesApi, settingsApi, eventAttachmentsApi, EventAttachment, FormAssistField } from '../../api';
+import { calendarApi, invitationsApi, placesApi, eventAttachmentsApi, EventAttachment, FormAssistField } from '../../api';
+import { resolveHomeAddress } from '../../lib/homeAddress';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { pickDocument, takePhoto, pickImage, PickedFile } from '../../lib/media';
@@ -15,18 +16,20 @@ import {
   getQueuedAttachments, addQueuedAttachment, removeQueuedAttachment,
   clearQueuedAttachments, useQueuedAttachments,
 } from '../../lib/attachmentDraft';
-import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, BottomSheet, Card, ListRow, InfoCard } from '../../components/ui';
+import { Button, Input, Select, Screen, SwitchRow, SegmentedControl, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, BottomSheet, Card, ListRow, InfoCard } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
+import { startKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
-  sealNew, sealUpdate, openRecord, getHDK, newObjectId,
+  sealNew, sealUpdate, openRecord, getHDK, newObjectId, ensureHouseholdKey,
   loadCalendarKeys, currentCalendarKeyVersion, sealForCalendar,
 } from '../../lib/e2ee';
 import { getFeedEventById, FEED_EVENT_ID_PREFIX } from '../../lib/calendarFeeds';
 import { formatDuration } from '../../lib/format';
+import { excludeUsedAlert } from '../../lib/recurrence';
 import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from '../../components/WheelPicker';
 import {
   getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees,
@@ -78,25 +81,46 @@ function addMinutesToTime(time: string, minutes: number): string {
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-const CUSTOM_UNITS = [
-  { label: 'minutes', value: 1 },
-  { label: 'hours', value: 60 },
-  { label: 'days', value: 1440 },
-];
-
-// Amount wheel range per unit (iOS timer-style: finer units, shorter ranges).
-const AMOUNT_MAX: Record<number, number> = { 1: 59, 60: 23, 1440: 31 };
-
-// Decompose stored "minutes before the event" into the largest clean unit, to
-// seed the wheels from the field's current value. No usable value → 30 minutes.
-function decomposeAlert(minutes: number | null): { amount: number; unit: number } {
-  if (!minutes || minutes <= 0) return { amount: 30, unit: 1 };
-  const unit = minutes % 1440 === 0 ? 1440 : minutes % 60 === 0 ? 60 : 1;
-  return { amount: Math.min(minutes / unit, AMOUNT_MAX[unit]), unit };
+// Minutes since midnight for an "HH:MM" string.
+function timeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
 }
 
-// The alert picker's "Custom…" choice: a dual amount + unit wheel in a bottom
-// sheet (the Repeat screen's "Every" sheet with a second wheel for the unit).
+// One day after a "YYYY-MM-DD" string.
+function nextDay(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return ymd(d);
+}
+
+// Custom-alert unit: a string key so it drives the SegmentedControl directly.
+type AlertUnit = 'min' | 'hr' | 'day';
+const UNIT_MINUTES: Record<AlertUnit, number> = { min: 1, hr: 60, day: 1440 };
+// Word shown beside the amount wheel (the live "[30] minutes" spinner readout).
+const UNIT_LABEL: Record<AlertUnit, string> = { min: 'minutes', hr: 'hours', day: 'days' };
+// Amount wheel range per unit (iOS timer-style: finer units, shorter ranges).
+const AMOUNT_MAX: Record<AlertUnit, number> = { min: 59, hr: 23, day: 31 };
+const CUSTOM_UNITS: { label: string; value: AlertUnit }[] = [
+  { label: 'Minutes', value: 'min' },
+  { label: 'Hours', value: 'hr' },
+  { label: 'Days', value: 'day' },
+];
+
+// Decompose stored "minutes before the event" into the largest clean unit, to
+// seed the wheel from the field's current value. No usable value → 30 minutes.
+function decomposeAlert(minutes: number | null): { amount: number; unit: AlertUnit } {
+  if (!minutes || minutes <= 0) return { amount: 30, unit: 'min' };
+  const unit: AlertUnit = minutes % 1440 === 0 ? 'day' : minutes % 60 === 0 ? 'hr' : 'min';
+  return { amount: Math.min(minutes / UNIT_MINUTES[unit], AMOUNT_MAX[unit]), unit };
+}
+
+// The alert picker's "Custom…" choice. A single amount wheel + the unit word
+// beside it (the classic "[30] minutes" spinner readout), with the unit chosen
+// via a SegmentedControl below. This mirrors the Repeat screen's "Every" sheet —
+// one scroll wheel inside the modal, which scrolls reliably; the earlier
+// two-adjacent-wheels layout did not. The unit has only 3 values, so a tap
+// control is both more robust and more discoverable than a second wheel.
 // Done emits plain "minutes before the event".
 function CustomAlertSheet({
   visible,
@@ -110,7 +134,7 @@ function CustomAlertSheet({
   onClose: () => void;
 }) {
   const [amount, setAmount] = useState(30);
-  const [unit, setUnit] = useState(1);
+  const [unit, setUnit] = useState<AlertUnit>('min');
 
   // Reseed from the field's current value each time the sheet opens.
   useEffect(() => {
@@ -122,7 +146,7 @@ function CustomAlertSheet({
   }, [visible]);
 
   // Switching to a coarser unit can leave the amount past its wheel's range.
-  const pickUnit = (u: number) => {
+  const pickUnit = (u: AlertUnit) => {
     setUnit(u);
     setAmount((a) => Math.min(a, AMOUNT_MAX[u]));
   };
@@ -130,28 +154,23 @@ function CustomAlertSheet({
   return (
     <BottomSheet visible={visible} onClose={onClose} style={styles.alertSheet}>
       <View style={styles.wheelRow}>
-        {/* Selection band spans both wheels, like the native spinner's. */}
+        {/* Selection band sits behind the centered row, like the native spinner's. */}
         <View pointerEvents="none" style={styles.wheelBand} />
         <WheelPicker
           // Remount per open (fresh position) and per unit (clamped range).
           key={`amount-${String(visible)}-${unit}`}
-          width={72}
+          width={96}
           items={Array.from({ length: AMOUNT_MAX[unit] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
           value={amount}
           onChange={setAmount}
         />
-        <WheelPicker
-          key={`unit-${String(visible)}`}
-          width={120}
-          items={CUSTOM_UNITS}
-          value={unit}
-          onChange={pickUnit}
-        />
+        <Text style={styles.wheelUnit}>{UNIT_LABEL[unit]}</Text>
       </View>
+      <SegmentedControl<AlertUnit> value={unit} options={CUSTOM_UNITS} onChange={pickUnit} />
       <Button
         title="Done"
         onPress={() => {
-          onSave(amount * unit);
+          onSave(amount * UNIT_MINUTES[unit]);
           onClose();
         }}
       />
@@ -299,26 +318,94 @@ export default function EventFormScreen() {
     assist.clear(Object.keys(patch));
   };
 
-  // Upload one picked file as an attachment on `evId`. The E2EE path (encrypt
-  // the bytes on-device when the session is unlocked, upload ciphertext + a
-  // wrapped file key) mirrors the receipts/manuals upload; else plaintext.
-  const uploadAttachment = async (evId: string, file: PickedFile) => {
-    const endpoint = `/calendar/events/${evId}/attachments/upload`;
-    if (getHDK()) {
-      const attId = await newObjectId();
-      const sealed = await encryptFileForUpload('EventAttachment', attId, file.uri);
-      if (sealed) {
-        return uploadFile(endpoint, { uri: sealed.uri, name: `${attId}.bin`, type: 'application/octet-stream' }, 'file', {
-          encrypted: true,
-          _id: attId,
-          wrappedFileKey: sealed.wrappedFileKey,
-          keyVersion: sealed.keyVersion,
-          fileType: file.type || 'application/octet-stream',
-          title: file.name,
-        });
+  // Moving the start past the end drags the end along, preserving the original
+  // duration (10–11 → start 2pm becomes 2–3pm). Same-day timed events only; if
+  // the shifted end crosses midnight, roll the end date to the next day.
+  const setStartTime = (v: string) => {
+    const patch: Partial<typeof form> = { startTime: v };
+    const sameDay = !form.endDate || form.endDate === form.date;
+    if (sameDay && form.startTime && form.endTime) {
+      const startMin = timeToMinutes(form.startTime);
+      const endMin = timeToMinutes(form.endTime);
+      const newStartMin = timeToMinutes(v);
+      if (endMin >= startMin && newStartMin > endMin) {
+        const total = newStartMin + (endMin - startMin);
+        patch.endTime = `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+        if (total >= 1440) patch.endDate = nextDay(form.date);
       }
     }
-    return uploadFile(endpoint, file, 'file');
+    set(patch);
+  };
+
+  // The mirror of setStartTime: dragging the end to at/before the start pulls the
+  // start back so the event keeps its length (8–9 → end 4am makes start 3am). If
+  // the shifted start crosses back over midnight, its date rolls to the previous
+  // day and the (previously same-day) end date is pinned to the original day.
+  const setEndTime = (v: string) => {
+    const patch: Partial<typeof form> = { endTime: v };
+    if (!form.allDay && form.startTime && form.endTime) {
+      const endDate = form.endDate || form.date;
+      const shifted = startKeepingDuration(
+        { date: form.date, time: form.startTime },
+        { date: endDate, time: form.endTime },
+        { date: endDate, time: v }
+      );
+      if (shifted) {
+        patch.startTime = shifted.time;
+        if (shifted.date !== form.date) {
+          patch.date = shifted.date;
+          if (!form.endDate) patch.endDate = form.date;
+        }
+      }
+    }
+    set(patch);
+  };
+
+  // Ends date change: same rule across dates. If the new end date lands before the
+  // start, slide the start (date + time) back to preserve the span; otherwise keep
+  // the existing "same day ⇒ blank endDate" normalization.
+  const setEndDate = (v: string) => {
+    const startTime = form.allDay ? '00:00' : form.startTime || '00:00';
+    const endTime = form.allDay ? '00:00' : form.endTime || '00:00';
+    const shifted = startKeepingDuration(
+      { date: form.date, time: startTime },
+      { date: form.endDate || form.date, time: endTime },
+      { date: v, time: endTime }
+    );
+    if (shifted) {
+      const patch: Partial<typeof form> = { endDate: v, date: shifted.date };
+      if (!form.allDay) patch.startTime = shifted.time;
+      set(patch);
+      return;
+    }
+    set({ endDate: v === form.date ? '' : v });
+  };
+
+  // Upload one picked file as an attachment on `evId`. E2EE is mandatory
+  // (crypto-e2ee.md: no plaintext-content lane), so we ALWAYS encrypt on-device
+  // and upload opaque ciphertext + a wrapped per-file key. There is deliberately
+  // no plaintext fallback: it uploaded the raw picked URI straight to RN's
+  // FormData, and some iOS photo URIs can't be read that way — the multipart part
+  // arrived empty and the server rejected it with "No file uploaded". The encrypt
+  // path instead reads the bytes via expo-file-system into a cache file that
+  // always uploads cleanly, for photos and PDFs alike. Mirrors receipts/manuals.
+  const uploadAttachment = async (evId: string, file: PickedFile) => {
+    const endpoint = `/calendar/events/${evId}/attachments/upload`;
+    // Make sure the household key is loaded before we encrypt — ensureHouseholdKey
+    // populates both the HDK and the household id the wrap binds to. A first
+    // upload can otherwise race ahead of the focus re-sync that normally loads them.
+    if (!getHDK()) await ensureHouseholdKey().catch(() => {});
+    const attId = await newObjectId();
+    const sealed = await encryptFileForUpload('EventAttachment', attId, file.uri);
+    if (!sealed) throw new Error('Unlock your account to attach files, then try again.');
+    return uploadFile(endpoint, { uri: sealed.uri, name: `${attId}.bin`, type: 'application/octet-stream' }, 'file', {
+      encrypted: true,
+      _id: attId,
+      wrappedFileKey: sealed.wrappedFileKey,
+      keyVersion: sealed.keyVersion,
+      fileType: file.type || 'application/octet-stream',
+      title: file.name,
+    });
   };
 
   // A new event defaults to Activities; if the user deleted that calendar,
@@ -383,12 +470,18 @@ export default function EventFormScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill, isEdit]);
 
-  // Default the "From" origin to the household home address once settings load.
-  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
+  // Default the "From" origin to the household home address once it resolves,
+  // and — for new events only — turn travel time ON by default when a home
+  // address exists. Without a home address travel time stays off. Edit keeps
+  // the event's saved setting (the eventQ effect above owns those fields).
+  // The home address is E2EE-sealed, so it must be decrypted, not read raw.
+  const homeQ = useQuery({ queryKey: ['homeAddress'], queryFn: resolveHomeAddress });
   useEffect(() => {
-    const home = settingsQ.data?.homeAddress;
-    if (home) setForm((f) => (f.fromAddress ? f : { ...f, fromAddress: home }));
-  }, [settingsQ.data]);
+    if (isEdit) return;
+    const home = homeQ.data;
+    if (!home) return;
+    setForm((f) => (f.fromAddress ? f : { ...f, fromAddress: home, travelEnabled: true }));
+  }, [homeQ.data, isEdit]);
 
   // Compute traffic-aware drive time from the origin to the event location.
   const fetchTravelTime = async () => {
@@ -605,7 +698,11 @@ export default function EventFormScreen() {
         recurrMonths: e.recurrence?.months ?? [],
         recurrWeekOfMonth: e.recurrence?.weekOfMonth ?? null,
         recurrWeekdayKind: e.recurrence?.weekdayKind ?? null,
-        recurrUntil: e.recurrence?.until ? String(e.recurrence.until).slice(0, 10) : '',
+        // `until` is stored as end of the chosen *local* day (see save), so its
+        // UTC calendar date can be the next day. Derive the local Y-M-D back —
+        // slicing the ISO string would read the UTC date and drift a day forward
+        // on every edit.
+        recurrUntil: e.recurrence?.until ? ymd(new Date(String(e.recurrence.until))) : '',
       });
       // Seed the Invitees screen's guest-list switch (missing on events that
       // predate the setting — treated as visible).
@@ -735,13 +832,22 @@ export default function EventFormScreen() {
           clearQueuedInvitees();
         }
         // Attachments picked on the draft form upload now that the event exists.
-        // A failed upload is dropped (the form is already closing) rather than
-        // blocking the save the user just confirmed.
+        // A failed upload doesn't block the save the user just confirmed, but we
+        // no longer swallow it silently — the user is told which files didn't
+        // attach (and why) so a failure isn't mistaken for a successful upload.
         const queuedFiles = getQueuedAttachments();
+        const failed: string[] = [];
         for (const f of queuedFiles) {
-          try { await uploadAttachment(res.data._id, f); } catch { /* keep going */ }
+          try { await uploadAttachment(res.data._id, f); }
+          catch (e: any) { failed.push(f.name); }
         }
         clearQueuedAttachments();
+        if (failed.length) {
+          Alert.alert(
+            'Some attachments didn’t upload',
+            `The event was saved, but these files couldn’t be attached: ${failed.join(', ')}. Open the event to try again.`,
+          );
+        }
       }
       qc.invalidateQueries({ queryKey: ['calendar'] });
       navigation.goBack();
@@ -1052,7 +1158,7 @@ export default function EventFormScreen() {
       {/* All day / Starts / Ends / Travel Time grouped card */}
       <View style={formStyles.groupCard}>
         <View style={formStyles.groupPad}>
-          <SwitchRow label="All day" value={form.allDay} onValueChange={(v) => set({ allDay: v })} highlight={assist.changed.has('allDay')} />
+          <SwitchRow label="All day" value={form.allDay} onValueChange={(v) => set({ allDay: v })} color={accent} highlight={assist.changed.has('allDay')} />
         </View>
         <View style={formStyles.cardDivider} />
         <View style={formStyles.dtRow}>
@@ -1070,7 +1176,7 @@ export default function EventFormScreen() {
             {!form.allDay ? (
               <TimeField
                 value={form.startTime}
-                onChange={(v) => set({ startTime: v })}
+                onChange={setStartTime}
                 highlight={assist.changed.has('startTime')}
                 containerStyle={formStyles.dtFieldWrap}
                 fieldStyle={formStyles.dtField}
@@ -1088,7 +1194,7 @@ export default function EventFormScreen() {
                 until a different date is picked. */}
             <DateField
               value={form.endDate || form.date}
-              onChange={(v) => set({ endDate: v === form.date ? '' : v })}
+              onChange={setEndDate}
               highlight={assist.changed.has('endDate')}
               containerStyle={formStyles.dtFieldWrap}
               fieldStyle={formStyles.dtField}
@@ -1098,7 +1204,7 @@ export default function EventFormScreen() {
             {!form.allDay ? (
               <TimeField
                 value={form.endTime}
-                onChange={(v) => set({ endTime: v })}
+                onChange={setEndTime}
                 defaultValue={addMinutesToTime(form.startTime || '09:00', 60)}
                 highlight={assist.changed.has('endTime')}
                 containerStyle={formStyles.dtFieldWrap}
@@ -1126,9 +1232,11 @@ export default function EventFormScreen() {
             <ActivityIndicator size="small" color={colors.textMuted} />
           ) : (
             <Text style={[formStyles.groupValue, !form.travelMinutes && formStyles.groupValueMuted]} numberOfLines={1}>
-              {form.travelEnabled && form.travelMinutes
-                ? `${formatDuration(form.travelMinutes)}${leaveByTime ? ` · Leave by ${leaveByTime}` : ''}`
-                : 'None'}
+              {!form.travelEnabled
+                ? 'None'
+                : form.travelMinutes
+                  ? `${formatDuration(form.travelMinutes)}${leaveByTime ? ` · Leave by ${leaveByTime}` : ''}`
+                  : 'On'}
             </Text>
           )}
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} style={formStyles.rowChevron} />
@@ -1225,7 +1333,7 @@ export default function EventFormScreen() {
         <Select
           inlineLabel="Alert"
           value={form.reminderMinutes ?? undefined}
-          options={alertItems}
+          options={excludeUsedAlert(alertItems, form.alert2Minutes, form.reminderMinutes)}
           placeholder="None"
           onChange={(v) => {
             if (v === CUSTOM_ALERT) setCustomFor('reminderMinutes');
@@ -1243,7 +1351,7 @@ export default function EventFormScreen() {
             <Select
               inlineLabel="Second Alert"
               value={form.alert2Minutes ?? undefined}
-              options={alertItems}
+              options={excludeUsedAlert(alertItems, form.reminderMinutes, form.alert2Minutes)}
               placeholder="None"
               onChange={(v) => {
                 if (v === CUSTOM_ALERT) setCustomFor('alert2Minutes');
@@ -1273,11 +1381,11 @@ export default function EventFormScreen() {
       <SectionTitle>Attachments</SectionTitle>
       <View style={formStyles.groupCard}>
         <TouchableOpacity style={styles.attAddRow} activeOpacity={0.7} onPress={openAttachmentPicker}>
-          <View style={[styles.attAddIcon, { backgroundColor: accent }]}>
+          <View style={[styles.attAddIcon, { backgroundColor: colors.textMuted }]}>
             <Ionicons name="add" size={18} color="#fff" />
           </View>
-          <Text style={[styles.attAddLabel, { color: accent }]}>Add attachment…</Text>
-          {addAttachment.isPending ? <ActivityIndicator size="small" color={accent} /> : null}
+          <Text style={styles.attAddLabel}>Add attachment…</Text>
+          {addAttachment.isPending ? <ActivityIndicator size="small" color={colors.textMuted} /> : null}
         </TouchableOpacity>
         {isEdit
           ? (attachmentsQ.data ?? []).map((a) => (
@@ -1382,7 +1490,7 @@ const styles = StyleSheet.create({
   // Attachments card
   attAddRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
   attAddIcon: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
-  attAddLabel: { flex: 1, fontSize: 16 },
+  attAddLabel: { flex: 1, fontSize: 16, color: colors.text },
   attRow: { flexDirection: 'row', alignItems: 'center', paddingLeft: spacing.md, paddingRight: spacing.xs },
   attMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md },
   attName: { flex: 1, fontSize: 16, color: colors.text },
@@ -1398,4 +1506,6 @@ const styles = StyleSheet.create({
     top: ((WHEEL_VISIBLE - 1) / 2) * WHEEL_ITEM_H, height: WHEEL_ITEM_H,
     borderRadius: radius.sm, backgroundColor: colors.border + '55',
   },
+  // The unit word beside the amount wheel ("30 minutes").
+  wheelUnit: { fontSize: 23, color: colors.text },
 });

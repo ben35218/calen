@@ -1,4 +1,4 @@
-import type { InvitationEventSnapshot, Item, ProposedTask, Recipe } from '../api';
+import type { InvitationEventSnapshot, Item, PersonLabeledValue, PersonRelatedName, ProposedTask, Recipe } from '../api';
 import type { RepeatRule } from '../lib/eventRepeat';
 import type { AssistantId } from '../screens/chat/assistantTabs';
 
@@ -23,14 +23,26 @@ export interface AssistantFocusEvent {
 export interface PersonPrefill {
   type: 'family' | 'friend' | 'service';
   name: string;
+  // Structured name from a device import (expo-contacts firstName/lastName);
+  // when absent the form splits `name`.
+  firstName?: string;
+  lastName?: string;
   relationship?: string;
   businessName?: string;
+  jobTitle?: string;
+  company?: string;
   birthday?: string;
   address?: string;
   notes?: string;
-  interests?: string[];
   phone?: string;
   email?: string;
+  // Multi-value fields from a device/AI import (fold in alongside the singles).
+  phones?: PersonLabeledValue[];
+  emails?: PersonLabeledValue[];
+  addresses?: PersonLabeledValue[];
+  dates?: PersonLabeledValue[];
+  urls?: PersonLabeledValue[];
+  relatedNames?: PersonRelatedName[];
   deviceContactId?: string;
 }
 
@@ -50,6 +62,10 @@ export type RootStackParamList = {
   // the Edit form so it returns to the same day. Household-owned events only —
   // guest/collaborator copies still open read-only in EventForm.
   EventDetail: { eventId: string; date?: string };
+  // Full-screen in-app preview of a decrypted attachment, rendered in a WebView
+  // (images + PDFs). `uri` is the on-device decrypted file; `mimeType` feeds the
+  // header Share action.
+  AttachmentPreview: { uri: string; title?: string; mimeType?: string };
   // Unified assistant view (Calendar / Chores / Task Plan swap in place). `initial`
   // picks which body opens; the switcher swaps the rest without navigating.
   // `focusEvent` scopes the calendar assistant to one event ("Ask Calen" on the
@@ -70,7 +86,31 @@ export type RootStackParamList = {
   PrintCalendar: undefined;
   // Edit one country's holiday calendar (its national/regional/cultural toggles).
   Holidays: { calendarId: string };
-  Birthdays: undefined;
+  // The Occasions calendar home (route id stays `Birthdays` for add-on/deep-link
+  // continuity; the screen and title are "Occasions"). `focus` (from tapping an
+  // occasion on the calendar) scrolls the list to that occasion and highlights it.
+  Birthdays: {
+    focus?: {
+      personId: string;
+      kind: 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
+      month: number;
+      day: number;
+      label: string;
+    };
+  } | undefined;
+  // Schedule (or edit) an e-card for one occasion. Context comes from the
+  // occasion row; `ecardId` opens an already-scheduled card for edit/cancel.
+  ECardForm: {
+    personId?: string;
+    personName?: string;
+    kind: 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
+    occasionLabel?: string;
+    month: number;
+    day: number;
+    ecardId?: string;
+  };
+  // Calendar-level occasion alert settings (offsets + time).
+  OccasionAlerts: undefined;
   Weather: undefined;
   Invitations: undefined;
   // Manage one event's invitees. `snapshot` is the decrypted event content the
@@ -159,9 +199,11 @@ export type RootStackParamList = {
 
   // ----- Profile -----
   ProfileHome: undefined;
-  // `section` deep-links to a collapsible section on the Account screen.
-  Account: { section?: 'account' | 'reminders' | 'security' } | undefined;
-  // The dedicated Privacy & Data screen. `focus` deep-links intent: 'unlock'
+  Account: undefined;
+  // The reminders hub — the master on/off toggle + the personal day-based alert
+  // time (see features/notifications.md).
+  Reminders: undefined;
+  // The dedicated Privacy & security screen. `focus` deep-links intent: 'unlock'
   // (locked-data prompt — auto-presents Face ID) or 'recovery'.
   PrivacyData: { focus?: 'unlock' | 'recovery' } | undefined;
   // The recovery-code detail view — explains it + create/replace the code.
@@ -179,6 +221,8 @@ export type RootStackParamList = {
     id?: string;
     isSelf?: boolean;
     type?: 'family' | 'friend' | 'service';
+    // Open scrolled to a section (e.g. 'dates' from the Occasions list).
+    focus?: 'dates';
     // Review-mode import: a queue of prefilled contacts to step through. The
     // form saves the one at `queueIndex`, then advances to the next.
     prefills?: PersonPrefill[];
@@ -187,8 +231,12 @@ export type RootStackParamList = {
   ContactImport: undefined;
   Household: undefined;
 
-  // ----- Plan & billing (status hub is inlined on ProfileHome) -----
-  ComparePlans: undefined; // the paywall proper (tier catalog + purchase)
-  AiUsage: undefined;      // usage drill-in (per member / per feature)
-  Upsell: { reason: 'quota' | 'warning' } | undefined; // focused upgrade sheet from the AI nudges
+  // ----- Billing (credits summary card is inlined on ProfileHome) -----
+  // Prepaid AI credits: balance, pack store, history, usage + AI preferences.
+  Credits: undefined;
+  // Focused top-up sheet the AI-surface nudges open (low balance / out).
+  BuyCredits: { reason: 'low' | 'out' } | undefined;
+  // The Add-ons store: one-time feature-calendar purchases (Meals, Maintenance,
+  // Trips + bundle). `focus` highlights one add-on's card.
+  AddOns: { focus?: 'recipes' | 'maintenance' | 'trips' | 'birthdays' | 'chores' } | undefined;
 };

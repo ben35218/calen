@@ -1,7 +1,7 @@
 ---
 title: Guardian recovery (dual-control)
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65 (2026-07-27)
 code:
   - shared/crypto/src/core.ts                        # createGuardianEnvelope / unsealGuardianOuter / resealGuardianInner / recoverWithGuardian
   - server/src/routes/keys.js                        # /keys/guardian* endpoints (blind store + relay)
@@ -160,7 +160,7 @@ has `inner` without the guardian. ✔ dual control.
   - No `POST /keys/reenroll` — recovery restores the same key, so existing
     `PUT /keys/factors` re-enrols fresh factors (see the flow note above).
 - **Client:** `GuardianRecoveryScreen` with `mode: setup | recover | approve`;
-  entry points in **Privacy & data** — a "Household guardian" row in Recovery
+  entry points in **Privacy & security** — a "Household guardian" row in Recovery
   methods (status badge), a "Recover with your household guardian" link in the
   locked-state hero, and an approval banner when the caller is someone's guardian
   and has a pending request. `lib/guardianRecovery.ts` orchestrates; no camera/QR

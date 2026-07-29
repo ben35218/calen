@@ -1,17 +1,20 @@
 ---
 title: Households & sharing
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65 (2026-07-29)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - server/src/routes/household.js
   - server/src/routes/keys.js
   - server/src/services/{householdKey,keyEnvelope,securityAlerts,e2eePolicy}.js
+  - server/src/services/notify.js
   - server/src/models/{Household,HouseholdInvitation,JoinRequest,HouseholdKeyEnvelope,ResourceKeyEnvelope}.js
   - mobile/src/lib/safetyNumbers.ts
+  - mobile/src/lib/shareInvite.ts
 tests:
   - server/src/test/householdInvitations.integration.test.js
   - server/src/test/householdKey.integration.test.js
+  - server/src/test/householdLeave.integration.test.js
   - server/src/test/keyHygiene.integration.test.js
   - server/src/test/securityAlerts.integration.test.js
   - server/src/services/householdKey.test.js
@@ -52,9 +55,35 @@ verification. The cryptographic mechanics are in
 
 ### Invitations & joining
 
-- An owner/member invites by email → `POST /household/invitations`
+- An owner/member invites by email or phone → `POST /household/invitations`
   (`HouseholdInvitation`). Invitations are **discovery only**: no key material is
   ever in the email or link.
+- **Notification channels.** Outreach is **device-composed** — the server sends
+  no invite email or text. `POST /household/invitations` only creates the
+  discovery record and returns `userExists`; the inviter's device then composes
+  the message from its own account: `mailto:` for an email invite, `sms:` for a
+  phone invite (mobile `lib/shareInvite` → `composeShareEmail` / `composeShareSms`,
+  driven from `HouseholdScreen`). This keeps the invitee's address off the server
+  and off any transactional-mail path, and gives the message the deliverability
+  of a person-to-person email. The message is a **nudge only** (open the app to
+  accept) — consistent with invites being discovery-only, carrying no key
+  material or functional token.
+- **Push for existing accounts.** When the invited address already belongs to an
+  account, the server *additionally* sends a push to that user's registered
+  devices (`notify.pushToUser`, fire-and-forget, best-effort — no-ops if they
+  have no token or denied permission). This is the one channel the server does
+  send, since it needs the recipient's device tokens. The `HouseholdInvitation`
+  row is created regardless, so the invite also appears in the recipient's in-app
+  inbox (`GET /household/invitations/mine`).
+- **Invite from contacts (mobile):** the invite field on `HouseholdScreen`
+  autocompletes over the **in-app contacts roster** (the decrypted People
+  records — Family/Friends/Professionals — via `peopleApi.list` + on-device
+  decrypt), matching the typed text against a contact's name, email, or phone.
+  Tapping a suggestion invites that contact's primary email (else a normalized
+  phone) through the same `POST /household/invitations` path — no retyping.
+  Suggestions exclude current members, people with a pending/accepted invite, and
+  the signed-in user. The source is the in-app roster, not the device address
+  book; typing a raw email/phone for someone not on file still works.
 - The invitee sees it via `GET /household/invitations/mine` and accepts
   (`POST /household/invitations/:id/accept`, rate-limited) — which creates a
   `JoinRequest`, **not** an instant join.
@@ -64,7 +93,21 @@ verification. The cryptographic mechanics are in
   to the joiner's public key. Reject and cancel paths exist
   (`.../reject`, `DELETE /household/join-requests/mine`).
 - `POST /household/leave` and `POST /household/members/:userId/remove`
-  (owner-only) move a member to a fresh solo household.
+  (owner-only) move a member to a fresh solo household, activated born-encrypted
+  right away (mint HDK → `activateBornEncryptedHousehold`). Leaving hands the
+  shared data to the members who remain and drops the leaver into a clean space.
+- **Sole member = no-op.** `leave` only applies when the household is **shared**.
+  A sole member has no one to leave and nothing to hand over — their household
+  *is* their own data — so `POST /household/leave` returns the existing household
+  unchanged and creates nothing. The client hides the leave action (surfaced as
+  **"Leave household"**) unless `members.length > 1`. This closes a data-loss
+  bug: for a sole member the old path minted an empty household and ran
+  `handleDeparture`'s empty-household branch, which deletes the household and its
+  **only** key envelope while the encrypted records stay behind — orphaning every
+  record with no key left to decrypt it.
+- **Reap invariant.** `handleDeparture` never deletes a memberless household's
+  key envelope while any `Record` still references that household; key material
+  is destroyed only once the ciphertext that needs it is gone.
 
 ### Key lifecycle
 
@@ -79,7 +122,14 @@ verification. The cryptographic mechanics are in
 - **Born-encrypted enforcement:** `e2eePolicy` blocks plaintext content writes;
   `POST /household/e2ee/activate` marks the household active; `e2ee/readiness`,
   `e2ee/stragglers` + `e2ee/seal`, and `e2ee/client-version` support the
-  migration/consistency tooling.
+  migration/consistency tooling. Activation is **automatic** — every household
+  activates on the next owner-key unlock (`lib/e2ee maybeActivateBornEncrypted`),
+  so the client no longer shows a manual "Turn on encryption now" setup card.
+  HouseholdScreen shows an encryption-status badge that reflects the ACTUAL
+  `e2eeActive` state — "End-to-end encrypted" once active, "Finishing encryption
+  setup…" (with a reassuring hint) while activation is still pending. It is never
+  hard-coded to "encrypted": activation is automatic but can stall, and a badge
+  that always claimed success would hide a stuck household from its owner.
 
 ### Security alerts & verification
 
@@ -108,7 +158,9 @@ verification. The cryptographic mechanics are in
   join-requests, key lifecycle, e2ee activation/readiness) and
   `server/src/routes/keys.js` (identity factors + public keys — see
   [auth-identity.md](auth-identity.md)).
-- **Client:** `HouseholdScreen` (members, invite, remove, safety numbers).
+- **Client:** `HouseholdScreen` (members, invite, remove, safety numbers, an
+  always-on "end-to-end encrypted" indicator, and the "Create new household"
+  leave action).
 
 ## Encryption boundary
 

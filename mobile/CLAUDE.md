@@ -13,6 +13,16 @@ from the theme.
 
 - **Forms / detail screens** → wrap in `<Screen>` (handles the keyboard-aware
   scroll + padding). `<Screen scroll={false}>` for a non-scrolling screen.
+- **Inline dropdown under an input** (autocomplete / suggestions) → the
+  keyboard-aware scroll only keeps the *input* above the keyboard, so a
+  dropdown rendered below it opens exactly behind the keyboard. Attach
+  `useRevealOnOpen(open, itemCount)`'s ref (with `collapsable={false}`) to the
+  view wrapping the input + dropdown; `<Screen>` scrolls the pair clear when
+  the dropdown opens. See `PlacesAutocomplete` / `EventInviteesScreen`.
+  Picking a suggestion in a **single-value** field completes the entry —
+  `Keyboard.dismiss()` so the field blurs and shows the value from its start.
+  A **multi-add** field (invitees: type, pick, type the next) keeps the
+  keyboard open, like a mail To: field.
 - **Lists** → `FlatList` / `SectionList` (not a `ScrollView.map`). Every
   top-level, query-backed list gets pull-to-refresh:
   `refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} />}`.
@@ -45,11 +55,24 @@ default those to `colors.primary` inside an accented area.
   bar with a feature accent — the accent lives *in the body* (add button, FAB,
   save check, primary buttons), never on the header chrome. A header whose
   background differs from its body is drift, not a highlight.
-- **Add action on a list** → `RoundIconButton icon="add"` in `headerRight`, `bg={accent}`.
+- **Filled accent disc vs. transparent white — the header-action rule.** A
+  header button gets a solid-fill circular disc **only when it carries a feature
+  accent** (`useCalendarColors().colors.<area>`). A header action in a
+  non-accented area (the app-primary blue — e.g. Calendars, Contacts, Account,
+  New/Subscribe Calendar, generic forms) is instead a **transparent white, thick
+  icon** matching the header close **✕** — never a primary-coloured disc. A
+  primary-blue disc in the header is drift; either it belongs to an accented
+  area (use the accent) or it doesn't (make it transparent white).
+- **Add action on a list** → in an **accented** area, `RoundIconButton icon="add"`
+  in `headerRight`, `bg={accent}` (solid disc). In a **non-accented** area,
+  `<HeaderIconButton icon="add" size={30} accessibilityLabel />` (transparent white).
 - **Header action on a detail screen** (edit pencil / share / print) → `<HeaderIconButton icon onPress accessibilityLabel />` in `headerRight`.
 - **Floating action button** (detail screen adds a sub-item, or the AI assistant) → `<Fab icon onPress bg={accent} />` (or `<Fab>` with a custom glyph child).
 - **Grouped info rows on a detail screen** → `<InfoCard>` wrapping `ListRow`s (InfoCard = a Card that hands its padding to the rows).
 - **Form save/close chrome** → `useHeaderCheckButton(navigation, { onPress, loading, color: accent })`.
+  Pass `color={accent}` in an accented feature area for the tinted save disc;
+  **omit `color`** in a non-accented area to get the neutral transparent white
+  check (matches the close ✕). Never pass `color: colors.primary`.
 - **Titles/labels** — three distinct roles, don't mix them:
   - `<ScreenTitle>` = the bold 24px in-body header title on a detail screen (the
     item/recipe/event name at the top of its page).
@@ -61,6 +84,26 @@ default those to `colors.primary` inside an accented area.
   (`radius` for a rounded-square instead of a circle).
 - **Settings-style tappable row** (inside an InfoCard/GroupCard) → `<ListRow icon title subtitle onPress right />`.
 - **Standalone list card** (its own tappable Card: avatar + title + subtitle + trailing) → `<CardRow leading title subtitle right onPress titleRight />`. `subtitle` may be a node (icon-studded meta row); `right` falls back to a chevron when `onPress` is set. Keep a raw Card for bespoke cards (expandable, swipeable, flush colour-bar).
+- **Phone number** → `<PhoneField value onChangeText label? highlight? containerStyle? fieldStyle? />`
+  (country picker with flag/dial code + as-you-type formatting; emits canonical
+  E.164 for storage). Never a bare `<Input keyboardType="phone-pad" />`. For a
+  flush grouped-card row pass `containerStyle={fs.headField}` + `fieldStyle={fs.headInput}`;
+  for a standalone bordered field pass `label`. When a flush row shares its line
+  with other controls and the picker button would crowd the number (the person
+  form's multi-value rows), use the picker-free `<PhoneTextField value onChangeText
+  label? highlight? containerStyle? style? />` instead — no country selector; the
+  user types a local number or a leading `+<country code>`, and it still emits
+  E.164. Read-only display → `formatDisplay()` from `lib/phone`.
+- **Text-field clear button** — `Input` (and `PhoneField`/`PhoneTextField`)
+  shows an Apple-style ✕ that empties the field while it's focused and holds
+  text; it auto-suppresses for multiline, `secureTextEntry`, and non-editable
+  fields. Never hand-roll a close-circle clear inside an `Input`. Pass
+  `clearable={false}` only for: right-aligned label/value rows (`fs.rowInput` —
+  Servings, Airline, Cost…), and fields whose right edge is already occupied
+  inside the field box or by an identical adjacent glyph (recipe ingredient
+  cells next to their close-circle remove button). A search pill built from a
+  raw `TextInput` (People, Calendar search) hand-rolls the same close-circle,
+  with `clearButtonMode="never"` so iOS doesn't double it.
 - **Buttons** → `<Button variant="primary|ghost|danger" color={accent} />`.
 - **Filter pills** → `<Chip label selected onPress color={accent} />`.
 - **Colour picker** → `<ColorPicker value onChange options={COLOR_PRESETS} />`.

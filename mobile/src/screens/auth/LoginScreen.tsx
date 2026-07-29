@@ -27,6 +27,7 @@ export default function LoginScreen() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [passkeyLoading, setPasskeyLoading] = useState(false);
+  const hasPasskeys = passkeysSupported();
 
   async function handlePasswordLogin() {
     if (!email.trim() || !password) {
@@ -45,16 +46,19 @@ export default function LoginScreen() {
   }
 
   async function handlePasskey() {
-    if (!email.trim()) {
-      setError('Enter your email, then sign in with your passkey.');
-      return;
-    }
     setPasskeyLoading(true);
     setError('');
     try {
-      await loginWithPasskey(email.trim()); // false = canceled, which needs no message
+      // Usernameless when the email field is empty: the OS account picker
+      // chooses the passkey and the server resolves the account. If an email was
+      // typed, pass it — that path signs in AND unlocks E2EE in one assertion.
+      await loginWithPasskey(email.trim() || undefined); // false = canceled, which needs no message
     } catch (e: any) {
-      setError(e?.response?.data?.error || 'Passkey sign-in failed');
+      // A native ceremony failure (e.g. rpId not in the app's associated
+      // domains) has no HTTP `.response` — surface its message instead of
+      // swallowing it behind the generic string, or passkey issues are
+      // undebuggable from the device.
+      setError(e?.response?.data?.error || e?.message || 'Passkey sign-in failed');
     } finally {
       setPasskeyLoading(false);
     }
@@ -62,14 +66,37 @@ export default function LoginScreen() {
 
   return (
     <AuthScaffold>
-      <View style={authStyles.header}>
+      {/* Wordmark alone — the primary "Sign in with a passkey" button below makes
+          a "Sign in to your account" subtitle redundant, and dropping it (plus
+          tighter spacing) keeps the Register footer above the fold on small
+          screens. */}
+      <View style={[authStyles.header, styles.header]}>
         <Image
           source={require('../../../assets/calen-wordmark.png')}
           style={styles.wordmark}
           resizeMode="contain"
         />
-        <Text style={authStyles.subtitle}>Sign in to your account</Text>
       </View>
+
+      {/* Passwordless-first: lead with the passkey. It's usernameless — the OS
+          account picker chooses, so no email is needed. The password form below
+          is the fallback for accounts without a passkey (or unsupported
+          devices). */}
+      {hasPasskeys ? (
+        <>
+          <Button
+            title="Sign in with a passkey"
+            onPress={handlePasskey}
+            loading={passkeyLoading}
+            color={AUTH_PRIMARY_BTN_COLOR}
+          />
+          <View style={styles.divider}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>or use your password</Text>
+            <View style={styles.dividerLine} />
+          </View>
+        </>
+      ) : null}
 
       <Input
         label="Email"
@@ -91,19 +118,15 @@ export default function LoginScreen() {
 
       {error ? <Text style={authStyles.error}>{error}</Text> : null}
 
-      <Button title="Sign In" onPress={handlePasswordLogin} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />
-
-      {passkeysSupported() ? (
-        <View style={styles.passkeyButton}>
-          <Button
-            title="Sign in with Face ID / passkey"
-            variant="ghost"
-            onPress={handlePasskey}
-            loading={passkeyLoading}
-            color={AUTH_GHOST_BTN_COLOR}
-          />
-        </View>
-      ) : null}
+      {/* When a passkey is the hero action above, the password sign-in is the
+          secondary (ghost) path; otherwise it's the primary CTA. */}
+      <Button
+        title="Sign In"
+        onPress={handlePasswordLogin}
+        loading={loading}
+        variant={hasPasskeys ? 'ghost' : 'primary'}
+        color={hasPasskeys ? AUTH_GHOST_BTN_COLOR : AUTH_PRIMARY_BTN_COLOR}
+      />
 
       <Text style={[authStyles.link, styles.forgot]} onPress={() => nav.navigate('ForgotPassword')}>
         Forgot password?
@@ -120,7 +143,12 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  wordmark: { width: 240, height: 95, marginBottom: spacing.sm },
-  passkeyButton: { marginTop: spacing.sm },
+  // Tighter than the shared header (xl) — reclaims vertical space so the footer
+  // clears the fold on small devices.
+  header: { marginBottom: spacing.lg },
+  wordmark: { width: 220, height: 80 },
+  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: spacing.md },
+  dividerLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.3)' },
+  dividerText: { color: 'rgba(255,255,255,0.8)', marginHorizontal: spacing.md, fontSize: 13 },
   forgot: { textAlign: 'center', marginTop: spacing.md },
 });

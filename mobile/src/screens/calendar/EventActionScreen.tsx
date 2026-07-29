@@ -11,6 +11,7 @@ import {
 } from '../../components/ui';
 import { form as formStyles } from '../../components/formStyles';
 import { ymd } from '../../lib/calendar';
+import { startTimeKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
@@ -79,6 +80,17 @@ export default function EventActionScreen() {
 
   const setWindow = (i: number, patch: Partial<TimeWindow>) =>
     setWindows((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));
+
+  // Moving a window's "to" to at/before its "from" pulls "from" back so the window
+  // keeps its width (same-day, clamped at 00:00).
+  const setWindowTo = (i: number, v: string) =>
+    setWindows((ws) =>
+      ws.map((w, j) => {
+        if (j !== i) return w;
+        const from = startTimeKeepingDuration(w.from, w.to, v);
+        return { ...w, to: v, ...(from ? { from } : {}) };
+      })
+    );
 
   const pickAction = (a: Action) => {
     setAction(a);
@@ -232,7 +244,7 @@ export default function EventActionScreen() {
                   <Text style={styles.andText}>and</Text>
                   <TimeField
                     value={w.to}
-                    onChange={(v) => setWindow(i, { to: v })}
+                    onChange={(v) => setWindowTo(i, v)}
                     containerStyle={formStyles.dtFieldWrap}
                     fieldStyle={formStyles.dtField}
                     valueStyle={formStyles.dtValue}

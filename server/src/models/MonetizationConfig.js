@@ -1,51 +1,87 @@
 const mongoose = require('mongoose');
 
-// Single source of truth for monetization: tier prices/quotas, per-call API
-// costs (used only by the projection on the temp config page), model choices,
-// the activity curve, processor-fee assumption, and abuse guards.
+// Single source of truth for monetization: the app-unlock product, the prepaid
+// AI-credit economy (rates/margin/packs/starter grant), per-call API cost
+// references, model choices, the add-on catalog, and abuse guards.
 //
-// There is exactly ONE document (singleton). The temp /monetization-config page
-// reads and writes it; the usageMeter middleware and billing routes read it.
-// Quota value `null` = unlimited. Counters listed in `METERED_ACTIONS` are
-// always tracked (incremented) even when their quota is null, so usage stays
-// visible for actions we don't currently limit.
+// There is exactly ONE document (singleton). The admin /monetization-config
+// page reads and writes it; the usageMeter middleware and billing routes read
+// it. Counters listed in `METERED_ACTIONS` are always tracked (incremented)
+// for analytics even though enforcement is the prepaid credit balance.
 
-// Action keys we still COUNT for analytics (feature-mix / adoption), even though
-// enforcement moved to a weekly token budget. The per-action counts are no longer
-// caps — `weeklyTokenLimit` (below) is the enforced limit.
+// Action keys we COUNT for analytics (feature-mix / adoption). Not caps —
+// enforcement is the per-user credit balance.
 const METERED_ACTIONS = ['chat', 'scan', 'generation', 'manualParse', 'aiHelper'];
 
-// `weeklyTokenLimit` is the enforced cap per tier: total Claude tokens (input +
-// output + cache read + cache write) a user (free, per-user) or household (paid,
-// pooled) may consume per weekly window. `null` = unlimited. `quotas` are retained
-// only so the admin analytics keep the per-action breakdown; they no longer cap.
-//
-// `weeklyCallSecondsLimit` is a SEPARATE enforced cap for assistant phone calls,
-// measured in seconds of connected call time per weekly window (same scope model:
-// per-user on free, pooled on paid). Phone calls are billed by Vapi per-minute
-// (STT + TTS + telephony dominate; the LLM tokens are a rounding error), so they
-// draw down this seconds budget rather than the token budget. `null` = unlimited.
-function tier(label, price, quotas, weeklyTokenLimit, weeklyCallSecondsLimit) {
-  return { label, price, quotas, weeklyTokenLimit, weeklyCallSecondsLimit };
+// Feature-calendar add-on keys (calendar ids). Order = display order: the paid
+// store products first, then the free opt-in calendars (price 0 in the catalog).
+const ADDON_KEYS = ['recipes', 'maintenance', 'trips', 'birthdays', 'chores'];
+
+// Add-on labels that were renamed after some config docs were already saved.
+// A stored doc still holding a retired label is upgraded to the current default
+// on load. Scoped to the exact old string, so an admin-customized label (which
+// wouldn't match) is left untouched. `birthdays` shipped as "Birthdays" before
+// the calendar was broadened and renamed "Occasions".
+const RETIRED_ADDON_LABELS = { birthdays: ['Birthdays'] };
+
+// Normalize a stored `addons.items` map against DEFAULTS, in place: backfill
+// catalog items added after the doc was created, force-sync a now-free add-on's
+// price (a stale paid price would block /billing/addons/claim, which validates
+// price === 0), and upgrade a retired label to its current name. Returns true if
+// anything changed. Pure over a plain object (no mongoose) so it's unit-testable.
+function normalizeAddonItems(items) {
+  let changed = false;
+  for (const key of ADDON_KEYS) {
+    const def = DEFAULTS.addons.items[key];
+    const cur = items[key];
+    if (!cur || (def.price === 0 && cur.price !== 0)) {
+      items[key] = { ...def };
+      changed = true;
+      continue;
+    }
+    // Upgrade a stored label that still holds a since-renamed default (e.g.
+    // "Birthdays" → "Occasions"); an admin-customized label won't match the
+    // retired string, so it's preserved.
+    if ((RETIRED_ADDON_LABELS[key] || []).includes(cur.label) && cur.label !== def.label) {
+      cur.label = def.label;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
-// Prices are USD. The App Store base prices are CAD 5.99/12.99, which Apple
-// maps to 3.99/9.99 on the US storefront; this field is only a fallback
-// display (the paywall shows StoreKit's localized price whenever packages
-// load). Weekly token limits are seeded from today's per-action quotas ×
-// typical tokens per action; tune against real usage once token metering has
-// run for a week.
 const DEFAULTS = {
-  // weeklyCallSecondsLimit is the 5th tier() arg. At Vapi's measured ~$0.082/min
-  // (~$0.00137/sec) these seed to roughly: free 2 min (~$0.16/wk), premium 15 min
-  // (~$1.23/wk), unlimited 60 min (~$4.90/wk). Tune in the admin config against
-  // real margins — these are starting points, not fixed policy.
-  tiers: {
-    free:      tier('Free',       0,     { chat: 15,  scan: 15,  generation: 5,    manualParse: 1,  aiHelper: null }, 150000,  120),
-    premium:   tier('Premium',    3.99,  { chat: 200, scan: 200, generation: 60,   manualParse: 10, aiHelper: null }, 2000000, 900),
-    unlimited: tier('Unlimited',  9.99,  { chat: 600, scan: 600, generation: null, manualParse: 30, aiHelper: null }, null,    3600),
+  // Prepaid AI-credit economy. 1 credit = $0.01 of RETAIL value; balances are
+  // stored in integer millicredits (1 credit = 1000 Mc). Usage debits at
+  // raw cost × `margin` (2.0 = 100% margin):
+  //   tokens: ceil(tokens × ratePer1M/1e6 × margin × 100 × 1000) Mc
+  //   calls:  ceil(seconds × callRatePerMinute/60 × margin × 100 × 1000) Mc
+  // `tokenRatesPer1M` are blended RAW $ per 1M tokens (input+output+cache),
+  // matched by substring on the model id ('haiku'/'sonnet'), else `default`.
+  // Deliberately rough — tune the rates against real spend, not the formula.
+  credits: {
+    margin: 2.0,
+    tokenRatesPer1M: { default: 6, haiku: 3, sonnet: 10 },
+    // Raw Vapi cost per connected minute (STT + TTS + telephony; measured ~$0.082).
+    callRatePerMinute: 0.10,
+    // One-time grant per new user (in credits), so the AI can be tried before
+    // the first pack purchase. Idempotent via the CreditLedger.
+    starterCredits: 100,
+    // Balance (in credits) at/below which clients show the low-balance state.
+    lowBalanceThreshold: 25,
+    // Consumable credit packs. Keys are the store product ids; `price` is a USD
+    // display FALLBACK (the store's localized price is authoritative);
+    // `credits` is what the webhook grants. Bigger packs carry a volume bonus.
+    packs: {
+      credits_499:  { label: 'Starter',    price: 4.99,  credits: 500 },
+      credits_999:  { label: 'Plus',       price: 9.99,  credits: 1050 },
+      credits_1999: { label: 'Best value', price: 19.99, credits: 2200 },
+    },
   },
-  // $ per call — projection inputs only; not used for billing.
+  // The $4.99 one-time PER-USER app unlock (non-consumable IAP, RevenueCat
+  // entitlement `app_unlock`). `price` is a USD display fallback.
+  unlock: { price: 4.99, productId: 'app_unlock_499' },
+  // $ per call — reference numbers for the admin page; not used for billing.
   costs: {
     sonnetChat:  0.03,
     haikuChat:   0.01,
@@ -58,29 +94,28 @@ const DEFAULTS = {
     freeChat: 'claude-haiku-4-5-20251001',
     paidChat: 'claude-sonnet-4-6',
   },
-  // Calls per household per month, used by the projection.
-  activity: {
-    heavyMonths: 2,
-    heavy: {
-      free:      { chat: 15,  scan: 15,  generation: 5,  manualParse: 1 },
-      premium:   { chat: 60,  scan: 80,  generation: 30, manualParse: 5 },
-      unlimited: { chat: 150, scan: 200, generation: 60, manualParse: 15 },
+  // Feature-calendar add-ons acquired on the mobile "Add-ons" screen, keyed by
+  // calendar ids (they match Household.addons and the mobile CALENDARS
+  // registry). Price > 0 = one-time store purchase (paid prices are USD display
+  // FALLBACKS only — the store's localized price is authoritative, same
+  // doctrine as the packs). Price 0 = included free but OPT-IN: never sold
+  // through the store; a member claims it via POST /billing/addons/claim.
+  addons: {
+    items: {
+      recipes:     { label: 'Meals',       price: 2.99, description: 'Meal planner, recipes and the grocery schedule on your calendar' },
+      maintenance: { label: 'Maintenance', price: 2.99, description: 'Home and vehicle maintenance tasks on your calendar' },
+      trips:       { label: 'Trips',       price: 2.99, description: 'Trip planning with legs, expenses and calendar overlays' },
+      birthdays:   { label: 'Occasions',   price: 0,    description: 'Birthdays, anniversaries, and other dates from your people — on the calendar every year, with e-cards' },
+      chores:      { label: 'Chores',      price: 0,    description: 'Recurring household chores the family shares' },
     },
-    steady: {
-      free:      { chat: 5,  scan: 2,  generation: 2,  manualParse: 0 },
-      premium:   { chat: 20, scan: 15, generation: 10, manualParse: 1 },
-      unlimited: { chat: 50, scan: 30, generation: 20, manualParse: 2 },
-    },
+    bundle: { label: 'All add-ons', price: 7.99, description: 'Every paid feature calendar in one purchase' },
   },
-  // Payment-processor fee assumption, used only by the projection on the config
-  // page (the mobile app will handle real payments later).
-  fees: { pct: 2.9, flat: 0.30 },
   guards: { mapsPerDay: 500 },
   // Admin-account policy. `unlimitedAi: true` exempts users with role 'admin'
-  // from the weekly AI token / call-time budgets (internal team + testing);
-  // usage is still tracked either way. Flip to false in the admin app to meter
-  // admins exactly like everyone else. Read by the usageMeter middleware and the
-  // billing-status gauge.
+  // from the credit-balance pre-checks (internal team + testing); usage is
+  // still tracked and debited either way. Flip to false in the admin app to
+  // meter admins exactly like everyone else. Read by the usageMeter middleware
+  // and the billing-status payload.
   admin: { unlimitedAi: true },
 };
 
@@ -88,63 +123,59 @@ const monetizationConfigSchema = new mongoose.Schema(
   {
     // Marker so we can upsert the one-and-only document.
     singleton: { type: String, default: 'config', unique: true, index: true },
-    tiers:    { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.tiers },
+    credits:  { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.credits },
+    unlock:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.unlock },
     costs:    { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.costs },
     models:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.models },
-    activity: { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.activity },
-    fees:     { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.fees },
+    addons:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.addons },
     guards:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.guards },
     admin:    { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.admin },
   },
   { timestamps: true, minimize: false }
 );
 
-// Fetch the singleton, creating it from defaults on first access. Normalizes
-// docs created before the Stripe integration was removed: legacy `stripe`
-// {feePct,feeFlat} → `fees` {pct,flat}, and drops any leftover `stripePriceId`.
+// Fetch the singleton, creating it from defaults on first access. Backfills
+// sections added after a doc was created and strips retired ones (the
+// subscription-era `tiers`/`activity`/`fees`).
 monetizationConfigSchema.statics.getSingleton = async function getSingleton() {
   let doc = await this.findOne({ singleton: 'config' });
   if (!doc) doc = await this.create({ singleton: 'config' });
 
   let dirty = false;
-  if (!doc.fees && doc.get('stripe')) {
-    const legacy = doc.get('stripe');
-    doc.fees = { pct: legacy.feePct ?? 2.9, flat: legacy.feeFlat ?? 0.30 };
-    doc.set('stripe', undefined, { strict: false });
-    doc.markModified('fees');
-    dirty = true;
-  } else if (!doc.fees) {
-    doc.fees = { ...DEFAULTS.fees };
-    doc.markModified('fees');
+  // Backfill the credit economy + unlock product for docs predating prepaid
+  // credits (the subscription era).
+  if (!doc.credits) {
+    doc.credits = JSON.parse(JSON.stringify(DEFAULTS.credits));
+    doc.markModified('credits');
     dirty = true;
   }
-  // Backfill the admin-policy section for configs created before it existed.
+  if (!doc.unlock) {
+    doc.unlock = { ...DEFAULTS.unlock };
+    doc.markModified('unlock');
+    dirty = true;
+  }
   if (!doc.admin) {
     doc.admin = { ...DEFAULTS.admin };
     doc.markModified('admin');
     dirty = true;
   }
-  if (doc.tiers) {
-    for (const key of Object.keys(doc.tiers)) {
-      if (doc.tiers[key] && 'stripePriceId' in doc.tiers[key]) {
-        delete doc.tiers[key].stripePriceId;
-        doc.markModified('tiers');
-        dirty = true;
-      }
-      // Backfill the weekly token limit for configs created before token
-      // metering. `null` is a valid value (unlimited), so only fill when absent.
-      if (doc.tiers[key] && !('weeklyTokenLimit' in doc.tiers[key])) {
-        doc.tiers[key].weeklyTokenLimit = DEFAULTS.tiers[key]?.weeklyTokenLimit ?? null;
-        doc.markModified('tiers');
-        dirty = true;
-      }
-      // Backfill the weekly call-seconds limit for configs created before call
-      // metering. `null` (unlimited) is valid, so only fill when the key is absent.
-      if (doc.tiers[key] && !('weeklyCallSecondsLimit' in doc.tiers[key])) {
-        doc.tiers[key].weeklyCallSecondsLimit = DEFAULTS.tiers[key]?.weeklyCallSecondsLimit ?? null;
-        doc.markModified('tiers');
-        dirty = true;
-      }
+  if (!doc.addons) {
+    doc.addons = JSON.parse(JSON.stringify(DEFAULTS.addons));
+    doc.markModified('addons');
+    dirty = true;
+  } else {
+    if (!doc.addons.items) doc.addons.items = {};
+    if (normalizeAddonItems(doc.addons.items)) {
+      doc.markModified('addons');
+      dirty = true;
+    }
+  }
+  // Strip retired subscription-era sections so the doc matches the schema the
+  // admin app round-trips.
+  for (const legacy of ['tiers', 'activity', 'fees', 'stripe']) {
+    if (doc.get(legacy) !== undefined) {
+      doc.set(legacy, undefined, { strict: false });
+      dirty = true;
     }
   }
   if (dirty) await doc.save();
@@ -155,6 +186,8 @@ monetizationConfigSchema.statics.getSingleton = async function getSingleton() {
 const MonetizationConfig = mongoose.model('MonetizationConfig', monetizationConfigSchema);
 MonetizationConfig.DEFAULTS = DEFAULTS;
 MonetizationConfig.METERED_ACTIONS = METERED_ACTIONS;
-MonetizationConfig.TIERS = ['free', 'premium', 'unlimited'];
+MonetizationConfig.ADDON_KEYS = ADDON_KEYS;
+MonetizationConfig.RETIRED_ADDON_LABELS = RETIRED_ADDON_LABELS;
+MonetizationConfig.normalizeAddonItems = normalizeAddonItems;
 
 module.exports = MonetizationConfig;

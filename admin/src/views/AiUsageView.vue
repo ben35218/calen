@@ -9,8 +9,8 @@
       <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="load">Refresh</v-btn>
     </div>
     <p class="text-caption text-medium-emphasis mb-4" v-if="resetAt">
-      Current week resets {{ new Date(resetAt).toLocaleString() }}. Token counts are per user on every plan;
-      the enforced budget is per user on free, pooled per household on paid.
+      Current analytics week resets {{ new Date(resetAt).toLocaleString() }}. Token counts are per
+      user; enforcement is each user's prepaid credit balance.
     </p>
 
     <v-row dense class="mb-4">
@@ -65,7 +65,8 @@
       <v-card-text>
         <v-text-field
           v-model="search" placeholder="Filter by email, name, or household" prepend-inner-icon="mdi-magnify"
-          density="comfortable" variant="outlined" hide-details clearable class="mb-3" style="max-width: 420px" />
+          density="comfortable" variant="outlined" hide-details clearable class="mb-3" style="max-width: 420px"
+          @update:model-value="syncQuery" />
 
         <div v-if="loading" class="text-center py-8"><v-progress-circular indeterminate color="primary" /></div>
         <v-table v-else density="comfortable">
@@ -73,47 +74,30 @@
             <tr>
               <th>User</th>
               <th>Household</th>
-              <th>Plan</th>
+              <th class="text-right">Credits</th>
               <th class="text-right">Tokens (week)</th>
               <th>Trend ({{ weeks }}w)</th>
-              <th style="min-width: 140px">Budget used</th>
               <th style="min-width: 130px">Call time (week)</th>
               <th class="text-right">Blocked</th>
               <th>Flags</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="u in filtered" :key="u._id" :class="{ 'bg-red-lighten-5': u.flags.length }">
+            <tr v-for="u in filtered" :key="u._id" :class="{ 'flagged-row': u.flags.length }">
               <td>
-                <div class="font-weight-medium">{{ u.email }}</div>
+                <router-link :to="{ path: '/billing', query: { q: u.email } }" class="cross-link font-weight-medium"
+                  title="Open in Billing">
+                  {{ u.email }}
+                </router-link>
                 <div class="text-caption text-medium-emphasis">{{ u.name || '—' }}</div>
               </td>
               <td>{{ u.householdName || '—' }}</td>
-              <td><v-chip size="small" variant="tonal" :color="u.plan === 'free' ? 'default' : 'primary'">{{ u.plan }}</v-chip></td>
+              <td class="text-right" :class="u.creditBalance < 0 ? 'text-error font-weight-bold' : 'font-weight-medium'">
+                {{ u.creditBalance?.toLocaleString?.() ?? '—' }}
+              </td>
               <td class="text-right font-weight-medium">{{ fmt(u.tokens) }}</td>
               <td><Sparkline :values="u.series" /></td>
-              <td>
-                <template v-if="u.limit != null">
-                  <v-progress-linear
-                    :model-value="Math.min(100, u.pctOfLimit)" height="6" rounded
-                    :color="u.pctOfLimit >= 100 ? 'error' : u.pctOfLimit >= 75 ? 'warning' : 'primary'" />
-                  <span class="text-caption text-medium-emphasis">
-                    {{ u.pctOfLimit }}% of {{ fmt(u.limit) }}<span v-if="u.scope === 'household'"> (pooled)</span>
-                  </span>
-                </template>
-                <span v-else class="text-caption text-medium-emphasis">unlimited</span>
-              </td>
-              <td>
-                <template v-if="u.callSecondsLimit != null">
-                  <v-progress-linear
-                    :model-value="Math.min(100, u.callPctOfLimit)" height="6" rounded
-                    :color="u.callPctOfLimit >= 100 ? 'error' : u.callPctOfLimit >= 75 ? 'warning' : 'primary'" />
-                  <span class="text-caption text-medium-emphasis">
-                    {{ mins(u.callSecondsUsed) }} / {{ mins(u.callSecondsLimit) }}<span v-if="u.scope === 'household'"> (pooled)</span>
-                  </span>
-                </template>
-                <span v-else class="text-caption text-medium-emphasis">{{ mins(u.callSecondsUsed) }} · unlimited</span>
-              </td>
+              <td class="text-caption text-medium-emphasis">{{ mins(u.callSeconds) }}</td>
               <td class="text-right" :class="{ 'text-warning font-weight-bold': u.blocked > 0 }">
                 {{ u.blocked || '—' }}
               </td>
@@ -124,7 +108,9 @@
               </td>
             </tr>
             <tr v-if="!filtered.length">
-              <td colspan="9" class="text-medium-emphasis py-4">No users match.</td>
+              <td colspan="8" class="text-medium-emphasis py-4">
+                No users match{{ search ? ' — try clearing the filter' : '' }}.
+              </td>
             </tr>
           </tbody>
         </v-table>
@@ -137,16 +123,26 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { analyticsApi } from '../services/api';
 import { useSnackbar } from '../composables/useSnackbar';
 import Sparkline from '../components/Sparkline.vue';
 import SnackbarHost from '../components/SnackbarHost.vue';
 
+const route = useRoute();
+const router = useRouter();
 const { snack, fromError } = useSnackbar();
 
 const loading = ref(true);
-const weeks = ref(8);
-const search = ref('');
+const weeks = ref([4, 8, 12, 26].includes(Number(route.query.weeks)) ? Number(route.query.weeks) : 8);
+const search = ref(typeof route.query.q === 'string' ? route.query.q : '');
+
+function syncQuery() {
+  const query = { ...route.query };
+  if (search.value) query.q = search.value; else delete query.q;
+  if (weeks.value !== 8) query.weeks = String(weeks.value); else delete query.weeks;
+  router.replace({ query });
+}
 const items = ref([]);
 const fleet = ref({ tokensThisPeriod: 0, callSecondsThisPeriod: 0, blockedThisPeriod: 0, flaggedUsers: 0 });
 const resetAt = ref(null);
@@ -164,7 +160,6 @@ const filtered = computed(() => {
 const flagged = computed(() => items.value.filter((u) => u.flags.length));
 
 const FLAGS = {
-  overLimit: { label: 'over budget', color: 'error' },
   hammering: { label: 'hammering', color: 'error' },
   spike: { label: 'usage spike', color: 'warning' },
 };
@@ -189,6 +184,7 @@ function mins(seconds) {
 
 async function load() {
   loading.value = true;
+  syncQuery();
   try {
     const { data } = await analyticsApi.tokens(weeks.value);
     items.value = data.items;
@@ -203,3 +199,12 @@ async function load() {
 
 onMounted(load);
 </script>
+
+<style scoped>
+/* Theme-aware flag tint (the old bg-red-lighten-5 was unreadable in dark mode). */
+.flagged-row {
+  background: rgba(var(--v-theme-error), 0.08);
+}
+.cross-link { color: inherit; text-decoration: none; }
+.cross-link:hover { text-decoration: underline; }
+</style>

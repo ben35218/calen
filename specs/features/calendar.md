@@ -1,14 +1,19 @@
 ---
 title: Calendar & events
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65+ (2026-07-29); Starts/Ends picker commits on dismiss (tap-away accepts) + start-time change past the end drags the end to preserve duration, and the symmetric reverse — editing the end (time or date) before the start drags the start back to preserve duration, via shared lib/datetime.startKeepingDuration reused by every Starts/Ends form (2026-07-28, reverse 2026-07-29); event detail view renders both alerts grouped in one divided card, with the Delete Event pill floating over the location map (2026-07-28); Birthdays→Occasions calendar (labeled contact dates as annual occasions), calendar-level occasion alerts, scheduled e-cards (2026-07-28); per-contact occasion exclusion (`occasionsHidden`) + occasion rows open PersonForm scrolled to Dates (2026-07-28); e-card recipients scoped to the occasion's contact + linked contacts, with inline add-email + per-recipient address picker for multi-email contacts (2026-07-28); scheduled-card indicator on the occasion row + edit/cancel + live email preview (2026-07-28); occasions render as kind icons (not chips) on the month grid and tap through to the Occasions screen from calendar/day/agenda surfaces (2026-07-28); a tapped occasion scrolls to the top of the Occasions list and is highlighted (`focus` param) (2026-07-28); e-card hour picker opens scrolled to noon (2026-07-28); e-card style gallery — 3 designs per occasion kind, greeting-card email with CSS-motion progressive enhancement, in-form style picker + animated live preview (2026-07-28); e-card personalization — fully editable card lines (greeting/sign-off/signature overrides), email-safe font menu, up to 3 inline CID photos (2026-07-28); default greeting + subject address recipients by first name only (2026-07-28); travel-time origin is an editable "starting address" (home-seeded, not labelled as home) with Current-location + Home one-tap shortcuts via shared `lib/currentLocation.ts` (2026-07-28); the two event alert slots must be distinct — each picker excludes the other slot's value (`excludeUsedAlert`) so the same lead time can't be set twice (2026-07-28); event attachments always seal on-device before upload (removed the plaintext fallback) and the server accepts iOS's relabeled opaque-binary content-types so the encrypted `.bin` ciphertext isn't dropped as "No file uploaded"; the event view previews attachments in-app via a WebView (images + PDFs render inline on the AttachmentPreview screen, Share button in the header) — WebView is used instead of RN's <Image>, which hard-crashes on the new architecture in both an RN <Modal> and a plain native-stack screen; expo-sharing alone (the interim fix) only gave the share sheet, not a direct preview (2026-07-29); the End Repeat (`until`) date loads back as the local Y-M-D via `ymd(new Date(until))` instead of slicing the ISO's UTC date, fixing a one-day-forward drift on every edit in behind-UTC timezones (2026-07-29); new events default travel time **on** with the origin seeded from the household home address when one is set (off when there's no home address); editing an existing event leaves its saved travel-time setting untouched; the home address is decrypted client-side from the E2EE-sealed settings blob via shared `lib/homeAddress.ts` (the raw column is ciphertext, so the default + "Home" origin shortcut now resolve) and the Travel Time row shows "On" while enabled but not yet computed instead of "None" (2026-07-29); the Occasions empty-state CTA now reads "Add dates in Contacts" (was "…in People") to match the app-wide Contacts naming (copy-only) (2026-07-29); the Add-ons storefront row's subtitle names the full add-on catalog in store order with **no price** (every add-on, owned or not; the store screen does the selling) — spec + CalendarsScreen tests aligned to the shipped component, which dropped the earlier per-locked price line (2026-07-29)
 code:
   - mobile/src/screens/calendar/
   - mobile/src/lib/calendar.ts
   - mobile/src/lib/calendarData.ts
   - mobile/src/lib/eventRepeat.ts
+  - mobile/src/lib/occasions.ts            # occasion kind → title/icon/noun
   - server/src/models/CalendarEvent.js
   - server/src/models/CustomCalendar.js
+  - server/src/models/ECard.js             # scheduled occasion e-cards (plaintext exception)
+  - server/src/routes/ecards.js            # e-card CRUD
+  - server/src/services/ecardTemplates.js  # e-card style gallery + card HTML renderer
+  - mobile/src/lib/ecardTemplates.ts       # mirrored gallery metadata (picker + preview)
   - server/src/routes/calendars.js        # custom calendars + calendar keys + invitations
   - server/src/routes/records.js          # the store events are actually persisted in
   - server/src/routes/calendarChat.js     # the calendar assistant
@@ -18,7 +23,11 @@ tests:
   - server/src/test/calendarKeys.integration.test.js
   - server/src/test/invitations.integration.test.js
   - shared/calendar/index.test.js
-  - mobile/src/lib/__tests__/{calendarFeeds,calendarPrefs,holidays,recurrence,tz,printCalendar}.test.ts
+  - server/src/test/ecards.integration.test.js
+  - server/src/services/ecardTemplates.test.js
+  - mobile/src/lib/__tests__/{calendarFeeds,calendarPrefs,holidays,homeRegion,weatherSource,recurrence,tz,printCalendar,addons}.test.ts
+  - mobile/src/screens/calendar/__tests__/CalendarsScreen.test.tsx
+  - mobile/src/screens/calendar/dayview/__tests__/dayViewLayout.test.ts
 ---
 
 # Calendar & events
@@ -38,18 +47,64 @@ and printing. It is also the anchor for the calendar AI assistant.
   `appointments`) or a user-defined calendar (`custom-<slug>`). The mobile "Add
   calendar" flow mints `custom-<slug>` ids on-device.
 - An event carries a `title`, optional `description`/`location`/`url`/`phone`, a
-  `startDate`, optional `endDate`, and an `allDay` flag (default true).
+  `startDate`, optional `endDate`, and an `allDay` flag (default true). The
+  business `phone` (which Calen dials for cancel/reschedule) is entered on the
+  location screen via the shared `PhoneField` and stored as canonical E.164.
+- **Starts / Ends editing:** the shared date/time picker (`DateField`/`TimeField`)
+  accepts the value the wheel is currently on when the sheet is **dismissed** —
+  tapping the backdrop (or the Done button) commits it; there is no discard-on-
+  tap-away. Changing the **start time** past the current **end time** drags the
+  end along, preserving the original duration (10–11am → start 2pm becomes
+  2–3pm). This applies to same-day timed events only; if the shifted end crosses
+  midnight the end **date** rolls to the next day. Moving the start **date** past
+  the end date snaps the end date up to match. The **reverse** is symmetric:
+  editing the **end** (time *or* date) to at/before the start drags the **start**
+  back by the same amount so the duration is preserved (8–9am → end 4am becomes
+  3–4am); if the shifted start crosses back over midnight its date rolls to the
+  previous day. Both directions share `lib/datetime.ts`
+  (`startKeepingDuration`), which every Starts/Ends form in the app reuses.
 - **Recurrence** supports `daily` / `weekly` / `monthly` / `yearly` with an
   `interval`, optional `until`, and pattern refinements: weekly `daysOfWeek`,
   monthly `daysOfMonth` or `weekOfMonth`+`weekdayKind` ("on the last Friday"),
   and yearly `months`. Occurrence expansion is done by the shared engine
-  (`shared/calendar/`), so mobile and any other consumer agree.
+  (`shared/calendar/`), so mobile and any other consumer agree. The **End Repeat**
+  date (`until`) is the last *local* day the event repeats: it is stored as the
+  end of that day in the user's timezone (`…T23:59:59` local → the UTC instant),
+  so the last occurrence is included. Because that instant can fall on the next
+  UTC calendar date, the edit form must recover the **local** Y-M-D when it loads
+  `until` (via `ymd(new Date(until))`), not slice the ISO string's UTC date —
+  slicing drifts the shown End Repeat one day forward on every edit.
 - **Reminders/alerts:** up to two alerts per event (`reminderMinutes`/`At`,
   `alert2Minutes`/`At`), delivered as on-device local notifications. In a shared
   household, `alertAudience` targets `everyone` or just the `owner` (creator).
-  See [notifications.md](notifications.md).
+  See [notifications.md](notifications.md). The event detail view renders **both**
+  alerts when set — an "Alert" row plus a "Second alert" row (the latter only when
+  `alert2Minutes` is set) **grouped in one hairline-divided card** (Apple
+  Calendar-style), matching the form's Alert / Second Alert fields. The two
+  alerts must be **distinct**: each picker excludes the value already chosen in the
+  other slot (`excludeUsedAlert`), so the same lead time can't be set twice (which
+  would fire two identical notifications). The "None" and "Custom…" rows are never
+  filtered out.
 - **Travel time** (`travelMinutes`, `travelDistanceKm`) may be attached so an
-  event's reminder accounts for getting there.
+  event's reminder accounts for getting there. On a **new** event, travel time
+  defaults **on** with the origin seeded from the household **home address** when
+  one is set; with no home address it defaults **off**. The home address is
+  E2EE-sealed, so it is decrypted client-side (`lib/homeAddress.ts`, shared with
+  the same "Home" origin shortcut) — the raw settings column holds ciphertext.
+  Editing an existing event keeps that event's saved travel-time setting
+  untouched. On the event form the Travel Time row reads the drive time (with
+  "Leave by…") once computed; **"On"** while enabled but not yet computed (e.g. a
+  new event before its location is set); **"None"** when off. The Travel Time
+  sub-screen sets a **starting location** (origin) that the drive time is computed
+  from. The origin field seeds from the household **home address** on first load,
+  but is a plain
+  editable address (generic "Starting address" placeholder — never labelled as
+  the home field). Two one-tap shortcuts sit under it while a manual duration is
+  **not** set (a manual duration ignores the origin): **Current location** — the
+  opt-in device-GPS reverse-geocode path shared with the Account home-address
+  field (`lib/currentLocation.ts`; same denied/unavailable/not-found fallbacks) —
+  and **Home** (shown only when a home address exists and differs from the current
+  origin).
 - **Cancellation via AI call:** when Calen's cancellation call gets a business to
   confirm, the user resolves the outcome **from the event view itself** — the
   event stays on the calendar (faded/struck) until they **delete** it. The event
@@ -67,6 +122,25 @@ and printing. It is also the anchor for the calendar AI assistant.
   (one shared `acknowledged` flag) — returning the event to a normal appearance.
   A **hand-set** `cancelled` flag (from the "couldn't confirm → mark cancelled"
   path) persists until the event is deleted.
+- **Detail-screen close (Apple-style).** When the event has a location whose map
+  imagery loads, the location map (static map + street-view thumbnail) is the
+  **last element on the page** and the **"Delete Event"** control is a translucent
+  pill **floating over the map**. With no location — or if the map tiles fail to
+  load — it falls back to a plain full-width danger button.
+- **Attachments** (photos / PDFs, `EventAttachment`, ≤25 MB). Files are **always
+  sealed on-device before upload** — a fresh per-file key, ciphertext uploaded as
+  an opaque part, no plaintext lane (see [Encryption boundary](#encryption-boundary)
+  + crypto-e2ee.md). Because iOS relabels a `.bin` ciphertext part's content-type
+  (e.g. `application/macbinary`), the server accepts the whole opaque-binary family,
+  not just `application/octet-stream` (the real type rides in the body's
+  `fileType`). Picks staged on a **new** event upload after the save creates it;
+  a failed upload is surfaced (which files, not silently dropped). On the **event
+  view**, tapping an attachment card downloads + decrypts it on-device and then
+  **previews it in-app**: images and PDFs render inline in a WebView
+  (`AttachmentPreview` screen — a WebView, not RN's `<Image>`, which crashes on the
+  new architecture), with a **Share** button in the header that hands the file to
+  the OS sheet (Open in… / Save to Files). Any non-previewable type skips straight
+  to the OS share sheet.
 
 ### Views (month display density)
 
@@ -109,6 +183,84 @@ shared floating chrome (avatar, switcher/search/add, Today, Calendars/
 Invitations/Assistant) never moves. The single **Today** button re-centres
 whichever layer is active.
 
+### Day view (tap a day)
+
+Tapping a month-grid day opens the **day view** (`CalendarDay` route — the
+param only seeds the surface; all browsing after that is in-place state, not
+navigation). It mirrors Apple Calendar's day surface: **three modes** behind
+the day view's own switcher (the same anchored-dropdown convention as the
+month switcher — button glyph reflects the active mode, checkmark on the
+active row, **List** isolated below a divider). The choice is persisted
+device-local (`hc_day_view_mode`, `lib/calendarPrefs` → `useDayViewMode`);
+default **Single Day**.
+
+**Shared chrome.** The native header is off; the view draws its own floating
+pills over whichever mode is active: top-left a **back pill** labelled with
+the anchor's month ("‹ July") returning to the month view; top-right the
+switcher/search/add pill; bottom-left **Today** (re-anchors to today and
+re-centres the active mode); bottom-right month-jump (calendar glyph →
+month view) + the Invitations inbox button. The native back-swipe stays
+disabled: horizontal swipes page between days.
+
+- **Single Day / Multi Day (the timeline modes)** are one hour-grid surface
+  differing only in visible-day count (Multi Day is **fixed at two columns**):
+  - A **week strip** (weekday letters + paging date numbers) sits above the
+    grid. Today is marked in the **app primary colour** (never Apple's red):
+    a primary-tinted number, becoming a **filled primary circle** when it's
+    the anchor; a non-today anchor gets a **white circle**; in Multi Day a
+    **grey pill spans the visible pair** (clipped at Saturday — the spillover
+    Sunday shows on the next page). Tapping a number re-anchors in place;
+    paging the strip keeps the weekday and moves the week; day-swipes that
+    cross a week edge page the strip to follow.
+  - The **hour grid** is a fixed 24h canvas (1 px/min), gutter labels
+    `12 AM … Noon … 11 PM`. Timed events render as blocks — translucent
+    calendar-colour fill, solid colour bar on the left edge, title in the
+    calendar colour — **clipped to each day column** (a midnight-spanning
+    event yields one clipped segment per column). Overlapping blocks
+    **lane-pack** (first-fit within each overlap cluster, equal widths). A
+    *timed* event covering the entire day demotes to the all-day lane.
+  - The **all-day lane** (hidden when every visible day is empty) holds
+    all-day events, trips, holidays, birthdays, meals, the grocery marker —
+    and **date-only tasks/chores as muted empty-circle chips**: they have no
+    time of day, so the view never invents a slot for them. Capped at three
+    rows per day with "+N more" expanding.
+  - The **now indicator** renders only when today is visible, in the app
+    primary colour: a line with a dot across today's column (dimmer across
+    the rest of the row), plus a time badge in the gutter, ticking on the
+    minute in an isolated leaf.
+  - The **hourly weather rail**: while the Weather calendar is toggled
+    visible (the same gate as the month grid's forecast strip), each day
+    column weaves the passive forecast's hourly entries into the time
+    canvas — a slim ambient rail down the column's right edge, one condition
+    icon + temperature per forecast hour, centred in its hour band.
+    Non-interactive and rendered **under** the event blocks (weather is
+    context; events own the canvas). Days outside the forecast simply have
+    no rail.
+  - **Swiping** pages by the visible day count (±1 single, ±2 multi) with the
+    directional slide; the vertical scroll offset survives day swipes *and*
+    the single↔multi switch (one mounted grid). The initial position is the
+    now-line for today, just above the first event otherwise, 8 AM when empty.
+- **List** — a continuous agenda of **days with items only**: sticky day
+  headers ("Monday – Jul 27", today's in the app primary colour) with a
+  passive-weather glance (condition icon + high/low) when the Weather
+  calendar is visible and the forecast covers the day; timed events as rows (colour bar, title, location line, stacked
+  start/end times on the right); all-day items marked "all-day"; date-only
+  tasks/chores as **muted empty-circle rows**. The window **starts at the
+  anchor's day** — the anchor is the top of the list, never a scroll target
+  into unrendered sections (SectionList can't reliably `scrollToLocation`
+  that far), so a new anchor (day swipe, week-strip tap, **Today**) restarts
+  the window at that day. Scrolling to the end extends the window forward;
+  earlier days load behind an explicit **"Load earlier"** control (RN's
+  SectionList can't prepend smoothly under sticky headers). Leaving List
+  keeps the anchor.
+
+Resolved-call dimming (see *Resolved events are dimmed on every calendar
+surface*) applies in all three modes. The former day-view **weather card**
+(conditions hero + horizontal hourly strip) was removed with this surface —
+its hourly forecast now lives *in* the timeline as the weather rail, and the
+List headers carry the daily glance; the Weather screen owns the full
+forecast. All of it follows the Weather calendar's visibility toggle.
+
 ### Custom calendars
 
 - A household may create custom calendars (colour + name); these are managed
@@ -116,6 +268,94 @@ whichever layer is active.
   Calendars / Add-Calendar / Calendar-Colors screens.
 - Custom calendars can be **subscribed** (external ICS feeds) and **holiday**
   calendars added; see the Subscribe/Holiday screens.
+- **Holiday calendars know where home is.** Provincial/state holidays are
+  opt-in by subdivision (`selectedRegions`), and the home subdivision is
+  preselected automatically wherever it can be derived (`lib/homeRegion.ts`:
+  the saved home address — decrypted client-side for E2EE households — through
+  the keyless geocoders' `regionForAddress`, matched against the country's
+  `REGIONS` names):
+  - **First run:** a fresh install auto-seeds the device-locale country's
+    holiday calendar (the long-standing `pendingLocalHolidayCals` seed in
+    `calendarPrefs`, uploaded server-backed by `refreshCustomCalendars`; deduped
+    by country against the server list). New since 2026-07: right after that
+    seed uploads, the home province/state is preselected on it when the saved
+    address makes it derivable — only on the calendar the seed itself minted,
+    never on one that came from the server or real legacy data.
+  - **Creating one** (Add Calendar → holiday country) seeds `selectedRegions`
+    with the detected home region when the picked country matches.
+  - **Saving a home address** (Account) auto-selects the detected region on the
+    user's own holiday calendars of that country — but only those with **no
+    regional picks yet**; an explicit choice is never overridden
+    (`autoSelectHolidayRegion`).
+
+### Calendars view (the manager)
+
+- Calendars group by **audience**, ordered **HOUSEHOLD** (built-ins +
+  household-wide customs — the dominant group leads) → **JUST ME** →
+  **SHARED**; empty groups are hidden. Every row in SHARED MUST state its
+  direction in the subtitle — "Shared by you · N person/people" (member +
+  outside shares counted) or "Shared with you" — joined after the kind
+  ("Holidays"/"Subscription") when both apply; household-wide calendars carry
+  no direction (their group says it).
+- **Single-member household:** the Just me / Household split carries no
+  information, so unshared custom calendars display under HOUSEHOLD and the
+  JUST ME group is absent. The underlying sharing state stays unshared — when
+  a second member joins, those calendars move to a now-meaningful JUST ME
+  group rather than being silently exposed. While the member count is still
+  unknown (first load), the split is kept (the safe reading).
+- Rows are **single-purpose**: tapping a row toggles that calendar's
+  visibility (Apple-Calendar semantics; the row is `accessibilityRole:
+  "switch"` with checked state, and a hidden calendar dims its accent bar and
+  name). Tapping a row MUST NOT navigate. The toggle's visual flip on the
+  manager screen commits urgently; other mounted consumers of the visibility
+  store (e.g. the month grid beneath the modal) re-render in a non-urgent
+  transition so their cost never delays the tap feedback.
+- Navigation lives in the explicit trailing controls: **every row carries an
+  edit (info) button** opening the Edit Calendar form — the one consistent
+  path to name/colour/alerts/sharing/delete. Rows with a content view
+  additionally show an accent-tinted **"Open" pill** before the edit button:
+  feature-backed calendars (Maintenance, Chores, Meals, Trips, Birthdays,
+  Weather) open their home screen; holiday calendars open their holidays
+  editor (which days show). Feature home and holidays-editor screens carry
+  **no header edit pencil** — the row's edit button is the single edit path.
+- The primary **add action is the header `+`** (app convention), opening the
+  Add Calendar chooser (new / subscribe / holiday / restore deleted).
+  Secondary actions — Calendar colours & order, Print — are one grouped
+  "manage" card at the end of the list. There is no long-press delete;
+  built-ins are deleted from Edit Calendar (restore via Add Calendar).
+
+### Feature-calendar add-ons (locked state)
+
+- Five calendars are add-ons — Meals, Maintenance, Trips (one-time paid) and
+  Occasions, Chores (**included free but opt-in** — claimed from the Add-ons
+  screen, never default-added; the normative purchase/claim spec is
+  [billing-plans.md](billing-plans.md#feature-calendar-add-ons)). Only
+  Activities, Appointments, and Weather ship enabled. In the Calendars view,
+  **locked** add-on calendars (unbought paid and unclaimed free alike) MUST
+  NOT render as rows in the HOUSEHOLD group; they collapse into **one
+  storefront row rendered as the HOUSEHOLD group's closing row** (inside the
+  group, where those calendars would otherwise sit — contextual, never a
+  top-of-screen banner) — storefront icon at full saturation (acquirable, not
+  disabled) and a subtitle naming the **full add-on catalog in store order with
+  no price** (every add-on calendar, owned or not; the store screen does the
+  selling) — which opens the Add-ons store. The HOUSEHOLD group stays visible
+  while any add-on is locked, even if every household calendar row is deleted
+  or locked. Owned/claimed add-on calendars render exactly like other
+  built-ins. The row disappears once everything is owned.
+- `loadCalendarData` MUST exclude locked features' items (tasks, trips,
+  occasions, chores, meal schedules + grocery-shopping markers) at the same
+  chokepoint as custom-calendar access filtering, so the grid, day/agenda/list,
+  search, print, reminder scheduling, and assistant reads all agree. Locked
+  ids also hide from every calendar-list surface: the Print screen's
+  checklist, the **Colours & Order list**, and the Add-Calendar menu's
+  **deleted-calendars restore list** (restoring a locked calendar would
+  restore it into nothing; the storefront row is its affordance until owned).
+- All five add-on feature homes (Kitchen, Maintenance, Trips, Chores,
+  Occasions) gate at render: locked → the `AddonLockedView` interstitial
+  (free add-ons: the "Add for free" variant; see their specs —
+  `OccasionsScreen` is specified here).
+- Locking never deletes anything: device prefs (visibility/colour/order/deleted)
+  and household data are retained, and purchase/claim restores the prior state.
 
 ### Invitees & sharing
 
@@ -127,16 +367,206 @@ whichever layer is active.
 - Accepting a cross-household invitation creates a **copy** event on the
   accepter's calendar with `invitationId` set; on that copy the client's delete
   action becomes **"Leave event"** (which also retires the invitation).
-- A **calendar** (not a single event) can be shared by email as well; calendar
-  invitations are accepted/declined via `/api/calendars/invitations/*`.
+- A **calendar** (not a single event) can be shared with people outside the
+  household by email or phone (`PUT /calendars/:id/sharing`); calendar invitations
+  are accepted/declined via `/api/calendars/invitations/*`. **Outreach is
+  device-composed** — the owner's own Mail/Messages app sends the nudge
+  (`mailto:`/`sms:` via mobile `lib/shareInvite`); the server sends no invite email
+  or text, it only creates the `CalendarInvitation` discovery record. An invited
+  **existing account** additionally gets a push (`notify.pushToUser`, best-effort)
+  and sees the invite in its in-app inbox. Same pattern as
+  [households-sharing](households-sharing.md) and [trips](trips.md).
 
 ### Overlays & output
 
-- The calendar screen can overlay **weather** for the visible range (fetched
-  client-side from the decrypted home location; see `shared/weather`).
-- **Holidays** and **birthdays** (from People) surface as read-only events.
+- **Forecast strip in the month grid.** When the Weather calendar is toggled
+  visible, the grid shows the **7-day forecast as a spanning strip** riding
+  the existing week-bar lane system: a translucent lane (tinted with the
+  Weather calendar's colour) at lane 0 — event/trip bars stack below it — with
+  one segment per forecast day (condition icon + high temp). It spans exactly
+  the forecast days, splitting across week rows like any multi-day bar.
+  Shown in Details and Stacked; hidden in Compact (which hides all spans).
+  Data via `loadPassiveForecast` (source-aware, never prompts; a failed load
+  just means no strip). Tapping the strip opens the Weather screen.
+- **Geocoding chain.** The client geocoder (`shared/weather` `geocode`) tries
+  Nominatim first and falls back to Photon (both keyless + CORS-open, so E2EE
+  households never send the address to our server). The server geocoder
+  (`services/weather.js`, pre-drop households only) prefers the Google
+  Geocoding API when `GOOGLE_PLACES_API_KEY` is set and falls back to
+  Nominatim. Both surface the primary's error message when the whole chain
+  fails.
+- **The Weather screen's location source** is chosen on the screen itself via
+  the single tappable **location chip** above the hero (icon + current-source
+  label + chevron → the three-option picker sheet). One affordance, not two —
+  a header button was tried and removed as redundant. Layout constraint: the
+  screen's header is a transparent native bar whose band swallows taps
+  entry-path-dependently, so the chip MUST sit *below* it (content clears
+  `insets.top + 52`); a control inside the bar band regresses tappability from
+  some entries (e.g. the former day-view weather card). Persisted device-local
+  (`hc_weather_source`, `lib/weatherSource.ts`):
+  - **My location** (the default — first open triggers the iOS location
+    permission ask): a foreground GPS fix, fetched client-direct from
+    open-meteo, so the fix never touches our server. One fix is cached ~60s and
+    shared by the forecast + outlook queries. Failure modes render an
+    actionable card, not a dead screen: permission **denied** → Open Settings +
+    "Use home address"; native module **unavailable** (pre-rebuild dev client,
+    lazy-required) → reinstall note + "Use home address".
+  - **Home**: the household's home address via the existing E2EE-aware path.
+  - **Another location**: tapping the row expands an inline **Google-Places
+    city autocomplete** (`PlacesAutocomplete type="city"` — the same picker as
+    trip destinations). **Selecting a suggestion is the confirmation**: it
+    applies the source and closes the sheet; free text alone is never
+    accepted, so an unrecognized place can't be saved. The chosen place shows
+    as the row's subtitle, and its weather is geocoded client-direct
+    (`geocodePlace`) at fetch time.
+  The chip renders above the loading/error branches so a broken source can
+  always be switched away from.
+- **Rain icons scale with intensity.** The WMO code buckets into
+  light (51/53/56/61/80) / moderate (55/57/63/66/81) / heavy (65/67/82)
+  (`rainIntensity` in `components/WeatherIcon`). All tiers use the SAME
+  classic two-tone composite — a consistent solid **white cloud** with blue
+  Ionicons `rainy` **streaks** below it. Only the streaks vary: the component
+  renders just the glyph's lower streak band (its own blue cloud is never
+  shown, so no blue cloud peeks past the white one) and clips that band's
+  width from the right (55% / 78% / full) so lighter rain reveals fewer of the
+  same streaks — heavy is exactly the original icon. The **cloud is identical
+  across all three tiers**; only the raindrop count changes. Chosen over a
+  custom drop composition (tried and rejected): the tiers must stay
+  stylistically identical to the original glyph.
+- **Rain quantity is shown wherever weather is.** Amounts format via
+  `formatMm` (one decimal under 1 mm, whole numbers above, hidden under
+  0.1 mm): the Weather hero's meta line adds "Rain X mm" when it's currently
+  precipitating; each 7-day row shows "prob% · Xmm"; every hourly-strip slot
+  (Weather screen, trip detail) shows the hour's mm under its probability.
+- **Passive weather surfaces** (the calendar day view's **hourly weather
+  rail** and **List-header glance**, and the **assistant's** weather context)
+  follow the same chosen source via
+  `loadPassiveForecast`, with one hard rule: they **never prompt** — the
+  location permission ask belongs to the Weather screen. Live is used only
+  when the permission is *already* granted; otherwise (or when the GPS fetch
+  fails) they fall back to the home address, and when that fails too they
+  render no weather. So a live-location user with no home address still gets
+  the day-view glance once they've granted the permission on the Weather screen.
+- **No home address** (home source) on the Weather screen is an actionable
+  empty state: a card explaining what the address unlocks with a **"Set home
+  address"** button that navigates to the Account screen's identity section.
+  Other load failures (offline, provider down) show a plain retry message
+  instead — the CTA only appears for the missing-address error.
+- **Travel-aware weather.** When a *booked* trip's date range spans today, the
+  Weather screen shows a destination-forecast card (current conditions + the
+  remaining trip days, capped at 5) under the home forecast. Fetched
+  client-direct from open-meteo via `geocodePlace` — the destination never
+  touches our server. The card is silent (absent) when there is no active
+  trip, the trips add-on is locked, or the lookup fails.
+- **Holidays** and **occasions** (from People) surface as read-only events (see
+  the Occasions calendar below).
 - Events/agenda can be **printed** (`mobile/src/lib/printCalendar.ts`, Print
   screen).
+
+### Occasions calendar (free opt-in add-on, id `birthdays`)
+
+- The **Occasions** calendar (formerly "Birthdays") derives read-only,
+  annually-recurring events from People. Two sources per contact:
+  - the dedicated `Person.birthday` field → a `birthday` occasion; and
+  - each `Person.dates[]` entry → an occasion whose **kind comes from the
+    label**: `anniversary`, `marriage`, and `death` are recognised kinds; any
+    other label is a `custom` occasion whose display name is the raw label.
+  The shared engine (`shared/calendar` `occasionOccurrences` +
+  `occasionKindFromLabel`) builds `CalendarData.occasions`
+  (`{ id, kind, name, date, personId, label, year? }`); consumers title/icon
+  each kind via `mobile/src/lib/occasions.ts`. Add/edit occasion dates on the
+  person's card (People); the internal calendar/add-on id stays `birthdays`.
+- **Rendering.** On the month grid, occasions appear as **kind icons** (cake /
+  heart / ring / candle / calendar-star) in the cell's icon row — **not** as
+  event-style chips. Tapping an occasion anywhere it's read-only (the month-grid
+  icon, the day view, the agenda list) opens the **Occasions** screen, not the
+  person's edit form, and passes a `focus` param so the list **scrolls that
+  occasion to the top and outlines it** (bolder border + faint accent wash). The
+  focus is matched by `occasionFocusKey` (person + kind + month/day + label). (The
+  person's card is still where dates are edited, reached from the Occasions list.)
+- **Per-contact inclusion.** A person may be **excluded** from the Occasions
+  calendar via `Person.occasionsHidden` (sealed; default shown) — a
+  "Show on Occasions calendar" switch in the Occasion dates section of their card. Hidden
+  contacts contribute no occasions to the grid, day/list, search, print, or
+  reminders (the shared engine skips them). The Occasions list still shows them
+  in a dimmed **"Hidden from calendar"** group so they stay discoverable; tapping
+  any occasion row opens the person **scrolled to the Dates section**
+  (`PersonForm` `focus: 'dates'`) to edit dates or re-include them.
+- **Calendar-level alerts.** One alert config for the whole Occasions calendar
+  (no per-occasion override) — offsets (days before) + a single time, stored
+  device-local (`hc_occasion_alert_prefs`). Defaults: an alert at **noon the day
+  of** the occasion AND one **two weeks before**. Alerts fire on-device like
+  maintenance/chore day-alerts (see [notifications.md](notifications.md)); the
+  Occasions calendar's Alerts switch (calendar id `birthdays`) mutes them.
+- **Scheduled e-cards.** From an occasion the user can schedule an e-card:
+  a card **style chosen from a per-kind gallery** (birthday / anniversary /
+  marriage / condolence / custom) plus a custom message, delivered by email on
+  the occasion's date. **Style gallery:** each kind offers **three designs**
+  (e.g. birthday: Confetti / Balloons / Golden; condolence: Dove / Candlelight /
+  Evening Sky), defined in `server/src/services/ecardTemplates.js` (`GALLERY`)
+  and mirrored for the picker in `mobile/src/lib/ecardTemplates.ts` — the
+  template **keys are a stable API contract** kept in sync by a unit test. The
+  form shows the styles as a **horizontal swatch row**; the chosen key is
+  stored in `ECard.template`. **Unknown or legacy keys** (old rows stored
+  `template: <kind>`) resolve to the kind's **first (default) style** on both
+  sides. **Card email design:** the e-card does NOT use the transactional
+  `htmlLayout` — it renders as a standalone greeting card (tinted canvas,
+  rounded card, full-bleed gradient cover with decorative art, display
+  heading, message on white, per-style sign-off phrase, "Sent with ♥ through
+  Calen" footer). **Motion is progressive enhancement:** cover art animates via
+  CSS `@keyframes` (floating balloons/hearts, falling confetti, twinkling
+  sparkles, drifting doves) in clients that support it (Apple Mail / iOS Mail,
+  Outlook macOS, Thunderbird); Gmail and Outlook-Windows strip animation and
+  receive the identical static card (with `bgcolor` solid fallbacks where
+  gradients are unsupported); a `prefers-reduced-motion` query stills
+  everything. Condolence styles use only slow, gentle motion, and **condolence
+  subjects never include the recipient's name** (celebration kinds do; custom
+  labels don't). All user content is HTML-escaped, and a plaintext alternative
+  always accompanies the HTML. **Fully editable card text:** every line of the
+  card is author-editable — the greeting, message, sign-off phrase, and
+  signature are **bare inputs on the card face itself** (placeholders show the
+  defaults). Blank fields fall back at send time: greeting → per-recipient
+  "Dear <first name>," — recipients are stored with their full contact name,
+  but the default greeting and the subject-line name use the **first name
+  only** (a custom greeting applies to every recipient verbatim);
+  sign-off → the style's phrase; signature → the author's first name (the
+  signature also signs the subject line). Stored as `ECard.greeting` /
+  `signoff` / `signature` (≤120 chars each). **Font choice:** an `ECard.font`
+  key picks the card typeface from a small email-safe menu — Auto (the
+  template's own face) / Modern (system sans) / Serif (Georgia) / Elegant
+  (Palatino) / Script (Snell Roundhand, cursive fallback; rendered slightly
+  larger for legibility) — applied to the heading and body in both the email
+  (`FONTS` stacks) and the native preview (`FONT_NATIVE`); unknown keys fall
+  back to the template default. **Photos:** up to **3 author photos** per card
+  (JPEG/PNG/GIF/WebP, ≤10MB each), uploaded multipart to `POST
+  /api/ecards/:id/photos` into the shared disk upload store and **embedded
+  inline in the email via CID attachments** (no external image hosting) between
+  the message and sign-off; removable per-photo (author-only) and unlinked from
+  disk when the photo or card is deleted. New-card photo picks upload after the
+  card is created; a failed photo upload never loses the card.
+  Recipient candidates are scoped to **the occasion's own
+  contact plus anyone linked to them** (their `relatedNames` that resolve to a
+  roster person) — not the whole roster. A candidate **missing an email** can
+  have one added **inline**, which is saved to that contact's card (sealed). A
+  card goes to **one address per recipient**: a contact with **multiple emails**
+  defaults to their primary, switchable via a per-recipient address picker (the
+  chosen label, e.g. "work", shows on the row). Send delivery is **hour-granular**
+  (the scheduler reads only the hour), so the send time is a **whole-hour
+  picker**, not a free minute field. The hour list **opens scrolled to noon**
+  (AM hours reachable by scrolling up) so daytime hours are the visible
+  default and "2:00 AM" isn't mistaken for "2:00 PM". The form's centerpiece is
+  the **live editable card** (gradient cover + gently bobbing art via
+  Reanimated/SVG, heading, then the editable greeting/message/photos/sign-off/
+  signature lines, footer) mirroring the email renderer — there is no separate
+  message field. A **scheduled**
+  card is marked on its occasion row by a filled-envelope icon; tapping it
+  **re-opens the card to edit or cancel** it. E-cards recur annually. **Deliberate E2EE exception:** the recipient emails,
+  message/framing lines, and card photos are stored **plaintext** server-side
+  (`ECard` model + upload-store files, `POST /api/ecards`) and sent by the
+  scheduler (`runECardCheck`) so they fire while
+  the app is closed — see [crypto-e2ee.md](../platform/crypto-e2ee.md)
+  "Deliberate plaintext exceptions". Occasions stays a free add-on; e-cards are
+  free.
 
 ## Data & API surface
 
@@ -181,6 +611,11 @@ whichever layer is active.
 
 ## Verification
 
+- Calendars view interaction contract: row tap toggles visibility (never
+  navigates), Open pill / edit button navigation, locked add-ons collapsing
+  into the single storefront row (and disappearing when owned) —
+  `mobile/src/screens/calendar/__tests__/CalendarsScreen.test.tsx`; the
+  data-side lock (`applyAddonLocks`) — `mobile/src/lib/__tests__/addons.test.ts`.
 - Custom calendars: create/list visibility tiers (private, household-wide,
   member-specific, outsiders excluded), creator-only writes, validation,
   outside-share invitation lifecycle, access levels, feed subscription
@@ -196,6 +631,10 @@ whichever layer is active.
 - Client-side calendar plumbing (feeds, prefs/density, holidays, recurrence
   helpers, timezone math, printing) — the `mobile/src/lib/__tests__/` units
   listed in `tests:`.
+- Day-view layout math (all-day vs. timed routing incl. midnight clipping and
+  the muted task/chore chips, lane packing, week-strip paging/selection,
+  initial-scroll targets, gutter/now-badge labels) —
+  `mobile/src/screens/calendar/dayview/__tests__/dayViewLayout.test.ts`.
 - The sealed record store the events persist in is verified under
   [platform/data-model.md](../platform/data-model.md) (records suite) and
   [platform/crypto-e2ee.md](../platform/crypto-e2ee.md) (author hiding, drop).

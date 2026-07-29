@@ -38,7 +38,7 @@
             </thead>
             <tbody>
               <tr v-for="m in items" :key="m.uid" style="cursor: pointer" @click="open(m)">
-                <td class="text-caption" :class="rowClass(m)">{{ fmt(m.date) }}</td>
+                <td class="text-caption" :class="rowClass(m)"><Timestamp :date="m.date" /></td>
                 <td class="text-caption text-truncate" :class="rowClass(m)" style="max-width: 260px">
                   {{ mailbox === 'Sent' ? m.to : m.from }}
                 </td>
@@ -130,17 +130,23 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { emailApi } from '../services/api';
 import { useSnackbar } from '../composables/useSnackbar';
+import { fmtDateTime as fmt } from '../lib/format';
 import SnackbarHost from '../components/SnackbarHost.vue';
+import Timestamp from '../components/Timestamp.vue';
 
 const PAGE_SIZE = 25;
+const KNOWN_BOXES = ['INBOX', 'Archive', 'Sent'];
 
+const route = useRoute();
+const router = useRouter();
 const { snack, success, fromError } = useSnackbar();
 const loading = ref(true);
 const notConfigured = ref(false);
 const boxes = ref([{ path: 'INBOX', unseen: 0 }, { path: 'Archive' }, { path: 'Sent' }]);
-const mailbox = ref('INBOX');
+const mailbox = ref(KNOWN_BOXES.includes(route.query.mailbox) ? route.query.mailbox : 'INBOX');
 const items = ref([]);
 const page = ref(1);
 const total = ref(0);
@@ -158,11 +164,16 @@ const rangeLabel = computed(() => {
   return `${start}–${end} of ${total.value}`;
 });
 
-function fmt(d) { return d ? new Date(d).toLocaleString() : '—'; }
 function label(path) { return path === 'INBOX' ? 'Inbox' : path; }
 function rowClass(m) { return !m.seen && mailbox.value !== 'Sent' ? 'font-weight-bold' : ''; }
 
-function reload() { page.value = 1; load(); }
+function reload() {
+  page.value = 1;
+  router.replace({
+    query: { ...route.query, ...(mailbox.value === 'INBOX' ? { mailbox: undefined } : { mailbox: mailbox.value }) },
+  });
+  load();
+}
 
 async function load() {
   loading.value = true;

@@ -1,21 +1,20 @@
 import React from 'react';
-import { TouchableOpacity, View, Text, StyleSheet } from 'react-native';
+import { TouchableOpacity, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
+import { HeaderIconButton } from '../components/ui';
 import { colors } from '../theme';
 import { ASSISTANT_NAME } from '../config';
 import { useCalendarColors } from '../lib/calendarPrefs';
 import { useSyncTimezone } from '../lib/useSyncTimezone';
-import { useQuery } from '@tanstack/react-query';
-import { loadForecast } from '../lib/weather';
-import { weatherCardColors } from '../lib/weatherTheme';
 
 // Calendar
 import CalendarScreen from '../screens/calendar/CalendarScreen';
 import CalendarDayScreen from '../screens/calendar/CalendarDayScreen';
 import EventFormScreen from '../screens/calendar/EventFormScreen';
 import EventDetailScreen from '../screens/calendar/EventDetailScreen';
+import AttachmentPreviewScreen from '../screens/calendar/AttachmentPreviewScreen';
 import AssistantScreen from '../screens/chat/AssistantScreen';
 import CalendarSearchScreen from '../screens/calendar/CalendarSearchScreen';
 import CalendarsScreen from '../screens/calendar/CalendarsScreen';
@@ -26,7 +25,9 @@ import AddHolidayCalendarScreen from '../screens/calendar/AddHolidayCalendarScre
 import CalendarColorsScreen from '../screens/calendar/CalendarColorsScreen';
 import PrintCalendarScreen from '../screens/calendar/PrintCalendarScreen';
 import HolidaysScreen from '../screens/calendar/HolidaysScreen';
-import BirthdaysScreen from '../screens/calendar/BirthdaysScreen';
+import OccasionsScreen from '../screens/calendar/OccasionsScreen';
+import ECardFormScreen from '../screens/calendar/ECardFormScreen';
+import OccasionAlertsScreen from '../screens/calendar/OccasionAlertsScreen';
 import WeatherScreen from '../screens/calendar/WeatherScreen';
 import InvitationsScreen from '../screens/calendar/InvitationsScreen';
 import EventInviteesScreen from '../screens/calendar/EventInviteesScreen';
@@ -75,6 +76,7 @@ import TripAssistantScreen from '../screens/trips/TripAssistantScreen';
 // Profile
 import ProfileScreen from '../screens/ProfileScreen';
 import AccountScreen from '../screens/profile/AccountScreen';
+import RemindersScreen from '../screens/profile/RemindersScreen';
 import PrivacyDataScreen from '../screens/profile/PrivacyDataScreen';
 import GuardianRecoveryScreen from '../screens/profile/GuardianRecoveryScreen';
 import RecoveryCodeScreen from '../screens/profile/RecoveryCodeScreen';
@@ -84,9 +86,9 @@ import PersonDetailScreen from '../screens/profile/PersonDetailScreen';
 import PersonFormScreen from '../screens/profile/PersonFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
-import ComparePlansScreen from '../screens/plan/ComparePlansScreen';
-import AiUsageScreen from '../screens/plan/AiUsageScreen';
-import UpsellSheet from '../screens/plan/UpsellSheet';
+import AddOnsScreen from '../screens/plan/AddOnsScreen';
+import CreditsScreen from '../screens/plan/CreditsScreen';
+import BuyCreditsSheet from '../screens/plan/BuyCreditsSheet';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -96,59 +98,14 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const BLACK = '#000';
 const hdr = (bg: string) => ({ headerStyle: { backgroundColor: bg }, headerTintColor: '#fff' as const });
 
-// Weather's floating edit pencil. Reads the cached forecast so its fill tracks
-// the current conditions in step with the forecast cards behind it.
-function WeatherEditButton({ onPress }: { onPress: () => void }) {
-  const weatherQ = useQuery({ queryKey: ['weather'], queryFn: () => loadForecast() });
-  const { bg, border } = weatherCardColors(weatherQ.data?.current?.weatherCode);
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={[styles.weatherEditBtn, { backgroundColor: bg, borderColor: border }]}
-      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      accessibilityRole="button"
-      accessibilityLabel="Edit Weather calendar"
-    >
-      <Ionicons name="pencil" size={16} color="#fff" />
-    </TouchableOpacity>
-  );
-}
-
-// Header title with a bare pencil hugging its right edge, opening the
-// calendar's Edit Calendar view. An invisible left spacer mirrors the pencil's
-// width so the TITLE itself stays exactly centered (the header centers the
-// whole group; without the spacer the pencil would push the title off-center).
-const EDIT_BTN_W = 24;
-function HeaderTitleWithEdit({ title, onEdit }: { title: string; onEdit: () => void }) {
-  return (
-    <View style={styles.headerTitleRow}>
-      <View style={{ width: EDIT_BTN_W }} />
-      <Text style={styles.headerTitleText} numberOfLines={1}>{title}</Text>
-      <TouchableOpacity
-        onPress={onEdit}
-        style={styles.headerEditBtn}
-        hitSlop={{ top: 10, bottom: 10, left: 4, right: 10 }}
-        accessibilityRole="button"
-        accessibilityLabel={`Edit ${title} calendar`}
-      >
-        <Ionicons name="pencil" size={16} color="#fff" />
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-// Screen options for a feature-calendar home: the standard header plus the
-// pencil that opens the calendar's Edit Calendar view.
-const editableCalendarHome = (title: string, calendarId: string) =>
-  ({ navigation }: { navigation: { navigate: (route: string, params?: object) => void } }) => ({
-    ...hdr(colors.background),
-    headerShadowVisible: false,
-    title,
-    headerTitleAlign: 'center' as const,
-    headerTitle: () => (
-      <HeaderTitleWithEdit title={title} onEdit={() => navigation.navigate('AddCalendar', { calendarId })} />
-    ),
-  });
+// Screen options for a feature-calendar home: the standard header. (The old
+// header pencil into Edit Calendar was removed — the Calendars view's per-row
+// edit button is now the single path to a calendar's colour/alerts/delete.)
+const featureCalendarHome = (title: string) => ({
+  ...hdr(colors.background),
+  headerShadowVisible: false,
+  title,
+});
 
 // Assistant chat screens open full screen. (They were briefly a resizable form
 // sheet, but react-native-screens doesn't give a form sheet's JS content a stable
@@ -165,7 +122,7 @@ const assistantSheet = (title: string) => ({
 export default function AppNavigator() {
   // Subscribe so per-flow header colours update when the user recolours a calendar.
   const { colors: cal } = useCalendarColors();
-  // Keep the stored timezone aligned with this device (drives 7am alert timing).
+  // Keep the stored timezone aligned with this device (drives 9am alert timing).
   useSyncTimezone();
   return (
     <View style={styles.root}>
@@ -182,8 +139,23 @@ export default function AppNavigator() {
       {/* Calendar family (black). The grid/agenda toggle lives inside
           CalendarHome (crossfading layers), not as a separate route. */}
       <Stack.Screen name="CalendarHome" component={CalendarScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Day' }} />
+      {/* Headerless: the day view draws its own floating chrome (back pill,
+          view switcher). Native swipe-back stays off so horizontal swipes page
+          between days instead of popping to the month. */}
+      <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ headerShown: false, gestureEnabled: false }} />
       <Stack.Screen name="EventDetail" component={EventDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
+      {/* In-app attachment preview (WebView: images + PDFs). Dark modal; the
+          title is the file name, a Share button sits in the header. */}
+      <Stack.Screen
+        name="AttachmentPreview"
+        component={AttachmentPreviewScreen}
+        options={({ route }) => ({
+          ...hdr(BLACK),
+          headerShadowVisible: false,
+          presentation: 'modal',
+          title: route.params?.title || 'Attachment',
+        })}
+      />
       <Stack.Screen name="EventForm" component={EventFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
       {/* Unified assistant: Calendar / Chores / Task Plan swap in place inside one
           view; header stays "Calen". Entry points pass `initial` to pick a body. */}
@@ -201,6 +173,16 @@ export default function AppNavigator() {
             <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
               <Ionicons name="close" size={26} color="#fff" />
             </TouchableOpacity>
+          ),
+          // The list's primary add action lives in the header (app convention),
+          // opening the Add Calendar chooser (new / subscribe / holiday / restore).
+          headerRight: () => (
+            <HeaderIconButton
+              icon="add"
+              size={30}
+              onPress={() => navigation.navigate('AddCalendarMenu')}
+              accessibilityLabel="Add calendar"
+            />
           ),
         })}
       />
@@ -233,27 +215,28 @@ export default function AppNavigator() {
       <Stack.Screen name="PrintCalendar" component={PrintCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Print' }} />
       {/* Title is set by the screen itself from the selected holiday calendar. */}
       <Stack.Screen name="Holidays" component={HolidaysScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Holidays', headerTitleAlign: 'center' }} />
-      <Stack.Screen name="Birthdays" component={BirthdaysScreen} options={editableCalendarHome('Birthdays', 'birthdays')} />
-      {/* Transparent header: sky gradient runs edge-to-edge, only the back chevron
-          and edit pencil float. headerStyle must be reset too, or the
-          navigator-level red background still paints. */}
+      {/* Route name stays "Birthdays" (the add-on key + deep-links are keyed to
+          it); only the visible title becomes "Occasions". */}
+      <Stack.Screen name="Birthdays" component={OccasionsScreen} options={featureCalendarHome('Occasions')} />
+      <Stack.Screen name="ECardForm" component={ECardFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Schedule E-Card' }} />
+      <Stack.Screen name="OccasionAlerts" component={OccasionAlertsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Occasion Alerts' }} />
+      {/* Transparent header: sky gradient runs edge-to-edge, only the back
+          chevron floats. headerStyle must be reset too, or the navigator-level
+          red background still paints. */}
       <Stack.Screen
         name="Weather"
         component={WeatherScreen}
-        options={({ navigation }) => ({
+        options={{
           headerTransparent: true,
           headerStyle: { backgroundColor: 'transparent' },
           headerShadowVisible: false,
           headerTintColor: '#fff',
           title: '',
-          headerRight: () => (
-            <WeatherEditButton onPress={() => navigation.navigate('AddCalendar', { calendarId: 'weather' })} />
-          ),
-        })}
+        }}
       />
 
       {/* Maintenance (blue) */}
-      <Stack.Screen name="MaintenanceHome" component={MaintenanceScreen} options={editableCalendarHome('Maintenance', 'maintenance')} />
+      <Stack.Screen name="MaintenanceHome" component={MaintenanceScreen} options={featureCalendarHome('Maintenance')} />
       <Stack.Screen name="TaskDetail" component={TaskDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Task' }} />
       <Stack.Screen name="TaskForm" component={TaskFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Task' }} />
       <Stack.Screen name="TaskTemplates" component={TaskTemplatesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Task Templates' }} />
@@ -263,14 +246,14 @@ export default function AppNavigator() {
       <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={assistantSheet(`${ASSISTANT_NAME} · Maintenance`)} />
 
       {/* Chores (orange) */}
-      <Stack.Screen name="ChoresHome" component={ChoresScreen} options={editableCalendarHome('Chores', 'chores')} />
+      <Stack.Screen name="ChoresHome" component={ChoresScreen} options={featureCalendarHome('Chores')} />
       <Stack.Screen name="ChoreDetail" component={ChoreDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Chore' }} />
       <Stack.Screen name="AddChore" component={AddChoreScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add Chore' }} />
       <Stack.Screen name="ChoreForm" component={ChoreFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Chore' }} />
       <Stack.Screen name="ChoreTemplates" component={ChoreTemplatesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Chore Templates' }} />
 
       {/* Kitchen / meals (teal) */}
-      <Stack.Screen name="KitchenHome" component={KitchenScreen} options={editableCalendarHome('Meals', 'recipes')} />
+      <Stack.Screen name="KitchenHome" component={KitchenScreen} options={featureCalendarHome('Meals')} />
       <Stack.Screen name="Recipes" component={RecipesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recipes' }} />
       <Stack.Screen name="GrocerySchedule" component={GroceryScheduleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Grocery Schedule' }} />
       <Stack.Screen name="RecipeDetail" component={RecipeDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recipe' }} />
@@ -281,7 +264,7 @@ export default function AppNavigator() {
       <Stack.Screen name="AddMeal" component={AddMealScreen} options={{ headerStyle: { backgroundColor: colors.background }, headerTintColor: colors.text, headerShadowVisible: false, title: '' }} />
 
       {/* Trips (purple) */}
-      <Stack.Screen name="Trips" component={TripsScreen} options={editableCalendarHome('Trips', 'trips')} />
+      <Stack.Screen name="Trips" component={TripsScreen} options={featureCalendarHome('Trips')} />
       <Stack.Screen name="TripForm" component={TripFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Trip' }} />
       <Stack.Screen name="TripDetail" component={TripDetailScreen} options={{ ...hdr(cal.trips), title: 'Trip' }} />
       <Stack.Screen name="TripItemForm" component={TripItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Booking' }} />
@@ -291,28 +274,30 @@ export default function AppNavigator() {
       {/* Profile (app primary) */}
       <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Profile' }} />
       <Stack.Screen name="Account" component={AccountScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Account' }} />
-      <Stack.Screen name="PrivacyData" component={PrivacyDataScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy & data' }} />
+      <Stack.Screen name="Reminders" component={RemindersScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Reminders' }} />
+      <Stack.Screen name="PrivacyData" component={PrivacyDataScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy & security' }} />
       <Stack.Screen name="LinkDevice" component={LinkDeviceScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link device' }} />
       <Stack.Screen name="GuardianRecovery" component={GuardianRecoveryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Guardian recovery' }} />
       <Stack.Screen name="RecoveryCode" component={RecoveryCodeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recovery code' }} />
       <Stack.Screen name="People" component={PeopleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contacts' }} />
       <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
-      <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Person' }} />
+      <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
-      {/* Plan & billing: the status hub now lives inline on ProfileHome; these
-          are its drill-ins — catalog / usage — plus the upsell sheet the
+      {/* Billing: the credits summary card lives inline on ProfileHome; these
+          are its drill-ins — the Credits screen and the top-up sheet the
           AI-surface nudges open as a modal. */}
-      <Stack.Screen name="ComparePlans" component={ComparePlansScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Plans' }} />
-      <Stack.Screen name="AiUsage" component={AiUsageScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI' }} />
+      {/* The feature-calendar add-ons store. Never titled "App Store" (5.2.5). */}
+      <Stack.Screen name="AddOns" component={AddOnsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add-ons' }} />
+      <Stack.Screen name="Credits" component={CreditsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI credits' }} />
       <Stack.Screen
-        name="Upsell"
-        component={UpsellSheet}
+        name="BuyCredits"
+        component={BuyCreditsSheet}
         options={({ navigation }) => ({
           ...hdr(colors.background),
           headerShadowVisible: false,
           presentation: 'modal',
-          title: 'Upgrade',
+          title: 'Buy credits',
           headerLeft: () => (
             <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
               <Ionicons name="close" size={26} color="#fff" />
@@ -327,18 +312,4 @@ export default function AppNavigator() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
-  // Matches the native stack header's default title weight/size.
-  headerTitleText: { color: '#fff', fontSize: 17, fontWeight: '600' },
-  headerEditBtn: { width: EDIT_BTN_W, alignItems: 'flex-end', justifyContent: 'center' },
-  // Weather's floating edit pencil — matches the forecast card's solid fill
-  // (backgroundColor/borderColor applied dynamically in WeatherEditButton).
-  weatherEditBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-  },
 });

@@ -89,19 +89,37 @@ function buildForecast(raw) {
 // path (server/services/weather.js). RN fetch sends the User-Agent per Nominatim's
 // usage policy; browsers ignore it but send a Referer, which also satisfies it.
 const geocodeCache = new Map(); // query -> in-flight/settled promise (dedupes parallel lookups)
+
+async function geocodeNominatim(address) {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
+  });
+  if (!res.ok) throw new Error('Geocoding failed');
+  const data = await res.json();
+  const r = data && data[0];
+  if (!r) throw new Error('Could not find that location — check your address in Settings');
+  return { lat: parseFloat(r.lat), lon: parseFloat(r.lon) };
+}
+
+// Photon (photon.komoot.io) — also OSM-backed, keyless + CORS-open. Second in
+// the chain because Nominatim's full-address matching is stricter; Photon
+// covers Nominatim outages and its 1 req/s public rate limit.
+async function geocodePhoton(address) {
+  const url = `https://photon.komoot.io/api?q=${encodeURIComponent(address)}&limit=1`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Geocoding failed');
+  const data = await res.json();
+  const c = data && data.features && data.features[0] && data.features[0].geometry && data.features[0].geometry.coordinates;
+  if (!c) throw new Error('Could not find that location — check your address in Settings');
+  return { lat: c[1], lon: c[0] };
+}
+
 async function geocode(address) {
   if (geocodeCache.has(address)) return geocodeCache.get(address);
-  const p = (async () => {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
-    });
-    if (!res.ok) throw new Error('Geocoding failed');
-    const data = await res.json();
-    const r = data && data[0];
-    if (!r) throw new Error('Could not find that location — check your address in Settings');
-    return { lat: parseFloat(r.lat), lon: parseFloat(r.lon) };
-  })();
+  const p = geocodeNominatim(address).catch((err) =>
+    geocodePhoton(address).catch(() => { throw err; }), // surface the primary's message
+  );
   geocodeCache.set(address, p);
   p.catch(() => geocodeCache.delete(address)); // don't cache failures
   return p;
@@ -130,6 +148,66 @@ async function geocodePlace(place) {
   throw lastErr;
 }
 
+// Country + subdivision for an address, from the same keyless geocoders
+// (Nominatim with addressdetails, Photon fallback — the address never touches
+// our server). Returns { countryCode: 'CA', state: 'Ontario' } with either
+// field possibly null, or null when neither provider matches.
+async function regionForAddress(address) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&addressdetails=1`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const a = data && data[0] && data[0].address;
+      if (a) {
+        return {
+          countryCode: a.country_code ? a.country_code.toUpperCase() : null,
+          state: a.state || a.province || a.state_district || null,
+        };
+      }
+    }
+  } catch { /* fall through to Photon */ }
+  try {
+    const res = await fetch(`https://photon.komoot.io/api?q=${encodeURIComponent(address)}&limit=1`);
+    if (res.ok) {
+      const data = await res.json();
+      const p = data && data.features && data.features[0] && data.features[0].properties;
+      if (p) {
+        return {
+          countryCode: p.countrycode ? p.countrycode.toUpperCase() : null,
+          state: p.state || null,
+        };
+      }
+    }
+  } catch { /* both failed */ }
+  return null;
+}
+
+// IANA zone id for coordinates, from open-meteo's `timezone=auto` echo (keyless
+// + CORS-open, so an E2EE household resolves its home zone without the address
+// ever touching our server). Returns e.g. "America/Toronto", or null.
+async function timezoneForCoords(lat, lon) {
+  const params = new URLSearchParams({
+    latitude: String(lat), longitude: String(lon), timezone: 'auto', forecast_days: '1',
+  });
+  const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return (data && typeof data.timezone === 'string' && data.timezone.includes('/')) ? data.timezone : null;
+}
+
+// One call: address -> geocode -> IANA zone id (or null — never throws).
+async function locationTimezone(address, { geocoder = geocode } = {}) {
+  try {
+    const { lat, lon } = await geocoder(address);
+    return await timezoneForCoords(lat, lon);
+  } catch {
+    return null;
+  }
+}
+
 async function fetchWeather(lat, lon) {
   const params = new URLSearchParams({
     latitude: String(lat),
@@ -145,12 +223,18 @@ async function fetchWeather(lat, lon) {
   return res.json();
 }
 
+// One call: coords -> forecast -> built shape (e.g. a device GPS fix, which
+// needs no geocoding at all).
+async function loadWeatherForCoords(lat, lon) {
+  const raw = await fetchWeather(lat, lon);
+  return buildForecast(raw);
+}
+
 // One call: address -> geocode -> forecast -> built shape. Pass
 // `geocoder: geocodePlace` for city-style destinations (trips).
 async function loadWeatherForAddress(address, { geocoder = geocode } = {}) {
   const { lat, lon } = await geocoder(address);
-  const raw = await fetchWeather(lat, lon);
-  return buildForecast(raw);
+  return loadWeatherForCoords(lat, lon);
 }
 
 // ── Secondary surfaces (§9.1 P5b follow-ups): client-direct range + outlook ──
@@ -326,10 +410,9 @@ async function loadDailyClimate(address, from, to, { years = 3, geocoder = geoco
   return { days: buildDailyClimate(archiveResults, { dates }) };
 }
 
-// Orchestration: address -> 90-day seasonal outlook (averages the same window
+// Orchestration: coords -> 90-day seasonal outlook (averages the same window
 // across the past 3 years).
-async function loadOutlook(address, { today = new Date(), days = 90 } = {}) {
-  const { lat, lon } = await geocode(address);
+async function loadOutlookForCoords(lat, lon, { today = new Date(), days = 90 } = {}) {
   const archiveResults = (
     await Promise.all(
       [1, 2, 3].map((yearsAgo) => {
@@ -342,8 +425,16 @@ async function loadOutlook(address, { today = new Date(), days = 90 } = {}) {
   return buildOutlook(archiveResults, { today, days });
 }
 
+// Address wrapper over loadOutlookForCoords. Pass `geocoder: geocodePlace`
+// for city-style places.
+async function loadOutlook(address, { today = new Date(), days = 90, geocoder = geocode } = {}) {
+  const { lat, lon } = await geocoder(address);
+  return loadOutlookForCoords(lat, lon, { today, days });
+}
+
 module.exports = {
   WMO_DESCRIPTIONS, isMowingDay, buildForecast, geocode, geocodePlace, placeCandidates, fetchWeather, loadWeatherForAddress,
-  fetchWeatherArchive, buildRangeRecords, loadWeatherRange, buildOutlook, loadOutlook,
+  timezoneForCoords, locationTimezone, regionForAddress, loadWeatherForCoords,
+  fetchWeatherArchive, buildRangeRecords, loadWeatherRange, buildOutlook, loadOutlook, loadOutlookForCoords,
   buildDailyClimate, loadDailyClimate,
 };

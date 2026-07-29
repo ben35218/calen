@@ -68,7 +68,7 @@ export default function ForgotPasswordScreen() {
         // password — point at the existing unlock paths rather than blocking.
         Alert.alert(
           'Password reset',
-          'You are signed in, but your encrypted data is still locked. Unlock it with Face ID or your recovery code in Profile → Privacy & data.'
+          'You are signed in, but your encrypted data is still locked. Unlock it with Face ID or your recovery code in Profile → Privacy & security.'
         );
       }
     } catch (e: any) {

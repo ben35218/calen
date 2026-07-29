@@ -11,7 +11,27 @@ const WMO_DESCRIPTIONS = {
   95: 'Thunderstorm', 96: 'Thunderstorm with hail', 99: 'Heavy thunderstorm with hail',
 };
 
+// Google Geocoding when the Places key is configured (typo-tolerant, no rate
+// cap that matters at our volume), falling back to keyless Nominatim — which
+// also remains the whole chain when no key is set.
+async function geocodeGoogle(address) {
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (!key) return null;
+  try {
+    const { data } = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
+      params: { address, key },
+      timeout: 8000,
+    });
+    const loc = data.status === 'OK' && data.results?.[0]?.geometry?.location;
+    return loc ? { lat: loc.lat, lon: loc.lng } : null;
+  } catch {
+    return null; // key lacks the Geocoding API / transient — fall through
+  }
+}
+
 async function geocodeAddress(address) {
+  const viaGoogle = await geocodeGoogle(address);
+  if (viaGoogle) return viaGoogle;
   const { data } = await axios.get('https://nominatim.openstreetmap.org/search', {
     params: { q: address, format: 'json', limit: 1 },
     headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },

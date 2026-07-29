@@ -11,14 +11,16 @@ import { authApi, householdApi, keysApi, DeviceSession } from '../../api';
 import { useAuth } from '../../store/auth';
 import {
   isUnlocked, ensureHouseholdKey, unlockWithPassword, unlockWithPasskey,
-  unlockWithRecoveryCode, addPasskeyFactor, hasPasskeyFactor,
+  unlockWithRecoveryCode, addPasskeyFactor, hasPasskeyFactor, rewrapForNewPassword,
+  reauthWithBiometric,
 } from '../../lib/e2ee';
+import { isDeviceKeyEnabled } from '../../lib/deviceKey';
 import { passkeysSupported } from '../../lib/passkeys';
 import { useRecoveryHealth } from '../../hooks/useRecoveryHealth';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { exportEncryptedBackup, importEncryptedBackup } from '../../lib/exportData';
 import {
-  Input, Screen, Card, Button, SectionTitle, SectionHeader, Badge, ListRow, Chip, Hint,
+  Input, Screen, Card, Button, SectionTitle, SectionHeader, Badge, ListRow, Chip, Hint, SwitchRow,
 } from '../../components/ui';
 import { GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
@@ -29,7 +31,7 @@ import { colors, spacing } from '../../theme';
 type Focus = 'unlock' | 'recovery';
 type KeyStatus = 'locked' | 'ready' | 'pending' | null;
 
-// The dedicated Privacy & Data screen. Split out of AccountScreen so the "how
+// The dedicated Privacy & security screen. Split out of AccountScreen so the "how
 // protected am I / how do I get back in" story lives in one place: the
 // encryption status hero (+ unlock UI), a Recovery methods roll-up that shows
 // every way back into the encrypted data and which ones are set up, devices,
@@ -133,6 +135,72 @@ export default function PrivacyDataScreen() {
       setUnlockError(e?.message || 'Could not unlock.');
     } finally {
       setUnlockBusy(false);
+    }
+  }
+
+  // ── Change password ─────────────────────────────────────────────────────────
+  // The everyday sign-in credential. It lives here (not in Recovery methods)
+  // because changing it re-wraps the E2EE key, which needs the key unlocked —
+  // exactly what this screen manages.
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pwForm, setPwForm] = useState({ currentPassword: '', newPassword: '', confirm: '' });
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwError, setPwError] = useState('');
+  // Biometric-first re-auth: when this device has armed the Face ID / Touch ID
+  // key cache, a fresh biometric prompt replaces re-typing the current password.
+  // Otherwise we fall back to the typed current password (verified server-side).
+  const [bioAvailable, setBioAvailable] = useState(false);
+  useEffect(() => {
+    if (!pwOpen) return;
+    let alive = true;
+    isDeviceKeyEnabled().then((v) => { if (alive) setBioAvailable(v); });
+    return () => { alive = false; };
+  }, [pwOpen]);
+  const pwReady =
+    pwForm.newPassword.length >= 8 &&
+    pwForm.confirm.length > 0 &&
+    (bioAvailable || pwForm.currentPassword.length > 0);
+
+  async function savePassword() {
+    if (pwForm.newPassword !== pwForm.confirm) {
+      setPwError('New passwords do not match');
+      return;
+    }
+    // The new password must re-wrap the E2EE key, which needs the key in hand.
+    // Changing it while locked would swap the sign-in password but leave the key
+    // wrapped under the OLD one — the new password then silently fails to unlock.
+    if (!isUnlocked()) {
+      setPwError('Unlock your encryption above so your new password can unlock your data too.');
+      return;
+    }
+    setPwSaving(true);
+    setPwError('');
+    try {
+      // Re-authenticate. On a biometric-armed device, a fresh device unlock
+      // (fingerprint / Face ID / passcode) proves presence in place of the
+      // current password (server accepts the change on the session). Otherwise
+      // send the typed current password.
+      let currentPassword: string | undefined;
+      if (bioAvailable) {
+        if (!(await reauthWithBiometric())) {
+          setPwError('Confirmation is required to change your password.');
+          setPwSaving(false);
+          return;
+        }
+      } else {
+        currentPassword = pwForm.currentPassword;
+      }
+      await authApi.updatePassword({ currentPassword, newPassword: pwForm.newPassword });
+      // Re-wrap the E2EE key under the new password so it still unlocks the
+      // account. Best-effort — a locked session keeps the old password factor.
+      await rewrapForNewPassword(pwForm.newPassword).catch(() => {});
+      setPwOpen(false);
+      setPwForm({ currentPassword: '', newPassword: '', confirm: '' });
+      Alert.alert('Updated', 'Password updated.');
+    } catch (e: any) {
+      setPwError(e?.response?.data?.error || 'Failed to update password');
+    } finally {
+      setPwSaving(false);
     }
   }
 
@@ -470,6 +538,81 @@ export default function PrivacyDataScreen() {
         </TouchableOpacity>
       ) : null}
 
+      {/* ── Sign-in ── */}
+      {/* The everyday unlock, kept ABOVE Recovery methods and deliberately OUT of
+          that list: a password is how you get in day to day, not a backstop for
+          when you lose it — a reset password can't even decrypt (passwordStale),
+          so counting it as "recovery" would give false confidence. */}
+      <SectionHeader>Sign-in</SectionHeader>
+      <Card style={styles.sectionCard}>
+        {hasPassword ? (
+          <>
+            {/* The whole row is the affordance (tap to reveal the change form) —
+                matching the tappable Recovery methods rows below and the
+                Transparency card, rather than a separate "Change" button. */}
+            <TouchableOpacity onPress={() => { setPwOpen((o) => !o); setPwError(''); }} activeOpacity={0.7}>
+              <View style={styles.mainRow}>
+                <View style={styles.iconBubble}>
+                  <Ionicons name="key-outline" size={18} color="#fff" />
+                </View>
+                <View style={styles.mainText}>
+                  <Text style={styles.mainLabel}>Password</Text>
+                  <Text style={styles.mainSubtitle}>
+                    {!pwOpen
+                      ? 'Change your account password'
+                      : bioAvailable
+                        ? "Set a new password — confirm it's you to save"
+                        : 'Enter your current and new password'}
+                  </Text>
+                </View>
+                <Ionicons name={pwOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+              </View>
+            </TouchableOpacity>
+            {pwOpen ? (
+              <View style={styles.expand}>
+                {!unlocked ? (
+                  <Text style={styles.unlockStaleNote}>
+                    Unlock your encryption above first, so your new password can unlock your data too.
+                  </Text>
+                ) : null}
+                {!bioAvailable ? (
+                  <Input
+                    label="Current password"
+                    value={pwForm.currentPassword}
+                    onChangeText={(v) => setPwForm((f) => ({ ...f, currentPassword: v }))}
+                    secureTextEntry
+                  />
+                ) : null}
+                <Input
+                  label="New password (min 8 chars)"
+                  value={pwForm.newPassword}
+                  onChangeText={(v) => setPwForm((f) => ({ ...f, newPassword: v }))}
+                  secureTextEntry
+                />
+                <Input
+                  label="Confirm new password"
+                  value={pwForm.confirm}
+                  onChangeText={(v) => setPwForm((f) => ({ ...f, confirm: v }))}
+                  secureTextEntry
+                />
+                {pwError ? <Text style={styles.error}>{pwError}</Text> : null}
+                <Button title={bioAvailable ? "Confirm it's you" : 'Save password'} onPress={savePassword} loading={pwSaving} disabled={!pwReady || !unlocked} />
+              </View>
+            ) : null}
+          </>
+        ) : (
+          <View style={styles.mainRow}>
+            <View style={styles.iconBubble}>
+              <Ionicons name="key-outline" size={18} color="#fff" />
+            </View>
+            <View style={styles.mainText}>
+              <Text style={styles.mainLabel}>Password</Text>
+              <Text style={styles.mainSubtitle}>Passwordless — sign in with Face ID or an email code</Text>
+            </View>
+          </View>
+        )}
+      </Card>
+
       {/* ── Recovery methods ── */}
       <SectionHeader>Recovery methods</SectionHeader>
       <Card style={styles.sectionCard}>
@@ -595,9 +738,38 @@ export default function PrivacyDataScreen() {
       {/* ── Data controls ── */}
       <SectionHeader>Data & privacy controls</SectionHeader>
 
+      {/* Artificial intelligence — the AI consent gate (aiEnabled, mirrored to
+          the server) plus the personal/contact-info toggle (aiUsePersonalInfo).
+          Lives here with the other data controls, not on the billing/Credits
+          screen: these are privacy choices, not purchases. */}
+      <Card style={styles.sectionCard}>
+        <SectionTitle style={styles.cardTitle}>Artificial intelligence</SectionTitle>
+        <SwitchRow
+          label="Use AI features"
+          value={prefs.aiEnabled}
+          onValueChange={(v) => setPref('aiEnabled', v)}
+        />
+        <Text style={styles.switchHint}>
+          Powers the assistants, recipe and receipt scanning, and smart suggestions. Turning it off blocks
+          every AI feature — nothing leaves your device for AI processing.
+        </Text>
+        <View style={prefs.aiEnabled ? undefined : styles.disabled} pointerEvents={prefs.aiEnabled ? 'auto' : 'none'}>
+          <SwitchRow
+            label="Use personal & contact info in prompts"
+            value={prefs.aiEnabled && prefs.aiUsePersonalInfo}
+            onValueChange={(v) => setPref('aiUsePersonalInfo', v)}
+          />
+          <Text style={styles.switchHint}>
+            On, the assistant sees household members and friends by name only (plus a professional’s saved
+            business details). Off, it sees no people at all — form assist won’t use your contacts and
+            contact-based AI import is unavailable.
+          </Text>
+        </View>
+      </Card>
+
       {/* App lock (Signal-parity A4). */}
       <Card style={styles.sectionCard}>
-        <SectionTitle>App lock</SectionTitle>
+        <SectionTitle style={styles.cardTitle}>App lock</SectionTitle>
         <Text style={styles.cardNote}>
           Require Face ID again after the app has been in the background. Protects your data if
           you hand your phone to someone while signed in.
@@ -680,7 +852,7 @@ export default function PrivacyDataScreen() {
         <>
         <SectionHeader>Your data</SectionHeader>
         <Card style={styles.sectionCard}>
-          <SectionTitle>Encrypted backup</SectionTitle>
+          <SectionTitle style={styles.cardTitle}>Encrypted backup</SectionTitle>
           <Text style={styles.cardNote}>
             Save a passphrase-protected copy of your data to a file you control. Keep the passphrase safe; without it the
             backup can’t be opened.
@@ -706,6 +878,11 @@ export default function PrivacyDataScreen() {
 
 const styles = StyleSheet.create({
   cardNote: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 18 },
+  // Drop SectionTitle's top margin when it's the first child of a Card — the
+  // card's own padding already spaces it, so the default margin double-stacks.
+  cardTitle: { marginTop: 0 },
+  switchHint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs, marginBottom: spacing.sm, lineHeight: 16 },
+  disabled: { opacity: 0.4 },
   sectionCard: { marginBottom: spacing.md },
   hero: { borderWidth: 1, marginBottom: spacing.md },
   encLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md, paddingHorizontal: spacing.xs },

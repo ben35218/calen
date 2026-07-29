@@ -18,6 +18,27 @@ const User = require('../models/User');
 before(startDb);
 after(stopDb);
 
+// ── Registration monetization side-effects ────────────────────────────────────
+
+test('registration exposes appUnlocked=false and grants starter credits once', async () => {
+  const CreditLedger = require('../models/CreditLedger');
+  const res = await request().post('/api/auth/register').send({
+    email: 'starter@example.com', password: 'a-password-1', firstName: 'Star', passwordless: false,
+  });
+  assert.equal(res.status, 201);
+  // The hard paywall keys off this flag in every auth payload.
+  assert.equal(res.body.user.appUnlocked, false);
+
+  const user = await User.findOne({ email: 'starter@example.com' }).lean();
+  assert.equal(user.appUnlocked, false);
+  // Starter credits landed (default config grants > 0) with exactly one
+  // idempotency-keyed ledger row.
+  assert.ok(user.creditBalanceMc > 0);
+  const rows = await CreditLedger.find({ userId: user._id, kind: 'starter' }).lean();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].transactionId, `starter:${user._id}`);
+});
+
 // ── Forgot password ───────────────────────────────────────────────────────────
 
 test('forgot: unknown email still answers ok (no account enumeration)', async () => {
@@ -127,6 +148,76 @@ test('delete account: passwordless account deletes on session token alone', asyn
   assert.equal(await User.findById(user._id), null, 'user is gone');
 });
 
+// ── Change password (biometric-first, current-password fallback) ──────────────
+
+test('change password: biometric path omits currentPassword and changes the hash on the session alone', async () => {
+  const { user, auth } = await registerUser({ email: 'pwbio@example.com', password: 'old-password-1' });
+  const before = (await User.findById(user._id).lean()).passwordHash;
+
+  // Biometric re-auth is enforced client-side, so the request carries no
+  // currentPassword — a valid session is enough.
+  const res = await request().put('/api/auth/password').set('Authorization', auth)
+    .send({ newPassword: 'brand-new-9' });
+  assert.equal(res.status, 200);
+
+  const after = (await User.findById(user._id).lean()).passwordHash;
+  assert.notEqual(after, before, 'hash was rotated');
+  const good = await request().post('/api/auth/login').send({ email: 'pwbio@example.com', password: 'brand-new-9' });
+  assert.equal(good.status, 200, 'new password signs in');
+});
+
+test('change password: fallback path verifies currentPassword when supplied', async () => {
+  const { user, auth } = await registerUser({ email: 'pwfallback@example.com', password: 'old-password-1' });
+  const before = (await User.findById(user._id).lean()).passwordHash;
+
+  const wrong = await request().put('/api/auth/password').set('Authorization', auth)
+    .send({ currentPassword: 'not-it-1', newPassword: 'brand-new-9' });
+  assert.equal(wrong.status, 401, 'wrong current password → 401');
+  assert.equal((await User.findById(user._id).lean()).passwordHash, before, 'hash unchanged after 401');
+
+  const short = await request().put('/api/auth/password').set('Authorization', auth)
+    .send({ newPassword: 'short' });
+  assert.equal(short.status, 400, 'sub-8-char new password → 400');
+
+  const ok = await request().put('/api/auth/password').set('Authorization', auth)
+    .send({ currentPassword: 'old-password-1', newPassword: 'brand-new-9' });
+  assert.equal(ok.status, 200, 'correct current password → 200');
+});
+
+// ── Change email (biometric-first, current-password fallback) ─────────────────
+
+test('change email: biometric path omits currentPassword and updates on the session alone', async () => {
+  const { user, auth } = await registerUser({ email: 'emailbio@example.com', password: 'old-password-1' });
+
+  const res = await request().put('/api/auth/email').set('Authorization', auth)
+    .send({ email: 'emailbio-new@example.com' });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.email, 'emailbio-new@example.com');
+  assert.equal((await User.findById(user._id).lean()).email, 'emailbio-new@example.com');
+});
+
+test('change email: fallback verifies currentPassword; rejects invalid + taken', async () => {
+  const { user, auth } = await registerUser({ email: 'emailfb@example.com', password: 'old-password-1' });
+  await registerUser({ email: 'occupied@example.com', password: 'whatever-1' });
+
+  const wrong = await request().put('/api/auth/email').set('Authorization', auth)
+    .send({ email: 'emailfb-new@example.com', currentPassword: 'not-it-1' });
+  assert.equal(wrong.status, 401, 'wrong current password → 401');
+  assert.equal((await User.findById(user._id).lean()).email, 'emailfb@example.com', 'unchanged');
+
+  const bad = await request().put('/api/auth/email').set('Authorization', auth)
+    .send({ email: 'not-an-email' });
+  assert.equal(bad.status, 400, 'malformed email → 400');
+
+  const taken = await request().put('/api/auth/email').set('Authorization', auth)
+    .send({ email: 'occupied@example.com' });
+  assert.equal(taken.status, 409, 'already-in-use email → 409');
+
+  const ok = await request().put('/api/auth/email').set('Authorization', auth)
+    .send({ email: 'emailfb-new@example.com', currentPassword: 'old-password-1' });
+  assert.equal(ok.status, 200, 'correct current password → 200');
+});
+
 // ── Sliding session refresh ───────────────────────────────────────────────────
 
 test('requireAuth: token past half-life gets X-Refreshed-Token; fresh token does not', async () => {
@@ -151,16 +242,25 @@ test('requireAuth: token past half-life gets X-Refreshed-Token; fresh token does
 
 // ── Passkey sign-in ceremonies ───────────────────────────────────────────────
 
-test('passkey challenge: no account or no passkeys → 404, missing email → 400', async () => {
-  const none = await request().post('/api/auth/passkey/challenge').send({});
-  assert.equal(none.status, 400);
-
+test('passkey challenge: username-first with no account or no passkeys → 404', async () => {
   const unknown = await request().post('/api/auth/passkey/challenge').send({ email: 'ghost@example.com' });
   assert.equal(unknown.status, 404);
 
   await registerUser({ email: 'nopasskey@example.com' });
   const bare = await request().post('/api/auth/passkey/challenge').send({ email: 'nopasskey@example.com' });
   assert.equal(bare.status, 404);
+});
+
+test('passkey challenge: no email → usernameless discoverable challenge (empty allowCredentials)', async () => {
+  // No email supplied: the platform's account picker chooses among the device's
+  // discoverable passkeys, so the server issues a challenge with no allowlist
+  // and no user bound to it (resolved from the assertion at /login). It never
+  // 404s, so it can't be used to probe which emails have passkeys.
+  const res = await request().post('/api/auth/passkey/challenge').send({});
+  assert.equal(res.status, 200);
+  assert.ok(res.body.challengeId);
+  assert.ok(res.body.challenge);
+  assert.deepEqual(res.body.allowCredentials, []);
 });
 
 test('passkey challenge: returns credentials with their E2EE PRF salts', async () => {
@@ -209,6 +309,33 @@ test('passkey login: unknown challengeId and forged assertions are rejected', as
   const replay = await request().post('/api/auth/passkey/login')
     .send({ challengeId: ch.body.challengeId, response: { id: 'test-credential-b64url' } });
   assert.equal(replay.status, 400, 'challenge is single-use');
+});
+
+test('passkey login: usernameless challenge resolves the user by credential id', async () => {
+  // A usernameless challenge binds no user; /login must resolve the account from
+  // the asserted credential id. An unknown credential → 401 "Unknown passkey"
+  // (no user matched); a known one gets past resolution to signature
+  // verification, which a forged assertion still fails.
+  const unknown = await request().post('/api/auth/passkey/challenge').send({});
+  assert.equal(unknown.status, 200);
+  const noMatch = await request().post('/api/auth/passkey/login')
+    .send({ challengeId: unknown.body.challengeId, response: { id: 'no-such-credential' } });
+  assert.equal(noMatch.status, 401, 'unresolvable credential → 401');
+
+  // 'test-credential-b64url' was planted on haspasskey@example.com earlier, so a
+  // usernameless assertion for it resolves that account (then fails on the
+  // forged signature, not on user resolution).
+  const known = await request().post('/api/auth/passkey/challenge').send({});
+  const forged = await request().post('/api/auth/passkey/login').send({
+    challengeId: known.body.challengeId,
+    response: {
+      id: 'test-credential-b64url', rawId: 'test-credential-b64url', type: 'public-key',
+      response: { clientDataJSON: 'e30', authenticatorData: 'AAAA', signature: 'AAAA' },
+      clientExtensionResults: {},
+    },
+  });
+  assert.ok([400, 401].includes(forged.status), `forged assertion rejected (got ${forged.status})`);
+  assert.notEqual(forged.body.error, 'Unknown passkey', 'user was resolved before verification');
 });
 
 test('passkey register-options: requires auth, then issues a challenge for this RP', async () => {

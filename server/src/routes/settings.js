@@ -11,15 +11,18 @@ const router = express.Router();
 router.use(requireAuth);
 
 // Settings shared across the household vs. personal to the user account.
-// Interests / aboutMe (notes) now live on the user's self Person record,
+// aboutMe (notes) now lives on the user's self Person record,
 // managed from the People page — not here. Notifications are no longer a global
 // setting — alerts are configured per item and delivered via push.
-// timezone is personal: alerts fire at each member's own 7am local, so a
+// timezone is personal: alerts fire at each member's own default alert hour
+// (9am unless they change it — see dayAlertTime) in their own local zone, so a
 // travelling or out-of-town member gets correct timing regardless of the
 // household's default zone.
 const SHARED   = ['homeAddress', 'groceryShoppingDay', 'groceryFrequency', 'groceryAnchor', 'grocerySections', 'reminderLeadDays'];
 // aiEnabled mirrors the device's AI consent toggle (middleware/aiConsent.js).
-const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone', 'phone', 'aiEnabled'];
+// dayAlertTime is the personal `HH:mm` default day-based alerts fire at (see
+// User.dayAlertTime); validated + normalized below.
+const PERSONAL = ['firstName', 'lastName', 'birthday', 'timezone', 'phone', 'aiEnabled', 'dayAlertTime'];
 
 router.get('/', async (req, res) => {
   const u = req.user;
@@ -34,11 +37,14 @@ router.get('/', async (req, res) => {
     phone: u.phone || '',
     timezone: u.timezone,
     aiEnabled: u.aiEnabled !== false,
+    // Personal default time (HH:mm) day-based alerts fire at; null = 9am default.
+    dayAlertTime: u.dayAlertTime ?? null,
     // shared (household)
     homeAddress: hh.homeAddress,
     groceryShoppingDay: hh.groceryShoppingDay, grocerySections: hh.grocerySections,
     groceryFrequency: hh.groceryFrequency ?? 'weekly', groceryAnchor: hh.groceryAnchor ?? null,
     reminderLeadDays: hh.reminderLeadDays,
+    householdTimezone: req.household?.timezone,
     householdMemberCount: memberCount,
     // Encrypted home-location blob (§9.1 P5) so the client can decrypt the address
     // after the drop. householdId lets the client bind the AAD.
@@ -52,6 +58,14 @@ router.put('/', async (req, res) => {
   try {
     const userUpdate = {};
     for (const key of PERSONAL) if (req.body[key] !== undefined) userUpdate[key] = req.body[key];
+    // Day-based alert default: an empty value clears it back to the 9am default
+    // (null); a non-empty value must be a real 24h `HH:mm` wall-clock time.
+    if (userUpdate.dayAlertTime !== undefined) {
+      const t = String(userUpdate.dayAlertTime).trim();
+      if (!t) userUpdate.dayAlertTime = null;
+      else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) return res.status(400).json({ error: 'Enter a valid time' });
+      else userUpdate.dayAlertTime = t;
+    }
     // Normalize the phone so it can be resolved by the sharing flows. An empty
     // string clears it; a non-empty value must be a plausible number.
     if (userUpdate.phone !== undefined) {
@@ -66,6 +80,15 @@ router.put('/', async (req, res) => {
 
     const hhUpdate = {};
     for (const key of SHARED) if (req.body[key] !== undefined) hhUpdate[key] = req.body[key];
+    // Household default zone (the scheduler's fallback for members who never
+    // opened the app). The client derives it from the home location — keyless,
+    // client-side, so it works for E2EE households whose address the server
+    // can't read. Must be a real IANA zone id.
+    if (req.body.householdTimezone !== undefined) {
+      const tz = String(req.body.householdTimezone);
+      try { new Intl.DateTimeFormat(undefined, { timeZone: tz }); hhUpdate.timezone = tz; }
+      catch { return res.status(400).json({ error: 'Invalid timezone' }); }
+    }
     // Bust cached geocoordinates when the home address changes
     if (hhUpdate.homeAddress !== undefined) { hhUpdate.lat = null; hhUpdate.lon = null; }
     // Encrypted home-location blob (§9.1 P5), when the client sealed it.

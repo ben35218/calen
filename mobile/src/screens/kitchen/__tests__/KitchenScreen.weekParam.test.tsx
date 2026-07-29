@@ -38,6 +38,11 @@ jest.mock('../../../api', () => ({ settingsApi: { get: jest.fn() } }));
 jest.mock('../PlannerPane', () => () => null);
 jest.mock('../GroceryPane', () => () => null);
 jest.mock('../../../lib/calendarPrefs', () => ({ useCalendarColors: () => ({ colors: { recipes: '#00897B' } }) }));
+// The Meals add-on gate: owned, so the screen under test renders its content.
+jest.mock('../../../lib/addons', () => ({
+  useOwnedAddons: () => ({ owned: new Set(['recipes']), loaded: true, isUnlocked: () => true }),
+}));
+jest.mock('../../plan/AddonLockedView', () => () => null);
 // Stub the shared UI kit so the test doesn't drag in native modules
 // (keyboard-controller / reanimated) that components/ui imports transitively.
 // KitchenScreen only uses Card + SegmentedControl, and the week label under
@@ -45,6 +50,7 @@ jest.mock('../../../lib/calendarPrefs', () => ({ useCalendarColors: () => ({ col
 jest.mock('../../../components/ui', () => ({
   Card: ({ children }: { children: React.ReactNode }) => children,
   SegmentedControl: () => null,
+  CenteredLoader: () => null,
 }));
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null, MaterialCommunityIcons: () => null }));
 

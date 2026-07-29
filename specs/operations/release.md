@@ -1,7 +1,7 @@
 ---
 title: Release & build
 status: current
-last-verified: c69bdfd (2026-07-20)
+last-verified: d96d6b3 (2026-07-27)
 code:
   - mobile/RELEASE.md
   - mobile/eas.json
@@ -59,12 +59,47 @@ A native **dev/store build** is required whenever native modules change
 - Complete a sandbox IAP → plan flips via the webhook.
 - Stream one assistant response (SSE).
 
+## Pre-launch checklist — E2EE completion (prod residue, audited 2026-07-27)
+
+New households are born encrypted, but a prod audit (2026-07-27, read-only)
+found **residual plaintext from the pre-mandate era** that must be cleared
+before launch. The steps are ordered and interlocked — each script refuses to
+run before its prerequisite (see the headers of
+`server/src/scripts/{reDropPlaintext,dropContentCollections}.js`):
+
+1. **Re-seal the two grandfathered households** (bendpolk@ and laithpolk@ —
+   both stamped `dropFieldsVersion` 0 of 4, household **name still plaintext**).
+   Requires an app session on each **owner's unlocked device**; the re-seal pass
+   (`dropMigration.reencryptForReDrop`) runs automatically on unlock and stamps
+   v4. No server-side substitute exists by design.
+2. **Re-drop each**: `node src/scripts/reDropPlaintext.js <hh> --commit`
+   (dry-run first) — nulls `Household.name` + the newer plaintext columns.
+3. **Drop the legacy content tables**:
+   `node src/scripts/dropContentCollections.js --commit` — removes the
+   pre-cutover rows the app no longer reads (~364 rows incl. deleted users'
+   plaintext categories/people and 6 legacy calendar events). Do NOT migrate
+   these rows into `Record` first — they lack `householdId` and are stale;
+   they are meant to die here.
+4. **Delete the 4 zero-member orphan households** (test/deleted-account
+   leftovers holding plaintext names + home addresses).
+5. **Re-run the residue audit** (all-clean = no plaintext content columns, all
+   e2eeActive households at `DROP_FIELDS_VERSION`), then **reconcile the
+   user-facing docs**: `docs/CRYPTO-SPEC.md` §7 + `docs/TRANSPARENCY.md` still
+   conservatively list the household name and `nextDueDate` as server-visible;
+   update once the residue is confirmed gone (tracked in
+   [crypto-e2ee.md](../platform/crypto-e2ee.md) open questions).
+6. **E2 — publish `shared/crypto` + `docs/CRYPTO-SPEC.md`** (repo/venue
+   decision pending).
+7. **E3 — third-party crypto audit** (ops/comms engagement; schedule near
+   launch against the final surface — see `docs/SIGNAL-PARITY-PLAN.md`).
+
 ## Deliberately NOT in scope
 
-- The old **"per-household plaintext drop"** go-live is obsolete: E2EE is now
-  mandatory and born-encrypted, so there is no plaintext to drop. (The former
+- The old **steady-state "per-household plaintext drop"** go-live is obsolete
+  for new households: E2EE is mandatory and born-encrypted. (The former
   `docs/RELEASE-SMOKE-CHECKLIST.md`, written around that flow, was retired
-  2026-07-20 — this spec supersedes it.)
+  2026-07-20 — this spec supersedes it.) The one-time pre-launch residue
+  cleanup above is what remains of it.
 - Cross-household trip-attachment encryption (design gap — see [trips.md](../features/trips.md)).
 
 ## Open questions

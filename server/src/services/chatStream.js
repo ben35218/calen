@@ -143,8 +143,8 @@ async function streamChat(res, opts) {
       });
 
       const final = await stream.finalMessage();
-      // Meter this call's tokens against the weekly budget (best-effort).
-      if (req) { try { tokensUsed += await recordTokens(req, final.usage, action); } catch { /* never break chat */ } }
+      // Record this call's tokens (analytics + credit debit; best-effort).
+      if (req) { try { tokensUsed += await recordTokens(req, final.usage, action, model); } catch { /* never break chat */ } }
 
       if (final.stop_reason === 'end_turn') break;
 

@@ -13,7 +13,9 @@ import { choresApi, peopleApi, Chore, Person } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import { useAuth } from '../../store/auth';
-import { RoundIconButton, SkeletonList, EmptyState, IconAvatar, CardRow, Fab } from '../../components/ui';
+import { CenteredLoader, RoundIconButton, SkeletonList, EmptyState, IconAvatar, CardRow, Fab } from '../../components/ui';
+import { useOwnedAddons } from '../../lib/addons';
+import AddonLockedView from '../plan/AddonLockedView';
 import CalenChatIcon from '../../components/CalenChatIcon';
 import { recurrenceLabel, mdiName } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -24,7 +26,19 @@ type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ChoresHome'>;
 
 // Mirrors client/src/views/ChoresDashboardView.vue — a dedicated chores list,
 // separate from the maintenance (items) flow.
+//
+// Free add-on gate: Chores is included with the app but OPT-IN (see
+// billing-plans spec) — until the household adds it from the Add-ons screen,
+// every entry path lands on the locked view.
 export default function ChoresScreen() {
+  const { isUnlocked, loaded } = useOwnedAddons();
+  const accent = useCalendarColors().colors.chores;
+  if (!loaded) return <CenteredLoader color={accent} />;
+  if (!isUnlocked('chores')) return <AddonLockedView addon="chores" />;
+  return <ChoresHome />;
+}
+
+function ChoresHome() {
   const navigation = useNavigation<Nav>();
   const { user } = useAuth();
   const accent = useCalendarColors().colors.chores;

@@ -5,7 +5,7 @@
 // re-entry gate is deliberate friction. Mirrors the web RecoveryCodeDialog.
 //
 // Single-purpose: capture the recovery code. Adding a passkey is a separate,
-// optional durability step handled in Privacy & data → Recovery methods (the
+// optional durability step handled in Privacy & security → Recovery methods (the
 // recovery-health card nudges password accounts there) — the modal no longer
 // pushes it inline, so a password signup isn't nagged to set up a passkey right
 // after choosing not to use one.

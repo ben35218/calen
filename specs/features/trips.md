@@ -1,7 +1,7 @@
 ---
 title: Trips
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65+ (2026-07-27); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29)
 code:
   - mobile/src/screens/trips/
   - server/src/routes/trips.js
@@ -24,13 +24,28 @@ participating households, and share a trip with people outside your household.
 
 ## Behavior (normative)
 
+### Add-on gating
+
+- The Trips home is gated by the **`trips` add-on** — a one-time household-wide
+  purchase specified in
+  [billing-plans.md](billing-plans.md#feature-calendar-add-ons). When the
+  household doesn't own it, `TripsScreen` renders the `AddonLockedView`
+  purchase interstitial instead of its content (trip detail/sharing sub-screens
+  are reached only through the gated home). Data is retained while locked and
+  reappears on purchase.
+
 ### Trips & itinerary
 
 - A `Trip` has name, destination (+ placeId/timezone), status, date range (or
   `candidateRanges` while planning), notes, color, `budget`, `baseCurrency`, and
   a `tripKeyVersion` (its own resource key, see Sharing).
+- Editing the **end** of any Starts/Ends pair (a trip's date range, a booking's
+  start/end, or a journey's Departs/Arrives) to at/before the start drags the
+  **start** back so the span is preserved — the shared `lib/datetime.ts`
+  (`startKeepingDuration`) rule described in calendar.md.
 - `TripItem`s are itinerary/booking entries (title, start/end, location, address,
-  confirmation, cost/currency, url/phone, notes, free-form `details`, and
+  confirmation, cost/currency, url/`phone` (entered via the shared `PhoneField`,
+  stored E.164), notes, free-form `details`, and
   encrypted `attachments`). CRUD: `POST/PUT/DELETE /trips/:id/items[...]`;
   `POST /trips/:id/items/from-confirmation` parses a booking; per-item
   `attachments` upload/download/delete endpoints exist.
@@ -55,6 +70,12 @@ participating households, and share a trip with people outside your household.
     **plaintext** and mints a share code. Steady-state writes then **strip
     ciphertext while shared** so an edit can't reintroduce data the collaborator
     can't read. Un-sharing (`DELETE /:id/share`) re-encrypts on next edit.
+- **Invite outreach is device-composed.** `PUT /trips/:id/share` only creates the
+  `TripInvitation` discovery record and returns the sharing list; the owner's own
+  Mail/Messages app sends the nudge (`mailto:`/`sms:` via mobile `lib/shareInvite`)
+  — the server sends no invite email or text. An invited **existing account** also
+  gets a push (`notify.pushToUser`, best-effort) plus the in-app inbox entry. Same
+  pattern as [households-sharing](households-sharing.md) and [calendars](calendar.md).
 - `TripInvitation` handles invite accept/decline (`GET /trips/invitations`,
   `.../accept`|`decline`). Collaborator management:
   `POST /:id/leave-share`, `DELETE /:id/collaborators/:userId`.

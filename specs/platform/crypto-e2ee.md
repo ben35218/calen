@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -54,7 +54,13 @@ identity key to the new device's transient key over the `/keys/link/*` relay
 new device triggers a security alert. A per-**household** symmetric key (**HDK**,
 versioned) is sealed to each member's public key (`crypto_box_seal` →
 `HouseholdKeyEnvelope`) and encrypts the household's records; per-file content
-keys are wrapped by the HDK. Shared calendars/trips get their own resource keys —
+keys are wrapped by the HDK. **File attachments (event/receipt/manual/trip) are
+sealed on-device before upload with no plaintext lane**: the client reads the
+picked file's bytes, encrypts them under a fresh per-file key, and uploads only
+the ciphertext (`application/octet-stream`) + the wrapped key — never the raw
+picked file. Uploading requires the unlocked session key; if it isn't loaded the
+upload is refused with an unlock prompt rather than falling back to plaintext.
+Shared calendars/trips get their own resource keys —
 a **CalendarKey** (D1) or **TripKey** (D2), wrapped in a `ResourceKeyEnvelope` —
 so a cross-household collaborator can read just that resource without the HDK; a
 record sealed under one carries a `ks`/`scope` discriminator so a reader picks
@@ -105,8 +111,14 @@ server-visible set, nothing more. See [operations/transparency.md](../operations
 Content leaves encryption **only** where a chosen feature requires it: things
 **shared outside** the household (trips/calendars — the collaborator lacks the
 HDK), **event invitations** to non-account people (a readable event snapshot for
-the email + `.ics`), and **AI phone calls** (the event essentials needed to place
-the call). Each is documented in the relevant feature spec and in
+the email + `.ics`), **AI phone calls** (the event essentials needed to place
+the call), and **scheduled occasion e-cards** (the recipient emails, the card
+message + framing lines, and any **attached card photos** — text stored
+plaintext in the `ECard` collection, photo files stored plaintext in the shared
+disk upload store — so the server can deliver the card by email on the
+occasion's date while the app is closed, like an email invitation; the form
+warns before saving).
+Each is documented in the relevant feature spec and in
 [operations/transparency.md](../operations/transparency.md).
 
 ## Verification

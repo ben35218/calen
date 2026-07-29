@@ -33,6 +33,7 @@ const settingsRoutes = require('./routes/settings');
 const odometerRoutes = require('./routes/odometer');
 const weatherRoutes = require('./routes/weather');
 const peopleRoutes = require('./routes/people');
+const ecardRoutes = require('./routes/ecards');
 const recipeRoutes = require('./routes/recipes');
 const recipeScheduleRoutes = require('./routes/recipeSchedule');
 const tripRoutes = require('./routes/trips');
@@ -62,22 +63,20 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 // CORS allowlist. The admin web app sends an Origin and must be allowed
 // explicitly; the native mobile app sends no Origin and is allowed through
 // (the `!origin` case). Set CORS_ORIGINS (comma-separated) for production;
-// CLIENT_URL is honored as a fallback. In non-production we always add the
-// local dev port for the admin app (5174) so it runs out of the box even when
-// CLIENT_URL pins a single origin.
-const DEV_ORIGINS = ['http://localhost:5174'];
+// CLIENT_URL is honored as a fallback. In non-production any localhost /
+// 127.0.0.1 origin is allowed so the admin dev server works even when Vite
+// bumps its port (5174 busy → 5175, 5176, ...).
+const isProd = process.env.NODE_ENV === 'production';
+const DEV_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 const configuredOrigins = (process.env.CORS_ORIGINS || process.env.CLIENT_URL || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
-const allowedOrigins =
-  process.env.NODE_ENV === 'production'
-    ? (configuredOrigins.length ? configuredOrigins : DEV_ORIGINS)
-    : [...new Set([...configuredOrigins, ...DEV_ORIGINS])];
 app.use(cors({
   origin(origin, cb) {
     // No Origin header → native app / curl / same-origin → allow.
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    if (!origin || configuredOrigins.includes(origin)) return cb(null, true);
+    if (!isProd && DEV_ORIGIN_RE.test(origin)) return cb(null, true);
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
@@ -125,6 +124,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/vehicles/:itemId/odometer', odometerRoutes);
 app.use('/api/weather', weatherRoutes);
 app.use('/api/people', peopleRoutes);
+app.use('/api/ecards', ecardRoutes);
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/recipe-schedule', recipeScheduleRoutes);
 app.use('/api/trips', tripRoutes);

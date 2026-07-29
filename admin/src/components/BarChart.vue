@@ -8,7 +8,8 @@
           <title>{{ labels[i] }}: {{ v }}</title>
         </rect>
       </g>
-      <line :x1="0" :y1="height - axis" :x2="width" :y2="height - axis" stroke="#e0e0e0" stroke-width="1" />
+      <!-- Neutral mid-gray so the axis reads on both light and dark themes. -->
+      <line :x1="0" :y1="height - axis" :x2="width" :y2="height - axis" stroke="rgba(128,128,128,0.5)" stroke-width="1" />
     </svg>
     <div class="d-flex" :style="{ width: width + 'px' }">
       <div v-for="(l, i) in labels" :key="i" class="text-center text-caption text-medium-emphasis"

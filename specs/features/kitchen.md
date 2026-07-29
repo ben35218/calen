@@ -1,7 +1,7 @@
 ---
 title: Kitchen (recipes, meal planning, grocery)
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: d96d6b3 (2026-07-24)
 code:
   - mobile/src/screens/kitchen/
   - server/src/routes/recipes.js
@@ -22,6 +22,16 @@ A recipe box, a weekly meal planner, auto-generated grocery lists, and a
 hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
 
 ## Behavior (normative)
+
+### Add-on gating
+
+- The Kitchen home is gated by the **`recipes` (Meals) add-on** — a one-time
+  household-wide purchase specified in
+  [billing-plans.md](billing-plans.md#feature-calendar-add-ons). When the
+  household doesn't own it, `KitchenScreen` renders the `AddonLockedView`
+  purchase interstitial instead of its content (sub-screens are reached only
+  through the gated home). Data is retained while locked and reappears on
+  purchase; grocery-shopping calendar markers lock with the Meals feature.
 
 ### Recipes
 

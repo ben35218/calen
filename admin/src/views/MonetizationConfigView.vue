@@ -2,81 +2,84 @@
   <v-container class="py-6" style="max-width: 1100px">
     <h1 class="text-h5 font-weight-bold mb-1">Monetization config</h1>
     <p class="text-body-2 text-medium-emphasis mb-6">
-      Single source of truth for tier prices, quotas, per-call costs, models, and the activity curve.
-      Edits take effect on the server within ~30s of saving.
+      Single source of truth for the app unlock, the prepaid credit economy, per-call costs,
+      models and guards. Edits take effect on the server within ~30s of saving.
     </p>
 
     <div v-if="loading" class="text-center py-12"><v-progress-circular indeterminate color="primary" /></div>
 
-    <template v-else-if="config">
-      <!-- ===================== TIERS ===================== -->
+    <v-alert v-else-if="!config" type="error" variant="tonal" rounded="lg">
+      Couldn't load the monetization config.
+      <template #append><v-btn variant="text" @click="load">Retry</v-btn></template>
+    </v-alert>
+
+    <template v-else>
+      <!-- ===================== CREDITS ===================== -->
       <v-card class="mb-5" rounded="lg" variant="outlined">
-        <v-card-title class="text-subtitle-1 font-weight-bold">Tiers, prices &amp; quotas</v-card-title>
+        <v-card-title class="text-subtitle-1 font-weight-bold">AI credits</v-card-title>
         <v-card-text>
-          <div class="tier-grid">
-            <div class="th"></div>
-            <div v-for="t in TIERS" :key="'h'+t" class="th text-capitalize">{{ t }}</div>
+          <div class="d-flex flex-wrap mb-4" style="gap: 12px">
+            <v-text-field v-model.number="config.credits.margin" label="Margin multiplier" type="number" step="0.1" density="compact" variant="outlined" style="max-width: 170px" hide-details />
+            <v-text-field v-model.number="config.credits.callRatePerMinute" label="Call raw cost ($/min)" type="number" step="0.01" density="compact" variant="outlined" style="max-width: 190px" hide-details />
+            <v-text-field v-model.number="config.credits.starterCredits" label="Starter credits (new user)" type="number" density="compact" variant="outlined" style="max-width: 210px" hide-details />
+            <v-text-field v-model.number="config.credits.lowBalanceThreshold" label="Low-balance threshold" type="number" density="compact" variant="outlined" style="max-width: 190px" hide-details />
+          </div>
 
-            <div class="rl">Label</div>
-            <v-text-field v-for="t in TIERS" :key="'lbl'+t" v-model="config.tiers[t].label" density="compact" variant="outlined" hide-details />
-
-            <div class="rl">Price ($/mo)</div>
-            <v-text-field v-for="t in TIERS" :key="'pr'+t" v-model.number="config.tiers[t].price" type="number" step="0.01" density="compact" variant="outlined" hide-details />
-
-            <div class="rl font-weight-bold">Weekly token limit</div>
+          <div class="text-subtitle-2 mb-2">Token raw cost ($ / 1M tokens, blended, by model family)</div>
+          <div class="d-flex flex-wrap mb-4" style="gap: 12px">
             <v-text-field
-              v-for="t in TIERS" :key="'wtl'+t"
-              :model-value="quotaDisplay(config.tiers[t].weeklyTokenLimit)"
-              @update:model-value="v => setTokenLimit(t, v)"
-              placeholder="∞" density="compact" variant="outlined" hide-details />
+              v-for="(_, fam) in config.credits.tokenRatesPer1M" :key="fam"
+              v-model.number="config.credits.tokenRatesPer1M[fam]"
+              :label="fam" type="number" step="0.5" density="compact" variant="outlined"
+              style="max-width: 150px" hide-details />
+          </div>
 
-            <div class="rl font-weight-bold">Weekly call limit (min)</div>
-            <v-text-field
-              v-for="t in TIERS" :key="'wcl'+t"
-              :model-value="callMinutesDisplay(config.tiers[t].weeklyCallSecondsLimit)"
-              @update:model-value="v => setCallMinutes(t, v)"
-              placeholder="∞" density="compact" variant="outlined" hide-details />
-
-            <template v-for="a in ACTIONS" :key="'row'+a">
-              <div class="rl text-medium-emphasis">{{ actionLabel(a) }} count</div>
-              <v-text-field
-                v-for="t in TIERS" :key="a+t"
-                :model-value="quotaDisplay(config.tiers[t].quotas[a])"
-                @update:model-value="v => setQuota(t, a, v)"
-                placeholder="∞" density="compact" variant="outlined" hide-details />
+          <div class="text-subtitle-2 mb-2">Credit packs (consumable IAPs)</div>
+          <div class="pack-grid">
+            <div class="th">Product id</div><div class="th">Label</div><div class="th">Price ($)</div><div class="th">Credits</div>
+            <template v-for="(pack, pid) in config.credits.packs" :key="pid">
+              <div class="rl">{{ pid }}</div>
+              <v-text-field v-model="pack.label" density="compact" variant="outlined" hide-details />
+              <v-text-field v-model.number="pack.price" type="number" step="0.01" density="compact" variant="outlined" hide-details />
+              <v-text-field v-model.number="pack.credits" type="number" density="compact" variant="outlined" hide-details />
             </template>
           </div>
           <p class="text-caption text-medium-emphasis mt-2">
-            <strong>Weekly token limit</strong> is the enforced cap for text AI (total Claude tokens per week; blank = unlimited).
-            <strong>Weekly call limit</strong> is a separate cap for assistant phone calls, in minutes of connected call time per week
-            (blank = unlimited; ~$0.08/min in Vapi cost). The per-action <em>counts</em> below are analytics only and no longer cap usage.
+            1 credit = $0.01 retail. Usage debits at raw cost × margin (2.0 = a 100% markup), so a
+            pack's raw-cost coverage is <em>credits ÷ (100 × margin)</em> dollars. Pack prices here
+            are display fallbacks — the store's localized price is authoritative; the credited
+            amount is what the webhook grants. Product ids must match App Store Connect.
           </p>
         </v-card-text>
       </v-card>
 
-      <!-- ===================== COSTS / MODELS / MISC ===================== -->
+      <!-- ===================== UNLOCK / COSTS / MODELS / ADMIN ===================== -->
       <div class="d-flex flex-wrap" style="gap: 16px">
+        <v-card class="flex-1-1" rounded="lg" variant="outlined" style="min-width: 320px">
+          <v-card-title class="text-subtitle-1 font-weight-bold">App unlock</v-card-title>
+          <v-card-text>
+            <v-text-field v-model="config.unlock.productId" label="Store product id" density="compact" variant="outlined" class="mb-1" hide-details />
+            <v-text-field v-model.number="config.unlock.price" label="Price ($, display fallback)" type="number" step="0.01" density="compact" variant="outlined" hide-details />
+            <p class="text-caption text-medium-emphasis mt-1">
+              The one-time per-user purchase that opens the app (non-consumable, RevenueCat
+              entitlement <code>app_unlock</code>).
+            </p>
+          </v-card-text>
+        </v-card>
+
         <v-card class="flex-1-1" rounded="lg" variant="outlined" style="min-width: 320px">
           <v-card-title class="text-subtitle-1 font-weight-bold">Per-call cost to us ($)</v-card-title>
           <v-card-text>
             <v-text-field v-for="(_, k) in config.costs" :key="k" v-model.number="config.costs[k]" :label="k" type="number" step="0.001" density="compact" variant="outlined" class="mb-1" hide-details />
+            <p class="text-caption text-medium-emphasis mt-1">Reference numbers only — billing uses the credit rates above.</p>
           </v-card-text>
         </v-card>
 
         <v-card class="flex-1-1" rounded="lg" variant="outlined" style="min-width: 320px">
-          <v-card-title class="text-subtitle-1 font-weight-bold">Models, fees &amp; guards</v-card-title>
+          <v-card-title class="text-subtitle-1 font-weight-bold">Models, guards &amp; admin</v-card-title>
           <v-card-text>
-            <v-text-field v-model="config.models.freeChat" label="Free-tier chat model" density="compact" variant="outlined" class="mb-1" hide-details />
-            <v-text-field v-model="config.models.paidChat" label="Paid-tier chat model" density="compact" variant="outlined" class="mb-3" hide-details />
-            <v-text-field v-model.number="config.fees.pct" label="Processor fee %" type="number" step="0.1" density="compact" variant="outlined" class="mb-1" hide-details />
-            <v-text-field v-model.number="config.fees.flat" label="Processor flat fee $" type="number" step="0.01" density="compact" variant="outlined" class="mb-1" hide-details />
-            <v-text-field v-model.number="config.guards.mapsPerDay" label="Maps calls / household / day" type="number" density="compact" variant="outlined" hide-details />
-          </v-card-text>
-        </v-card>
-
-        <v-card class="flex-1-1" rounded="lg" variant="outlined" style="min-width: 320px">
-          <v-card-title class="text-subtitle-1 font-weight-bold">Admin accounts</v-card-title>
-          <v-card-text>
+            <v-text-field v-model="config.models.paidChat" label="Chat model" density="compact" variant="outlined" class="mb-3" hide-details />
+            <v-text-field v-model.number="config.guards.mapsPerDay" label="Maps calls / household / day" type="number" density="compact" variant="outlined" class="mb-3" hide-details />
             <v-switch
               v-model="config.admin.unlimitedAi"
               color="primary"
@@ -84,126 +87,78 @@
               hide-details
               label="Admins get unlimited AI" />
             <p class="text-caption text-medium-emphasis mt-1">
-              When on, users with the <strong>admin</strong> role skip the weekly AI token and
-              call-time budgets (for internal team use and testing). Turn off to meter admins
-              exactly like everyone else. Usage is always tracked either way.
+              When on, users with the <strong>admin</strong> role skip the credit-balance checks
+              (for internal team use and testing). Usage is tracked and debited either way.
             </p>
           </v-card-text>
         </v-card>
       </div>
 
-      <!-- ===================== ACTIVITY CURVE ===================== -->
+      <!-- ===================== ADD-ONS ===================== -->
       <v-card class="my-5" rounded="lg" variant="outlined">
-        <v-card-title class="text-subtitle-1 font-weight-bold">Activity curve (calls / household / month)</v-card-title>
+        <v-card-title class="text-subtitle-1 font-weight-bold">Feature-calendar add-ons</v-card-title>
         <v-card-text>
-          <v-text-field v-model.number="config.activity.heavyMonths" label="Heavy (onboarding) months" type="number" density="compact" variant="outlined" style="max-width: 240px" class="mb-3" hide-details />
-          <div v-for="phase in ['heavy','steady']" :key="phase" class="mb-4">
-            <div class="text-subtitle-2 text-capitalize mb-2">{{ phase }} months</div>
-            <div class="tier-grid">
-              <div class="th"></div>
-              <div v-for="t in TIERS" :key="phase+'h'+t" class="th text-capitalize">{{ t }}</div>
-              <template v-for="a in PROJ_ACTIONS" :key="phase+a">
-                <div class="rl">{{ actionLabel(a) }}</div>
-                <v-text-field v-for="t in TIERS" :key="phase+a+t" v-model.number="config.activity[phase][t][a]" type="number" density="compact" variant="outlined" hide-details />
-              </template>
-            </div>
+          <div class="pack-grid">
+            <div class="th">Key</div><div class="th">Label</div><div class="th">Price ($)</div><div class="th">Description</div>
+            <template v-for="(item, key) in config.addons.items" :key="key">
+              <div class="rl">{{ key }}</div>
+              <v-text-field v-model="item.label" density="compact" variant="outlined" hide-details />
+              <v-text-field v-model.number="item.price" type="number" step="0.01" density="compact" variant="outlined" hide-details />
+              <v-text-field v-model="item.description" density="compact" variant="outlined" hide-details />
+            </template>
+            <div class="rl">bundle</div>
+            <v-text-field v-model="config.addons.bundle.label" density="compact" variant="outlined" hide-details />
+            <v-text-field v-model.number="config.addons.bundle.price" type="number" step="0.01" density="compact" variant="outlined" hide-details />
+            <v-text-field v-model="config.addons.bundle.description" density="compact" variant="outlined" hide-details />
           </div>
-        </v-card-text>
-      </v-card>
-
-      <!-- ===================== PROJECTION ===================== -->
-      <v-card class="mb-5" rounded="lg" variant="tonal" color="primary">
-        <v-card-title class="text-subtitle-1 font-weight-bold">Year-1 projection (per household)</v-card-title>
-        <v-card-text>
-          <v-table density="comfortable" class="bg-transparent">
-            <thead>
-              <tr><th>Tier</th><th class="text-right">Heavy mo. profit</th><th class="text-right">Steady mo. profit</th><th class="text-right">Year-1 profit</th><th class="text-right">Margin</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="p in projection" :key="p.tier">
-                <td class="text-capitalize font-weight-medium">{{ p.tier }}</td>
-                <td class="text-right">{{ money(p.heavyProfit) }}</td>
-                <td class="text-right">{{ money(p.steadyProfit) }}</td>
-                <td class="text-right font-weight-bold">{{ money(p.annualProfit) }}</td>
-                <td class="text-right">{{ p.margin == null ? '—' : p.margin + '%' }}</td>
-              </tr>
-            </tbody>
-          </v-table>
-          <p class="text-caption mt-1">Projection only — uses the per-call costs and activity curve above. Not used for billing.</p>
+          <p class="text-caption text-medium-emphasis mt-2">
+            One-time household-wide purchases. Prices are display fallbacks — the store's localized
+            price is authoritative.
+          </p>
         </v-card-text>
       </v-card>
 
       <div class="d-flex align-center mb-8" style="gap: 12px">
-        <v-btn color="primary" :loading="saving" @click="save">Save config</v-btn>
-        <span v-if="savedAt" class="text-caption text-success">Saved {{ savedAt }}</span>
+        <v-btn color="primary" :disabled="!changes.length" @click="openReview">
+          Review &amp; save<template v-if="changes.length"> ({{ changes.length }})</template>
+        </v-btn>
+        <span v-if="!changes.length && savedAt" class="text-caption text-success">Saved {{ savedAt }}</span>
+        <span v-else-if="changes.length" class="text-caption text-warning">Unsaved changes</span>
       </div>
     </template>
+
+    <!-- Review the exact diff before it hits the live economy. -->
+    <ConfirmDialog
+      v-model="reviewOpen" title="Save monetization config?" confirm-text="Save config"
+      :loading="saving" @confirm="save">
+      <p class="text-body-2 mb-3">These values change billing for every user within ~30 seconds:</p>
+      <ul class="text-body-2 pl-4">
+        <li v-for="c in changes" :key="c.path">
+          <code>{{ c.path }}</code>: {{ c.from }} → <strong>{{ c.to }}</strong>
+        </li>
+      </ul>
+    </ConfirmDialog>
+
+    <SnackbarHost :snack="snack" :timeout="4000" />
   </v-container>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { onBeforeRouteLeave } from 'vue-router';
 import { monetizationApi } from '../services/api';
+import { useSnackbar } from '../composables/useSnackbar';
+import SnackbarHost from '../components/SnackbarHost.vue';
+import ConfirmDialog from '../components/ConfirmDialog.vue';
 
-const TIERS = ['free', 'premium', 'unlimited'];
-const ACTIONS = ['chat', 'scan', 'generation', 'manualParse', 'aiHelper'];
-const PROJ_ACTIONS = ['chat', 'scan', 'generation', 'manualParse'];
+const { snack, success, error, fromError } = useSnackbar();
 
 const loading = ref(true);
 const saving = ref(false);
 const savedAt = ref('');
 const config = ref(null);
-
-function actionLabel(a) {
-  return { chat: 'Chat', scan: 'Scan', generation: 'Generation', manualParse: 'Manual parse', aiHelper: 'AI helper' }[a] || a;
-}
-function quotaDisplay(v) { return v === null || v === undefined ? '' : String(v); }
-function setQuota(tier, action, v) {
-  const trimmed = String(v).trim();
-  config.value.tiers[tier].quotas[action] = trimmed === '' ? null : Number(trimmed);
-}
-function setTokenLimit(tier, v) {
-  const trimmed = String(v).trim();
-  config.value.tiers[tier].weeklyTokenLimit = trimmed === '' ? null : Number(trimmed);
-}
-// The call budget is stored in seconds but edited in whole minutes for readability.
-function callMinutesDisplay(seconds) {
-  return seconds === null || seconds === undefined ? '' : String(Math.round(seconds / 60));
-}
-function setCallMinutes(tier, v) {
-  const trimmed = String(v).trim();
-  config.value.tiers[tier].weeklyCallSecondsLimit = trimmed === '' ? null : Math.round(Number(trimmed) * 60);
-}
-
-const money = (n) => (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2);
-
-const projection = computed(() => {
-  if (!config.value) return [];
-  const c = config.value;
-  const heavyMonths = Number(c.activity.heavyMonths) || 0;
-  const steadyMonths = 12 - heavyMonths;
-  const costOf = (tier, calls) => {
-    const chatCost = tier === 'free' ? c.costs.haikuChat : c.costs.sonnetChat;
-    return (calls.chat || 0) * chatCost
-      + (calls.scan || 0) * c.costs.scan
-      + (calls.generation || 0) * c.costs.generation
-      + (calls.manualParse || 0) * c.costs.manualParse
-      + Number(c.costs.mapsMonthly || 0);
-  };
-  return TIERS.map((tier) => {
-    const price = Number(c.tiers[tier].price) || 0;
-    const net = price > 0 ? price - (price * (c.fees.pct / 100) + Number(c.fees.flat)) : 0;
-    const heavyCost = costOf(tier, c.activity.heavy[tier]);
-    const steadyCost = costOf(tier, c.activity.steady[tier]);
-    const heavyProfit = net - heavyCost;
-    const steadyProfit = net - steadyCost;
-    const annualRevenue = net * 12;
-    const annualCost = heavyMonths * heavyCost + steadyMonths * steadyCost;
-    const annualProfit = annualRevenue - annualCost;
-    const margin = annualRevenue > 0 ? Math.round((annualProfit / annualRevenue) * 100) : null;
-    return { tier, heavyProfit, steadyProfit, annualProfit, margin };
-  });
-});
+const reviewOpen = ref(false);
+let baseline = null; // deep snapshot of the last loaded/saved state
 
 async function load() {
   loading.value = true;
@@ -211,33 +166,119 @@ async function load() {
     const { data } = await monetizationApi.get();
     if (!data.admin) data.admin = { unlimitedAi: true }; // predates the admin-policy section
     config.value = data;
+    baseline = JSON.parse(JSON.stringify(editable(data)));
+  } catch (e) {
+    config.value = null;
+    fromError(e, 'Failed to load monetization config');
   } finally {
     loading.value = false;
   }
 }
 
+function editable(c) {
+  const { credits, unlock, costs, models, guards, admin, addons } = c;
+  return { credits, unlock, costs, models, guards, admin, addons };
+}
+
+// Leaf-level diff against the baseline, shown in the review dialog and used
+// for dirty-state tracking.
+function diffLeaves(a, b, prefix = '', out = []) {
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const k of keys) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    const av = a?.[k];
+    const bv = b?.[k];
+    if (av && bv && typeof av === 'object' && typeof bv === 'object') {
+      diffLeaves(av, bv, path, out);
+    } else if (JSON.stringify(av) !== JSON.stringify(bv)) {
+      out.push({ path, from: String(av ?? '—'), to: String(bv ?? '—') });
+    }
+  }
+  return out;
+}
+
+const changes = computed(() => {
+  if (!config.value || !baseline) return [];
+  return diffLeaves(baseline, editable(config.value));
+});
+
+// The config is the live economy — refuse to save obviously broken numbers.
+function validate(c) {
+  const errors = [];
+  const num = (v) => typeof v === 'number' && Number.isFinite(v);
+  if (!num(c.credits.margin) || c.credits.margin <= 0) errors.push('Margin multiplier must be > 0');
+  if (!num(c.credits.callRatePerMinute) || c.credits.callRatePerMinute < 0) errors.push('Call rate must be ≥ 0');
+  if (!Number.isInteger(c.credits.starterCredits) || c.credits.starterCredits < 0) errors.push('Starter credits must be a whole number ≥ 0');
+  if (!num(c.credits.lowBalanceThreshold) || c.credits.lowBalanceThreshold < 0) errors.push('Low-balance threshold must be ≥ 0');
+  for (const [fam, rate] of Object.entries(c.credits.tokenRatesPer1M || {})) {
+    if (!num(rate) || rate < 0) errors.push(`Token rate "${fam}" must be ≥ 0`);
+  }
+  for (const [pid, pack] of Object.entries(c.credits.packs || {})) {
+    if (!pack.label?.trim()) errors.push(`Pack "${pid}" needs a label`);
+    if (!num(pack.price) || pack.price < 0) errors.push(`Pack "${pid}" price must be ≥ 0`);
+    if (!Number.isInteger(pack.credits) || pack.credits <= 0) errors.push(`Pack "${pid}" credits must be a whole number > 0`);
+  }
+  if (!num(c.unlock.price) || c.unlock.price < 0) errors.push('Unlock price must be ≥ 0');
+  for (const [k, v] of Object.entries(c.costs || {})) {
+    if (!num(v) || v < 0) errors.push(`Cost "${k}" must be ≥ 0`);
+  }
+  if (!Number.isInteger(c.guards.mapsPerDay) || c.guards.mapsPerDay < 0) errors.push('Maps/day guard must be a whole number ≥ 0');
+  const addonRows = { ...(c.addons?.items || {}), bundle: c.addons?.bundle };
+  for (const [key, item] of Object.entries(addonRows)) {
+    if (!item) continue;
+    if (!item.label?.trim()) errors.push(`Add-on "${key}" needs a label`);
+    if (!num(item.price) || item.price < 0) errors.push(`Add-on "${key}" price must be ≥ 0`);
+  }
+  return errors;
+}
+
+function openReview() {
+  const errors = validate(editable(config.value));
+  if (errors.length) {
+    error(errors[0] + (errors.length > 1 ? ` (+${errors.length - 1} more)` : ''));
+    return;
+  }
+  reviewOpen.value = true;
+}
+
 async function save() {
   saving.value = true;
   try {
-    const { tiers, costs, models, activity, fees, guards, admin } = config.value;
-    await monetizationApi.update({ tiers, costs, models, activity, fees, guards, admin });
+    await monetizationApi.update(editable(config.value));
+    baseline = JSON.parse(JSON.stringify(editable(config.value)));
     savedAt.value = new Date().toLocaleTimeString();
+    reviewOpen.value = false;
+    success('Config saved');
+  } catch (e) {
+    fromError(e, 'Failed to save config');
   } finally {
     saving.value = false;
   }
 }
 
-onMounted(load);
+// Unsaved-changes guards: in-app navigation and tab close.
+onBeforeRouteLeave(() => {
+  if (!changes.value.length) return true;
+  return window.confirm('You have unsaved monetization changes. Leave without saving?');
+});
+function beforeUnload(e) {
+  if (changes.value.length) e.preventDefault();
+}
+onMounted(() => {
+  window.addEventListener('beforeunload', beforeUnload);
+  load();
+});
+onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload));
 </script>
 
 <style scoped>
-.tier-grid {
+.pack-grid {
   display: grid;
-  grid-template-columns: 160px repeat(3, 1fr);
+  grid-template-columns: 140px 1fr 120px 1fr;
   gap: 8px 12px;
   align-items: center;
 }
-.tier-grid .th { font-weight: 600; font-size: 0.85rem; }
-.tier-grid .rl { font-size: 0.85rem; color: rgba(var(--v-theme-on-surface), 0.6); }
+.pack-grid .th { font-weight: 600; font-size: 0.85rem; }
+.pack-grid .rl { font-size: 0.85rem; color: rgba(var(--v-theme-on-surface), 0.6); }
 .flex-1-1 { flex: 1 1 0; }
 </style>

@@ -1,14 +1,15 @@
 ---
 title: AI assistant (Calen)
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65 (2026-07-29)
 code:
   - mobile/src/screens/chat/
+  - mobile/src/hooks/{useChat,useDictation}.ts
   - server/src/routes/{calendarChat,choresChat,maintenanceChat,maintenancePlanChat,tripsChat}.js
   - server/src/routes/{calls,formAssist}.js
-  - server/src/services/{chatStream,aiUsage,phoneCalls}.js
+  - server/src/services/{chatStream,aiUsage,phoneCalls,dnc,phone}.js
   - server/src/middleware/aiConsent.js
-  - server/src/models/PhoneCall.js
+  - server/src/models/{PhoneCall,DncEntry}.js
   - mobile/src/lib/aiPayload.ts
 tests:
   - server/src/test/aiPrivacy.integration.test.js
@@ -43,11 +44,29 @@ reference).
   streamed turn (`services/chatStream.js`); `POST /form-assist` powers one-shot
   "fill this form from a photo/text" flows.
 
+### Voice input — dictation (normative)
+
+The shared `ChatScreen` lets the user **dictate** to Calen on every assistant. A
+mic button in the composer (`hooks/useDictation.ts`) starts on-device speech
+recognition (`requiresOnDeviceRecognition: true`, `expo-speech-recognition`); the
+live transcript streams into the text field so the user reviews/edits before
+sending. **Nothing is sent until they tap send** — it is ordinary typed input by
+voice, running through the exact same `POST /<area>/chat` request (same E2EE-safe
+`buildBody`, same tools, same token metering) with **no new server path and no
+audio leaving the device**. Microphone + speech-recognition permission is
+requested on first use; denial surfaces a settings prompt, not a crash. Dictation
+is transcription only — it adds no cost of its own; a sent message costs the same
+as if it were typed. `aiEnabled` hard-gates the surface. (There is no hands-free
+"voice mode" / spoken read-back — that was removed.)
+
 ### Consent & data minimization (normative)
 
 - AI is **consent-gated**: the `aiEnabled` / `aiUsePersonalInfo` prefs hard-gate
   every surface — with AI off, the assistant is unusable and scans/extracts are
-  blocked. Every AI surface shows a "sent to Anthropic" indicator.
+  blocked. Every AI surface shows a "sent to Anthropic" indicator. Both toggles
+  live in the **Artificial intelligence** card under Profile → Privacy & data
+  (`PrivacyDataScreen`), alongside the other privacy controls — not on the
+  billing/Credits screen.
   `aiEnabled` is **also enforced server-side**: the pref syncs to
   `User.aiEnabled` and `middleware/aiConsent.js` returns 403 on every AI route
   when it is off, so a client that bypasses the app UI cannot spend AI actions.
@@ -68,7 +87,7 @@ reference).
 - **Friends & family are name-only.** For people of type `family`/`friend`, no
   field other than the name (plus a family/friend grouping and an is-you marker)
   may appear in any AI payload — no birthdays, ages, addresses, relationships,
-  interests, or notes. Consequences accepted by design: the assistant cannot see
+  or notes. Consequences accepted by design: the assistant cannot see
   the birthdays calendar, and form-assist cannot fill a friend's address.
   **Professionals (`service` contacts) share the business details the user saved
   them for** — service (their `relationship`, e.g. "plumber"), business name, and
@@ -130,6 +149,40 @@ reference).
   Action screen (`shareContact` on `POST /calls/event-action`) or tells the chat
   assistant to (the `call_business` tool's `shareContactDetails` input). Default
   is off; the legacy `/calls/cancel-event` route never sends them.
+- **Recipients can stop future automated calls (do-not-call).** Every outbound
+  number is checked against a **platform-wide suppression list** before dialing
+  (`services/dnc.js` `isSuppressed`, called inside `placeCall`). A suppressed
+  number is refused on every entry point — `/calls/cancel-event`,
+  `/calls/event-action`, and the chat `call_business` tool — with a clear
+  do-not-call error and **no call is placed** (`DoNotCallError`, `code:
+  'DNC_SUPPRESSED'`). Scope is by phone number, not by household: the recipient's
+  right to be left alone is against Calen as a whole, so one opt-out blocks every
+  household. The agent also **discloses it is an AI assistant** at the start of
+  every call (the cancel/reschedule intros), so the recipient knows what they're
+  opting out of.
+- **How a number gets suppressed.** (1) **On the call** — if the person asks not
+  to be called again / to be removed / to stop calling, the agent acknowledges
+  and invokes the `record_do_not_call` Vapi function tool, which posts to the
+  unauthenticated, shared-secret `POST /calls/vapi/webhook` (`X-Vapi-Secret`) and
+  suppresses **the number actually dialed** (`call.customer.number`, taken
+  server-side — never a model-supplied number) immediately. (2) **Backstop** —
+  a `structuredDataPlan.doNotCallRequested` flag on the call analysis is honored
+  on the next lazy `PhoneCall` refresh (`applyVapiToRow`), covering the case where
+  the real-time webhook isn't wired (no `PUBLIC_BASE_URL`/`RENDER_EXTERNAL_URL`).
+  (3) **Admin/support** — an admin adds/releases numbers from the portal
+  (`GET/POST /api/admin/dnc`, `DELETE /api/admin/dnc/:id`). (4) **Inbound SMS
+  `STOP`** is a designed-in source (`source: 'inbound-sms'`) but deferred until a
+  messaging-capable number exists — the app has no server-side SMS provider
+  today (the Vapi number is voice-only; event SMS invites are sent from the
+  organizer's own device).
+- **The suppression list is a deliberate plaintext-exception operational model**
+  (`DncEntry`): it must be server-queryable before any call, so it can't be
+  sealed. It stores an **HMAC-SHA256 of the E.164 number** (keyed by
+  `DNC_HASH_SECRET`, falling back to `JWT_SECRET` outside production) as the
+  match key, plus the **last four digits** for admin display — never the raw
+  number. Suppress is idempotent (upsert on the hash); adds and releases are
+  audited (`dnc_suppressed`, `dnc_released`, actor + source + last4 in meta,
+  never the full number).
 - **Resolving the outcome** the user acts on the captured result, they don't just
   dismiss it. The primary place to resolve is **the event view** (the call-status
   card), so no drill-through is needed; the same actions also exist in the call
@@ -154,19 +207,22 @@ reference).
 
 ### Usage metering
 
-- Token usage is recorded against a weekly budget: `services/aiUsage.js` patches
-  the Anthropic SDK so one-shot calls auto-record; streaming records in
-  `chatStream.js`. Limits gate by plan — see
+- Every AI call is priced into the caller's **prepaid credit balance**:
+  `services/aiUsage.js` patches the Anthropic SDK so one-shot calls auto-record
+  (token count + model id → credit debit); streaming records in
+  `chatStream.js`, passing the stream's model. Enforcement is the balance
+  pre-check → `402 CREDITS_EXHAUSTED`; weekly counters survive as analytics
+  only — see [billing-plans.md](billing-plans.md).
+- **Phone calls debit the same credit balance at a per-second call rate** —
+  Vapi bills calls per-minute and the LLM tokens are negligible, so seconds are
+  priced at `credits.callRatePerMinute` instead of the token rate. When a call
+  ends, `phoneCalls.js` charges its `durationSeconds` once
+  (`recordCallSecondsById`; `PhoneCall.metered` guards re-charging). Placement
+  is pre-checked against **one minute** of call cost (`meterCallSeconds` on the
+  direct routes; `creditStatus` + `callDebitMc` inline in the chat
+  `call_business` tool) → `402 CREDITS_EXHAUSTED` / an "out of AI credits" tool
+  error when the balance can't cover it. See
   [billing-plans.md](billing-plans.md).
-- **Phone calls are metered on a SEPARATE weekly budget, measured in seconds of
-  connected call time** (`tiers.<plan>.weeklyCallSecondsLimit`) — not the token
-  budget, because Vapi bills calls per-minute and the LLM tokens are negligible.
-  When a call ends, `phoneCalls.js` charges its `durationSeconds` against the
-  household/user call-time counter once (`recordCallSecondsById`;
-  `PhoneCall.metered` guards re-counting). Placement is pre-checked
-  (`meterCallSeconds` on the direct routes; `callSecondsStatus` inline in the chat
-  `call_business` tool) → `402 CALL_SECONDS_EXCEEDED` / a "used all your call time"
-  tool error when exhausted. See [billing-plans.md](billing-plans.md).
 
 ## Data & API surface
 
@@ -208,7 +264,6 @@ metering in `services/phoneCalls.test.js` and token metering in
 
 - Enumerate which write-tools the assistant can invoke per surface (create event,
   add task, etc.) and their confirmation UX.
-- Document the weekly-budget reset window.
 - **ZDR (G3, ops):** request a zero-data-retention arrangement for the Anthropic
   org (console/support request — not a code change). Until granted, API inputs
   are subject to Anthropic's standard API retention (not used for training).

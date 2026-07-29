@@ -6,11 +6,23 @@ const User = require('../models/User');
 const Household = require('../models/Household');
 const Person = require('../models/Person');
 const CalendarEvent = require('../models/CalendarEvent');
+const ECard = require('../models/ECard');
 const { pushToUser } = require('../services/notify');
+const mailer = require('../services/mailer');
 const { isConfigured: pushConfigured } = require('../services/push');
 const { cleanupOrphanUploads } = require('./cleanupOrphanUploads');
+const { runEmailReconcile } = require('./emailReconcile');
 
 const APP_URL = () => process.env.APP_URL || 'http://localhost:5174';
+
+// A user's personal day-based alert hour (0-23). Parsed from their
+// `dayAlertTime` (`HH:mm`); the cron is hourly so only the HOUR is honored
+// server-side (the on-device scheduler honors the full time). Defaults to 9am.
+function dayAlertHour(u) {
+  const m = /^(\d{1,2}):/.exec(u.dayAlertTime || '');
+  const h = m ? parseInt(m[1], 10) : 9;
+  return Number.isInteger(h) && h >= 0 && h <= 23 ? h : 9;
+}
 
 // 0-23 hour in a timezone.
 function localHour(tz) {
@@ -64,7 +76,8 @@ async function pushToUsers(users, payload) {
 }
 
 // ── Daily per-item alerts (tasks, chores, birthdays) ────────────────────────
-// Runs hourly; fires per-household at 07:00 local. Tasks/chores alert on
+// Runs hourly; fires per-member at their chosen local alert hour (9am default).
+// Tasks/chores alert on
 // (dueDate − reminderDaysBefore) and the optional second alert; birthdays
 // always alert on the day, to everyone.
 async function runDailyCheck() {
@@ -91,13 +104,13 @@ async function runDailyCheckForHousehold(hh) {
   const members = await User.find({ householdId: hh._id });
   if (!members.length) return;
 
-  // Each member alerts at their own 7am local, so a member in a different zone
-  // (travelling or out-of-town) gets correct timing. Bail early if nobody in
-  // the household is at 7am right now.
+  // Each member alerts at their own chosen hour (default 9am) in their own local
+  // zone, so a member in a different zone (travelling or out-of-town) gets
+  // correct timing. Bail early if nobody in the household is due this hour.
   const tzOf = (u) => u.timezone || hh.timezone || 'America/Toronto';
   // Skip users whose client schedules reminders on-device (Phase 5) — they'd
   // otherwise be notified twice.
-  const due = members.filter(u => !u.localReminders && localHour(tzOf(u)) === 7);
+  const due = members.filter(u => !u.localReminders && localHour(tzOf(u)) === dayAlertHour(u));
   if (!due.length) return;
 
   const memberIds = members.map(m => m._id);
@@ -107,7 +120,7 @@ async function runDailyCheckForHousehold(hh) {
     Person.find({ userId: { $in: memberIds }, birthday: { $ne: null } }).lean(),
   ]);
 
-  // Fire each at-7am member's alerts, with due/today evaluated in their zone.
+  // Fire each due member's alerts, with due/today evaluated in their zone.
   for (const u of due) {
     const todayStr = localDateStr(tzOf(u));
 
@@ -252,6 +265,75 @@ async function fanOutEventReminder(event) {
   console.log(`[Scheduler] Event alert: ${event._id}`);
 }
 
+// ── Occasion e-cards — hourly, annual per-card ──────────────────────────────
+// Sends each active ECard on its occasion's month/day, at the author's local
+// send-time hour. UNLIKE the daily/event checks, this runs for E2EE households
+// too: an ECard is a deliberate plaintext exception (models/ECard.js), so the
+// recipient emails + message are server-readable by design. A per-year
+// `lastSentYear` guard makes the hourly re-run idempotent within the same day.
+async function runECardCheck() {
+  const cards = await ECard.find({ active: true }).lean();
+  if (!cards.length) return;
+
+  // Small caches so a household of cards doesn't re-query the same author/hh.
+  const userCache = new Map();
+  const hhCache = new Map();
+  const getUser = async (id) => {
+    const key = String(id);
+    if (!userCache.has(key)) userCache.set(key, await User.findById(id).select('firstName timezone householdId').lean());
+    return userCache.get(key);
+  };
+  const getHhTz = async (id) => {
+    if (!id) return null;
+    const key = String(id);
+    if (!hhCache.has(key)) {
+      const hh = await Household.findById(id).select('timezone').lean();
+      hhCache.set(key, hh?.timezone || null);
+    }
+    return hhCache.get(key);
+  };
+
+  for (const card of cards) {
+    try {
+      const author = await getUser(card.userId);
+      if (!author) continue;
+      const tz = author.timezone || (await getHhTz(author.householdId)) || 'America/Toronto';
+      const todayStr = localDateStr(tz);           // YYYY-MM-DD in the author's zone
+      const [yStr, moStr, dStr] = todayStr.split('-');
+      if (Number(moStr) !== card.month || Number(dStr) !== card.day) continue;
+      const sendHour = parseInt(String(card.sendTime || '09:00').split(':')[0], 10) || 9;
+      // Send at the first hourly tick AT OR AFTER the send hour on the occasion
+      // day — so a card scheduled same-day past its hour, or one whose exact tick
+      // was missed (deploy/downtime), still goes out that day. lastSentYear keeps
+      // it to once per year.
+      if (localHour(tz) < sendHour) continue;
+      const year = Number(yStr);
+      if (card.lastSentYear === year) continue;     // already sent this year
+
+      for (const r of card.recipients || []) {
+        await mailer.sendECard({
+          toEmail: r.email,
+          toName: r.name,
+          fromName: author.firstName,
+          kind: card.kind,
+          occasionLabel: card.occasionLabel,
+          message: card.message,
+          template: card.template,
+          font: card.font,
+          greeting: card.greeting,
+          signoff: card.signoff,
+          signature: card.signature,
+          photos: card.photos,
+        });
+      }
+      await ECard.updateOne({ _id: card._id }, { $set: { lastSentYear: year } });
+      console.log(`[Scheduler] E-card sent: ${card._id} → ${(card.recipients || []).length} recipient(s)`); // ids/counts only (C5)
+    } catch (err) {
+      console.error(`[Scheduler] E-card send failed for ${card._id}:`, err.message);
+    }
+  }
+}
+
 // ── Periodic HDK rotation flag (Signal-parity plan B2) ──────────────────────
 // The server can't rotate a key it never holds — it only FLAGS households whose
 // current HDK version is older than the interval; the next unlocked member's
@@ -282,15 +364,20 @@ function startScheduler() {
     console.error('[Scheduler] runDailyCheck failed:', err.message)));
   cron.schedule('*/15 * * * *', () => runEventReminderCheck().catch(err =>
     console.error('[Scheduler] runEventReminderCheck failed:', err.message)));
+  cron.schedule('0 * * * *', () => runECardCheck().catch(err =>
+    console.error('[Scheduler] runECardCheck failed:', err.message)));
   cron.schedule('30 3 * * *', () => cleanupOrphanUploads().catch(err =>
     console.error('[Scheduler] cleanupOrphanUploads failed:', err.message)));
   cron.schedule('45 3 * * *', () => runKeyRotationCheck().catch(err =>
     console.error('[Scheduler] runKeyRotationCheck failed:', err.message)));
-  console.log('[Scheduler] Per-item push alerts: daily check hourly (fires 07:00 local for tasks/chores/birthdays); event reminders every 15 min; orphan-upload cleanup at 03:30; key-rotation age check at 03:45');
+  // Email delivery outbox: retry transient/provider-blocked sends on backoff.
+  cron.schedule('*/10 * * * *', () => runEmailReconcile().catch(err =>
+    console.error('[Scheduler] runEmailReconcile failed:', err.message)));
+  console.log('[Scheduler] Per-item push alerts: daily check hourly (fires each member\'s chosen local hour, 9am default, for tasks/chores/birthdays); event reminders every 15 min; occasion e-cards hourly (fire on the occasion date at the author\'s send-time); orphan-upload cleanup at 03:30; key-rotation age check at 03:45; email delivery reconcile every 10 min');
 }
 
 module.exports = {
-  startScheduler, runDailyCheck, runEventReminderCheck, runKeyRotationCheck,
+  startScheduler, runDailyCheck, runEventReminderCheck, runKeyRotationCheck, runECardCheck, runEmailReconcile,
   // Exported for tests.
   runDailyCheckForHousehold, inAudience, alertsToday, localHour, localDateStr,
 };

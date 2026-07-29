@@ -1,6 +1,7 @@
-// RevenueCat webhook (/api/billing/webhook): shared-secret auth + event → plan
-// mapping, including the events that must NOT change the plan (CANCELLATION
-// with auto-renew off, TRANSFER, grants with unknown entitlements).
+// RevenueCat webhook (/api/billing/webhook): shared-secret auth + event →
+// per-user unlock/credit mapping and household add-on grants, including the
+// events that must be acked without effect (legacy subscription-era tier
+// events, unknown users, lifecycle noise).
 
 process.env.REVENUECAT_WEBHOOK_SECRET = 'test-rc-secret';
 
@@ -8,6 +9,9 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { startDb, stopDb, request, registerUser } = require('./harness');
 const Household = require('../models/Household');
+const User = require('../models/User');
+const CreditLedger = require('../models/CreditLedger');
+const { grantStarterCredits } = require('../services/credits');
 
 before(startDb);
 after(stopDb);
@@ -19,9 +23,14 @@ function post(event, secret = 'test-rc-secret') {
     .send({ api_version: '1.0', event });
 }
 
-async function planOf(householdId) {
-  const hh = await Household.findById(householdId).lean();
-  return hh.plan;
+async function userDoc(id) {
+  return User.findById(id).lean();
+}
+
+// Whole credits from the stored Mc balance (may be negative after a refund).
+async function balanceOf(userId) {
+  const u = await userDoc(userId);
+  return Math.floor((u.creditBalanceMc || 0) / 1000);
 }
 
 test('rejects a bad secret', async () => {
@@ -29,105 +38,322 @@ test('rejects a bad secret', async () => {
   assert.equal(res.status, 401);
 });
 
-test('grant → revoke lifecycle flips the household plan', async () => {
+test('registration grants starter credits once (ledger-keyed idempotency)', async () => {
   const { user } = await registerUser();
-  const hh = user.householdId;
+  const starter = await balanceOf(user._id);
+  assert.ok(starter > 0, 'starter grant landed at registration');
+  const rows = await CreditLedger.find({ userId: user._id, kind: 'starter' }).lean();
+  assert.equal(rows.length, 1);
 
-  const buy = await post({ type: 'INITIAL_PURCHASE', app_user_id: hh, entitlement_ids: ['premium'] });
-  assert.equal(buy.status, 200);
-  assert.deepEqual(buy.body, { ok: true, plan: 'premium' });
-  assert.equal(await planOf(hh), 'premium');
-
-  // Upgrade picks the highest entitlement.
-  const up = await post({ type: 'PRODUCT_CHANGE', app_user_id: hh, entitlement_ids: ['unlimited'] });
-  assert.equal(up.body.plan, 'unlimited');
-  assert.equal(await planOf(hh), 'unlimited');
-
-  const expire = await post({ type: 'EXPIRATION', app_user_id: hh, entitlement_ids: ['unlimited'] });
-  assert.equal(expire.body.plan, 'free');
-  assert.equal(await planOf(hh), 'free');
+  // Re-running the grant (retry, double-fire) is a no-op.
+  const again = await grantStarterCredits(user._id, { credits: { starterCredits: 100 } });
+  assert.equal(again.duplicate, true);
+  assert.equal(await balanceOf(user._id), starter);
 });
 
-test('CANCELLATION keeps the plan until expiration; refunds revoke now', async () => {
+test('unlock purchase grants the user; a refund revokes', async () => {
   const { user } = await registerUser();
-  const hh = user.householdId;
-  await post({ type: 'INITIAL_PURCHASE', app_user_id: hh, entitlement_ids: ['premium'] });
+  const uid = String(user._id);
 
-  // Auto-renew turned off — paid through the period, so plan stays; only the
-  // lifecycle flag records the cancellation.
-  const cancel = await post({ type: 'CANCELLATION', app_user_id: hh, cancel_reason: 'UNSUBSCRIBE' });
-  assert.equal(cancel.status, 200);
-  assert.equal(cancel.body.plan, 'premium');
-  assert.equal(await planOf(hh), 'premium');
-  assert.equal((await Household.findById(hh).lean()).planAutoRenew, false);
-
-  // Refund via customer support — revoke immediately.
-  const refund = await post({ type: 'CANCELLATION', app_user_id: hh, cancel_reason: 'CUSTOMER_SUPPORT' });
-  assert.equal(refund.body.plan, 'free');
-  assert.equal(await planOf(hh), 'free');
-});
-
-test('lifecycle state: grants stamp renewal details, BILLING_ISSUE flags, EXPIRATION clears', async () => {
-  const { user } = await registerUser();
-  const hh = user.householdId;
-  const expiresMs = Date.now() + 30 * 86_400_000;
-
-  await post({
-    type: 'INITIAL_PURCHASE',
-    app_user_id: hh,
-    entitlement_ids: ['premium'],
-    expiration_at_ms: expiresMs,
-    product_id: 'app.householdcalendar.premium_monthly',
-    subscriber_attributes: { purchaser_user_id: { value: String(user._id) } },
+  const buy = await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: uid,
+    entitlement_ids: ['app_unlock'], product_id: 'app_unlock_499',
   });
-  let doc = await Household.findById(hh).lean();
-  assert.equal(doc.planAutoRenew, true);
-  assert.equal(doc.planBillingIssue, false);
-  assert.equal(new Date(doc.planExpiresAt).getTime(), expiresMs);
-  assert.equal(doc.planProductId, 'app.householdcalendar.premium_monthly');
-  assert.equal(String(doc.planPurchasedBy), String(user._id));
+  assert.equal(buy.status, 200);
+  assert.equal(buy.body.unlocked, true);
+  let doc = await userDoc(user._id);
+  assert.equal(doc.appUnlocked, true);
+  assert.equal(doc.unlockProductId, 'app_unlock_499');
+  assert.equal(doc.revenueCatId, uid);
 
-  // Card failed — plan untouched, flag raised for the client banner.
-  await post({ type: 'BILLING_ISSUE', app_user_id: hh });
-  doc = await Household.findById(hh).lean();
-  assert.equal(doc.plan, 'premium');
-  assert.equal(doc.planBillingIssue, true);
-
-  // A successful renewal clears the flag.
-  await post({ type: 'RENEWAL', app_user_id: hh, entitlement_ids: ['premium'] });
-  doc = await Household.findById(hh).lean();
-  assert.equal(doc.planBillingIssue, false);
-
-  // Expiration drops to free and clears the renewal state.
-  await post({ type: 'EXPIRATION', app_user_id: hh });
-  doc = await Household.findById(hh).lean();
-  assert.equal(doc.plan, 'free');
-  assert.equal(doc.planAutoRenew, undefined);
-  assert.equal(doc.planExpiresAt, undefined);
-  assert.equal(doc.planProductId, undefined);
+  const refund = await post({
+    type: 'CANCELLATION', cancel_reason: 'CUSTOMER_SUPPORT', app_user_id: uid,
+    entitlement_ids: ['app_unlock'], product_id: 'app_unlock_499',
+  });
+  assert.equal(refund.status, 200);
+  doc = await userDoc(user._id);
+  assert.equal(doc.appUnlocked, false);
 });
 
-test('TRANSFER (no app_user_id) and unknown entitlements are acked, not applied', async () => {
+test('credit pack purchase credits once per transaction id (RC retries dedupe)', async () => {
   const { user } = await registerUser();
-  const hh = user.householdId;
-  await post({ type: 'INITIAL_PURCHASE', app_user_id: hh, entitlement_ids: ['premium'] });
+  const uid = String(user._id);
+  const before = await balanceOf(user._id);
 
-  const transfer = await post({ type: 'TRANSFER', transferred_from: ['x'], transferred_to: ['y'] });
-  assert.equal(transfer.status, 200);
-  assert.equal(transfer.body.ignored, 'TRANSFER');
+  const buy = await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: uid,
+    product_id: 'credits_999', transaction_id: 'txn_dupe',
+  });
+  assert.equal(buy.status, 200);
+  assert.equal(buy.body.credited, 1050);
+  assert.equal(await balanceOf(user._id), before + 1050);
 
-  // A grant for an entitlement we don't map must not downgrade.
-  const odd = await post({ type: 'RENEWAL', app_user_id: hh, entitlement_ids: ['mystery_tier'] });
-  assert.equal(odd.body.ignored, 'RENEWAL');
-  assert.equal(await planOf(hh), 'premium');
+  // Same event delivered again — the ledger's unique key blocks a double credit.
+  const dupe = await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: uid,
+    product_id: 'credits_999', transaction_id: 'txn_dupe',
+  });
+  assert.equal(dupe.status, 200);
+  assert.equal(dupe.body.duplicate, true);
+  assert.equal(await balanceOf(user._id), before + 1050);
+
+  // Ledger rows: the starter grant + exactly one purchase.
+  const rows = await CreditLedger.find({ userId: user._id }).lean();
+  assert.deepEqual(rows.map((r) => r.kind).sort(), ['purchase', 'starter']);
 });
 
-test('unknown household is acknowledged so RC stops retrying', async () => {
+test('a pack refund debits and may drive the balance negative', async () => {
+  const { user } = await registerUser();
+  const uid = String(user._id);
+  const before = await balanceOf(user._id); // starter credits only
+
+  const refund = await post({
+    type: 'CANCELLATION', cancel_reason: 'CUSTOMER_SUPPORT', app_user_id: uid,
+    product_id: 'credits_999', transaction_id: 'txn_refund_1',
+  });
+  assert.equal(refund.status, 200);
+  assert.equal(await balanceOf(user._id), before - 1050); // negative allowed — no clamp
+
+  // The refund's ':refund' key dedupes independently of the purchase key.
+  const dupe = await post({
+    type: 'CANCELLATION', cancel_reason: 'CUSTOMER_SUPPORT', app_user_id: uid,
+    product_id: 'credits_999', transaction_id: 'txn_refund_1',
+  });
+  assert.equal(dupe.body.duplicate, true);
+  assert.equal(await balanceOf(user._id), before - 1050);
+});
+
+test('TRANSFER moves the unlock between users (restore under a new account)', async () => {
+  const { user: alice } = await registerUser();
+  const { user: bob } = await registerUser();
+  await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: String(alice._id),
+    entitlement_ids: ['app_unlock'], product_id: 'app_unlock_499',
+  });
+
   const res = await post({
-    type: 'INITIAL_PURCHASE',
+    type: 'TRANSFER',
+    transferred_from: [String(alice._id)],
+    transferred_to: [String(bob._id)],
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.transferred, true);
+  assert.equal((await userDoc(bob._id)).appUnlocked, true);
+  assert.equal((await userDoc(alice._id)).appUnlocked, false);
+
+  // A transfer between unknown ids is acked, never 400'd into RC's retry loop.
+  const unknown = await post({ type: 'TRANSFER', transferred_from: ['x'], transferred_to: ['y'] });
+  assert.equal(unknown.status, 200);
+});
+
+test('legacy subscription-era tier events are acked without effect', async () => {
+  const { user } = await registerUser();
+  const uid = String(user._id);
+  const before = await balanceOf(user._id);
+
+  // Entitlements that no longer map to anything → ignored, regardless of type.
+  for (const event of [
+    { type: 'INITIAL_PURCHASE', app_user_id: uid, entitlement_ids: ['premium'], product_id: 'premium_monthly' },
+    { type: 'RENEWAL', app_user_id: uid, entitlement_ids: ['unlimited'] },
+    { type: 'CANCELLATION', app_user_id: uid, cancel_reason: 'UNSUBSCRIBE', entitlement_ids: ['premium'] },
+    { type: 'EXPIRATION', app_user_id: uid, entitlement_ids: ['premium'] },
+    { type: 'BILLING_ISSUE', app_user_id: uid },
+  ]) {
+    const res = await post(event);
+    assert.equal(res.status, 200, event.type);
+    assert.equal(res.body.ignored, event.type);
+  }
+  const doc = await userDoc(user._id);
+  assert.equal(doc.appUnlocked, false);
+  assert.equal(await balanceOf(user._id), before);
+});
+
+test('unknown app_user_id is acknowledged so RC stops retrying', async () => {
+  const res = await post({
+    type: 'NON_RENEWING_PURCHASE',
     app_user_id: '000000000000000000000000',
-    entitlement_ids: ['premium'],
+    product_id: 'credits_499',
   });
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, { ok: true, matched: false });
+});
+
+test('billing status reports unlock, balance, low/out state and the pack catalog', async () => {
+  const { user, auth } = await registerUser();
+  const uid = String(user._id);
+
+  let res = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.unlocked, false);
+  assert.equal(typeof res.body.unlockPrice, 'number');
+  assert.equal(res.body.usageScope, 'user');
+  assert.equal(res.body.unlimited, false);
+  // Fresh account holds the starter grant: positive, not low, not negative.
+  assert.ok(res.body.creditBalance > 0);
+  assert.equal(res.body.lowBalance, false);
+  // Pack catalog for the store display.
+  assert.ok(Array.isArray(res.body.packs) && res.body.packs.length >= 1);
+  for (const p of res.body.packs) {
+    assert.equal(typeof p.productId, 'string');
+    assert.equal(typeof p.price, 'number');
+    assert.equal(typeof p.credits, 'number');
+  }
+
+  // Unlock lands in the payload after the webhook grant.
+  await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: uid,
+    entitlement_ids: ['app_unlock'], product_id: 'app_unlock_499',
+  });
+  res = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.equal(res.body.unlocked, true);
+
+  // Drain the balance below zero via a refund → lowBalance flips on and the
+  // whole-credit balance goes negative (display floors client-side).
+  await post({
+    type: 'CANCELLATION', cancel_reason: 'CUSTOMER_SUPPORT', app_user_id: uid,
+    product_id: 'credits_1999', transaction_id: 'txn_status_refund',
+  });
+  res = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.ok(res.body.creditBalance < 0);
+  assert.equal(res.body.lowBalance, true);
+});
+
+test('the credit ledger endpoint lists the caller’s grants newest-first', async () => {
+  const { user, auth } = await registerUser();
+  await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: String(user._id),
+    product_id: 'credits_499', transaction_id: 'txn_ledger_1',
+  });
+
+  const res = await request().get('/api/billing/credits/ledger').set('Authorization', auth);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.entries.map((e) => e.kind), ['purchase', 'starter']);
+  assert.equal(res.body.entries[0].credits, 500);
+  assert.equal(res.body.entries[0].productId, 'credits_499');
+});
+
+// --- Feature-calendar add-ons ---
+// The webhook's app_user_id is the USER id (the mobile app logs the RC SDK in
+// as the signed-in user); add-ons resolve user → household and land there.
+
+async function addonsOf(householdId) {
+  const hh = await Household.findById(householdId).lean();
+  return (hh.addons || []).sort();
+}
+
+test('add-on purchase grants the household key; repeat delivery is idempotent', async () => {
+  const { user } = await registerUser();
+  const uid = String(user._id);
+
+  const buy = await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_meals'] });
+  assert.equal(buy.status, 200);
+  assert.deepEqual(await addonsOf(user.householdId), ['recipes']);
+
+  // Duplicate delivery (RC retries) must not duplicate the key.
+  await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_meals'] });
+  assert.deepEqual(await addonsOf(user.householdId), ['recipes']);
+});
+
+test('bundle purchase grants all three add-ons in one event', async () => {
+  const { user } = await registerUser();
+  await post({
+    type: 'NON_RENEWING_PURCHASE',
+    app_user_id: String(user._id),
+    entitlement_ids: ['addon_meals', 'addon_maintenance', 'addon_trips'],
+  });
+  assert.deepEqual(await addonsOf(user.householdId), ['maintenance', 'recipes', 'trips']);
+});
+
+test('an add-on refund revokes exactly that add-on', async () => {
+  const { user } = await registerUser();
+  const uid = String(user._id);
+  await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_trips'] });
+  await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_meals'] });
+  assert.deepEqual(await addonsOf(user.householdId), ['recipes', 'trips']);
+
+  const refund = await post({
+    type: 'CANCELLATION',
+    app_user_id: uid,
+    cancel_reason: 'CUSTOMER_SUPPORT',
+    entitlement_ids: ['addon_trips'],
+  });
+  assert.equal(refund.status, 200);
+  assert.deepEqual(await addonsOf(user.householdId), ['recipes']);
+});
+
+test('retired addon_birthdays entitlement is ignored (Birthdays ships free)', async () => {
+  const { user } = await registerUser();
+  const res = await post({
+    type: 'NON_RENEWING_PURCHASE',
+    app_user_id: String(user._id),
+    entitlement_ids: ['addon_birthdays'],
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ignored, 'NON_RENEWING_PURCHASE');
+  assert.deepEqual(await addonsOf(user.householdId), []);
+});
+
+test('billing status reports owned add-ons and the catalog (3 paid + 2 free)', async () => {
+  const { user, auth } = await registerUser();
+
+  let res = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.addons, []);
+  assert.deepEqual(res.body.addonCatalog.items.map((i) => i.key),
+    ['recipes', 'maintenance', 'trips', 'birthdays', 'chores']);
+  // Paid items carry a price; free ones (opt-in, claimed not bought) are 0.
+  const priceOf = (key) => res.body.addonCatalog.items.find((i) => i.key === key).price;
+  for (const key of ['recipes', 'maintenance', 'trips']) assert.ok(priceOf(key) > 0, key);
+  for (const key of ['birthdays', 'chores']) assert.equal(priceOf(key), 0, key);
+  assert.equal(typeof res.body.addonCatalog.bundle.price, 'number');
+
+  await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: String(user._id), entitlement_ids: ['addon_maintenance'] });
+  res = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.deepEqual(res.body.addons, ['maintenance']);
+});
+
+test('any member can claim a FREE add-on; paid keys are rejected', async () => {
+  const { user, auth } = await registerUser();
+
+  // Free add-ons are opt-in: nothing granted by default.
+  assert.deepEqual(await addonsOf(user.householdId), []);
+
+  const claim = await request().post('/api/billing/addons/claim')
+    .set('Authorization', auth).send({ addon: 'birthdays' });
+  assert.equal(claim.status, 200);
+  assert.deepEqual(await addonsOf(user.householdId), ['birthdays']);
+
+  // Claiming again is idempotent.
+  await request().post('/api/billing/addons/claim')
+    .set('Authorization', auth).send({ addon: 'birthdays' });
+  assert.deepEqual(await addonsOf(user.householdId), ['birthdays']);
+
+  // A paid key can never be claimed for free; garbage keys likewise.
+  for (const addon of ['recipes', 'maintenance', 'trips', 'not-a-key', undefined]) {
+    const res = await request().post('/api/billing/addons/claim')
+      .set('Authorization', auth).send({ addon });
+    assert.equal(res.status, 400, String(addon));
+  }
+  assert.deepEqual(await addonsOf(user.householdId), ['birthdays']);
+});
+
+test('admin add-on override validates keys and requires admin', async () => {
+  const { user, auth } = await registerUser();
+
+  // Non-admin is rejected.
+  const forbidden = await request().post('/api/billing/addons')
+    .set('Authorization', auth).send({ addons: ['recipes'] });
+  assert.equal(forbidden.status, 403);
+
+  const User = require('../models/User');
+  await User.updateOne({ _id: user._id }, { $set: { role: 'admin' } });
+
+  const bad = await request().post('/api/billing/addons')
+    .set('Authorization', auth).send({ addons: ['recipes', 'not-a-key'] });
+  assert.equal(bad.status, 400);
+
+  const ok = await request().post('/api/billing/addons')
+    .set('Authorization', auth).send({ addons: ['recipes', 'trips'] });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await addonsOf(user.householdId), ['recipes', 'trips']);
 });

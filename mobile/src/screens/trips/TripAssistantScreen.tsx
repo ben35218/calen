@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { tripsApi, householdApi } from '../../api';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { createAliasContext } from '../../lib/aiPayload';
@@ -107,7 +107,7 @@ export default function TripAssistantScreen({
       // (from a trip's detail page) it stays a focused single-trip chat.
       activeAssistant={onSelectAssistant ? 'trips' : undefined}
       onSelectAssistant={onSelectAssistant}
-      banner={<AiUsageBanner />}
+      banner={<CreditsBanner />}
       footer={tripBar}
       navContext={{ tripId }}
       emptyHint={'e.g. "What\'s my itinerary?"'}

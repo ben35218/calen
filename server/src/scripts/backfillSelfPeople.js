@@ -1,6 +1,6 @@
 /**
  * Give every User a linked self-record in the People roster, copying their
- * profile fields (interests / aboutMe → notes / birthday / home address) so the
+ * profile fields (aboutMe → notes / birthday / home address) so the
  * account owner shows up as a "You" card alongside family & friends, shared
  * with the rest of the household. Safe to re-run (idempotent via accountId).
  *

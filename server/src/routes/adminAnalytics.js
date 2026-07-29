@@ -15,8 +15,9 @@ const User = require('../models/User');
 const Household = require('../models/Household');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const {
-  getConfig, currentPeriodKey, nextPeriodResetAt, enforcedTokens, enforcedCallSeconds,
+  currentPeriodKey, nextPeriodResetAt,
 } = require('../middleware/usageMeter');
+const { MC_PER_CREDIT } = require('../services/credits');
 const {
   AI_ACTIONS, ACTIVITY_ACTIONS,
   activeCounts, weeklyGrowth, rollupByPeriod, toSeries,
@@ -35,8 +36,8 @@ router.get('/overview', async (_req, res) => {
   try {
     const now = Date.now();
     const [users, households] = await Promise.all([
-      User.find({}, 'createdAt lastActiveAt householdId').lean(),
-      Household.find({}, 'createdAt plan').lean(),
+      User.find({}, 'createdAt lastActiveAt householdId appUnlocked').lean(),
+      Household.find({}, 'createdAt').lean(),
     ]);
 
     const engagement = activeCounts(users.map((u) => u.lastActiveAt), { now });
@@ -56,7 +57,7 @@ router.get('/overview', async (_req, res) => {
       totals: {
         users: users.length,
         households: households.length,
-        paidHouseholds: households.filter((h) => h.plan && h.plan !== 'free').length,
+        unlockedUsers: users.filter((u) => u.appUnlocked).length,
       },
       engagement,
       activeHouseholds7d: activeHouseholdIds.size,
@@ -103,10 +104,13 @@ router.get('/platforms', async (_req, res) => {
   }
 });
 
+// Fleet AI-usage series, summed from the per-USER counters — AI usage, calls,
+// and credits are individual concerns, so nothing AI-related is tracked per
+// household anymore (Household.usage is retired legacy data).
 router.get('/usage', async (req, res) => {
   try {
     const weeks = clampWeeks(req.query.weeks, 8);
-    const maps = (await Household.find({}, 'usage').lean()).map((h) => h.usage || {});
+    const maps = (await User.find({}, 'usage').lean()).map((u) => u.usage || {});
     const perPeriod = rollupByPeriod(maps, { actions: AI_ACTIONS });
     res.json({
       actions: AI_ACTIONS,
@@ -135,57 +139,41 @@ router.get('/activity', async (req, res) => {
 });
 
 // Per-user token consumption + abuse signals for the AI-usage page. Tokens are
-// counted per USER on every plan (recordTokens always bumps the user counter);
-// the enforced budget shown alongside is per-user on free, pooled on paid.
-// Content-blind like everything here: token counts, never prompt contents.
+// counted per USER (recordTokens always bumps the user counter); the enforced
+// budget is the prepaid credit balance shown alongside. Content-blind like
+// everything here: token counts, never prompt contents.
 router.get('/tokens', async (req, res) => {
   try {
     const weeks = clampWeeks(req.query.weeks, 8);
     const period = currentPeriodKey();
     const periods = periodKeysBack(period, weeks);
 
-    const [users, households, config] = await Promise.all([
-      User.find({}, 'email firstName lastName householdId lastActiveAt usageTokens usageBlocked usageCallSeconds').lean(),
-      Household.find({}, 'name plan usageTokens usageTokensBaseline usageCallSeconds usageCallSecondsBaseline').lean(),
-      getConfig(),
+    const [users, households] = await Promise.all([
+      User.find({}, 'email firstName lastName householdId lastActiveAt usageTokens usageBlocked usageCallSeconds creditBalanceMc appUnlocked').lean(),
+      Household.find({}, 'name').lean(),
     ]);
     const hhById = Object.fromEntries(households.map((h) => [String(h._id), h]));
 
     const items = users.map((u) => {
       const hh = u.householdId ? hhById[String(u.householdId)] || null : null;
-      const plan = hh?.plan || 'free';
       const series = tokenSeries(u.usageTokens, periods);
-      const limit = config.tiers?.[plan]?.weeklyTokenLimit ?? null;
-      // What enforcement compares against the limit: the user's own counter on
-      // free, the household's pooled effective tokens on paid.
-      const used = enforcedTokens({ user: u, household: hh }, period);
       const blocked = blockedCount(u.usageBlocked, period);
-      // Assistant call-time (separate enforced budget, in seconds). `callSeconds`
-      // is this user's OWN counter (fleet-summable without double-counting a
-      // pooled household); `callSecondsUsed` is what enforcement compares against
-      // the limit — the user's own on free, the pooled household total on paid.
       const callSeconds = u.usageCallSeconds?.[period]?.seconds || 0;
-      const callSecondsUsed = enforcedCallSeconds({ user: u, household: hh }, period);
-      const callSecondsLimit = config.tiers?.[plan]?.weeklyCallSecondsLimit ?? null;
+      const creditBalance = Math.floor((u.creditBalanceMc || 0) / MC_PER_CREDIT);
       return {
         _id: u._id,
         email: u.email,
         name: [u.firstName, u.lastName].filter(Boolean).join(' '),
         householdName: hh?.name || null,
-        plan,
-        scope: plan === 'free' ? 'user' : 'household',
         lastActiveAt: u.lastActiveAt || null,
         tokens: series.at(-1) || 0,      // this user's own tokens, this period
         totalTokens: series.reduce((a, b) => a + b, 0),
         series,
-        used, limit,
-        pctOfLimit: limit ? Math.min(999, Math.round((used / limit) * 100)) : null,
+        creditBalance,                   // may be negative after a refund
+        appUnlocked: !!u.appUnlocked,
         callSeconds,
-        callSecondsUsed,
-        callSecondsLimit,
-        callPctOfLimit: callSecondsLimit ? Math.min(999, Math.round((callSecondsUsed / callSecondsLimit) * 100)) : null,
         blocked,
-        flags: abuseFlags({ series, used, limit, blocked }),
+        flags: abuseFlags({ series, blocked }),
       };
     }).sort((a, b) => b.tokens - a.tokens);
 

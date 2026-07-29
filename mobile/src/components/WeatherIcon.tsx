@@ -28,13 +28,35 @@ function PartlyCloudy({ night, size, style }: { night: boolean; size: number; st
   );
 }
 
-// Rain is two-tone like PartlyCloudy: the blue `rainy` glyph (cloud + drops)
-// underneath, with a white `cloud` overlaid to cover the cloud so only the
-// drops below stay blue (Apple Weather look).
-function Rainy({ size, style }: { size: number; style?: StyleProp<TextStyle> }) {
+// Rain intensity from the WMO code: drizzle + "light" codes → light, "heavy"
+// codes → heavy, the rest moderate. Exported for tests.
+export type RainIntensity = 'light' | 'moderate' | 'heavy';
+export function rainIntensity(code: number): RainIntensity {
+  if (code === 65 || code === 67 || code === 82) return 'heavy';
+  if (code === 55 || code === 57 || code === 63 || code === 66 || code === 81) return 'moderate';
+  return 'light'; // 51, 53, 56, 61, 80
+}
+
+// Rain is the classic two-tone composite: blue rain streaks under a solid
+// white cloud (Apple Weather look). Only the streaks (drops) vary with
+// intensity — the cloud is identical every time. We render just the LOWER
+// band of the `rainy` glyph so its own (blue) cloud is never shown; the white
+// cloud on top is the only cloud, always full and never peeking blue. Lighter
+// rain clips that streak band's width from the right, revealing fewer of the
+// same streaks; heavy shows them all (the original icon).
+const STREAK_BAND_TOP = 0.62; // below the glyph's cloud; the white cloud covers down to ~0.78
+function Rainy({ size, style, intensity }: { size: number; style?: StyleProp<TextStyle>; intensity: RainIntensity }) {
+  const streakCut = intensity === 'light' ? 0.55 : intensity === 'moderate' ? 0.78 : 1;
+  const bandTop = size * STREAK_BAND_TOP;
   return (
     <View style={[{ width: size, height: size }, style as StyleProp<ViewStyle>]}>
-      <Ionicons name="rainy" size={size} color={RAIN} style={{ position: 'absolute', top: 0, left: 0 }} />
+      {/* Streak band: only the glyph's rain streaks, clipped to the left
+          `streakCut` fraction so fewer streaks show for lighter rain. */}
+      <View style={{ position: 'absolute', top: bandTop, left: 0, width: size * streakCut, height: size - bandTop, overflow: 'hidden' }}>
+        <Ionicons name="rainy" size={size} color={RAIN} style={{ position: 'absolute', top: -bandTop, left: 0 }} />
+      </View>
+      {/* Consistent white cloud — identical for every intensity, drawn on top
+          so any blue cloud bottom inside the band is covered. */}
       <Ionicons
         name="cloud"
         size={size * 0.74}
@@ -84,7 +106,7 @@ export default function WeatherIcon({
   style?: StyleProp<TextStyle>;
 }) {
   if (code === 2) return <PartlyCloudy night={night} size={size} style={style} />;
-  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return <Rainy size={size} style={style} />;
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return <Rainy size={size} style={style} intensity={rainIntensity(code)} />;
   if (code >= 95) return <Thunderstorm size={size} style={style} />;
   const s = spec(code, night);
   if (s.ion) return <Ionicons name={s.ion} size={size} color={s.color} style={style} />;

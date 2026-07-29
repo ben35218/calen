@@ -10,6 +10,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Household = require('../models/Household');
 const AuditLog = require('../models/AuditLog');
+const mailer = require('./mailer');
 
 // Models the userId/email sweep must never touch (handled specially or global).
 const SKIP_MODELS = new Set(['User', 'Household', 'AuditLog', 'MonetizationConfig']);
@@ -24,6 +25,14 @@ async function deleteUserAndData(user) {
   const userId = user._id;
   const householdId = user.householdId || null;
   const deleted = {};
+
+  // Account-deleted confirmation (account lifecycle) — sent BEFORE the purge,
+  // while the address is still valid. Best-effort; the mailer never throws. The
+  // EmailLog row it writes is itself swept below (email-keyed PII removal), which
+  // is fine: the send is independent of the log.
+  if (user.email) {
+    mailer.sendAccountDeletedConfirmation({ email: user.email, firstName: user.firstName }).catch(() => {});
+  }
 
   // 1. Every collection scoped to this user's own id.
   for (const [name, Model] of Object.entries(mongoose.models)) {

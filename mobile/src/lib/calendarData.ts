@@ -6,6 +6,7 @@
 import { assembleCalendarData } from '@household/calendar';
 import { CalendarData, settingsApi, tripsApi } from '../api';
 import { currentUserId, openRecord } from './e2ee';
+import { applyAddonLocks, getOwnedAddonIds } from './addons';
 import { getAccessibleCustomCalendarIds } from './calendarPrefs';
 import { getFeedEvents } from './calendarFeeds';
 import * as replica from './replica';
@@ -97,6 +98,12 @@ export async function loadCalendarData({ from, to }: { from: string; to: string 
   data.events = (data.events ?? []).filter(
     (e) => !e.calendarType?.startsWith('custom-') || accessible.has(e.calendarType)
   );
+
+  // Feature-calendar add-ons: locked features' items never render anywhere.
+  // Enforced at this same chokepoint (client-side — the server can't see
+  // record types) so every view, search, print, and the reminder scheduler
+  // exclude them together. Data is retained; purchasing restores it.
+  applyAddonLocks(data, await getOwnedAddonIds());
 
   // Subscribed ICS feeds: expanded client-side (the events never touch the
   // server — E2EE), injected here so every view and the reminder scheduler see

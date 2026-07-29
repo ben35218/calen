@@ -33,21 +33,45 @@ function parseVCards(raw) {
       while ((m = re.exec(block)) !== null) results.push(m[1].trim());
       return results;
     }
+    // Labeled multi-value extraction (TEL/EMAIL/URL): capture each entry's TYPE
+    // param and normalize it into our label vocabulary, defaulting per field.
+    function allLabeled(field, typeMap, fallback) {
+      const re = new RegExp(`^${field}((?:;[^:\\r\\n]*)?):([^\\r\\n]*)`, 'gim');
+      const results = [];
+      let m;
+      while ((m = re.exec(block)) !== null) {
+        const value = m[2].trim();
+        if (!value) continue;
+        const t = /TYPE=([^;:]*)/i.exec(m[1] || '');
+        const raw = t ? t[1].split(',')[0].trim().toLowerCase() : '';
+        results.push({ label: typeMap[raw] || raw || fallback, value });
+      }
+      return results;
+    }
 
     // Name: prefer FN, fall back to assembling from N (family;given;additional;prefix;suffix)
     const fn = first('FN');
     const n  = first('N');
     let name = fn;
-    if (!name && n) {
+    // Structured components (Apple-Contacts First / Last), taken from N when the
+    // vCard supplies it: first = given (+ additional/middle), last = family.
+    // Left blank when only FN is present — the client splits the display name.
+    let firstName = '';
+    let lastName = '';
+    if (n) {
       const p = n.split(';').map(s => s.trim());
-      name = [p[1], p[2], p[0]].filter(Boolean).join(' ').trim();
+      firstName = [p[1], p[2]].filter(Boolean).join(' ').trim();
+      lastName = p[0] || '';
+      if (!name) name = [p[1], p[2], p[0]].filter(Boolean).join(' ').trim();
     }
 
-    // Phone — first TEL value
-    const phone = all('TEL')[0] ?? '';
-
-    // Email — first EMAIL value
-    const email = all('EMAIL')[0] ?? '';
+    // Phones / emails / URLs — all values, labeled from their TYPE param. The
+    // first of each is also surfaced as a legacy single for back-compat.
+    const phones = allLabeled('TEL', { cell: 'mobile', iphone: 'mobile', home: 'home', work: 'work', main: 'main' }, 'mobile');
+    const emails = allLabeled('EMAIL', { home: 'home', work: 'work', internet: 'home' }, 'home');
+    const urls = allLabeled('URL', { home: 'home', work: 'work' }, 'homepage');
+    const phone = phones[0]?.value ?? '';
+    const email = emails[0]?.value ?? '';
 
     // Birthday — handle YYYYMMDD, YYYY-MM-DD, and --MMDD (no year)
     const bdayRaw = first('BDAY');
@@ -72,7 +96,7 @@ function parseVCards(raw) {
     // Notes
     const notes = first('NOTE');
 
-    return { name, phone, email, birthday, address, notes };
+    return { name, firstName: firstName || undefined, lastName: lastName || undefined, phone, email, phones, emails, urls, birthday, address, notes };
   }).filter(c => c.name);
 }
 
@@ -131,7 +155,6 @@ const CLASSIFY_TOOL = {
             address: { type: 'string' },
             phone: { type: 'string' },
             email: { type: 'string' },
-            interests: { type: 'array', items: { type: 'string' } },
             notes: { type: 'string', description: 'Short helpful context, if any.' },
           },
           required: ['key', 'type', 'name'],
@@ -243,7 +266,6 @@ router.post('/classify', meter('chat', 'contactImport'), requireAiEnabled, async
           phone: r.phone?.trim() || src.phone || undefined,
           email: r.email?.trim() || src.email || undefined,
           birthday: src.birthday || undefined,
-          interests: Array.isArray(r.interests) ? r.interests.map((x) => String(x).trim()).filter(Boolean) : [],
           notes: r.notes?.trim() || undefined,
         };
       });

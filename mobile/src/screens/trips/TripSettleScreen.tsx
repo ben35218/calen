@@ -208,6 +208,7 @@ export default function TripSettleScreen() {
             onChangeText={(v) => setForm((f) => ({ ...f, amount: v }))}
             keyboardType="decimal-pad"
             placeholder="0"
+            clearable={false}
             containerStyle={[fs.headField, fs.rowInputWrap]}
             style={[fs.headInput, fs.rowInput]}
           />

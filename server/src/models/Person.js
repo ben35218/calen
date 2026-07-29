@@ -1,20 +1,62 @@
 const mongoose = require('mongoose');
 const { encFields, requiredUntilSealed } = require('./encFields');
 
+// Apple-Contacts-style labeled value (mobile/home/work/anniversary/…). Related
+// names extend it with an optional link to another Person. Under E2EE these ride
+// inside the sealed `enc` blob (client mirror: lib/personFields); the plaintext
+// columns exist for the pre-E2EE seed path and schema honesty.
+const labeledValue = new mongoose.Schema(
+  { label: { type: String, trim: true }, value: { type: String, trim: true } },
+  { _id: false },
+);
+const relatedName = new mongoose.Schema(
+  {
+    label: { type: String, trim: true },
+    value: { type: String, trim: true },
+    personId: { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },
+  },
+  { _id: false },
+);
+
 const personSchema = new mongoose.Schema({
   userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: requiredUntilSealed, index: true },
   // When set, this Person is the self-record for that household member's User
   // account. Self records are always type 'family' and cannot be deleted.
   accountId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true, sparse: true },
   type:         { type: String, enum: ['family', 'friend', 'service'], required: true },
+  // `name` is the canonical composed display name. firstName/lastName are the
+  // Apple-Contacts-style structured components the client edits and recomposes
+  // `name` from; both ride inside the sealed `enc` blob under E2EE (client
+  // mirror: lib/personFields + encSubsets PERSON_ENC). Optional — legacy records
+  // and single-name (service) contacts carry only `name`.
   name:         { type: String, required: requiredUntilSealed, trim: true },
+  firstName:    { type: String, trim: true },
+  lastName:     { type: String, trim: true },
   relationship: { type: String, trim: true },  // e.g. "spouse", "daughter", "neighbor"
   birthday:     { type: Date },
-  interests:    [{ type: String, trim: true }],
   notes:        { type: String, trim: true },
+  // When true, this person's birthday + dates are excluded from the Occasions
+  // calendar (the shared engine skips them). Sealed content under E2EE.
+  occasionsHidden: { type: Boolean, default: false },
+  // Multi-value labeled fields (Apple-Contacts-style). `dates` values are
+  // YYYY-MM-DD; their label carries the occasion KIND — 'anniversary',
+  // 'marriage', and 'death' are recognised, any other label is a custom
+  // occasion. Both `dates` and the dedicated `birthday` field surface on the
+  // Occasions calendar (see shared/calendar occasionKindFromLabel).
+  // company/jobTitle apply to every type (company supersedes the old
+  // service-only businessName).
+  phones:       [labeledValue],
+  emails:       [labeledValue],
+  addresses:    [labeledValue],
+  dates:        [labeledValue],
+  urls:         [labeledValue],
+  relatedNames: [relatedName],
+  jobTitle:     { type: String, trim: true },
+  company:      { type: String, trim: true },
+  // Legacy single-value fields, superseded by the arrays above. Retained so
+  // records created before the multi-value cutover keep resolving; the client
+  // folds them into the arrays on read and clears them on the next save.
   address:      { type: String, trim: true },
-  // Professionals split the old combined "Address or business" field into a
-  // business name + its address. Only meaningful for type 'service'.
   businessName: { type: String, trim: true },
   phone:        { type: String, trim: true },
   email:        { type: String, trim: true },
@@ -48,7 +90,6 @@ personSchema.statics.ensureSelf = async function (user) {
       name:      [user.firstName, user.lastName].filter(Boolean).join(' ').trim() || user.firstName,
       birthday:  user.birthday,
       address:   user.homeAddress || undefined,
-      interests: user.interests || [],
       notes:     user.aboutMe || undefined,
     });
   }

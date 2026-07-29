@@ -9,11 +9,14 @@ import {
   unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
   unlockFromDeviceCache, forgetDeviceKey, generateAccountSecret, addPasskeyFactor,
   holdRecoveryCode, releaseRecoveryCode, clearRecoveryCode, setSealAuthor,
+  subscribeKeysReady,
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
 import { maintainKeyHygiene } from '../lib/dropMigration';
 import { queryClient } from '../lib/queryClient';
 import { clearAll as clearReplica } from '../lib/replica';
+import { resetRecordCursor, syncRecords } from '../lib/records';
+import { cacheUnlocked, clearUnlockCache } from '../lib/unlock';
 
 // Enroll (or unlock) the E2EE keypair after auth, then make sure this session
 // holds the household key (owner mints it lazily on first unlock). Additive and
@@ -40,7 +43,7 @@ type AuthState = {
   isLoggedIn: boolean;
   login: (creds: { email: string; password: string }) => Promise<void>;
   // One-tap sign-in with a registered passkey; false = user canceled the sheet.
-  loginWithPasskey: (email: string) => Promise<boolean>;
+  loginWithPasskey: (email?: string) => Promise<boolean>;
   // Emailed-code reset; signs the user in and reports the E2EE outcome so the
   // screen can explain a still-locked state ('none' = account not enrolled).
   resetPassword: (data: { email: string; code: string; newPassword: string }) =>
@@ -67,15 +70,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [bootstrapping, setBootstrapping] = useState(true);
 
   const logout = useCallback(async () => {
+    // Leave the authed stack first, in the SAME synchronous tick as the key
+    // lock below. lockE2EE() synchronously notifies lock-state subscribers, and
+    // the first `await` after it would let React flush that update while the
+    // authed screens are still mounted — surfacing ProfileScreen's "data is
+    // locked" prompt over the login screen during teardown. Batching setUser(null)
+    // with lockE2EE() unmounts those screens in the same commit, so the prompt
+    // never arms.
+    setUser(null);
     lockE2EE(); // drop the in-memory private key
     await forgetDeviceKey().catch(() => {}); // and the biometric device cache
     await clearToken();
-    setUser(null);
     // The next sign-in may be a different account: query keys aren't scoped by
     // user, so cached server state and the on-device replica would paint the
-    // previous household's records. Wipe both.
+    // previous household's records. Wipe both — and the app-unlock cache, so
+    // another account on this device can't inherit the paywall unlock.
     queryClient.clear();
+    clearUnlockCache();
     await clearReplica().catch(() => {});
+    // Wiping the replica MUST also reset the record-sync cursor: it lives in its
+    // own AsyncStorage key, so without this the next sign-in resumes incremental
+    // sync from the old high-water mark and never re-pulls the records we just
+    // cleared — the whole household's content silently vanishes until a full
+    // pull happens by chance. Reset → the next syncRecords() does a full pull.
+    await resetRecordCursor().catch(() => {});
   }, []);
 
   // Restore a stored token on launch and verify it against /auth/me.
@@ -124,6 +142,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ciphertext as `author`) in sync with the signed-in user.
   useEffect(() => { setSealAuthor(user?._id ?? null); }, [user?._id]);
 
+  // When the household key first becomes available (sign-in, relaunch restore,
+  // app-lock foreground, or a manual unlock), re-pull the record feed and refetch
+  // the replica-backed views. The first record sync on sign-in races ahead of the
+  // unlock: it can't decrypt anything yet, blocks the cursor, and leaves the
+  // replica empty — so the calendar/people/etc. show only plaintext overlays
+  // (weather, holidays) until a manual mutation invalidates them. This closes that
+  // gap centrally (ensureHouseholdKey is the chokepoint every unlock path reaches),
+  // so content appears on its own once the key lands. See lib/records syncRecords.
+  useEffect(() => subscribeKeysReady(() => {
+    void (async () => {
+      try { await syncRecords(); } catch { /* offline — the cached replica stands */ }
+      queryClient.invalidateQueries();
+    })();
+  }), []);
+
+  // Mirror the per-user app unlock into the device cache on every auth payload
+  // sighting (login/register/me). Belt-and-braces with useBilling — whichever
+  // lands first flips the hard paywall.
+  useEffect(() => {
+    if (user) cacheUnlocked(Boolean(user.appUnlocked));
+  }, [user?._id, user?.appUnlocked]);
+
   // Report this app version for the §9 readiness gate (every member must be on a
   // compatible build before the whole-household drop). Best-effort.
   useEffect(() => {
@@ -140,19 +180,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await initE2EE(creds.password); // token stored → keysApi is authed
   }, []);
 
-  const loginWithPasskey = useCallback(async (email: string) => {
-    const { data: ch } = await authApi.passkeyChallenge({ email });
+  // Pass an email for the username-first flow (one assertion signs in AND
+  // unlocks E2EE via the credential's PRF salt). Omit it for usernameless
+  // sign-in: the OS account picker chooses the passkey, the server resolves the
+  // user from the assertion, and E2EE unlocks post-auth (the challenge couldn't
+  // carry a PRF salt for an unknown user).
+  const loginWithPasskey = useCallback(async (email?: string) => {
+    const { data: ch } = await authApi.passkeyChallenge(email ? { email } : {});
     const assertion = await assertPasskeyForLogin(ch);
     if (!assertion) return false; // user canceled the Face ID sheet
     const { data } = await authApi.passkeyLogin({ challengeId: ch.challengeId, response: assertion.response });
     await saveToken(data.token);
     setUser(data.user);
-    // Same-gesture E2EE unlock: the assertion already evaluated the PRF.
-    // Best-effort like initE2EE — a crypto failure must not block sign-in.
+    // Best-effort E2EE unlock (like initE2EE — a crypto failure must not block
+    // sign-in). Username-first assertions already evaluated the PRF, so unlock
+    // in the same gesture. Usernameless ones didn't, so fall back to the same
+    // path a relaunch uses: the biometric device-key cache (no prompt), then a
+    // passkey assertion (a second Face ID only when the cache is cold).
     try {
-      if (assertion.prfOutput && (await unlockWithPasskeyPrfOutput(assertion.credentialId, assertion.prfOutput))) {
-        await ensureHouseholdKey();
-      }
+      const unlocked = assertion.prfOutput
+        ? await unlockWithPasskeyPrfOutput(assertion.credentialId, assertion.prfOutput)
+        : (await unlockFromDeviceCache()) || (await unlockWithPasskey());
+      if (unlocked) await ensureHouseholdKey();
     } catch (err) {
       console.warn('[e2ee] passkey unlock skipped:', (err as Error)?.message ?? err);
     }

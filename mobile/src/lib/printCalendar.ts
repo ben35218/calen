@@ -14,6 +14,7 @@
 
 import { CalendarData } from '../api';
 import { buildMonth, colorOf, ymd } from './calendar';
+import { occasionTitle } from './occasions';
 
 export type PrintLayout = 'month' | 'agenda';
 
@@ -136,8 +137,8 @@ export function collectPrintItems(
     }
   }
   if (selectedIds.has('birthdays')) {
-    for (const b of data.birthdays ?? []) {
-      items.push({ calendarId: 'birthdays', title: `${b.name}'s Birthday`, date: storedDate(b.date), allDay: true });
+    for (const o of data.occasions ?? []) {
+      items.push({ calendarId: 'birthdays', title: occasionTitle(o), date: storedDate(o.date), allDay: true });
     }
   }
   for (const h of holidays) {

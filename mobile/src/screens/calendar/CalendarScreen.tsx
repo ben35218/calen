@@ -5,10 +5,13 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { CalendarData, Chore, Task } from '../../api';
+import { CalendarData, CalendarOccasion, Chore, Task } from '../../api';
 import { loadCalendarData } from '../../lib/calendarData';
+import { loadPassiveForecast } from '../../lib/weatherSource';
+import WeatherIcon from '../../components/WeatherIcon';
 import { useAuth } from '../../store/auth';
 import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell } from '../../lib/calendar';
+import { occasionIcon, occasionFocusFrom } from '../../lib/occasions';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors, useMonthDensity, MonthDensity } from '../../lib/calendarPrefs';
 import { mdiName } from '../../lib/recurrence';
@@ -86,9 +89,11 @@ const chipTimeLabel = (iso: string) =>
 let autoOpenedTrip = false;
 
 type Chip = { key: string; label: string; color: string; time?: string; eventId?: string; cancelled?: boolean; reschedulePending?: boolean };
-type CellContent = { chips: Chip[]; tasks: Task[]; chores: Chore[]; recipes: RecipeCell[]; grocery: boolean };
+type CellContent = { chips: Chip[]; tasks: Task[]; chores: Chore[]; recipes: RecipeCell[]; grocery: boolean; occasions: CalendarOccasion[] };
 type RenderCell = { date: string; day: number; isToday: boolean; content: CellContent };
-type RenderWeek = { key: string; cells: RenderCell[]; bars: WeekBar[]; height: number; headerH: number; monthLabel: string };
+// The 7-day forecast strip's slice through one week (see the weather lane below).
+type WeekWeather = { startCol: number; endCol: number; days: { col: number; code: number; tempMax: number }[] };
+type RenderWeek = { key: string; cells: RenderCell[]; bars: WeekBar[]; weather: WeekWeather | null; height: number; headerH: number; monthLabel: string };
 
 // 2 past months + current + 9 future, matching the web's initView window.
 function monthWindow(): { year: number; month: number }[] {
@@ -104,7 +109,10 @@ function monthWindow(): { year: number; month: number }[] {
 // host owns all floating chrome (avatar, pills) and crossfades this layer
 // against the agenda, so the header's top row is just empty space under the
 // host's buttons.
-const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function CalendarGrid({ density }, ref) {
+// Memoized: the host CalendarScreen re-renders on unrelated state changes (e.g.
+// opening the view-switcher menu). Without memo, every such render re-renders
+// the whole month grid subtree, starving the menu's open/close animation frames.
+const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }>(function CalendarGrid({ density }, ref) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -159,6 +167,25 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
     queryFn: async () => loadCalendarData({ from: range.from, to: range.to }),
   });
 
+  // The Weather calendar's toggle drives a 7-day forecast strip in the grid
+  // (a translucent lane above the event bars). Passive source resolution
+  // (live / home / custom) — never prompts; failure just means no strip.
+  const weatherOn = visibility.weather !== false;
+  const weatherQ = useQuery({
+    queryKey: ['weather', 'current'],
+    queryFn: () => loadPassiveForecast(),
+    enabled: weatherOn,
+  });
+  const forecastByDate = useMemo(() => {
+    const map: Record<string, { code: number; tempMax: number }> = {};
+    if (weatherOn) {
+      for (const d of weatherQ.data?.forecast ?? []) {
+        map[d.date] = { code: d.weatherCode, tempMax: d.tempMax };
+      }
+    }
+    return map;
+  }, [weatherOn, weatherQ.data]);
+
   // While on a trip, land on its detail screen instead of the grid (once per
   // launch, and only if the user hasn't already navigated somewhere else).
   // TripDetail is pushed over this screen, so its back button pops to the calendar.
@@ -204,10 +231,11 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 
     const content = (dateStr: string): CellContent => {
-      if (!data) return { chips: [], tasks: [], chores: [], recipes: [], grocery: false };
+      if (!data) return { chips: [], tasks: [], chores: [], recipes: [], grocery: false, occasions: [] };
       const chips: Chip[] = [];
       for (const h of holidaysByDate[dateStr] ?? []) chips.push({ key: `hol-${h.id}`, label: h.name, color: h.color });
-      if (visible('birthdays')) for (const b of data.birthdays ?? []) if (ld(b.date) === dateStr) chips.push({ key: `b-${b.id}`, label: b.name, color: calColors.birthdays });
+      // Occasions render as icons (below), not event-style chips.
+      const occasions = visible('birthdays') ? (data.occasions ?? []).filter((o) => ld(o.date) === dateStr) : [];
       for (const e of data.events ?? []) {
         if (!visible(e.calendarType)) continue;
         const start = eventLd(e, e.startDate);
@@ -229,14 +257,14 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
             .map((r) => ({ recipeId: typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined) }))
         : [];
       const grocery = visible('recipes') ? (data.groceryShopping ?? []).some((g) => g.date === dateStr) : false;
-      return { chips, tasks, chores, recipes, grocery };
+      return { chips, tasks, chores, recipes, grocery, occasions };
     };
 
     const cellItemsHeight = (c: CellContent): number => {
       const chipsH = c.chips
         .slice(0, CHIP_MAX)
         .reduce((s, chip) => s + chipHeight(chipRows(chip)), 0);
-      const hasIcons = c.tasks.length > 0 || c.chores.length > 0 || c.recipes.length > 0 || c.grocery;
+      const hasIcons = c.tasks.length > 0 || c.chores.length > 0 || c.recipes.length > 0 || c.grocery || c.occasions.length > 0;
       return chipsH + (c.chips.length > CHIP_MAX ? MORE_H : 0) + (hasIcons ? ICON_ROW_H : 0);
     };
 
@@ -245,7 +273,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
     const stackBarCount = (c: CellContent): number =>
       Math.min(
         STACK_MAX,
-        c.chips.length + (c.tasks.length ? 1 : 0) + (c.chores.length ? 1 : 0) + (c.recipes.length ? 1 : 0) + (c.grocery ? 1 : 0),
+        c.chips.length + (c.tasks.length ? 1 : 0) + (c.chores.length ? 1 : 0) + (c.recipes.length ? 1 : 0) + (c.grocery ? 1 : 0) + (c.occasions.length ? 1 : 0),
       );
 
     const weeksR: RenderWeek[] = [];
@@ -269,6 +297,19 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
       }
       const weekDates = cells.map((c) => c.date);
       const bars = weekBars(visData, weekDates);
+      // The forecast strip's slice through this week (contiguous by
+      // construction — the forecast is a run of consecutive days). Compact
+      // hides all spans, the weather lane included.
+      const wxDays = cells
+        .flatMap((c, col) => {
+          const wx = forecastByDate[c.date];
+          return wx ? [{ col, code: wx.code, tempMax: wx.tempMax }] : [];
+        });
+      const weather: WeekWeather | null =
+        density !== 'compact' && wxDays.length
+          ? { startCol: wxDays[0].col, endCol: wxDays[wxDays.length - 1].col, days: wxDays }
+          : null;
+      const weatherPad = weather ? BAR_H : 0;
       const headerH = DAY_NUM_H;
       // How many bar lanes actually cover a given column (0 if none).
       const lanesAt = (col: number) =>
@@ -283,12 +324,12 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
         height = COMPACT_WEEK;
       } else if (density === 'stacked') {
         const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + stackBarCount(c.content) * STACK_BAR_H));
-        height = Math.min(MAX_WEEK, Math.max(MIN_STACK_WEEK, headerH + maxCell + VPAD));
+        height = Math.min(MAX_WEEK, Math.max(MIN_STACK_WEEK, headerH + weatherPad + maxCell + VPAD));
       } else {
         const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + cellItemsHeight(c.content)));
-        height = Math.min(MAX_WEEK, Math.max(MIN_WEEK, headerH + maxCell + VPAD));
+        height = Math.min(MAX_WEEK, Math.max(MIN_WEEK, headerH + weatherPad + maxCell + VPAD));
       }
-      weeksR.push({ key: weekDates[0], cells, bars, height, headerH, monthLabel });
+      weeksR.push({ key: weekDates[0], cells, bars, weather, height, headerH, monthLabel });
       cursor.setDate(cursor.getDate() + 7);
     }
 
@@ -300,7 +341,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
     const twOff = tIdx >= 0 ? offs[tIdx] : 0;
 
     return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff };
-  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, cancelledIds, reschedulePendingIds, density]);
+  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, cancelledIds, reschedulePendingIds, density, forecastByDate]);
 
   // Place today's week at the top of the viewport, just below the sticky header.
   const goToday = (animated = true) =>
@@ -333,7 +374,12 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
     if (idx !== curIdx) setCurIdx(idx);
   };
 
-  const renderWeek = ({ item: week }: { item: RenderWeek }) => (
+  const renderWeek = ({ item: week }: { item: RenderWeek }) => {
+    // The weather lane (when this week holds forecast days) sits above the
+    // event-bar lanes: every cell's content shifts down by one lane so the
+    // rows stay aligned across the week.
+    const weatherPad = week.weather ? BAR_H : 0;
+    return (
     <View style={[styles.weekRow, { height: week.height }]}>
       {week.cells.map((cell, col) => {
         const c = cell.content;
@@ -353,6 +399,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
           if (c.tasks.length) dots.push(calColors.maintenance);
           if (c.chores.length) dots.push(calColors.chores);
           if (c.recipes.length || c.grocery) dots.push(calColors.recipes);
+          if (c.occasions.length) dots.push(calColors.birthdays);
         }
 
         // Stacked: each single-day item is a thin colored bar (no text). Event
@@ -365,6 +412,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
                 ...(c.chores.length ? [{ color: calColors.chores }] : []),
                 ...(c.recipes.length ? [{ color: calColors.recipes }] : []),
                 ...(c.grocery ? [{ color: calColors.recipes }] : []),
+                ...(c.occasions.length ? [{ color: calColors.birthdays }] : []),
               ].slice(0, STACK_MAX)
             : [];
 
@@ -393,7 +441,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
             ) : density === 'stacked' ? (
               <>
                 {/* reserved space for the spanning bars overlaid on this cell */}
-                <View style={{ height: cellLanes * BAR_H }} />
+                <View style={{ height: weatherPad + cellLanes * BAR_H }} />
                 <View style={styles.cellItems}>
                   {stackItems.map((it, i) => {
                     const barStyle = [
@@ -419,7 +467,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
             ) : (
             <>
             {/* reserved space for the spanning bars overlaid on this cell */}
-            <View style={{ height: cellLanes * BAR_H }} />
+            <View style={{ height: weatherPad + cellLanes * BAR_H }} />
 
             <View style={styles.cellItems}>
               {/* Event chips open that event; holiday/birthday chips fall back to
@@ -461,6 +509,16 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
                   multiple items, so it opens the item when it's the only one and
                   falls back to the day/kitchen view when there are several. */}
               <View style={styles.iconRow}>
+                {c.occasions.slice(0, 3).map((o) => (
+                  <TouchableOpacity
+                    key={`occ-${o.id}`}
+                    hitSlop={6}
+                    onPress={() => navigation.navigate('Birthdays', { focus: occasionFocusFrom(o) })}
+                    accessibilityLabel={`${o.name} — ${o.kind}`}
+                  >
+                    <MaterialCommunityIcons name={occasionIcon(o.kind) as any} size={16} color={calColors.birthdays} />
+                  </TouchableOpacity>
+                ))}
                 {c.tasks.length > 0 ? (
                   <TouchableOpacity
                     hitSlop={6}
@@ -531,6 +589,32 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
         );
       })}
 
+      {/* 7-day forecast strip (the Weather calendar's toggle): one translucent
+          lane above the event bars, a per-day segment of condition icon + high
+          temp. Tapping it opens the Weather screen. */}
+      {week.weather ? (
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => navigation.navigate('Weather')}
+          style={[
+            styles.weatherStrip,
+            {
+              backgroundColor: (calColors.weather ?? '#0288D1') + '26',
+              left: week.weather.startCol * cellSize + 1,
+              width: (week.weather.endCol - week.weather.startCol + 1) * cellSize - 3,
+              top: week.headerH,
+            },
+          ]}
+        >
+          {week.weather.days.map((d) => (
+            <View key={d.col} style={styles.weatherSeg}>
+              <WeatherIcon code={d.code} size={11} />
+              <Text style={styles.weatherSegTemp} numberOfLines={1}>{Math.round(d.tempMax)}°</Text>
+            </View>
+          ))}
+        </TouchableOpacity>
+      ) : null}
+
       {/* Spanning bars: hidden in Compact (dots only); text-labelled only in
           Details (Stacked shows unlabelled bars). */}
       {density !== 'compact' && week.bars.map((bar) => (
@@ -571,7 +655,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
               backgroundColor: bar.color,
               left: bar.startCol * cellSize + 1,
               width: (bar.endCol - bar.startCol + 1) * cellSize - 3,
-              top: week.headerH + bar.lane * BAR_H,
+              top: week.headerH + weatherPad + bar.lane * BAR_H,
             },
           ]}
         >
@@ -581,7 +665,8 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
         </TouchableOpacity>
       ))}
     </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.screen}>
@@ -620,7 +705,7 @@ const CalendarGrid = forwardRef<TodayHandle, { density: GridDensity }>(function 
       </View>
     </View>
   );
-});
+}));
 
 // The view-switcher modes, in menu order (List sits apart, below a divider —
 // mirroring Apple Calendar). Each maps to a glyph shown both in the popover and
@@ -676,14 +761,18 @@ export default function CalendarScreen() {
     transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) }],
   };
 
-  const menuItems: AnchoredMenuItem[] = DENSITY_META.map((m) => ({
-    key: m.key,
-    label: m.label,
-    active: density === m.key,
-    dividerBefore: m.dividerBefore,
-    icon: <MaterialCommunityIcons name={m.icon as any} size={20} color={colors.text} />,
-    onPress: () => setDensity(m.key),
-  }));
+  const menuItems: AnchoredMenuItem[] = useMemo(
+    () =>
+      DENSITY_META.map((m) => ({
+        key: m.key,
+        label: m.label,
+        active: density === m.key,
+        dividerBefore: m.dividerBefore,
+        icon: <MaterialCommunityIcons name={m.icon as any} size={20} color={colors.text} />,
+        onPress: () => setDensity(m.key),
+      })),
+    [density],
+  );
   const activeIcon = DENSITY_META.find((m) => m.key === density)?.icon ?? 'view-stream-outline';
 
   const initial = user?.firstName?.charAt(0).toUpperCase() ?? '?';
@@ -757,7 +846,7 @@ export default function CalendarScreen() {
       {/* ── Bottom-right: Calendars + Invitations + Assistant ─────────────────── */}
       <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('Calendars')}>
-          <MaterialCommunityIcons name="menu" size={22} color={BTN_FG} />
+          <Ionicons name="calendar-outline" size={22} color={BTN_FG} />
         </TouchableOpacity>
         <InvitationsButton onPress={() => navigation.navigate('Invitations')} />
         {aiEnabled && (
@@ -795,6 +884,10 @@ const styles = StyleSheet.create({
   todayNum: { color: '#fff', fontWeight: '700' },
   spanBar: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, justifyContent: 'center', paddingHorizontal: 4 },
   spanBarText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
+  // The 7-day forecast lane: translucent weather tint, one segment per day.
+  weatherStrip: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
+  weatherSeg: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2 },
+  weatherSegTemp: { fontSize: 9, fontWeight: '600', color: colors.text },
   cellItems: { flex: 1 },
   chip: { borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, marginBottom: 2, justifyContent: 'center', overflow: 'hidden' },
   // Compact-mode dots + stacked-mode thin bars.

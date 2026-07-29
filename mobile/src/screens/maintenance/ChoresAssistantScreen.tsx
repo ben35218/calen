@@ -4,7 +4,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import type { RootStackParamList } from '../../navigation/types';
 import type { AssistantId } from '../chat/assistantTabs';
 
@@ -81,7 +81,7 @@ export default function ChoresAssistantScreen({ onSelectAssistant }: { onSelectA
       surface="chores"
       activeAssistant="chores"
       onSelectAssistant={onSelectAssistant}
-      banner={<AiUsageBanner />}
+      banner={<CreditsBanner />}
       emptyHint='e.g. "Set up a weekly trash chore"'
       placeholder="Message…"
       onFollowupPress={handleFollowup}

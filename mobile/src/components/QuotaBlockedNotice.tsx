@@ -7,23 +7,23 @@ import type { RootStackParamList } from '../navigation/types';
 import { colors, radius, spacing } from '../theme';
 
 // Rendered in place of an error/retry row when a request came back 402
-// (weekly AI budget spent). Retrying is futile until the Wednesday reset, so
-// the only useful action is the upgrade path. Companion to AiUsageBanner,
-// which warns *before* the wall; this is the wall itself.
+// (CREDITS_EXHAUSTED — the prepaid credit balance is spent). Retrying is futile
+// until credits are added, so the only useful action is buying a pack.
+// Companion to CreditsBanner, which warns *before* the wall; this is the wall.
 export default function QuotaBlockedNotice({ message }: { message?: string }) {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   return (
     <View style={styles.wrap}>
       <Ionicons name="alert-circle" size={18} color={colors.error} />
       <Text style={styles.text}>
-        {message || 'You’ve used this week’s AI budget. It resets Wednesday.'}
+        {message || 'You’re out of AI credits.'}
       </Text>
       <TouchableOpacity
-        onPress={() => nav.navigate('Upsell', { reason: 'quota' })}
+        onPress={() => nav.navigate('BuyCredits', { reason: 'out' })}
         accessibilityRole="button"
-        accessibilityLabel="See plans — open the upgrade sheet"
+        accessibilityLabel="Buy credits — open the credit pack sheet"
       >
-        <Text style={styles.cta}>See plans</Text>
+        <Text style={styles.cta}>Buy credits</Text>
       </TouchableOpacity>
     </View>
   );

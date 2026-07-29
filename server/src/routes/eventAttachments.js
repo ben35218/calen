@@ -30,13 +30,19 @@ const upload = multer({
   storage,
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    // octet-stream = E2EE ciphertext upload; the plaintext mimetype rides in the
-    // body's fileType and the bytes are opaque to us either way.
+    // E2EE ciphertext uploads are opaque bytes; the plaintext mimetype rides in
+    // the body's `fileType`. The client sends the ciphertext part as
+    // `application/octet-stream`, but iOS/CFNetwork OVERRIDES a `.bin` part's
+    // content-type to `application/macbinary` (and other platforms may pick other
+    // generic-binary labels), so accept the whole opaque-binary family — otherwise
+    // multer silently drops the file and the route 400s with "No file uploaded".
     const allowed = [
       'image/jpeg', 'image/png', 'image/gif', 'image/heic', 'image/webp',
-      'application/pdf', 'application/octet-stream',
+      'application/pdf',
+      'application/octet-stream', 'application/macbinary', 'application/x-macbinary',
+      'application/x-binary', 'application/binary',
     ];
-    cb(null, allowed.includes(file.mimetype));
+    return cb(null, allowed.includes(file.mimetype));
   },
 });
 

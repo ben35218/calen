@@ -1,0 +1,38 @@
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { CalendarStackParamList } from '../../../navigation/CalendarNavigator';
+import { AllDayItem } from './dayViewLayout';
+import { occasionFocusFrom } from '../../../lib/occasions';
+
+export type DayNav = NativeStackNavigationProp<CalendarStackParamList, 'CalendarDay'>;
+
+// Where tapping a day-view item leads — the same routing the old day screen's
+// rows used. Occasions open the Occasions calendar; holidays have no detail
+// screen; grocery and a recipe without a linked record land on the kitchen.
+export function openAllDayItem(navigation: DayNav, item: AllDayItem, date: string) {
+  switch (item.kind) {
+    case 'event':
+      if (item.id) navigation.navigate('EventDetail', { eventId: item.id, date });
+      break;
+    case 'occasion':
+      navigation.navigate('Birthdays', item.occasion ? { focus: occasionFocusFrom(item.occasion) } : undefined);
+      break;
+    case 'trip':
+      if (item.id) navigation.navigate('TripDetail', { id: item.id });
+      break;
+    case 'task':
+      if (item.id) navigation.navigate('TaskDetail', { id: item.id });
+      break;
+    case 'chore':
+      if (item.id) navigation.navigate('ChoreDetail', { id: item.id });
+      break;
+    case 'recipe':
+      if (item.id) navigation.navigate('RecipeDetail', { id: item.id });
+      else navigation.navigate('KitchenHome');
+      break;
+    case 'grocery':
+      navigation.navigate('KitchenHome', { pane: 'grocery' });
+      break;
+    default:
+      break;
+  }
+}

@@ -22,6 +22,7 @@ import {
   applyRecurrenceAssistPatch,
   ALERT_DAY_OPTIONS,
   AUDIENCE_OPTIONS,
+  excludeUsedAlert,
   mdiName,
 } from '../../lib/recurrence';
 import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
@@ -336,7 +337,11 @@ export default function ChoreFormScreen() {
         <Select
           inlineLabel="Alert"
           value={form.reminderDaysBefore ?? undefined}
-          options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
+          options={excludeUsedAlert(
+            ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 })),
+            form.alert2DaysBefore,
+            form.reminderDaysBefore,
+          )}
           onChange={(v) => set({ reminderDaysBefore: v === -1 ? null : (v as number) })}
           highlight={assist.changed.has('reminderDaysBefore')}
           containerStyle={fs.dtFieldWrap}
@@ -350,7 +355,11 @@ export default function ChoreFormScreen() {
             <Select
               inlineLabel="Second alert"
               value={form.alert2DaysBefore ?? undefined}
-              options={ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }))}
+              options={excludeUsedAlert(
+                ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 })),
+                form.reminderDaysBefore,
+                form.alert2DaysBefore,
+              )}
               onChange={(v) => set({ alert2DaysBefore: v === -1 ? null : (v as number) })}
               highlight={assist.changed.has('alert2DaysBefore')}
               containerStyle={fs.dtFieldWrap}
@@ -366,8 +375,8 @@ export default function ChoreFormScreen() {
             <TimeField
               inlineLabel="Remind at"
               clearable
-              placeholder="7:00 AM"
-              defaultValue="07:00"
+              placeholder="9:00 AM"
+              defaultValue="09:00"
               value={form.reminderTime}
               onChange={(v) => set({ reminderTime: v })}
               highlight={assist.changed.has('reminderTime')}

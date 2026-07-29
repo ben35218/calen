@@ -19,6 +19,7 @@ const mongoose = require('mongoose');
 const Household = require('../models/Household');
 const User = require('../models/User');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
+const Record = require('../models/Record');
 const AuditLog = require('../models/AuditLog');
 const { computeReadiness, dropUnsetFor, DROP_FIELDS_VERSION } = require('../services/dropReadiness');
 const { AUTHOR_HIDDEN } = require('../services/e2eePolicy');
@@ -86,6 +87,17 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
   const sharedCalKeys = await outsideSharedCalendarKeys(CustomCalendar, memberIds);
   if (sharedCalKeys.length) log(`  (events on ${sharedCalKeys.length} outside-shared calendar(s) are plaintext-exempt)\n`);
   for (const [name, Model] of Object.entries(MODELS)) {
+    // C3b: author-hidden content lives in the unified `Record` store, and the
+    // sealer (/e2ee/seal) writes ciphertext THERE — never back to these legacy
+    // per-collection tables. So the gate must NOT count author-hidden legacy
+    // rows: an un-migrated / orphaned legacy row (e.g. a pre-mandate seeded
+    // Category with no Record twin) can never be sealed in place, so counting it
+    // would deadlock activation forever — the count could never reach zero. The
+    // legacy tables are migrated + dropped out-of-band (dropContentCollections);
+    // author-hidden stragglers are counted from `Record` below. Trip/TripItem
+    // stay their own collections (the C4 routing deviation), so they're checked
+    // here in place.
+    if (AUTHOR_HIDDEN.has(name)) continue;
     const exempt = { ...excludeSharedFilter(name, sharedIds), ...excludeOutsideCalendarFilter(name, sharedCalKeys) };
     const [sealed, missing] = await Promise.all([
       Model.countDocuments({ ...scope, enc: { $exists: true } }),
@@ -94,6 +106,16 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
     stragglers += missing;
     log(`  ${name.padEnd(16)} ${sealed} sealed, ${missing} missing enc`);
   }
+  // Author-hidden content, from the Record store (the C3b source of truth). A
+  // straggler = a household record with no ciphertext yet. Scoped by householdId
+  // (every Record carries it), so orphans from other/dead households can't leak
+  // into this household's gate.
+  const [recSealed, recMissing] = await Promise.all([
+    Record.countDocuments({ householdId: hh._id, 'enc.ct': { $exists: true } }),
+    Record.countDocuments({ householdId: hh._id, 'enc.ct': { $exists: false } }),
+  ]);
+  stragglers += recMissing;
+  log(`  ${'Record'.padEnd(16)} ${recSealed} sealed, ${recMissing} missing enc`);
   // The household settings blob covers name + homeAddress (C2): any plaintext
   // there without a sealed blob blocks the drop until the client seals it (the
   // straggler pass PUTs the enc via /settings). NOTE: `hh.enc` is a mongoose
@@ -148,6 +170,20 @@ async function dropPlaintext(householdId, { commit = false, log = () => {} } = {
       log(`  ${name.padEnd(16)} author-nulled ${res.modifiedCount}`);
     }
   }
+  // C3b: author-hidden content lives in the `Record` store — the loop above only
+  // still reaches Trip/TripItem (their tables stay; the 9 author-hidden per-
+  // collection tables are dropped). Null the plaintext author `userId` on this
+  // household's HDK-sealed Records too, so the server can't attribute a record to
+  // a member (C4). Only HDK-sealed rows (`enc.ks` absent) — a resource-sealed
+  // Record keeps `userId` (the shared-lane routing deviation). The author itself
+  // is folded inside `enc` at write time on an active household
+  // (e2eePolicy.stripSealedContent) / by the client reseal for pre-activation
+  // rows; scoping survives because `householdId` is authoritative on every Record.
+  const recNull = await Record.updateMany(
+    { householdId: hh._id, 'enc.ct': { $exists: true }, 'enc.ks': { $exists: false }, userId: { $exists: true } },
+    { $unset: { userId: '' } },
+  );
+  log(`  ${'Record'.padEnd(16)} author-nulled ${recNull.modifiedCount}`);
   // Household name + location (C2): lat/lon derive from homeAddress, so they go
   // with it; the sealed settings blob is now the only source of both.
   if (hh.enc?.ct) await Household.updateOne({ _id: hh._id }, { $unset: { homeAddress: '', lat: '', lon: '', name: '' } });

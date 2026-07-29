@@ -1,4 +1,4 @@
-// Recovery code — the dedicated view opened from Privacy & data → Recovery
+// Recovery code — the dedicated view opened from Privacy & security → Recovery
 // methods. Explains what a recovery code is and the crucial fact that it can't
 // be shown again (never stored server-side), and lets the user create or
 // replace it. Replacing invalidates the previous code, so it's gated behind a

@@ -50,6 +50,30 @@ export const AUDIENCE_OPTIONS = [
   { label: 'Only me', value: 'owner' },
 ];
 
+// Offsets (days before the occasion) offered by the Occasions calendar's
+// calendar-level alert settings. `null` = that alert slot is off.
+export const OCCASION_ALERT_OFFSET_OPTIONS: { label: string; value: number | null }[] = [
+  { label: 'No alert', value: null },
+  { label: 'On the day', value: 0 },
+  { label: '3 days before', value: 3 },
+  { label: '1 week before', value: 7 },
+  { label: '2 weeks before', value: 14 },
+];
+
+// Drop an alert value already chosen in the paired slot so the same reminder
+// can't be picked twice across two alert fields. Sentinels (None `-1`, Custom
+// `-2`, and any negative marker) are always kept, as is `self` — the value this
+// slot currently holds — so pre-existing/legacy duplicates still render instead
+// of showing an empty field.
+export function excludeUsedAlert<T extends { value: number }>(
+  options: T[],
+  used: number | null | undefined,
+  self?: number | null,
+): T[] {
+  if (used == null || used < 0) return options;
+  return options.filter((o) => o.value < 0 || o.value === self || o.value !== used);
+}
+
 export function ordinal(n: number | null | undefined): string {
   if (n == null) return '';
   const s = ['th', 'st', 'nd', 'rd'];

@@ -77,3 +77,65 @@ describe('holiday calendar helpers', () => {
     expect(enabled).toContain('halloween');
   });
 });
+
+// ── Fresh-install holiday seed + home-region autoselect ─────────────────────
+// The api + homeRegion modules are mocked for the whole file (hoisted), but
+// only the tests below touch them; the pure helpers above never do.
+jest.mock('../../api', () => ({
+  customCalendarsApi: { list: jest.fn(), create: jest.fn(), update: jest.fn(), remove: jest.fn() },
+}));
+jest.mock('../homeRegion', () => ({ detectHomeRegion: jest.fn() }));
+
+import { getHolidayCalendars, refreshCustomCalendars } from '../calendarPrefs';
+import { REGIONS } from '../holidays';
+import { customCalendarsApi } from '../../api';
+import { detectHomeRegion } from '../homeRegion';
+
+const listMock = customCalendarsApi.list as jest.Mock;
+const createMock = customCalendarsApi.create as jest.Mock;
+const updateMock = customCalendarsApi.update as jest.Mock;
+const detectMock = detectHomeRegion as jest.Mock;
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe('fresh-install holiday seed', () => {
+  it('mints the locale-country calendar and preselects the detected home region', async () => {
+    listMock.mockResolvedValue({ data: [] });
+    createMock.mockImplementation(async (p: any) => ({ data: { ...p, mine: true, access: 'full' } }));
+    updateMock.mockResolvedValue({ data: {} });
+    // Echo whatever country the seed picked (locale-dependent in CI), with
+    // that country's first REGIONS entry as the detected home subdivision.
+    detectMock.mockImplementation(async () => {
+      const country = createMock.mock.calls[0][0].holiday.country;
+      return { country, region: REGIONS[country as keyof typeof REGIONS][0].name };
+    });
+
+    // First load: mints the fresh-install seed and (via the load's own
+    // background refresh) uploads it server-backed. Flush that async chain.
+    await getHolidayCalendars();
+    for (let i = 0; i < 10; i++) await flush();
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const created = createMock.mock.calls[0][0];
+    expect(created.holiday.selectedRegions).toEqual([]); // uploaded bare…
+    const region = REGIONS[created.holiday.country as keyof typeof REGIONS][0].name;
+    expect(updateMock).toHaveBeenCalledWith(created.key, {
+      holiday: expect.objectContaining({ selectedRegions: [region] }),
+    }); // …then patched with the detected home region
+
+    // A later refresh must not re-seed or re-patch (one-shot).
+    createMock.mockClear();
+    updateMock.mockClear();
+    detectMock.mockClear();
+    listMock.mockResolvedValue({ data: [{ ...created, mine: true, access: 'full' }] });
+    await refreshCustomCalendars();
+    expect(createMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(detectMock).not.toHaveBeenCalled();
+
+    // And the seeded calendar surfaces as a holiday calendar with the region.
+    const cals = await getHolidayCalendars();
+    expect(cals).toHaveLength(1);
+    expect(cals[0].country).toBe(created.holiday.country);
+  });
+});

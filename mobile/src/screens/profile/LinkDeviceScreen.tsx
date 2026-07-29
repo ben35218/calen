@@ -82,7 +82,7 @@ function ShowMode() {
     <Screen>
       <ScreenTitle>Set up from another device</ScreenTitle>
       <Hint>
-        On a device that’s already signed in and unlocked, open Privacy & data → Devices → “Link another
+        On a device that’s already signed in and unlocked, open Privacy & security → Devices → “Link another
         device” and scan this code. Your encryption keys transfer directly, encrypted end-to-end — the server
         only relays the sealed handoff.
       </Hint>
@@ -171,7 +171,7 @@ function ScanMode() {
     <Screen>
       <ScreenTitle>Link another device</ScreenTitle>
       <Hint>
-        Scan the code shown on the other device (Privacy & data → “Have another device? Set this one up from
+        Scan the code shown on the other device (Privacy & security → “Have another device? Set this one up from
         it”). It will receive your encryption keys, sealed so only it can read them.
       </Hint>
 

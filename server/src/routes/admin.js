@@ -12,6 +12,9 @@
 //   GET  /api/admin/audit                 → paginated audit-log entries
 //   GET  /api/admin/moderation            → paginated AI-content reports (Apple 1.2)
 //   POST /api/admin/moderation/:id/status → mark a report reviewed/dismissed/open
+//   GET  /api/admin/dnc                   → outbound-call do-not-call list
+//   POST /api/admin/dnc                   → add a number (support request), audited
+//   DELETE /api/admin/dnc/:id             → release a number, audited
 //
 // Pure request-independent logic lives in ./adminHelpers (unit-tested).
 
@@ -22,8 +25,11 @@ const Household = require('../models/Household');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const AuditLog = require('../models/AuditLog');
 const ContentReport = require('../models/ContentReport');
+const DncEntry = require('../models/DncEntry');
 const { computeReadiness, versionSatisfied } = require('../services/dropReadiness');
 const { pushToUser } = require('../services/notify');
+const { suppress, release } = require('../services/dnc');
+const { normalizePhone } = require('../services/phone');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const {
   buildUserFilter, paginate, summarizeReadiness, validateRoleChange, blockingMembers,
@@ -321,7 +327,7 @@ router.get('/moderation', async (req, res) => {
   }
 });
 
-// Triage a report: open → reviewed/dismissed (or back to open).
+// Triage a report: open → reviewed/dismissed (or back to open). Audited.
 router.post('/moderation/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
@@ -329,11 +335,80 @@ router.post('/moderation/:id/status', async (req, res) => {
       return res.status(400).json({ error: 'status must be open, reviewed, or dismissed' });
     }
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const before = await ContentReport.findById(req.params.id).select('status').lean();
+    if (!before) return res.status(404).json({ error: 'Not found' });
     const report = await ContentReport.findByIdAndUpdate(
       req.params.id, { $set: { status } }, { new: true },
     ).lean();
-    if (!report) return res.status(404).json({ error: 'Not found' });
+    if (before.status !== status) {
+      await AuditLog.create({
+        userId: req.user._id,
+        event: 'moderation_status_changed',
+        meta: { reportId: report._id, from: before.status, to: status },
+      });
+    }
     res.json({ _id: report._id, status: report.status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Do-not-call suppression (outbound AI calls) ---------------------------
+
+// The do-not-call list for outbound Calen calls (spec: ai-assistant.md). Admins
+// support requests to be removed and can audit/release entries. Numbers are
+// never shown — only the last four digits + how the opt-out was recorded — since
+// the list stores an HMAC, not the raw number.
+//
+//   GET    /api/admin/dnc            → paginated suppression entries
+//   POST   /api/admin/dnc { phone }  → add a number (source 'support'), audited
+//   DELETE /api/admin/dnc/:id        → release an entry, audited
+router.get('/dnc', async (req, res) => {
+  try {
+    const { page, pageSize, skip } = paginate(req.query, { defaultSize: 50, maxSize: 200 });
+    const filter = req.query.active === 'all' ? {} : { active: true };
+    const [total, entries] = await Promise.all([
+      DncEntry.countDocuments(filter),
+      DncEntry.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(pageSize).lean(),
+    ]);
+    res.json({
+      items: entries.map((e) => ({
+        _id: e._id,
+        last4: e.last4 || null,
+        source: e.source,
+        note: e.note || null,
+        active: e.active,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+      })),
+      total, page, pageSize,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/dnc', async (req, res) => {
+  try {
+    const { phone, note } = req.body || {};
+    if (!phone || !normalizePhone(phone)) {
+      return res.status(400).json({ error: 'A valid phone number is required' });
+    }
+    const { entry } = await suppress(phone, {
+      source: 'support', note, createdBy: req.user._id, userId: req.user._id,
+    });
+    res.status(201).json({ _id: entry._id, last4: entry.last4 || null, source: entry.source, active: entry.active });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/dnc/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const entry = await release(req.params.id, { by: req.user._id });
+    if (!entry) return res.status(404).json({ error: 'Not found' });
+    res.json({ _id: entry._id, active: entry.active });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

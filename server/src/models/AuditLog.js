@@ -15,7 +15,27 @@ const AUDIT_EVENTS = [
   'plaintext_redropped', // Signal-parity pass-2 re-drop: newer DROP_FIELDS columns nulled after re-seal
   // Admin-console actions (who changed what from the admin web app):
   'admin_role_changed', // an admin granted/revoked another user's admin role
-  'plan_changed',       // an admin manually overrode a household's plan
+  'plan_changed',       // legacy: an admin manually overrode a household's plan (subscription era)
+  'unlock_changed',     // an admin manually granted/revoked a user's app unlock
+  'credits_adjusted',   // an admin manually adjusted a user's credit balance
+  'config_changed',     // an admin saved the monetization config (meta: changed leaf paths)
+  'moderation_status_changed', // an admin triaged a content report (meta: reportId, from, to)
+  // Do-not-call suppression for outbound AI calls (spec: features/ai-assistant.md).
+  // Meta carries source + last4 + actor — never the full number.
+  'dnc_suppressed', // a number was added to the do-not-call list (callee request / admin / sms)
+  'dnc_released',   // an admin released a number from the do-not-call list
+  // Support-mailbox access — a privacy-relevant surface (admins reading user
+  // email), so every read/reply/move is accountable. Meta is uid+mailbox only,
+  // never message content or addresses.
+  'support_message_read',
+  'support_reply_sent',
+  'support_message_moved',
+  // Email lifecycle admin actions (spec: features/email-lifecycle.md). Meta is
+  // config leaf paths / counts / the recipient address only — never a body.
+  'email_config_changed',  // an admin saved the email lifecycle config (meta: changed paths)
+  'email_suppressed',      // an admin added an address to the suppression list
+  'email_released',        // an admin released an address from the suppression list
+  'email_reconcile_run',   // an admin manually triggered the delivery reconcile pass (meta: summary)
 ];
 
 const auditLogSchema = new mongoose.Schema({

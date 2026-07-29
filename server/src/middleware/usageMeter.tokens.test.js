@@ -1,8 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  totalTokens, effectiveTokens, enforcedTokens, upgradeBaselineUpdate, currentPeriodKey,
-  effectiveCallSeconds, enforcedCallSeconds, recordCallSecondsById, adminUnlimited,
+  totalTokens, currentPeriodKey, recordCallSecondsById, adminUnlimited, creditStatus, periodUsage,
 } = require('./usageMeter');
 
 const P = currentPeriodKey();
@@ -15,60 +14,6 @@ test('totalTokens sums input + output + cache read + write', () => {
   assert.equal(totalTokens({ input_tokens: 10 }), 10); // missing fields → 0
   assert.equal(totalTokens(null), 0);
   assert.equal(totalTokens(undefined), 0);
-});
-
-test('effectiveTokens subtracts the mid-week upgrade baseline, floored at 0', () => {
-  const hh = {
-    usageTokens: { [P]: { tokens: 500 } },
-    usageTokensBaseline: { [P]: { tokens: 200 } },
-  };
-  assert.equal(effectiveTokens(hh, P), 300);
-  // No baseline → raw passes through.
-  assert.equal(effectiveTokens({ usageTokens: { [P]: { tokens: 80 } } }, P), 80);
-  // Baseline above raw (shouldn't happen) → floored at 0, never negative.
-  assert.equal(effectiveTokens({
-    usageTokens: { [P]: { tokens: 10 } },
-    usageTokensBaseline: { [P]: { tokens: 50 } },
-  }, P), 0);
-  // Empty → 0.
-  assert.equal(effectiveTokens({}, P), 0);
-});
-
-test('enforcedTokens: per-user on free, pooled (effective) on paid', () => {
-  const user = { usageTokens: { [P]: { tokens: 42 } } };
-  const household = {
-    plan: 'premium',
-    usageTokens: { [P]: { tokens: 900 } },
-    usageTokensBaseline: { [P]: { tokens: 100 } },
-  };
-  // Free → the user's own counter (household pool ignored).
-  assert.equal(enforcedTokens({ user, household: { plan: 'free' } }, P), 42);
-  // Solo free user, no household → 0 when unset.
-  assert.equal(enforcedTokens({ user: {}, household: null }, P), 0);
-  // Paid → pooled effective (raw 900 − baseline 100).
-  assert.equal(enforcedTokens({ user, household }, P), 800);
-});
-
-test('effectiveCallSeconds subtracts the mid-week upgrade baseline, floored at 0', () => {
-  const hh = {
-    usageCallSeconds: { [P]: { seconds: 500 } },
-    usageCallSecondsBaseline: { [P]: { seconds: 200 } },
-  };
-  assert.equal(effectiveCallSeconds(hh, P), 300);
-  assert.equal(effectiveCallSeconds({ usageCallSeconds: { [P]: { seconds: 80 } } }, P), 80);
-  assert.equal(effectiveCallSeconds({}, P), 0);
-});
-
-test('enforcedCallSeconds: per-user on free, pooled (effective) on paid', () => {
-  const user = { usageCallSeconds: { [P]: { seconds: 42 } } };
-  const household = {
-    plan: 'premium',
-    usageCallSeconds: { [P]: { seconds: 900 } },
-    usageCallSecondsBaseline: { [P]: { seconds: 100 } },
-  };
-  assert.equal(enforcedCallSeconds({ user, household: { plan: 'free' } }, P), 42);
-  assert.equal(enforcedCallSeconds({ user: {}, household: null }, P), 0);
-  assert.equal(enforcedCallSeconds({ user, household }, P), 800);
 });
 
 test('recordCallSecondsById returns the rounded seconds (0/negative → no-op)', () => {
@@ -92,23 +37,39 @@ test('adminUnlimited: only admins, and only while the config toggle allows it', 
   assert.equal(adminUnlimited({ admin: { unlimitedAi: true } }, null), false);
 });
 
-test('upgradeBaselineUpdate snapshots tokens on a strict upgrade only', () => {
-  const household = {
-    plan: 'free',
-    usage: { [P]: { chat: 5, breakdown: { chat: { calendar: 5 } } } },
-    usageTokens: { [P]: { tokens: 1234, byAction: { chat: 1234 } } },
-    usageCallSeconds: { [P]: { seconds: 90 } },
-  };
-  const up = upgradeBaselineUpdate(household, 'premium');
-  assert.equal(up.usageTokensBaseline[P].tokens, 1234);
-  // byAction is analytics detail, not part of the enforced pool baseline.
-  assert.ok(!('byAction' in up.usageTokensBaseline[P]));
-  // Count baseline drops the analytics breakdown sub-object.
-  assert.ok(!('breakdown' in up.usageBaseline[P]));
-  // Call-time pool is also baselined so it restarts fresh on upgrade.
-  assert.equal(up.usageCallSecondsBaseline[P].seconds, 90);
+test('creditStatus: whole-credit floor, low threshold, exhaustion at <= 0', () => {
+  const config = { credits: { lowBalanceThreshold: 25 }, admin: { unlimitedAi: true } };
 
-  // Same tier or downgrade → no baseline (can't be used to wipe the counter).
-  assert.deepEqual(upgradeBaselineUpdate({ ...household, plan: 'premium' }, 'premium'), {});
-  assert.deepEqual(upgradeBaselineUpdate({ ...household, plan: 'unlimited' }, 'free'), {});
+  // Healthy balance: floors 1050.9 credits worth of Mc down to 1050.
+  const healthy = creditStatus({ creditBalanceMc: 1_050_900 }, config);
+  assert.deepEqual(healthy, { balanceMc: 1_050_900, balance: 1050, unlimited: false, exhausted: false, low: false });
+
+  // At the threshold → low but not exhausted.
+  const low = creditStatus({ creditBalanceMc: 25_000 }, config);
+  assert.equal(low.low, true);
+  assert.equal(low.exhausted, false);
+
+  // Zero and negative (post-refund) → exhausted; balance may be negative.
+  assert.equal(creditStatus({ creditBalanceMc: 0 }, config).exhausted, true);
+  const negative = creditStatus({ creditBalanceMc: -3_000 }, config);
+  assert.equal(negative.exhausted, true);
+  assert.equal(negative.balance, -3);
+
+  // Missing user / balance → treated as 0 (blocked until the starter grant lands).
+  assert.equal(creditStatus(null, config).exhausted, true);
+  assert.equal(creditStatus({}, config).exhausted, true);
+
+  // Exempt admins are never low/exhausted regardless of balance.
+  const admin = creditStatus({ role: 'admin', creditBalanceMc: -5_000 }, config);
+  assert.deepEqual(
+    { unlimited: admin.unlimited, exhausted: admin.exhausted, low: admin.low },
+    { unlimited: true, exhausted: false, low: false }
+  );
+});
+
+test('periodUsage returns the per-action counts and drops the breakdown blob', () => {
+  const doc = { usage: { [P]: { chat: 5, scan: 2, breakdown: { chat: { calendar: 5 } } } } };
+  assert.deepEqual(periodUsage(doc, P), { chat: 5, scan: 2 });
+  assert.deepEqual(periodUsage({}, P), {});
+  assert.deepEqual(periodUsage(null, P), {});
 });

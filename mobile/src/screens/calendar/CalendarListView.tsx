@@ -12,6 +12,7 @@ import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalen
 import { useCallEventStatus } from '../../lib/callStatus';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { mdiName } from '../../lib/recurrence';
+import { occasionIcon, occasionNoun, occasionFocusFrom } from '../../lib/occasions';
 import { CardRow } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -42,7 +43,7 @@ function dotColors(
   const d = itemsForDate(data, dateStr);
   d.trips.forEach((t) => visible('trips') && out.push(t.color));
   d.events.forEach((e) => visible(e.calendarType) && out.push(eventColor(e)));
-  if (visible('birthdays') && d.birthdays.length) out.push(calColors.birthdays);
+  if (visible('birthdays') && d.occasions.length) out.push(calColors.birthdays);
   if (visible('maintenance') && d.tasks.length) out.push(calColors.maintenance);
   if (visible('chores') && d.chores.length) out.push(calColors.chores);
   if (visible('recipes') && (d.recipes.length || d.grocery)) out.push(calColors.recipes);
@@ -206,7 +207,7 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
 
   const listEmpty =
     !day.events.length && !day.tasks.length && !day.chores.length && !day.recipes.length &&
-    !day.trips.length && !day.birthdays.length && !day.grocery && !holidaysForSelected.length;
+    !day.trips.length && !day.occasions.length && !day.grocery && !holidaysForSelected.length;
 
   const monthLabel = new Date(cursor.year, cursor.month, 1).toLocaleDateString(undefined, {
     month: 'long',
@@ -296,8 +297,8 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
         {holidaysForSelected.map((h) => (
           <ListItem key={`hol-${h.id}`} icon="flag-variant" color={h.color} title={h.name} subtitle="Holiday" />
         ))}
-        {day.birthdays.map((b) => (
-          <ListItem key={`bday-${b.id}`} icon="cake-variant" color={calColors.birthdays} title={b.name} subtitle="Birthday" />
+        {day.occasions.map((o) => (
+          <ListItem key={`occ-${o.id}`} icon={occasionIcon(o.kind)} color={calColors.birthdays} title={o.name} subtitle={occasionNoun(o)} onPress={() => nav.navigate('Birthdays', { focus: occasionFocusFrom(o) })} />
         ))}
         {day.events.map((e) => {
           const faded = Boolean(e.cancelled) || cancelledIds.has(e._id) || reschedulePendingIds.has(e._id);
@@ -335,7 +336,9 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
   );
 });
 
-export default CalendarListView;
+// Memoized so an unrelated host re-render (e.g. opening the view-switcher menu)
+// doesn't re-render the whole agenda subtree and stutter the menu animation.
+export default React.memo(CalendarListView);
 
 // A compact card row for the selected-day list — tighter vertical padding and
 // spacing than the default CardRow, with a leading calendar-colour accent bar.

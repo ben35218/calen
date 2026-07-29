@@ -133,3 +133,81 @@ test('placeCandidates simplifies Google Places strings for Nominatim', () => {
   assert.deepEqual(placeCandidates('Tokyo, Japan'), ['Tokyo, Japan', 'Tokyo']);
   assert.deepEqual(placeCandidates('Paris'), ['Paris']);
 });
+
+// ── Geocode fallback chain + location timezone (fetch mocked) ───────────────
+
+function withFetch(impl, fn) {
+  const orig = global.fetch;
+  global.fetch = impl;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => { global.fetch = orig; });
+}
+
+const jsonRes = (body, ok = true) => ({ ok, json: async () => body });
+
+test('geocode falls back to Photon when Nominatim finds nothing', () =>
+  withFetch(async (url) => {
+    if (String(url).includes('nominatim')) return jsonRes([]); // no match
+    assert.ok(String(url).includes('photon.komoot.io'));
+    return jsonRes({ features: [{ geometry: { coordinates: [-79.4, 43.7] } }] });
+  }, async () => {
+    const { geocode } = require('./index');
+    const r = await geocode('12 Fallback Lane, Toronto');
+    assert.deepEqual(r, { lat: 43.7, lon: -79.4 });
+  }));
+
+test("geocode surfaces the primary's error when both providers fail", () =>
+  withFetch(async () => jsonRes([], false), async () => {
+    const { geocode } = require('./index');
+    await assert.rejects(geocode('nowhere at all'), /Geocoding failed/);
+  }));
+
+test('timezoneForCoords reads the open-meteo timezone echo, null on junk', () =>
+  withFetch(async () => jsonRes({ timezone: 'Europe/Rome' }), async () => {
+    const { timezoneForCoords } = require('./index');
+    assert.equal(await timezoneForCoords(41.9, 12.5), 'Europe/Rome');
+  }).then(() =>
+    withFetch(async () => jsonRes({ timezone: 'GMT' }), async () => {
+      const { timezoneForCoords } = require('./index');
+      assert.equal(await timezoneForCoords(0, 0), null); // not a region/city id
+    }),
+  ));
+
+test('locationTimezone geocodes then resolves the zone, null (not throw) on failure', () =>
+  withFetch(async (url) => {
+    if (String(url).includes('nominatim')) return jsonRes([{ lat: '35.68', lon: '139.69' }]);
+    return jsonRes({ timezone: 'Asia/Tokyo' });
+  }, async () => {
+    const { locationTimezone } = require('./index');
+    assert.equal(await locationTimezone('1 Chiyoda, Tokyo'), 'Asia/Tokyo');
+  }).then(() =>
+    withFetch(async () => { throw new Error('offline'); }, async () => {
+      const { locationTimezone } = require('./index');
+      assert.equal(await locationTimezone('unreachable place'), null);
+    }),
+  ));
+
+test('regionForAddress parses Nominatim addressdetails, Photon fallback, null when both fail', async () => {
+  const { regionForAddress } = require('./index');
+
+  await withFetch(async (url) => {
+    assert.ok(String(url).includes('addressdetails=1'));
+    return jsonRes([{ address: { country_code: 'ca', state: 'Ontario' } }]);
+  }, async () => {
+    assert.deepEqual(await regionForAddress('123 Main St, Toronto'),
+      { countryCode: 'CA', state: 'Ontario' });
+  });
+
+  await withFetch(async (url) => {
+    if (String(url).includes('nominatim')) return jsonRes([]); // no match
+    return jsonRes({ features: [{ properties: { countrycode: 'US', state: 'California' } }] });
+  }, async () => {
+    assert.deepEqual(await regionForAddress('456 Elm St'),
+      { countryCode: 'US', state: 'California' });
+  });
+
+  await withFetch(async () => { throw new Error('offline'); }, async () => {
+    assert.equal(await regionForAddress('nowhere'), null);
+  });
+});

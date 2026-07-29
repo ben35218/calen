@@ -5,7 +5,7 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { calendarApi, invitationsApi, peopleApi, EventInvitation, Person } from '../../api';
-import { Badge, Input, Screen, SwitchRow, useHeaderCheckButton } from '../../components/ui';
+import { Badge, Input, Screen, SwitchRow, useHeaderCheckButton, useRevealOnOpen } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import {
   getQueuedInvitees, setQueuedInvitees, useDraftGuestListVisible, setDraftGuestListVisible,
@@ -149,6 +149,10 @@ export default function EventInviteesScreen() {
       .slice(0, 5)
       .map((p) => ({ person: p, entry: entryFor(p, queryIsDigits)! }));
   }, [peopleQ.data, input, taken]);
+
+  // The suggestion dropdown renders below the input, which the keyboard-aware
+  // scroll keeps just above the keyboard — scroll the pair clear when it opens.
+  const suggestWrapRef = useRevealOnOpen(suggestOpen, suggestions.length);
 
   // The inline ✓ inside the field shows once the text parses cleanly — a
   // tap-friendly stand-in for the return key.
@@ -306,7 +310,7 @@ export default function EventInviteesScreen() {
           : 'Add people outside your household by email address or phone number — press return to add each. Invitations go out when you tap the check mark.'}
       </Text>
 
-      <View style={styles.inputWrap}>
+      <View ref={suggestWrapRef} collapsable={false} style={styles.inputWrap}>
         <GroupCard>
           <View style={styles.inputRow}>
             <Input

@@ -131,13 +131,32 @@ router.post('/register', requireAuth, async (req, res) => {
 
 // ── Sign-in (public, rate-limited) ───────────────────────────────────────────
 
-// Step 1: challenge for this email's registered passkeys. Each credential is
-// returned with its E2EE PRF salt (public metadata) so the client can evaluate
-// the PRF in the SAME assertion and unlock encrypted data in one gesture.
+// Step 1: challenge for sign-in. Two modes:
+//
+//  - Username-first (email supplied): constrain the assertion to this account's
+//    registered passkeys and hand back each credential's E2EE PRF salt (public
+//    metadata), so a single assertion signs in AND unlocks encrypted data in one
+//    gesture.
+//  - Usernameless (no email): the passkeys are discoverable (registered with
+//    `residentKey: 'required'`), so issue a challenge with an EMPTY
+//    allowCredentials and let the platform's account picker choose. The user is
+//    resolved from the returned credential id at /login. No PRF salt can be sent
+//    (we don't know who's signing in yet), so the client unlocks E2EE right
+//    after auth (device-key cache, then a passkey assertion) rather than inline.
 router.post('/challenge', challengeLimiter, async (req, res) => {
   try {
     const email = req.body.email?.trim().toLowerCase();
-    if (!email) return res.status(400).json({ error: 'email is required' });
+
+    if (!email) {
+      const options = await generateAuthenticationOptions({
+        rpID,
+        userVerification: 'required',
+        allowCredentials: [], // discoverable-credential (usernameless) flow
+      });
+      const challengeId = crypto.randomBytes(16).toString('base64url');
+      putChallenge(challengeId, options.challenge, null); // no user bound yet
+      return res.json({ challengeId, challenge: options.challenge, rpId: rpID, allowCredentials: [] });
+    }
 
     const user = await User.findOne({ email });
     const creds = user?.passkeyCredentials || [];
@@ -187,7 +206,12 @@ router.post('/login', assertLimiter, async (req, res) => {
     const entry = takeChallenge(challengeId);
     if (!entry) return res.status(400).json({ error: 'Sign-in expired — try again' });
 
-    const user = await User.findById(entry.userId);
+    // Username-first challenges bound a userId; usernameless (discoverable) ones
+    // didn't, so resolve the account from the credential the authenticator
+    // returned. credentialId is unique across accounts (see the User index).
+    const user = entry.userId
+      ? await User.findById(entry.userId)
+      : await User.findOne({ 'passkeyCredentials.credentialId': response.id });
     const cred = user?.passkeyCredentials?.find((c) => c.credentialId === response.id);
     if (!cred) return res.status(401).json({ error: 'Unknown passkey' });
 

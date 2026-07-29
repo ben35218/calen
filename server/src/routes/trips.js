@@ -18,7 +18,7 @@ const { activity } = require('../middleware/activity');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent, stripSealedDoc } = require('../services/e2eePolicy');
 const { isTripShared } = require('../services/tripSharing');
-const { sendTripShareInvitation } = require('../services/mailer');
+const { pushToUser } = require('../services/notify');
 const { normalizePhone } = require('../services/phone');
 const { resolvePlaceWithTz } = require('../services/geo');
 const { getRates, convert } = require('../services/fx');
@@ -1138,8 +1138,8 @@ async function syncTripInvitations(trip, prevEntries, req, snapshot = {}) {
     if (prev.has(key)) continue;
     try {
       const recipient = entry.phone
-        ? await User.findOne({ phone: entry.phone }).select('_id').lean()
-        : await User.findOne({ email: entry.email }).select('_id').lean();
+        ? await User.findOne({ phone: entry.phone }).select('_id pushSubscriptions').lean()
+        : await User.findOne({ email: entry.email }).select('_id pushSubscriptions').lean();
       await TripInvitation.create({
         fromUserId: req.user._id,
         fromName,
@@ -1151,11 +1151,17 @@ async function syncTripInvitations(trip, prevEntries, req, snapshot = {}) {
         tripName,
         destination,
       });
-      // Phone invites carry no email — the owner's device texts them.
-      if (entry.email) {
-        sendTripShareInvitation({
-          toEmail: entry.email, fromName, tripName, destination, hasAccount: !!recipient,
-        });
+      // Outreach is device-composed — the owner's mail/Messages app sends the
+      // invite (see mobile lib/shareInvite); the server sends no email/text.
+      // Existing accounts also get a push nudge — the one channel the server
+      // sends, since it needs their device tokens. Fire-and-forget, best-effort.
+      if (recipient) {
+        pushToUser(recipient, {
+          title: 'Trip shared with you',
+          body: `${fromName || req.user.email} shared ${tripName ? `“${tripName}”` : 'a trip'} with you`,
+          data: { type: 'trip_invitation', tripId: String(trip._id) },
+          tag: `trip-invite-${trip._id}`,
+        }).catch(() => {});
       }
     } catch (err) {
       console.error('[trips] invitation create failed:', err.message);

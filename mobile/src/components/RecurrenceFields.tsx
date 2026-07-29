@@ -53,6 +53,7 @@ export default function RecurrenceFields({
               <Text style={fs.dtLabel}>Every</Text>
               <Input
                 keyboardType="numeric"
+                clearable={false}
                 value={String(form.intervalValue ?? '')}
                 onChangeText={(v) => onChange({ intervalValue: Number(v) || 1 })}
                 containerStyle={[fs.headField, styles.everyInputWrap]}
@@ -101,6 +102,7 @@ export default function RecurrenceFields({
                       <Text style={fs.dtLabel}>Day of month</Text>
                       <Input
                         keyboardType="numeric"
+                        clearable={false}
                         value={form.dayOfMonth != null ? String(form.dayOfMonth) : ''}
                         onChangeText={(v) => onChange({ dayOfMonth: v ? Number(v) : null })}
                         containerStyle={[fs.headField, fs.rowInputWrap]}
@@ -152,6 +154,7 @@ export default function RecurrenceFields({
                   <Text style={fs.dtLabel}>On day (optional)</Text>
                   <Input
                     keyboardType="numeric"
+                    clearable={false}
                     value={form.dayOfMonth != null ? String(form.dayOfMonth) : ''}
                     onChangeText={(v) => onChange({ dayOfMonth: v ? Number(v) : null })}
                     containerStyle={[fs.headField, fs.rowInputWrap]}
@@ -182,6 +185,7 @@ export default function RecurrenceFields({
               <Text style={fs.dtLabel}>On day of month</Text>
               <Input
                 keyboardType="numeric"
+                clearable={false}
                 value={form.dayOfMonth != null ? String(form.dayOfMonth) : ''}
                 onChangeText={(v) => onChange({ dayOfMonth: v ? Number(v) : null })}
                 containerStyle={[fs.headField, fs.rowInputWrap]}

@@ -5,7 +5,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { ProposedTask } from '../../api';
 import { Badge } from '../../components/ui';
 import { diyBadge } from '../../lib/diy';
@@ -100,7 +100,7 @@ export default function AiTaskPlanChatScreen({ onSelectAssistant }: { onSelectAs
     <ChatScreen
       chat={chat}
       surface="maintenance"
-      banner={<AiUsageBanner />}
+      banner={<CreditsBanner />}
       footer={footer}
       activeAssistant="maintenance"
       onSelectAssistant={onSelectAssistant}

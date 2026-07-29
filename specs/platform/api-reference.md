@@ -1,7 +1,7 @@
 ---
 title: API reference
 status: current
-last-verified: d7c71e0 (2026-07-22)
+last-verified: 55bfc65+ (2026-07-28); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
@@ -25,8 +25,9 @@ spec explains the shape and the parts that aren't obvious from the mounts.
   admin (browser) client can only read it because it's in CORS `exposedHeaders`.
   The mobile client swaps its stored token when present.
 - **CORS:** the native app sends no `Origin` and is allowed through; the admin
-  app's origin must be in `CORS_ORIGINS` (or `CLIENT_URL`). Dev adds
-  `http://localhost:5174` automatically.
+  app's origin must be in `CORS_ORIGINS` (or `CLIENT_URL`). In non-production
+  any `http://localhost:<port>` / `http://127.0.0.1:<port>` origin is allowed,
+  so the admin dev server works on whatever port Vite picks.
 - **Rate limits:** auth, key, and join endpoints carry per-IP limiters
   (`trust proxy` is set so limits key off the real client IP behind Render).
 - **Large bodies:** the AI chat paths get a 15 MB JSON limit (inline base64
@@ -84,6 +85,15 @@ See `app.js` for exact paths. Grouped for orientation:
 - **Kitchen:** `/api/recipes` (incl. `suggest-recipes`), `/api/recipe-schedule`.
 - **Trips:** `/api/trips`.
 - **People:** `/api/people`.
+- **Occasion e-cards:** `/api/ecards` (CRUD) + card photos:
+  `POST /api/ecards/:id/photos` (multipart `photo`; JPEG/PNG/GIF/WebP, ≤10MB,
+  max 3, author-only), `GET /api/ecards/:id/photos/:photoId` (bytes,
+  household-scoped), `DELETE /api/ecards/:id/photos/:photoId` (author-only;
+  photo files also unlink when their card is deleted). **Plaintext** by design
+  (recipient emails, message/framing lines, and photo files stored readable so
+  the scheduler can send on the occasion date — a deliberate E2EE exception, so
+  these are NOT routed through the sealed record store or the plaintext-create
+  guard). See [features/calendar.md](../features/calendar.md).
 - **AI:** `/api/calendar/chat`, `/api/maintenance/chat`,
   `/api/maintenance/plan-chat`, `/api/chores/chat`, `/api/trips/chat`,
   `/api/form-assist`, `/api/calls` (Vapi phone calls), `/api/places` (biasing).
@@ -91,12 +101,38 @@ See `app.js` for exact paths. Grouped for orientation:
   sit behind `middleware/aiConsent.js` (`requireAiEnabled` → 403 when
   `User.aiEnabled` is false; the flag syncs from the device via `PUT /settings`
   and is returned by `GET /settings`).
-- **Billing:** `/api/billing` (`webhook` — public, HMAC-verified; `status`;
-  `select` — admin). See [features/billing-plans.md](../features/billing-plans.md).
+- **Billing:** `/api/billing` (`webhook` — public, secret-verified, RC
+  `app_user_id` = USER id; `status` — the per-user app unlock (`unlocked`),
+  prepaid credit balance (`creditBalance`/`creditBalanceMc`, `lowBalance`,
+  `unlimited`, `packs`), per-user usage analytics, and the household's owned
+  feature-calendar `addons` + `addonCatalog`; `credits/ledger` — the caller's
+  credit grant history; `addons/claim` — any member claims a FREE add-on
+  (catalog price 0: Birthdays/Chores) for the household; `addons` — admin
+  override of the household's owned add-on set). AI routes return
+  `402 CREDITS_EXHAUSTED` when the balance is spent. See
+  [features/billing-plans.md](../features/billing-plans.md).
 - **Misc:** `/api/weather`, `/api/notifications`, `/api/settings`,
   `/api/moderation`, `/api/health` (public).
-- **Admin app surfaces:** `/api/monetization-config`, `/api/admin/analytics`,
-  `/api/admin/email`, `/api/admin` — all `requireAdmin`-gated.
+  - `/api/weather` geocodes the home address via the Google Geocoding API when
+    `GOOGLE_PLACES_API_KEY` is set, falling back to Nominatim (and remains
+    Nominatim-only without a key). E2EE households bypass this route entirely
+    (client-direct open-meteo).
+  - `PUT /settings` additionally accepts `householdTimezone` — the household's
+    default IANA zone (the reminder scheduler's fallback for members with no
+    personal zone). Validated as a real IANA id (400 otherwise) and stored as
+    `Household.timezone`; echoed by `GET /settings`. The client derives it from
+    the home location keyless + client-side, so an E2EE household's address is
+    never sent to resolve it. Distinct from the personal `timezone` key.
+  - `PUT /settings` also accepts `dayAlertTime` — the personal wall-clock time
+    (`"HH:mm"`) that DAY-BASED alerts fire at, stored on `User.dayAlertTime` and
+    echoed by `GET /settings`. An empty string clears it back to the 9am default
+    (`null`); a non-empty value must be a valid 24h `HH:mm` (400 otherwise). See
+    [features/notifications.md](../features/notifications.md).
+- **Admin app surfaces:** `/api/monetization-config` (config CRUD;
+  `households` — usage analytics; `users` — per-user unlock + credit balance;
+  `unlock` — grant/revoke a user's app unlock; `credits` — ledgered balance
+  adjustment), `/api/admin/analytics`, `/api/admin/email`, `/api/admin` — all
+  `requireAdmin`-gated.
 
 ## Public (unauthenticated) endpoints
 

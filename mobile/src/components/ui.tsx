@@ -16,12 +16,28 @@ import {
   Switch as RNSwitch,
   Platform,
   KeyboardAvoidingView,
+  Dimensions,
+  useWindowDimensions,
+  LayoutChangeEvent,
 } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KeyboardAwareScrollView, KeyboardController } from 'react-native-keyboard-controller';
+import type { KeyboardAwareScrollViewRef } from 'react-native-keyboard-controller';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence } from 'react-native-reanimated';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
+import {
+  COUNTRIES,
+  deviceCountry,
+  flagEmoji,
+  formatAsYouType,
+  formatAsTyped,
+  parseStored,
+  seedTyped,
+  toE164,
+  toE164FromTyped,
+  type CountryCode,
+} from '../lib/phone';
 
 export function Button({
   title,
@@ -111,14 +127,16 @@ export function RoundIconButton({
   );
 }
 
-// The checkmark that replaces a form's Save/Create button. A solid-fill circular
-// disc — tinted with the view's calendar/section accent colour — with a white
-// checkmark, living in the header's top-right (`headerRight`). While the save
-// mutation runs it shows a spinner; `disabled` dims it.
+// The checkmark that replaces a form's Save/Create button, living in the
+// header's top-right (`headerRight`). While the save mutation runs it shows a
+// spinner; `disabled` dims it. Two looks, driven by `color`: pass the view's
+// feature accent to get a solid-fill accent disc (accented feature areas); omit
+// it and the check is a plain transparent white glyph — matching the header
+// close X and the app's other non-accented header actions.
 export function HeaderCheckButton({
   onPress,
   loading,
-  color = colors.primary,
+  color,
   disabled,
 }: {
   onPress: () => void;
@@ -126,6 +144,7 @@ export function HeaderCheckButton({
   color?: string;
   disabled?: boolean;
 }) {
+  const tinted = !!color;
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -134,12 +153,15 @@ export function HeaderCheckButton({
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       accessibilityRole="button"
       accessibilityLabel="Save"
-      style={[styles.headerCheck, { backgroundColor: color }, (disabled || loading) && styles.btnDisabled]}
+      style={[
+        tinted ? [styles.headerCheck, { backgroundColor: color }] : styles.headerClose,
+        (disabled || loading) && styles.btnDisabled,
+      ]}
     >
       {loading ? (
         <ActivityIndicator size="small" color="#fff" />
       ) : (
-        <Ionicons name="checkmark-sharp" size={22} color="#fff" />
+        <Ionicons name="checkmark-sharp" size={tinted ? 22 : 28} color="#fff" />
       )}
     </TouchableOpacity>
   );
@@ -255,18 +277,59 @@ export function Input(
     highlight?: boolean;
     containerStyle?: StyleProp<ViewStyle>;
     labelStyle?: StyleProp<TextStyle>;
+    clearable?: boolean;
   },
 ) {
-  const { label, style, highlight, containerStyle, labelStyle, ...rest } = props;
+  const { label, style, highlight, containerStyle, labelStyle, clearable = true, ...rest } = props;
+  const [focused, setFocused] = useState(false);
+  // Apple-style clear affordance: while the field is being edited and holds
+  // text, an ✕ at its right end clears it (cross-platform stand-in for iOS's
+  // clearButtonMode="while-editing"). Only for single-line, editable,
+  // non-secure controlled fields; `clearable={false}` opts a field out (e.g.
+  // when something else already occupies the field's right edge).
+  const showClear =
+    clearable &&
+    focused &&
+    !!rest.value &&
+    !rest.multiline &&
+    !rest.secureTextEntry &&
+    rest.editable !== false &&
+    !!rest.onChangeText;
   return (
     <View style={[styles.inputWrap, containerStyle]}>
       {label ? <Text style={[styles.label, labelStyle]}>{label}</Text> : null}
       <TextInput
         placeholderTextColor={colors.textMuted}
-        style={[styles.input, highlight && styles.inputHighlight, style]}
+        style={[styles.input, highlight && styles.inputHighlight, style, showClear && styles.inputClearPad]}
         {...rest}
+        onFocus={(e) => {
+          setFocused(true);
+          rest.onFocus?.(e);
+        }}
+        onBlur={(e) => {
+          setFocused(false);
+          rest.onBlur?.(e);
+        }}
       />
+      {showClear ? <ClearButton onPress={() => rest.onChangeText!('')} /> : null}
     </View>
+  );
+}
+
+// The ✕-in-a-disc that clears a text field, bottom-anchored over the standard
+// 46px input row (so the label above doesn't offset it). Kept as its own
+// component so PhoneField's row layout can reuse the glyph inline.
+function ClearButton({ onPress, inline }: { onPress: () => void; inline?: boolean }) {
+  return (
+    <Pressable
+      style={inline ? styles.clearBtnInline : styles.clearBtn}
+      hitSlop={8}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Clear text"
+    >
+      <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+    </Pressable>
   );
 }
 
@@ -281,6 +344,63 @@ export function InfoCard({ children, style }: { children: React.ReactNode; style
   return <View style={[styles.card, styles.infoCard, style]}>{children}</View>;
 }
 
+// The keyboard-aware scroll only keeps the focused *input* above the keyboard,
+// so anything rendered below it (an autocomplete dropdown) opens exactly behind
+// the keyboard. Screen exposes `reveal`: scroll a view (input + its dropdown)
+// fully into the visible area above the keyboard, capped so the input's top
+// never leaves the viewport.
+const ScreenScrollContext = React.createContext<{ reveal: (view: View) => void; scrollToY: (y: number, animated?: boolean) => void } | null>(null);
+
+// Access the enclosing <Screen>'s scroll helpers (null outside a scrolling
+// Screen). `scrollToY(layoutY)` jumps a section to the top — e.g. opening a form
+// focused on one section (pass the section's onLayout layout.y).
+export function useScreenScroll() {
+  return React.useContext(ScreenScrollContext);
+}
+
+// Attach the returned ref to the view wrapping an input and its inline
+// dropdown; whenever the dropdown opens or grows, the wrap is scrolled clear
+// of the keyboard. No-op outside a scrolling <Screen>.
+export function useRevealOnOpen(open: boolean, itemCount: number) {
+  const screenScroll = React.useContext(ScreenScrollContext);
+  const ref = useRef<View>(null);
+  useEffect(() => {
+    if (!open || itemCount === 0 || !screenScroll) return;
+    // Wait a frame so the just-rendered dropdown is in the measured layout.
+    const id = requestAnimationFrame(() => { if (ref.current) screenScroll.reveal(ref.current); });
+    return () => cancelAnimationFrame(id);
+  }, [open, itemCount, screenScroll]);
+  return ref;
+}
+
+// Wraps a form section that should sit at the top of the viewport when the
+// screen opens focused on it (a `focus` deep-link, e.g. PersonForm's
+// `focus: 'dates'` from the Occasions list). Must be a DIRECT child of a
+// scrolling <Screen> — the scroll-context provider lives inside Screen, so
+// calling useScreenScroll from the screen component itself (which *renders*
+// Screen) reads null; this child component is the correct consumer. Direct
+// child also makes `layout.y` the section's offset within the scroll content.
+// Jumps without animation: the scroll lands during the push transition, so the
+// screen simply opens at the section.
+export function ScrollToSection({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const screenScroll = React.useContext(ScreenScrollContext);
+  const done = useRef(false);
+  const onLayout = (e: LayoutChangeEvent) => {
+    const y = e.nativeEvent.layout.y;
+    if (!active || done.current || !screenScroll || !y) return;
+    done.current = true;
+    // Wait a frame so the scroll view's content size (measured in the same
+    // layout pass) is committed before jumping — an early scrollTo gets
+    // clamped to the stale, shorter content.
+    requestAnimationFrame(() => screenScroll.scrollToY(y, false));
+  };
+  return (
+    <View collapsable={false} onLayout={onLayout}>
+      {children}
+    </View>
+  );
+}
+
 export function Screen({
   children,
   scroll = true,
@@ -290,21 +410,55 @@ export function Screen({
   scroll?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
+  const scrollRef = useRef<KeyboardAwareScrollViewRef>(null);
+  const offsetY = useRef(0);
+  const revealApi = React.useMemo(() => ({
+    reveal: (view: View) => {
+      const scrollView = scrollRef.current;
+      const native: any = scrollView?.getNativeScrollRef?.() ?? scrollView;
+      if (!scrollView || typeof native?.measureInWindow !== 'function') return;
+      view.measureInWindow((vx, vy, vw, vh) => {
+        native.measureInWindow((sx: number, sy: number, sw: number, sh: number) => {
+          const kb = KeyboardController.isVisible() ? KeyboardController.state()?.height ?? 0 : 0;
+          const visibleBottom = Math.min(sy + sh, Dimensions.get('window').height - kb) - spacing.sm;
+          const overflow = vy + vh - visibleBottom;
+          // Cap the scroll so the input's top stays inside the viewport even
+          // when the dropdown is taller than the space above the keyboard.
+          const delta = Math.min(overflow, Math.max(0, vy - sy - spacing.sm));
+          if (delta > 0) scrollView.scrollTo({ y: offsetY.current + delta, animated: true });
+        });
+      });
+    },
+    // Scroll to a content offset so a section's top sits near the viewport top
+    // (used to jump a form to a section on open). `y` is the section's
+    // `onLayout` layout.y — reliable because Screen's children render directly
+    // into the scroll content container.
+    scrollToY: (y: number, animated = true) => {
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.md), animated });
+    },
+  }), []);
   if (!scroll) return <View style={[styles.screen, style]}>{children}</View>;
   return (
-    <KeyboardAwareScrollView
-      style={styles.screen}
-      contentContainerStyle={[styles.screenContent, style]}
-      bottomOffset={spacing.lg}
-      keyboardShouldPersistTaps="handled"
-    >
-      {children}
-    </KeyboardAwareScrollView>
+    <ScreenScrollContext.Provider value={revealApi}>
+      <KeyboardAwareScrollView
+        ref={scrollRef}
+        style={styles.screen}
+        contentContainerStyle={[styles.screenContent, style]}
+        bottomOffset={spacing.lg}
+        keyboardShouldPersistTaps="handled"
+        onScroll={(e) => { offsetY.current = e.nativeEvent.contentOffset.y; }}
+      >
+        {children}
+      </KeyboardAwareScrollView>
+    </ScreenScrollContext.Provider>
   );
 }
 
-export function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <Text style={styles.sectionTitle}>{children}</Text>;
+// The bold in-form heading (add/edit forms). Carries a top margin so it
+// separates from the field above it; pass `style` (e.g. `{ marginTop: 0 }`) when
+// it's the FIRST child of a Card, where the card's own padding already spaces it.
+export function SectionTitle({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
+  return <Text style={[styles.sectionTitle, style]}>{children}</Text>;
 }
 
 // The quiet uppercase "eyebrow" that labels a group of rows/cards in a list or
@@ -805,6 +959,7 @@ export function Select<T extends string | number>({
   valueStyle,
   chevronIcon,
   inlineLabel,
+  initialScrollValue,
 }: {
   label?: string;
   value?: T | null;
@@ -825,8 +980,19 @@ export function Select<T extends string | number>({
   // Label rendered inside the touchable, left of the value — makes the whole
   // row (label included) open the picker. Also titles the option modal.
   inlineLabel?: string;
+  // Open the option list scrolled so this option sits at the top (the user can
+  // still scroll up to earlier options). E.g. the e-card hour picker opens at
+  // noon so PM times are the visible default.
+  initialScrollValue?: T;
 }) {
   const [open, setOpen] = useState(false);
+  const listRef = useRef<ScrollView>(null);
+  // The initial-scroll option's y within the list content, captured on layout.
+  const initialScrollY = useRef(0);
+  const scrollToInitial = () => {
+    if (initialScrollValue == null) return;
+    listRef.current?.scrollTo({ y: initialScrollY.current, animated: false });
+  };
   const selectedLabel = multiple
     ? options.filter((o) => values?.includes(o.value)).map((o) => o.label).join(', ')
     : options.find((o) => o.value === value)?.label;
@@ -854,11 +1020,11 @@ export function Select<T extends string | number>({
         <Ionicons name={chevronIcon ?? 'chevron-down'} size={18} color={colors.textMuted} style={styles.selectChevron} />
       </TouchableOpacity>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)} onShow={scrollToInitial}>
         <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
             {label || inlineLabel || placeholder ? <Text style={styles.modalTitle}>{label || inlineLabel || placeholder}</Text> : null}
-            <ScrollView style={styles.modalList}>
+            <ScrollView ref={listRef} style={styles.modalList}>
               {clearable && !multiple ? (
                 <TouchableOpacity
                   style={styles.optionRow}
@@ -877,6 +1043,17 @@ export function Select<T extends string | number>({
                   <TouchableOpacity
                     key={String(opt.value)}
                     style={styles.optionRow}
+                    // Capture the target option's position and scroll it to the
+                    // top — onLayout covers the first open (it fires after
+                    // onShow); onShow covers re-opens (layout doesn't re-fire).
+                    onLayout={
+                      initialScrollValue === opt.value
+                        ? (e) => {
+                            initialScrollY.current = e.nativeEvent.layout.y;
+                            scrollToInitial();
+                          }
+                        : undefined
+                    }
                     onPress={() => {
                       if (multiple) {
                         toggleMulti(opt.value);
@@ -1041,6 +1218,16 @@ function DateTimeField({
   const [temp, setTemp] = useState<Date>(new Date());
   const isDate = mode === 'date';
 
+  // The native iOS inline date grid (display="inline") sizes its 7-column grid to
+  // a fixed, roughly full-screen intrinsic width and *clips* (rather than shrinks)
+  // the right (Saturday) column if given a narrower frame — so it can't simply be
+  // inset. We give it the full screen width (cancelling the sheet's horizontal
+  // padding with a matching negative margin) so nothing clips, then scale it down
+  // a touch so the grid sits inset from both screen edges instead of running flush
+  // to the right edge. Time mode keeps the stretched wheel.
+  const { width: winWidth } = useWindowDimensions();
+  const datePickerStyle = { width: winWidth, marginHorizontal: -spacing.md, transform: [{ scale: 0.92 }] } as const;
+
   const display = value
     ? isDate
       ? friendlyDate(value)
@@ -1057,6 +1244,13 @@ function DateTimeField({
   const onAndroidChange = (e: DateTimePickerEvent, d?: Date) => {
     setOpen(false);
     if (e.type === 'set' && d) emit(d);
+  };
+
+  // iOS: dismissing the sheet (tap the backdrop / swipe / Done) accepts the
+  // value the wheel is currently on — no separate confirm tap required.
+  const commit = () => {
+    emit(temp);
+    setOpen(false);
   };
 
   return (
@@ -1097,8 +1291,8 @@ function DateTimeField({
       ) : null}
 
       {Platform.OS === 'ios' ? (
-        <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)}>
+        <Modal visible={open} transparent animationType="fade" onRequestClose={commit}>
+          <Pressable style={styles.modalBackdrop} onPress={commit}>
             <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
               {label || inlineLabel ? <Text style={styles.modalTitle}>{label || inlineLabel}</Text> : null}
               <DateTimePicker
@@ -1113,15 +1307,9 @@ function DateTimeField({
                 locale={isDate ? undefined : 'en_US'}
                 themeVariant="dark"
                 accentColor={colors.primary}
-                style={styles.iosPicker}
+                style={[styles.iosPicker, isDate && datePickerStyle]}
               />
-              <Button
-                title="Done"
-                onPress={() => {
-                  emit(temp);
-                  setOpen(false);
-                }}
-              />
+              <Button title="Done" onPress={commit} />
             </Pressable>
           </Pressable>
         </Modal>
@@ -1164,6 +1352,219 @@ export function TimeField(props: {
   inlineLabel?: string;
 }) {
   return <DateTimeField mode="time" {...props} />;
+}
+
+// A phone-number field with a country selector (flag + dial code) and live
+// "as you type" formatting. Emits canonical E.164 via `onChangeText` for
+// storage; seeds itself from an existing stored value (E.164 or legacy digits)
+// and re-derives when `value` changes externally (FormAssist / Places prefill).
+// Same style contract as Input/Select so it drops into a standalone bordered
+// layout (pass `label`) or flush inside a GroupCard (pass fs.headField /
+// fs.headInput via containerStyle / fieldStyle).
+export function PhoneField({
+  label,
+  value,
+  onChangeText,
+  placeholder = 'Phone number',
+  highlight,
+  defaultCountry,
+  containerStyle,
+  fieldStyle,
+  style,
+  ...rest
+}: Omit<TextInputProps, 'value' | 'onChangeText'> & {
+  label?: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  highlight?: boolean;
+  defaultCountry?: CountryCode;
+  containerStyle?: StyleProp<ViewStyle>;
+  fieldStyle?: StyleProp<ViewStyle>;
+}) {
+  const fallback = defaultCountry ?? deviceCountry();
+  const [country, setCountry] = useState<CountryCode>(fallback);
+  const [display, setDisplay] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [focused, setFocused] = useState(false);
+
+  // A ScrollView keeps its scroll offset when its content shrinks, so after any
+  // scroll (or a keyboard-driven layout shift) a filtered-down list can leave
+  // the surviving rows scrolled out of view. Reset to the top whenever the query
+  // changes so the matches are always visible.
+  const listRef = useRef<ScrollView>(null);
+  useEffect(() => {
+    listRef.current?.scrollTo({ y: 0, animated: false });
+  }, [search]);
+
+  // The E.164 we last emitted. An external `value` change (initial seed, AI
+  // assist, Places prefill) re-derives the field; our own keystrokes already
+  // updated `display`, so we skip re-seeding on those (keeps the cursor put).
+  const lastEmitted = useRef<string | null>(null);
+  useEffect(() => {
+    if (value === lastEmitted.current) return;
+    const parsed = parseStored(value, fallback);
+    setCountry(parsed.country);
+    setDisplay(parsed.national);
+    lastEmitted.current = value ?? '';
+  }, [value, fallback]);
+
+  const emit = (nextDisplay: string, nextCountry: CountryCode) => {
+    const e164 = toE164(nextDisplay, nextCountry);
+    lastEmitted.current = e164;
+    onChangeText(e164);
+  };
+
+  const onType = (text: string) => {
+    const formatted = formatAsYouType(text, country);
+    setDisplay(formatted);
+    emit(formatted, country);
+  };
+
+  const closePicker = () => {
+    setPickerOpen(false);
+    setSearch('');
+  };
+
+  const pickCountry = (c: CountryCode) => {
+    setPickerOpen(false);
+    setSearch('');
+    setCountry(c);
+    const reformatted = formatAsYouType(display, c);
+    setDisplay(reformatted);
+    emit(reformatted, c);
+  };
+
+  const callingCode = COUNTRIES.find((c) => c.code === country)?.callingCode ?? '';
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? COUNTRIES.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.code.toLowerCase().includes(q) ||
+          c.callingCode.includes(q.replace('+', '')),
+      )
+    : COUNTRIES;
+
+  return (
+    <View style={[styles.inputWrap, containerStyle]}>
+      {label ? <Text style={styles.label}>{label}</Text> : null}
+      <View style={[styles.input, styles.phoneRow, fieldStyle, highlight && styles.phoneHighlight]}>
+        <TouchableOpacity
+          style={styles.phoneCountryBtn}
+          onPress={() => setPickerOpen(true)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Select country code"
+        >
+          <Text style={styles.phoneFlag}>{flagEmoji(country)}</Text>
+          <Text style={styles.phoneCode}>+{callingCode}</Text>
+          <Ionicons name="chevron-down" size={14} color={colors.textMuted} />
+        </TouchableOpacity>
+        <View style={styles.phoneDivider} />
+        <TextInput
+          value={display}
+          onChangeText={onType}
+          placeholder={placeholder}
+          placeholderTextColor={colors.textMuted}
+          keyboardType="phone-pad"
+          textContentType="telephoneNumber"
+          autoComplete="tel"
+          style={[styles.phoneInput, style]}
+          {...rest}
+          onFocus={(e) => {
+            setFocused(true);
+            rest.onFocus?.(e);
+          }}
+          onBlur={(e) => {
+            setFocused(false);
+            rest.onBlur?.(e);
+          }}
+        />
+        {focused && display.length > 0 && rest.editable !== false ? (
+          <ClearButton inline onPress={() => onType('')} />
+        ) : null}
+      </View>
+
+      {/* Dedicated picker modal: the keyboard-avoider is the full-screen root so
+          the sheet is *lifted* clear of the keyboard rather than squeezed, and
+          the list carries its own minimum height so it can never collapse to a
+          sliver that hides the one matching row. */}
+      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={closePicker}>
+        <KeyboardAvoidingView style={styles.phonePickerRoot} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable style={styles.modalBackdrop} onPress={closePicker}>
+            <Pressable style={styles.phonePickerSheet} onPress={(e) => e.stopPropagation()}>
+              <Text style={styles.modalTitle}>Country</Text>
+              <Input placeholder="Search" value={search} onChangeText={setSearch} autoFocus containerStyle={styles.phoneSearch} />
+              <ScrollView ref={listRef} style={styles.phoneCountryList} keyboardShouldPersistTaps="handled">
+                {filtered.map((c) => (
+                  <TouchableOpacity key={c.code} style={styles.optionRow} onPress={() => pickCountry(c.code)}>
+                    <Text style={styles.phoneCountryName} numberOfLines={1}>
+                      {flagEmoji(c.code)}  {c.name}
+                    </Text>
+                    <Text style={styles.phoneCountryDial}>+{c.callingCode}</Text>
+                  </TouchableOpacity>
+                ))}
+                {filtered.length === 0 ? <Text style={styles.phoneNoMatch}>No matches</Text> : null}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Modal>
+    </View>
+  );
+}
+
+// A picker-free phone input: no country selector, no flag, no dial-code chip — the
+// number takes the full width. The user types a local number normally, or a
+// leading "+<country code>" for an international one; formatting follows suit
+// (national by device region, or international once a "+" is present). Emits
+// canonical E.164 for storage, same contract as PhoneField, and seeds itself from
+// a stored value. Use where a flush row shares its line with other controls (the
+// person form's multi-value rows) and the picker button would crowd the number.
+// Renders like Input, so it drops in beside the sibling email <Input> unchanged.
+export function PhoneTextField({
+  value,
+  onChangeText,
+  placeholder = 'Phone',
+  ...rest
+}: Omit<TextInputProps, 'value' | 'onChangeText'> & {
+  value: string;
+  onChangeText: (v: string) => void;
+  label?: string;
+  highlight?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
+}) {
+  const [display, setDisplay] = useState('');
+
+  // The E.164 we last emitted. An external `value` change (initial seed, AI
+  // assist, Places prefill) re-derives the field; our own keystrokes already
+  // updated `display`, so we skip re-seeding on those (keeps the cursor put).
+  const lastEmitted = useRef<string | null>(null);
+  useEffect(() => {
+    if (value === lastEmitted.current) return;
+    setDisplay(seedTyped(value));
+    lastEmitted.current = value ?? '';
+  }, [value]);
+
+  const onType = (text: string) => {
+    setDisplay(formatAsTyped(text));
+    const e164 = toE164FromTyped(text);
+    lastEmitted.current = e164;
+    onChangeText(e164);
+  };
+
+  return (
+    <Input
+      value={display}
+      onChangeText={onType}
+      placeholder={placeholder}
+      keyboardType="phone-pad"
+      textContentType="telephoneNumber"
+      autoComplete="tel"
+      {...rest}
+    />
+  );
 }
 
 const styles = StyleSheet.create({
@@ -1212,6 +1613,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.text,
   },
+  // Room for the clear ✕ so text never runs under it — applied only while the
+  // button is visible, so the text edge slides just like iOS's native clear.
+  inputClearPad: { paddingRight: 36 },
+  clearBtn: {
+    position: 'absolute',
+    right: 8,
+    bottom: 0,
+    height: 46,
+    justifyContent: 'center',
+  },
+  clearBtnInline: { paddingLeft: spacing.sm },
   // Applied to fields the AI form assistant just changed, so the user can spot
   // them at a glance. Accent border + a subtle primary tint over the surface.
   inputHighlight: {
@@ -1340,6 +1752,36 @@ const styles = StyleSheet.create({
   listRowTitle: { fontSize: 15, color: colors.text, fontWeight: '500' },
   listRowSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   selectField: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  phoneRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 0, minHeight: 46 },
+  // Tint-only highlight (no border) to match the grouped-card FormAssist look.
+  phoneHighlight: { backgroundColor: colors.primary + '22' },
+  phoneCountryBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 12, paddingRight: 8 },
+  phoneFlag: { fontSize: 18 },
+  phoneCode: { fontSize: 16, color: colors.text },
+  phoneDivider: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch', backgroundColor: colors.border, marginRight: 10, marginVertical: 8 },
+  phoneInput: { flex: 1, fontSize: 16, color: colors.text, paddingVertical: 12 },
+  phoneSearch: { marginBottom: spacing.sm },
+  // Full-screen keyboard-avoider root: reduces the usable area to *above* the
+  // keyboard so the flex-end sheet is lifted clear, not compressed.
+  phonePickerRoot: { flex: 1 },
+  // A definite-height sheet (percentage of the above-keyboard area) so the title
+  // + search stay pinned at the top and the list — not the sheet — is what fills
+  // and scrolls. `overflow: hidden` keeps the rounded top corners clipping rows.
+  phonePickerSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    padding: spacing.md,
+    height: '78%',
+    overflow: 'hidden',
+  },
+  // flex:1 inside the definite-height sheet: fills the space beneath the pinned
+  // search and scrolls, so a single match sits at the top and can never scroll
+  // out of view, while the search field is always visible.
+  phoneCountryList: { flex: 1, marginBottom: spacing.sm },
+  phoneNoMatch: { fontSize: 15, color: colors.textMuted, paddingVertical: spacing.md, textAlign: 'center' },
+  phoneCountryName: { fontSize: 16, color: colors.text, flex: 1, marginRight: spacing.sm },
+  phoneCountryDial: { fontSize: 16, color: colors.textMuted },
   selectChevron: { marginLeft: 6 },
   inlineLabel: { flex: 1, fontSize: 16, color: colors.text, marginRight: spacing.sm },
   dateFieldIcons: { flexDirection: 'row', alignItems: 'center' },

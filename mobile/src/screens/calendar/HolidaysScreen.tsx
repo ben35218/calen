@@ -28,23 +28,10 @@ export default function HolidaysScreen() {
 
   useEffect(() => {
     if (!cal) return;
-    nav.setOptions({
-      title: cal.name,
-      // Owner-only: the pencil opens the name/colour/sharing form.
-      headerRight: readOnly
-        ? undefined
-        : () => (
-            <TouchableOpacity
-              onPress={() => nav.navigate('AddCalendar', { calendarId })}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              accessibilityRole="button"
-              accessibilityLabel="Edit holiday calendar"
-            >
-              <Ionicons name="pencil" size={18} color="#fff" />
-            </TouchableOpacity>
-          ),
-    });
-  }, [cal, readOnly, calendarId, nav]);
+    // No header pencil — the Calendars view's per-row edit button is the
+    // single path to a calendar's name/colour/sharing form.
+    nav.setOptions({ title: cal.name });
+  }, [cal, nav]);
 
   const defs = useMemo(() => (cal ? getHolidayDefs(cal.country) : []), [cal]);
 

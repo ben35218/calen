@@ -15,6 +15,7 @@ import {
   applyRecurrenceAssistPatch,
   recurrenceAssistCurrent,
   ruleToRecurrence,
+  excludeUsedAlert,
 } from '../recurrence';
 import { Recurrence } from '../../api';
 import { EMPTY_REPEAT, RepeatRule } from '../eventRepeat';
@@ -201,6 +202,41 @@ describe('alertSummary', () => {
   it('joins two alerts and appends owner audience', () => {
     expect(alertSummary({ reminderDaysBefore: 7, alert2DaysBefore: 1, alertAudience: 'owner' }))
       .toBe('1 week before · 1 day before · you only');
+  });
+});
+
+describe('excludeUsedAlert', () => {
+  const opts = [
+    { label: 'None', value: -1 },
+    { label: 'Custom…', value: -2 },
+    { label: 'On the day', value: 0 },
+    { label: '1 day before', value: 1 },
+    { label: '1 week before', value: 7 },
+  ];
+
+  it('returns the full list when nothing is used yet', () => {
+    expect(excludeUsedAlert(opts, null)).toEqual(opts);
+    expect(excludeUsedAlert(opts, undefined)).toEqual(opts);
+  });
+
+  it('does not filter on a negative sentinel (None/Custom)', () => {
+    expect(excludeUsedAlert(opts, -1)).toEqual(opts);
+  });
+
+  it('removes the value already chosen in the paired slot', () => {
+    expect(excludeUsedAlert(opts, 1).map((o) => o.value)).toEqual([-1, -2, 0, 7]);
+  });
+
+  it('keeps the "off" and Custom sentinels even when a real value is used', () => {
+    const kept = excludeUsedAlert(opts, 0).map((o) => o.value);
+    expect(kept).toContain(-1);
+    expect(kept).toContain(-2);
+    expect(kept).not.toContain(0);
+  });
+
+  it('never hides the slot\'s own current value (legacy duplicate stays visible)', () => {
+    // Pre-existing data where both slots equal 7: this slot must still show 7.
+    expect(excludeUsedAlert(opts, 7, 7).map((o) => o.value)).toContain(7);
   });
 });
 

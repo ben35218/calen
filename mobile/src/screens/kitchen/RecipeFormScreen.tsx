@@ -18,7 +18,7 @@ import { Button, Input, Screen, SectionTitle, useHeaderCheckButton, FormError, C
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
 import CalenChatIcon from '../../components/CalenChatIcon';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
@@ -369,7 +369,7 @@ export default function RecipeFormScreen() {
           The usage banner self-gates: it only appears near the weekly token limit. */}
       {showAssistant ? (
         <>
-          <AiUsageBanner />
+          <CreditsBanner />
           <View style={styles.aiCard}>
           <View style={styles.aiHeader}>
             <Ionicons name="sparkles" size={16} color={accent} />
@@ -469,6 +469,7 @@ export default function RecipeFormScreen() {
           <Text style={fs.dtLabel}>Servings</Text>
           <Input
             keyboardType="numeric"
+            clearable={false}
             value={form.servings}
             onChangeText={(v) => set({ servings: v })}
             containerStyle={[fs.headField, fs.rowInputWrap]}
@@ -480,6 +481,7 @@ export default function RecipeFormScreen() {
           <Text style={fs.dtLabel}>Prep (minutes)</Text>
           <Input
             keyboardType="numeric"
+            clearable={false}
             value={form.prepTimeMins}
             onChangeText={(v) => set({ prepTimeMins: v })}
             containerStyle={[fs.headField, fs.rowInputWrap]}
@@ -491,6 +493,7 @@ export default function RecipeFormScreen() {
           <Text style={fs.dtLabel}>Cook (minutes)</Text>
           <Input
             keyboardType="numeric"
+            clearable={false}
             value={form.cookTimeMins}
             onChangeText={(v) => set({ cookTimeMins: v })}
             containerStyle={[fs.headField, fs.rowInputWrap]}
@@ -537,8 +540,12 @@ export default function RecipeFormScreen() {
           <React.Fragment key={i}>
             {i > 0 ? <CardDivider /> : null}
             <View style={styles.ingRow}>
+              {/* No clear ✕ in ingredient cells: the row's trailing remove
+                  button is the same close-circle glyph, and two identical
+                  adjacent icons with different meanings would misread. */}
               <Input
                 placeholder="1"
+                clearable={false}
                 value={ing.amount ?? ''}
                 onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, amount: v } : x)) })}
                 containerStyle={[fs.headField, styles.ingAmount]}
@@ -546,6 +553,7 @@ export default function RecipeFormScreen() {
               />
               <Input
                 placeholder="cup"
+                clearable={false}
                 value={ing.unit ?? ''}
                 onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, unit: v } : x)) })}
                 containerStyle={[fs.headField, styles.ingUnit]}
@@ -553,6 +561,7 @@ export default function RecipeFormScreen() {
               />
               <Input
                 placeholder="flour"
+                clearable={false}
                 value={ing.name}
                 onChangeText={(v) => set({ ingredients: form.ingredients.map((x, j) => (j === i ? { ...x, name: v } : x)) })}
                 containerStyle={[fs.headField, styles.flex1]}

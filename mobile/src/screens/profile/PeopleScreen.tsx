@@ -1,6 +1,20 @@
-import React, { useCallback, useLayoutEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActionSheetIOS, Platform, Alert, RefreshControl } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  SectionList,
+  TextInput,
+  StyleSheet,
+  TouchableOpacity,
+  ActionSheetIOS,
+  Platform,
+  Alert,
+  RefreshControl,
+  Keyboard,
+  type GestureResponderEvent,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -8,9 +22,10 @@ import { useAuth } from '../../store/auth';
 import { peopleApi, Person } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import { ensureSelfPerson } from '../../lib/selfPerson';
+import { normalizePerson } from '../../lib/personFields';
 import * as replica from '../../lib/replica';
-import { Card, Chip, RoundIconButton, CenteredLoader, EmptyState } from '../../components/ui';
-import { colors, spacing } from '../../theme';
+import { HeaderIconButton, CenteredLoader, EmptyState } from '../../components/ui';
+import { colors, spacing, radius } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
@@ -23,13 +38,42 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'service', label: 'Professionals' },
 ];
 
-// Contacts roster split across Family / Friends / Professionals tabs. The "You"
-// card lives under Family; the header "+" adds into the active tab.
+// The right-edge scrubber, iOS Contacts style: full alphabet plus a trailing "#"
+// bucket for names that don't start with a letter.
+const INDEX_LETTERS = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '#'];
+
+type Section = { letter: string; data: Person[] };
+
+// Contacts roster split across Family / Friends / Professionals tabs, presented
+// as an iOS-Contacts-style alphabetical list: initials avatars, letter section
+// headers, a right-edge A–Z scrubber, and a floating search pill. The "You" card
+// pins to the top of Family; the header "+" (kept in the nav bar) adds into the
+// active tab.
 export default function PeopleScreen() {
   const nav = useNavigation<Nav>();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const selfId = String(user?._id ?? '');
   const [tab, setTab] = useState<TabKey>('family');
+  const [query, setQuery] = useState('');
+  const [kbHeight, setKbHeight] = useState(0);
+
+  // Lift the floating search pill above the keyboard so the field it opens stays
+  // visible while typing. Use the `Will` events on iOS (they fire with the show
+  // animation for a smooth ride) and `Did` on Android (no `Will` there).
+  React.useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  const listRef = useRef<SectionList<Person, Section>>(null);
+  const indexHeight = useRef(0);
 
   // Header "+" opens a menu: add a person manually (into the active tab) or
   // import from the device address book.
@@ -54,7 +98,11 @@ export default function PeopleScreen() {
   }, [nav, tab]);
 
   useLayoutEffect(() => {
-    nav.setOptions({ headerRight: () => <RoundIconButton icon="add" onPress={openAddMenu} /> });
+    nav.setOptions({
+      headerRight: () => (
+        <HeaderIconButton icon="add" size={30} onPress={openAddMenu} accessibilityLabel="Add contact" />
+      ),
+    });
   }, [nav, openAddMenu]);
 
   const { data: people, isLoading, refetch, isRefetching } = useQuery({
@@ -88,18 +136,93 @@ export default function PeopleScreen() {
     });
   }, [people, user, qc]);
 
+  // Reap orphans from the pre-2026-07-27 person-form bug: a stale local
+  // PERSON_ENC sealed contacts without `type`, so they decrypt fine but can
+  // never appear in any tab. Rows only reach this decrypted Person bucket after
+  // a successful unseal (lib/records skips undecryptable rows), so a missing
+  // type here is definitive — tombstone them. accountId-bearing records are
+  // left alone as belt-and-suspenders for the "You"/member cards.
+  const reaped = React.useRef(false);
+  React.useEffect(() => {
+    if (reaped.current || !people) return;
+    const orphans = people.filter((p) => !p.accountId && !TABS.some((t) => t.key === p.type));
+    if (!orphans.length) return;
+    reaped.current = true;
+    Promise.all(orphans.map((p) => peopleApi.delete(p._id).catch(() => {})))
+      .then(() => qc.invalidateQueries({ queryKey: ['people'] }));
+  }, [people, qc]);
+
+  const selfPerson = useMemo(
+    () => people?.find((p) => p.accountId && String(p.accountId) === selfId),
+    [people, selfId]
+  );
+
+  // Group the active tab's contacts into alphabetical sections, sorted and
+  // section-keyed by name (non-letter leads fall into "#"), then filtered by the
+  // search query. The self "You" card is handled separately as a pinned header.
+  const sections = useMemo<Section[]>(() => {
+    if (!people) return [];
+    const q = query.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, '');
+    const roster = people.filter(
+      (p) => p.type === tab && p !== selfPerson && (!q || matchesPerson(p, q, qDigits))
+    );
+    roster.sort((a, b) => a.name.trim().toLowerCase().localeCompare(b.name.trim().toLowerCase()));
+    const buckets = new Map<string, Person[]>();
+    for (const p of roster) {
+      const first = p.name.trim().charAt(0).toUpperCase();
+      const letter = /[A-Z]/.test(first) ? first : '#';
+      const bucket = buckets.get(letter);
+      if (bucket) bucket.push(p);
+      else buckets.set(letter, [p]);
+    }
+    return [...buckets.entries()]
+      .sort(([a], [b]) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b)))
+      .map(([letter, data]) => ({ letter, data }));
+  }, [people, tab, selfPerson, query]);
+
+  const showSelf =
+    tab === 'family' &&
+    !!selfPerson &&
+    (() => {
+      const q = query.trim().toLowerCase();
+      return !q || matchesPerson(selfPerson, q, q.replace(/\D/g, ''));
+    })();
+
+  // Jump the list to a scrubbed letter, snapping to the nearest following
+  // section when that exact letter has no contacts.
+  const scrollToLetter = useCallback(
+    (letter: string) => {
+      if (!sections.length) return;
+      let idx = sections.findIndex((s) => s.letter === letter);
+      if (idx < 0) {
+        idx = sections.findIndex((s) => s.letter !== '#' && s.letter > letter);
+        if (idx < 0) idx = sections.length - 1;
+      }
+      listRef.current?.scrollToLocation({ sectionIndex: idx, itemIndex: 0, viewPosition: 0, animated: false });
+    },
+    [sections]
+  );
+
+  const onIndexTouch = useCallback(
+    (e: GestureResponderEvent) => {
+      const h = indexHeight.current;
+      if (!h) return;
+      const ratio = e.nativeEvent.locationY / h;
+      const i = Math.max(0, Math.min(INDEX_LETTERS.length - 1, Math.floor(ratio * INDEX_LETTERS.length)));
+      scrollToLetter(INDEX_LETTERS[i]);
+    },
+    [scrollToLetter]
+  );
+
   if (isLoading || !people) {
     return <CenteredLoader />;
   }
 
-  const selfPerson = people.find((p) => p.accountId && String(p.accountId) === selfId);
-  const roster = people.filter((p) => p.type === tab && p !== selfPerson);
-  const showSelf = tab === 'family' && !!selfPerson;
-
   const emptyLabel = {
-    family: 'No family members yet.',
-    friend: 'No friends added yet.',
-    service: 'No professionals added yet.',
+    family: query.trim() ? 'No matching family members.' : 'No family members yet.',
+    friend: query.trim() ? 'No matching friends.' : 'No friends added yet.',
+    service: query.trim() ? 'No matching professionals.' : 'No professionals added yet.',
   }[tab];
 
   return (
@@ -117,91 +240,286 @@ export default function PeopleScreen() {
         ))}
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
-      >
-        {showSelf ? (
-          <PersonCard
-            person={selfPerson!}
-            self
-            onPress={() => nav.navigate('Account')}
-          />
+      <View style={styles.body}>
+        <SectionList
+          ref={listRef}
+          sections={sections}
+          keyExtractor={(p) => p._id}
+          stickySectionHeadersEnabled
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+          onScrollToIndexFailed={() => {}}
+          ListHeaderComponent={
+            showSelf ? (
+              <ContactRow person={selfPerson!} self onPress={() => nav.navigate('Account')} />
+            ) : null
+          }
+          renderSectionHeader={({ section }) => (
+            <Text style={styles.sectionHeader}>{section.letter}</Text>
+          )}
+          renderItem={({ item }) => (
+            <ContactRow person={item} onPress={() => nav.navigate('PersonDetail', { id: item._id })} />
+          )}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          ListEmptyComponent={showSelf ? null : <EmptyState variant="inline" message={emptyLabel} />}
+        />
+
+        {!query.trim() && sections.length > 0 ? (
+          <View
+            style={styles.index}
+            onLayout={(e) => (indexHeight.current = e.nativeEvent.layout.height)}
+            onStartShouldSetResponder={() => true}
+            onMoveShouldSetResponder={() => true}
+            onResponderGrant={onIndexTouch}
+            onResponderMove={onIndexTouch}
+          >
+            {INDEX_LETTERS.map((l) => (
+              <Text key={l} style={styles.indexLetter} allowFontScaling={false}>
+                {l}
+              </Text>
+            ))}
+          </View>
         ) : null}
-        {roster.map((p) => (
-          <PersonCard key={p._id} person={p} onPress={() => nav.navigate('PersonDetail', { id: p._id })} />
-        ))}
-        {roster.length === 0 && !showSelf ? <Empty label={emptyLabel} /> : null}
-      </ScrollView>
+
+        <View
+          style={[
+            styles.searchWrap,
+            { bottom: kbHeight > 0 ? kbHeight + spacing.sm : insets.bottom + spacing.md },
+          ]}
+          pointerEvents="box-none"
+        >
+          <View style={styles.searchPill}>
+            <Ionicons name="search" size={18} color={colors.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search"
+              placeholderTextColor={colors.textMuted}
+              returnKeyType="search"
+              autoCorrect={false}
+              clearButtonMode="never"
+            />
+            {query.length > 0 ? (
+              <TouchableOpacity onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+                <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </View>
     </View>
   );
 }
 
-function PersonCard({ person, self, onPress }: { person: Person; self?: boolean; onPress: () => void }) {
-  // Service providers get MaterialCommunityIcons' "account-tie" (a person in a
-  // suit); everyone else uses the matching Ionicons person glyph.
-  const isService = !self && person.type === 'service';
-  const icon = self ? 'person-circle' : 'person';
+// One roster row: an initials avatar, the name (surname bolded, iOS style), and a
+// "You"/"Member" chip for the self and household-member cards.
+function ContactRow({ person, self, onPress }: { person: Person; self?: boolean; onPress: () => void }) {
   return (
-    <TouchableOpacity activeOpacity={0.7} onPress={onPress}>
-      <Card style={[styles.personCard, self && styles.selfCard]}>
-        <View style={styles.personHead}>
-          {isService ? (
-            <MaterialCommunityIcons name="account-tie" size={20} color={colors.primary} />
-          ) : (
-            <Ionicons name={icon as any} size={20} color={colors.primary} />
-          )}
-          <Text style={styles.personName}>{person.name}</Text>
-          {self ? <Text style={styles.youChip}>You</Text> : person.accountId ? <Text style={styles.memberChip}>Member</Text> : null}
-        </View>
-        {person.relationship ? <Text style={styles.personMeta}>{person.relationship}</Text> : null}
-        {isService && person.businessName ? <Text style={styles.personMeta}>🏢 {person.businessName}</Text> : null}
-        {person.address ? <Text style={styles.personMeta}>📍 {person.address}</Text> : null}
-        {!self && person.interests && person.interests.length > 0 ? (
-          <View style={styles.tags}>
-            {person.interests.map((i) => (
-              <Chip key={i} label={i} />
-            ))}
-          </View>
-        ) : null}
-        {!self && person.notes ? <Text style={styles.personNotes}>{person.notes}</Text> : null}
-      </Card>
+    <TouchableOpacity style={styles.row} activeOpacity={0.6} onPress={onPress}>
+      <View style={[styles.avatar, self && styles.avatarSelf]}>
+        <Text style={[styles.avatarText, self && styles.avatarTextSelf]}>{initialsOf(person.name)}</Text>
+      </View>
+      <Text style={styles.rowName} numberOfLines={1}>
+        {renderName(person.name, person.lastName)}
+      </Text>
+      {self ? (
+        <Text style={styles.youChip}>You</Text>
+      ) : person.accountId ? (
+        <Text style={styles.memberChip}>Member</Text>
+      ) : null}
     </TouchableOpacity>
   );
 }
 
-function Empty({ label }: { label: string }) {
-  return <EmptyState variant="inline" message={label} />;
+// Search matches a contact on any human-facing field — name, how you know them
+// (relationship), company, job title, and every address/email/related name —
+// via case-insensitive substring. Phones are matched separately on digits only,
+// since they're stored as canonical E.164 and users type spaces/parens/dashes.
+// `q` is already trimmed + lowercased; `qDigits` is `q` stripped to digits. The
+// contact is normalized so legacy single-value records match the same way.
+function matchesPerson(p: Person, q: string, qDigits: string): boolean {
+  const n = normalizePerson(p);
+  const hay = [
+    p.name, p.relationship, n.company, n.jobTitle,
+    ...n.emails.map((e) => e.value),
+    ...n.addresses.map((a) => a.value),
+    ...n.relatedNames.map((r) => r.value),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (hay.includes(q)) return true;
+  if (qDigits) return n.phones.some((ph) => ph.value.replace(/\D/g, '').includes(qDigits));
+  return false;
 }
+
+function nameParts(name: string): string[] {
+  return name.trim().split(/\s+/).filter(Boolean);
+}
+
+function initialsOf(name: string): string {
+  const parts = nameParts(name);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
+  return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+}
+
+// Bold the surname the way iOS Contacts does. Prefer the contact's structured
+// `lastName` (exact, handles multi-word surnames like "Van Der Berg"); fall back
+// to the last whitespace token for legacy records that carry only `name`. A
+// single-token name renders plain.
+function renderName(name: string, lastName?: string): React.ReactNode {
+  const trimmed = name.trim();
+  const surname = (lastName ?? '').trim();
+  if (surname && trimmed.toLowerCase().endsWith(surname.toLowerCase())) {
+    const lead = trimmed.slice(0, trimmed.length - surname.length).trim();
+    if (!lead) return trimmed || name;
+    return (
+      <>
+        {lead + ' '}
+        <Text style={styles.rowNameLast}>{trimmed.slice(trimmed.length - surname.length)}</Text>
+      </>
+    );
+  }
+  const parts = nameParts(name);
+  if (parts.length <= 1) return trimmed || name;
+  const lead = parts.slice(0, -1).join(' ');
+  const last = parts[parts.length - 1];
+  return (
+    <>
+      {lead + ' '}
+      <Text style={styles.rowNameLast}>{last}</Text>
+    </>
+  );
+}
+
+const AVATAR = 40;
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.md },
+  body: { flex: 1 },
+  content: { paddingBottom: 96 },
   tabBar: {
-    flexDirection: 'row', gap: spacing.sm,
-    paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.xs,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
     backgroundColor: colors.background,
   },
   tab: {
-    flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 8,
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderRadius: radius.sm,
     backgroundColor: colors.surface,
   },
   tabActive: { backgroundColor: colors.primary },
   tabText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   tabTextActive: { color: '#fff' },
-  personCard: { marginBottom: spacing.sm },
-  selfCard: { borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primary + '0D' },
-  personHead: { flexDirection: 'row', alignItems: 'center' },
-  personName: { fontSize: 16, fontWeight: '600', color: colors.text, marginLeft: spacing.sm },
+
+  sectionHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMuted,
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.background,
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+    marginLeft: spacing.md + AVATAR + spacing.md,
+  },
+  avatar: {
+    width: AVATAR,
+    height: AVATAR,
+    borderRadius: AVATAR / 2,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.md,
+  },
+  avatarSelf: { backgroundColor: colors.primary, borderColor: colors.primary },
+  avatarText: { fontSize: 15, fontWeight: '600', color: colors.text },
+  avatarTextSelf: { color: '#fff' },
+  rowName: { flex: 1, fontSize: 17, color: colors.text },
+  rowNameLast: { fontWeight: '700' },
   youChip: {
-    marginLeft: spacing.sm, fontSize: 11, fontWeight: '700', color: '#fff',
-    backgroundColor: colors.primary, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, overflow: 'hidden',
+    marginLeft: spacing.sm,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+    backgroundColor: colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
   },
   memberChip: {
-    marginLeft: spacing.sm, fontSize: 11, fontWeight: '600', color: colors.primary,
-    backgroundColor: colors.primary + '18', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, overflow: 'hidden',
+    marginLeft: spacing.sm,
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.primary,
+    backgroundColor: colors.primary + '18',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
   },
-  personMeta: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
-  personNotes: { fontSize: 13, color: colors.textMuted, marginTop: 6, lineHeight: 18 },
-  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+
+  index: {
+    position: 'absolute',
+    right: 2,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  indexLetter: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '600',
+    color: colors.primary,
+    textAlign: 'center',
+  },
+
+  searchWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  searchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    width: '86%',
+    height: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  searchInput: { flex: 1, fontSize: 16, color: colors.text, padding: 0 },
 });

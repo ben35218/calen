@@ -8,7 +8,8 @@ const WeatherRecord = require('../models/WeatherRecord');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { streamChat } = require('../services/chatStream');
-const { meter, getConfig, callSecondsStatus } = require('../middleware/usageMeter');
+const { meter, getConfig, creditStatus } = require('../middleware/usageMeter');
+const { callDebitMc } = require('../services/credits');
 const { ASSISTANT_NAME } = require('../config/assistant');
 const { assembleCalendarData } = require('@household/calendar');
 const { navTool, navPromptSection, collectNav, ensureActionableNav, SUGGEST_NAV_TOOL_NAME } = require('../services/navDestinations');
@@ -336,33 +337,42 @@ async function executeTool(name, input, ctx) {
         return { error: 'No phone number stored for this appointment. Please add the business phone number to the event first, then try again.' };
       }
 
-      // Weekly call-time budget pre-check (mirrors meterCallSeconds on the direct
-      // routes): once the household/user is at/over its seconds cap, block the
-      // next call and tell the user to upgrade.
-      const callBudget = await callSecondsStatus({ household: ctx.household, user: ctx.user });
-      if (callBudget.exceeded) {
-        return { error: `You’ve used all your assistant call time for this week (${Math.round(callBudget.limit / 60)} min on the ${callBudget.plan} plan). Upgrade for more, or try again after the weekly reset.` };
+      // Credit pre-check (mirrors meterCallSeconds on the direct routes): a call
+      // must be affordable up front — the balance has to cover at least one
+      // minute at the call rate.
+      const callConfig = await getConfig();
+      const standing = creditStatus(ctx.user, callConfig);
+      if (!standing.unlimited && standing.balanceMc < callDebitMc(60, callConfig)) {
+        return { error: 'You’re out of AI credits — buy a credit pack in Profile → Credits to place calls.' };
       }
 
       // Shared with the event view's "Call to Cancel" card (services/phoneCalls).
       // The user's phone/email ride along only when they explicitly agreed
       // (spec: contact details are per-call opt-in); the name is always given.
-      const row = await placeCall({
-        userId: ctx.userId,
-        householdId: ctx.household?._id,
-        event,
-        action: input.action,
-        callerName: input.callerName,
-        newDateTime: input.newDateTime,
-        additionalInstructions: input.additionalInstructions,
-        contact: input.shareContactDetails === true
-          ? {
-              name: [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || undefined,
-              phone: ctx.user.phone || undefined,
-              email: ctx.user.email || undefined,
-            }
-          : undefined,
-      });
+      // A do-not-call suppression (the business asked not to be called again on a
+      // prior call) surfaces as a plain tool error so the model can explain it.
+      let row;
+      try {
+        row = await placeCall({
+          userId: ctx.userId,
+          householdId: ctx.household?._id,
+          event,
+          action: input.action,
+          callerName: input.callerName,
+          newDateTime: input.newDateTime,
+          additionalInstructions: input.additionalInstructions,
+          contact: input.shareContactDetails === true
+            ? {
+                name: [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || undefined,
+                phone: ctx.user.phone || undefined,
+                email: ctx.user.email || undefined,
+              }
+            : undefined,
+        });
+      } catch (e) {
+        if (e.code === 'DNC_SUPPRESSED') return { error: e.message };
+        throw e;
+      }
 
       return {
         success: true,
@@ -473,7 +483,7 @@ You may pass this event id directly to call_business / open_edit_event_form / op
 If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can see the household calendar, the names of household members, and the user's saved professionals (each area of the app has its own ${ASSISTANT_NAME} chat with its own context — this one doesn't see trips, maintenance items, or recipes).
 ${focusSection}
 ## Household members & professionals
-Call get_household_members when the conversation involves who is in the household (e.g. suggesting a family outing, deciding who to invite) or which saved professional handles something (e.g. the plumber, the vet, the dentist). Household members and friends come back as NAMES ONLY — no other personal details (no birthdays, addresses, interests, or notes). Saved professionals also include the business details the user saved them for (service, business name, address); their phone/email are shown only as "on file" flags — the app dials or emails on the user's behalf, so you never see the real values. Don't guess or invent details about people; if you need something only the user knows, ask them.
+Call get_household_members when the conversation involves who is in the household (e.g. suggesting a family outing, deciding who to invite) or which saved professional handles something (e.g. the plumber, the vet, the dentist). Household members and friends come back as NAMES ONLY — no other personal details (no birthdays, addresses, or notes). Saved professionals also include the business details the user saved them for (service, business name, address); their phone/email are shown only as "on file" flags — the app dials or emails on the user's behalf, so you never see the real values. Don't guess or invent details about people; if you need something only the user knows, ask them.
 
 You have access to stored weather forecast data via get_weather_forecast. Use it when the user asks about the weather, wants to plan outdoor activities, or when suggesting good days for outdoor events.
 
@@ -512,7 +522,7 @@ function buildContextSummary(people, includePersonalInfo = true) {
   // Only advertise access to household/professional details when the privacy
   // toggle allows it — otherwise the panel would claim to "see" people the chat
   // never receives. Household & friends are names only (spec: no birthdays,
-  // interests, addresses, or notes); saved professionals additionally share the
+  // addresses, or notes); saved professionals additionally share the
   // business details they were saved for, but phone/email stay "on file".
   if (includePersonalInfo) {
     const named = people.filter((p) => p.type === 'family' || p.type === 'friend').length;

@@ -8,6 +8,7 @@ import {
   useCalendarColors,
   useDeletedDefaultCalendars,
 } from '../../lib/calendarPrefs';
+import { useOwnedAddons } from '../../lib/addons';
 import { Screen, SectionTitle } from '../../components/ui';
 import { GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
@@ -21,7 +22,11 @@ export default function AddCalendarMenuScreen() {
   const nav = useNavigation<NativeStackNavigationProp<CalendarStackParamList>>();
   const { colors: calColors } = useCalendarColors();
   const { deletedIds, restoreDefault } = useDeletedDefaultCalendars();
-  const deletedDefaults = CALENDARS.filter((c) => deletedIds.includes(c.id));
+  const { isUnlocked } = useOwnedAddons();
+  // Restoring a LOCKED add-on calendar would restore it into nothing (locked
+  // calendars don't render anywhere) — the storefront row is that calendar's
+  // affordance until it's owned, so hide it here.
+  const deletedDefaults = CALENDARS.filter((c) => deletedIds.includes(c.id) && isUnlocked(c.id));
 
   const CHOICES: { icon: keyof typeof Ionicons.glyphMap; title: string; hint: string; go: () => void }[] = [
     {

@@ -1,7 +1,7 @@
 ---
 title: Transparency (what Calen can/can't see)
 status: reference
-last-verified: b242e6c (2026-07-20)
+last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the plaintext-exception list (2026-07-28)
 code:
   - docs/TRANSPARENCY.md
 ---
@@ -10,7 +10,7 @@ code:
 
 The **canonical, user-facing** long form is
 [`docs/TRANSPARENCY.md`](../../docs/TRANSPARENCY.md) — it is the source for the
-in-app Privacy & data section and the website page, and is written for users, not
+in-app Privacy & security section and the website page, and is written for users, not
 engineers. It must be updated whenever a change alters what the server stores.
 This spec is the engineering pointer + the internal contract it commits us to.
 
@@ -27,7 +27,8 @@ A server (or a valid legal request) can obtain **only**:
 - Plan/billing status and AI-usage counts; a device label per session.
 - Operational logs referencing ids only (no content).
 - The deliberate plaintext exceptions (outside sharing, non-account event
-  invitations, AI-call essentials) — only if any exist for that account.
+  invitations, AI-call essentials, scheduled occasion e-cards) — only if any
+  exist for that account.
 
 It can **never** obtain record content, locations, attachments/manuals, AI
 conversation content, passwords, or any key.

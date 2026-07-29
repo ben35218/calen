@@ -47,23 +47,36 @@ const RULES = [
   { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|server\/src\/services\/sessions\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/api\/client\.ts|mobile\/src\/lib\/(passkeys|secureToken|deviceId|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
     tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(passkeys|deviceKey|deviceLink)\.)/ },
   { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/safetyNumbers\.ts)/, specs: ['specs/features/households-sharing.md'],
-    tests: /^(server\/src\/test\/(householdInvitations|householdKey|keyHygiene|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(safetyNumbers|guardianRecovery)\.)/ },
+    tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|keyHygiene|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(safetyNumbers|guardianRecovery)\.)/ },
   { re: /^(server\/src\/routes\/(calendars|calendarChat|eventAttachments|invitations)\.js|mobile\/src\/screens\/calendar\/|mobile\/src\/lib\/(calendar|calendarData|eventRepeat|calendarKeys|holidays)\.ts|shared\/calendar\/)/, specs: ['specs/features/calendar.md'],
-    tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat)\.)/ },
+    tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/(lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat|addons)\.|screens\/calendar\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(recipes|recipeSchedule)\.js|mobile\/src\/screens\/kitchen\/|mobile\/src\/lib\/grocery)/, specs: ['specs/features/kitchen.md'],
-    tests: /^(server\/src\/test\/kitchen\.|mobile\/src\/(lib\/__tests__\/(groceryList|groceryAggregate|recipeIconTarget)\.|screens\/kitchen\/__tests__\/))/ },
+    tests: /^(server\/src\/test\/kitchen\.|mobile\/src\/(lib\/__tests__\/(groceryList|groceryAggregate|recipeIconTarget|addons)\.|screens\/kitchen\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(items|tasks|chores|odometer|manuals|taskTemplates|choreTemplates)\.js|mobile\/src\/screens\/maintenance\/|server\/src\/services\/recurrence\.js|shared\/seed\/)/, specs: ['specs/features/maintenance.md'],
-    tests: /^(server\/src\/test\/maintenance\.|server\/src\/services\/recurrence\.test\.js$|mobile\/src\/lib\/__tests__\/(odometer|diy)\.)/ },
+    tests: /^(server\/src\/test\/maintenance\.|server\/src\/services\/recurrence\.test\.js$|mobile\/src\/lib\/__tests__\/(odometer|diy|addons)\.)/ },
   { re: /^(server\/src\/routes\/(trips|tripsChat)\.js|mobile\/src\/screens\/trips\/|mobile\/src\/lib\/tripKeys\.ts|server\/src\/services\/tripSharing\.js)/, specs: ['specs/features/trips.md'],
-    tests: /^(server\/src\/test\/(tripKeys|tripShare|tripAttachments)\.|server\/src\/services\/tripSharing\.test\.js$|mobile\/src\/lib\/__tests__\/tripKeys\.)/ },
+    tests: /^(server\/src\/test\/(tripKeys|tripShare|tripAttachments)\.|server\/src\/services\/tripSharing\.test\.js$|mobile\/src\/lib\/__tests__\/(tripKeys|addons)\.)/ },
   { re: /^(server\/src\/routes\/people\.js|mobile\/src\/screens\/profile\/(People|Person|ContactImport))/, specs: ['specs/features/people-contacts.md'],
     tests: /^server\/src\/test\/people\./ },
+  { re: /^(mobile\/src\/screens\/onboarding\/|mobile\/src\/lib\/onboarding\.ts)/, specs: ['specs/features/onboarding.md'],
+    tests: /^mobile\/src\/lib\/__tests__\/onboarding\./ },
   { re: /^(server\/src\/routes\/(calendarChat|choresChat|maintenanceChat|maintenancePlanChat|tripsChat|calls|formAssist)\.js|server\/src\/services\/(chatStream|chatSuggestions|aiUsage|phoneCalls)\.js|mobile\/src\/screens\/chat\/|mobile\/src\/lib\/aiPayload\.ts)/, specs: ['specs/features/ai-assistant.md'],
     tests: /^(server\/src\/test\/aiPrivacy\.|server\/src\/services\/phoneCalls\.test\.js$|server\/src\/middleware\/usageMeter\.tokens\.test\.js$|mobile\/src\/lib\/__tests__\/(aiPayload|aiWindow)\.)/ },
-  { re: /^(server\/src\/routes\/(billing|monetizationConfig)\.js|mobile\/src\/screens\/plan\/|mobile\/src\/lib\/purchases\.ts|admin\/)/, specs: ['specs/features/billing-plans.md'],
-    tests: /^(server\/src\/test\/billingWebhook\.|server\/src\/routes\/billing\.test\.js$)/ },
+  // Email lifecycle: the code-owned catalog + mailer + delivery ledger/outbox +
+  // reconcile + the two admin email views. Ordered BEFORE the admin rule so the
+  // email surfaces win; adminEmail.js itself stays admin-portal-owned.
+  { re: /^(server\/src\/(services\/(mailer|emailCatalog)|models\/(EmailLog|EmailLifecycleConfig|EmailSuppression)|jobs\/emailReconcile)\.js|admin\/src\/views\/Email(Lifecycle|Log)View\.vue)/,
+    specs: ['specs/features/email-lifecycle.md'],
+    tests: /^server\/src\/test\/email(Lifecycle|Reconcile)\./ },
+  { re: /^(admin\/|server\/src\/routes\/(admin|adminHelpers|adminAnalytics|adminAnalyticsHelpers|adminEmail)\.js)/, specs: ['specs/features/admin-portal.md'],
+    tests: /^(server\/src\/test\/admin\.|server\/src\/routes\/admin(Analytics)?Helpers\.test\.js$)/ },
+  { re: /^(server\/src\/routes\/(billing|monetizationConfig)\.js|mobile\/src\/screens\/plan\/|mobile\/src\/lib\/(purchases|addons)\.ts|mobile\/src\/hooks\/useBilling\.ts)/, specs: ['specs/features/billing-plans.md'],
+    tests: /^(server\/src\/test\/billingWebhook\.|server\/src\/routes\/billing\.test\.js$|mobile\/src\/(lib\/__tests__\/addons\.|screens\/plan\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/notifications\.js|server\/src\/jobs\/scheduler\.js|server\/src\/services\/(push|notify)\.js|mobile\/src\/lib\/(notifications|push)\.ts)/, specs: ['specs/features/notifications.md'],
     tests: /^(server\/src\/test\/notifications\.|server\/src\/jobs\/scheduler\.test\.js$|mobile\/src\/lib\/__tests__\/notifications\.)/ },
+  // Occasion e-cards (Occasions calendar): plaintext model + CRUD route, spec'd in calendar.md.
+  { re: /^(server\/src\/routes\/ecards\.js|server\/src\/models\/ECard\.js)/, specs: ['specs/features/calendar.md'],
+    tests: /^server\/src\/test\/ecards\./ },
 
   // Broad fallbacks — a route or model with no more-specific owner still owns the platform specs.
   { re: /^server\/src\/routes\//, specs: ['specs/platform/api-reference.md'] },
@@ -107,14 +120,20 @@ const testChangeByRule = new Map(); // rule index -> true when a matching test c
 
 for (const file of files) {
   if (file.startsWith('specs/')) continue;
-  const idx = RULES.findIndex((r) => r.re.test(file) || (r.tests && r.tests.test(file)));
+  // A changed test file credits EVERY rule whose tests pattern matches it — a
+  // shared suite (e.g. the add-on gating tests) proves behavior for several
+  // areas at once. Test files are never themselves code needing a spec update.
+  let isTest = false;
+  RULES.forEach((r, i) => {
+    if (r.tests && r.tests.test(file)) {
+      testChangeByRule.set(i, true);
+      isTest = true;
+    }
+  });
+  if (isTest) continue;
+  const idx = RULES.findIndex((r) => r.re.test(file));
   if (idx === -1) continue;
   const rule = RULES[idx];
-  if (rule.tests && rule.tests.test(file)) {
-    testChangeByRule.set(idx, true);
-    continue; // a test file is never itself code needing a spec/test update
-  }
-  if (!rule.re.test(file)) continue;
   if (rule.tests) {
     if (!codeByRule.has(idx)) codeByRule.set(idx, new Set());
     codeByRule.get(idx).add(file);

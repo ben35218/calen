@@ -8,7 +8,7 @@ import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
 import { setLocationDraft } from '../../lib/locationDraft';
-import { Screen, Input, SectionTitle, Hint, useHeaderCheckButton, CenteredLoader } from '../../components/ui';
+import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader } from '../../components/ui';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing, radius } from '../../theme';
 
@@ -146,12 +146,11 @@ export default function EventLocationScreen() {
       <SectionTitle>Details</SectionTitle>
       <Input label="Name" value={name} onChangeText={setName} placeholder="Business or place name" />
       <Input label="Address" value={address} onChangeText={setAddress} placeholder="Street address" />
-      <Input
+      <PhoneField
         label="Phone"
         value={phone}
         onChangeText={setPhone}
         placeholder="Business phone number"
-        keyboardType="phone-pad"
       />
       <Hint>Calen uses the phone number to call the business — for example to cancel this appointment for you.</Hint>
 

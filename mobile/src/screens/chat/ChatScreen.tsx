@@ -26,6 +26,7 @@ import { useCalendarColors } from '../../lib/calendarPrefs';
 import { BottomSheet } from '../../components/ui';
 import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import AssistantSwitcher from '../../components/AssistantSwitcher';
+import { useDictation } from '../../hooks/useDictation';
 import { ASSISTANT_TABS, AssistantId } from './assistantTabs';
 import type { ChatController, ChatAttachment } from '../../hooks/useChat';
 
@@ -91,6 +92,13 @@ export default function ChatScreen({
   const [contextOpen, setContextOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const insets = useSafeAreaInsets();
+
+  // Composer dictation (Level 1): live transcript flows straight into the input
+  // so the user can review/edit before sending down the normal chat pipeline.
+  const dictation = useDictation({
+    onText: chat.setInput,
+    onError: (m) => Alert.alert('Voice input', m),
+  });
   const aiEnabled = usePrivacyPrefs().prefs.aiEnabled;
   const areaColors = useCalendarColors().colors;
   const navigation = useNavigation();
@@ -344,8 +352,8 @@ export default function ChatScreen({
           </View>
         ) : null}
 
-        {/* Error + retry. Over quota, retrying is futile — offer the upgrade
-            path (Plan screen) instead. */}
+        {/* Error + retry. Out of credits, retrying is futile — offer the
+            buy-credits path instead. */}
         {chat.error ? (
           chat.quotaExceeded ? (
             <QuotaBlockedNotice message={chat.error} />
@@ -415,10 +423,30 @@ export default function ChatScreen({
           multiline
           editable={!disabled}
         />
+        {/* Dictation mic: tap to talk, transcript lands in the field to edit. */}
+        <TouchableOpacity
+          style={[
+            styles.micBtn,
+            dictation.state === 'listening'
+              ? { backgroundColor: activeAccent }
+              : { backgroundColor: activeAccent + '1A' },
+            (disabled || chat.loading) && styles.sendBtnDisabled,
+          ]}
+          onPress={() => (dictation.state === 'listening' ? dictation.stop() : dictation.start())}
+          disabled={disabled || chat.loading}
+          accessibilityLabel={dictation.state === 'listening' ? 'Stop dictation' : 'Dictate a message'}
+        >
+          <Ionicons
+            name={dictation.state === 'listening' ? 'stop' : 'mic'}
+            size={20}
+            color={dictation.state === 'listening' ? '#fff' : activeAccent}
+          />
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.sendBtn, { backgroundColor: activeAccent }, !canSend && styles.sendBtnDisabled]}
           onPress={() => chat.send()}
           disabled={!canSend}
+          accessibilityLabel="Send message"
         >
           {chat.loading ? (
             <ActivityIndicator size="small" color="#fff" />
@@ -552,6 +580,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  micBtn: {
     width: 44,
     height: 44,
     borderRadius: 22,

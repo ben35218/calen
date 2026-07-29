@@ -23,7 +23,11 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('hc_admin_token');
-      if (window.location.pathname !== '/login') window.location.href = '/login';
+      if (window.location.pathname !== '/login') {
+        // Preserve where the admin was so login can bounce them straight back.
+        const here = window.location.pathname + window.location.search;
+        window.location.href = '/login?redirect=' + encodeURIComponent(here);
+      }
     }
     return Promise.reject(err);
   }
@@ -41,7 +45,9 @@ export const monetizationApi = {
   get: () => api.get('/monetization-config'),
   update: (data) => api.put('/monetization-config', data),
   households: () => api.get('/monetization-config/households'),
-  setPlan: (payload) => api.post('/monetization-config/plan', payload),
+  users: () => api.get('/monetization-config/users'),
+  setUnlock: (userId, unlocked) => api.post('/monetization-config/unlock', { userId, unlocked }),
+  adjustCredits: (userId, credits, note) => api.post('/monetization-config/credits', { userId, credits, note }),
 };
 
 // Admin ops surfaces: users, E2EE readiness, audit log (requireAdmin-gated).
@@ -55,6 +61,10 @@ export const adminApi = {
   audit: (params) => api.get('/admin/audit', { params }),
   moderation: (params) => api.get('/admin/moderation', { params }),
   setReportStatus: (id, status) => api.post(`/admin/moderation/${id}/status`, { status }),
+  // Do-not-call list for outbound AI calls. `dnc` returns { items, total, page, pageSize }.
+  dnc: (params) => api.get('/admin/dnc', { params }),
+  addDnc: (phone, note) => api.post('/admin/dnc', { phone, note }),
+  releaseDnc: (id) => api.delete(`/admin/dnc/${id}`),
 };
 
 // Email surfaces: the outbound no-reply@ send log and the live support@
@@ -62,6 +72,18 @@ export const adminApi = {
 // are noticeably slower than the Mongo-backed endpoints.
 export const emailApi = {
   log: (params) => api.get('/admin/email/log', { params }),
+  logStats: () => api.get('/admin/email/log/stats'),
+  retry: (id) => api.post(`/admin/email/log/${id}/retry`),
+  cancel: (id) => api.post(`/admin/email/log/${id}/cancel`),
+  reconcile: () => api.post('/admin/email/reconcile'),
+  // Lifecycle catalog (the send map + admin-editable metadata).
+  catalog: () => api.get('/admin/email/catalog'),
+  saveCatalog: (data) => api.put('/admin/email/catalog', data),
+  preview: (key) => api.get(`/admin/email/catalog/${key}/preview`),
+  // Suppression list. `suppressions` returns { items, total, page, pageSize }.
+  suppressions: (params) => api.get('/admin/email/suppressions', { params }),
+  addSuppression: (email, note) => api.post('/admin/email/suppressions', { email, note }),
+  releaseSuppression: (id) => api.delete(`/admin/email/suppressions/${id}`),
   supportStatus: () => api.get('/admin/email/support/status'),
   supportMessages: (params) => api.get('/admin/email/support/messages', { params }),
   supportMessage: (uid, mailbox) => api.get(`/admin/email/support/messages/${uid}`, { params: { mailbox } }),

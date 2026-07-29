@@ -1,26 +1,27 @@
-// Per-household weekly quota enforcement for cost-bearing AI actions.
+// Credit-balance enforcement for cost-bearing AI actions.
 //
 // Usage:
 //   router.post('/from-photo', meter('scan'), upload.single('photo'), handler)
 //
-// Runs AFTER requireAuth (so req.household / req.user are set). For each action:
-//   1. Resolve the household's plan and the action's quota from MonetizationConfig.
-//   2. If the current week's counter is already at/over quota → 402 with an
-//      upgrade payload. A `null` quota means unlimited (still tracked).
-//   3. Otherwise let the request proceed and, on a 2xx response, atomically
-//      $inc the counter (so failed calls don't burn quota).
+// Runs AFTER requireAuth (so req.user / req.household are set). For each action:
+//   1. If the caller's prepaid credit balance (User.creditBalanceMc) is at/below
+//      zero → 402 CREDITS_EXHAUSTED with a buy-a-pack payload.
+//   2. Otherwise let the request proceed; on a 2xx response, atomically $inc the
+//      per-action analytics counters, and record the call's token cost as a
+//      credit debit once the Claude call returns (recordTokens).
 //
-// Config is cached in-process for a short TTL so edits on the temp config page
-// take effect quickly without a DB read on every request. There's a small
-// check-then-increment race under high concurrency; acceptable for the pre-launch
-// phase (the increment is atomic, so counts never corrupt — a user could at most
-// slip one extra call past the cap).
+// A call's cost is only known AFTER it runs, so this is a pre-check on the
+// balance: the last call may overdraw slightly (balance can dip negative), and
+// the NEXT call is blocked. Exempt admins (adminUnlimited) skip the pre-check
+// but are still tracked and debited.
+//
+// Config is cached in-process for a short TTL so admin-app edits take effect
+// quickly without a DB read on every request.
 
-const Household = require('../models/Household');
 const User = require('../models/User');
 const MonetizationConfig = require('../models/MonetizationConfig');
+const credits = require('../services/credits');
 
-const TIER_ORDER = ['free', 'premium', 'unlimited'];
 const CONFIG_TTL_MS = 30 * 1000;
 
 let cached = null;
@@ -40,10 +41,11 @@ function invalidateConfigCache() {
   cachedAt = 0;
 }
 
-// Usage windows reset weekly, every Wednesday at 5:00 PM America/New_York
-// (Eastern) — a fixed instant for all users worldwide, regardless of their local
-// timezone. The reset weekday/hour is defined in Eastern and stays put across ET
-// DST changes (the corresponding UTC instant just shifts by an hour).
+// Usage ANALYTICS windows reset weekly, every Wednesday at 5:00 PM
+// America/New_York (Eastern) — a fixed instant for all users worldwide. Nothing
+// is enforced against the window anymore (enforcement is the credit balance);
+// it keys the "this week" feature breakdown and admin analytics. The reset
+// weekday/hour is defined in Eastern and stays put across ET DST changes.
 const RESET_ZONE = 'America/New_York';
 const RESET_WEEKDAY = 3; // 0=Sun … 3=Wed
 const RESET_HOUR = 17;   // 5PM
@@ -89,43 +91,48 @@ function nextPeriodResetAt(d = new Date()) {
   return zoneWallToInstant(target.getUTCFullYear(), target.getUTCMonth() + 1, target.getUTCDate(), RESET_HOUR);
 }
 
-function nextTier(plan) {
-  const i = TIER_ORDER.indexOf(plan);
-  return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : null;
-}
-
-// Whether this caller is exempt from the weekly AI budgets. Admin accounts get
-// unlimited AI only while the admin-config toggle allows it (`admin.unlimitedAi`,
-// default true) — set it false in the admin app to meter admins like everyone
-// else. Usage is still tracked regardless; this only controls enforcement.
+// Whether this caller is exempt from credit-balance enforcement. Admin accounts
+// get unlimited AI only while the admin-config toggle allows it
+// (`admin.unlimitedAi`, default true) — set it false in the admin app to meter
+// admins like everyone else. Usage is still tracked and debited regardless;
+// this only controls the pre-check block.
 function adminUnlimited(config, user) {
   return user?.role === 'admin' && config?.admin?.unlimitedAi !== false;
 }
 
-// Pooled (paid-tier) usage a household has actually consumed this period: the raw
-// counter minus any baseline captured at a mid-week upgrade. The baseline only
-// exists for the period an upgrade landed in, so other periods pass through raw.
-function effectiveUsage(household, period, action) {
-  const raw = household?.usage?.[period]?.[action] || 0;
-  const base = household?.usageBaseline?.[period]?.[action] || 0;
-  return Math.max(0, raw - base);
+// The caller's credit standing, shared by the meter pre-checks and the
+// billing-status payload. `balance` is whole credits (floored; may be negative
+// after a refund — clients floor display at 0).
+function creditStatus(user, config) {
+  const balanceMc = user?.creditBalanceMc ?? 0;
+  const balance = Math.floor(balanceMc / credits.MC_PER_CREDIT);
+  const unlimited = adminUnlimited(config, user);
+  const threshold = Number(config?.credits?.lowBalanceThreshold) || 0;
+  return {
+    balanceMc,
+    balance,
+    unlimited,
+    exhausted: !unlimited && balanceMc <= 0,
+    low: !unlimited && balance <= threshold,
+  };
 }
 
-// Full per-action effective usage map for a period (for billing/status display).
-// Drops the `breakdown` analytics sub-object; it isn't a quota bucket.
-function effectivePeriodUsage(household, period) {
-  const raw = household?.usage?.[period] || {};
+// Per-action usage map for a period from a User or Household doc (for the
+// billing-status "By feature" display). Drops the `breakdown` analytics
+// sub-object; it isn't a display bucket.
+function periodUsage(doc, period) {
+  const raw = doc?.usage?.[period] || {};
   const out = {};
   for (const [action, count] of Object.entries(raw)) {
     if (action === 'breakdown') continue;
-    out[action] = effectiveUsage(household, period, action);
+    out[action] = count;
   }
   return out;
 }
 
-// ── Token metering (the enforced weekly budget) ──────────────────────────────
+// ── Token recording (analytics counters + credit debit) ──────────────────────
 // Total tokens an API response consumed: input + output + cache read + write.
-// This is the literal "tokens used" the app shows and meters against.
+// This is the literal "tokens used" the app shows and prices into credits.
 function totalTokens(usage) {
   if (!usage) return 0;
   return (usage.input_tokens || 0)
@@ -134,221 +141,119 @@ function totalTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
-// Pooled (paid-tier) tokens this period: raw minus any mid-week upgrade baseline.
-function effectiveTokens(household, period) {
-  const raw = household?.usageTokens?.[period]?.tokens || 0;
-  const base = household?.usageTokensBaseline?.[period]?.tokens || 0;
-  return Math.max(0, raw - base);
-}
-
-// Tokens enforced against this caller for the period: per-user on free, pooled
-// on paid — mirrors the count-scope model.
-function enforcedTokens(req, period) {
-  const plan = req.household?.plan || 'free';
-  if (plan === 'free') return req.user?.usageTokens?.[period]?.tokens || 0;
-  return effectiveTokens(req.household, period);
-}
-
-// Bump the weekly token counters by explicit ids. Always hits BOTH the household
-// pool (fleet analytics + paid enforcement) and the per-user counter (free
-// enforcement + per-user admin attribution — on paid plans the user counter is
-// analytics-only, enforcedTokens never reads it there). `action` gets a
-// per-action token split for analytics. Fire-and-forget; returns the token count.
-function bumpTokenCounters({ householdId, userId, tokens, action = null }) {
+// Bump the weekly token counter by explicit id and debit the user's credit
+// balance for the call's cost (tokens × model rate × margin). Per-USER only —
+// AI usage, calls, and credits are individual concerns; household-level
+// counters were retired with the per-user billing restructure (fleet analytics
+// sum the user counters). `action` gets a per-action token split for
+// analytics; `model` picks the credit rate. Fire-and-forget; returns the
+// token count.
+function bumpTokenCounters({ userId, tokens, action = null, model = null }) {
   if (!tokens) return 0;
   const period = currentPeriodKey();
-  if (householdId) {
+  if (userId) {
     const inc = { [`usageTokens.${period}.tokens`]: tokens };
     if (action) inc[`usageTokens.${period}.byAction.${action}`] = tokens;
-    Household.updateOne({ _id: householdId }, { $inc: inc })
-      .catch((err) => console.error('[recordTokens] household inc failed:', err.message));
-  }
-  if (userId) {
-    User.updateOne({ _id: userId }, { $inc: { [`usageTokens.${period}.tokens`]: tokens } })
+    User.updateOne({ _id: userId }, { $inc: inc })
       .catch((err) => console.error('[recordTokens] user inc failed:', err.message));
+    getConfig()
+      .then((config) => credits.debitUsageMc(userId, credits.tokenDebitMc(tokens, model, config)))
+      .catch((err) => console.error('[recordTokens] credit debit failed:', err.message));
   }
   return tokens;
 }
 
-// Record tokens an AI call consumed against the caller's weekly budget. Used by
-// the in-request path (patched Anthropic client / chat stream), so it reads the
-// scope off `req`. Returns the token count so handlers can echo `tokensUsed`.
-async function recordTokens(req, usage, action = null) {
+// Record tokens an AI call consumed. Used by the in-request path (patched
+// Anthropic client / chat stream), so it reads the scope off `req`. Returns the
+// token count so handlers can echo `tokensUsed`.
+async function recordTokens(req, usage, action = null, model = null) {
   return bumpTokenCounters({
-    householdId: req.household?._id,
     userId: req.user?._id,
     tokens: totalTokens(usage),
     action,
+    model,
   });
 }
 
-// ── Call-time metering (the enforced weekly seconds budget for phone calls) ──
-// Phone calls are billed by Vapi per-minute, so they draw down a SEPARATE weekly
-// budget measured in connected seconds — not the token budget. Same scope model
-// as tokens: per-user on free, pooled household on paid.
+// ── Call-time recording ──────────────────────────────────────────────────────
+// Phone calls are billed by Vapi per-minute (STT + TTS + telephony dominate; the
+// LLM tokens are a rounding error), so connected seconds are priced into credits
+// at the call rate rather than the token rate.
 
-// Pooled (paid-tier) call seconds this period: raw minus any upgrade baseline.
-function effectiveCallSeconds(household, period) {
-  const raw = household?.usageCallSeconds?.[period]?.seconds || 0;
-  const base = household?.usageCallSecondsBaseline?.[period]?.seconds || 0;
-  return Math.max(0, raw - base);
-}
-
-// Call seconds enforced against this caller for the period: per-user on free,
-// pooled on paid. Accepts either a `req` or a bare `{ household, user }`.
-function enforcedCallSeconds({ household, user }, period) {
-  const plan = household?.plan || 'free';
-  if (plan === 'free') return user?.usageCallSeconds?.[period]?.seconds || 0;
-  return effectiveCallSeconds(household, period);
-}
-
-// Resolve the caller's weekly call-time budget status for the current period.
-// `limit == null` means unlimited; exempt admins are never blocked (see
-// `adminUnlimited`) but are still tracked. Shared by the meterCallSeconds guard,
-// the chat call_business pre-check, and the billing-status payload.
-async function callSecondsStatus({ household, user }) {
-  const plan = household?.plan || 'free';
-  const config = await getConfig();
-  const tier = config.tiers?.[plan] || config.tiers?.free || {};
-  const period = currentPeriodKey();
-  const limit = tier.weeklyCallSecondsLimit ?? null;
-  const used = enforcedCallSeconds({ household, user }, period);
-  const enforced = limit != null && !adminUnlimited(config, user);
-  return {
-    plan,
-    scope: plan === 'free' ? 'user' : 'household',
-    limit,                       // null = unlimited
-    used,
-    exceeded: enforced && used >= limit,
-    pct: limit ? Math.min(100, Math.round((used / limit) * 100)) : 0,
-    remaining: limit == null ? null : Math.max(0, limit - used),
-  };
-}
-
-// Record connected call seconds against the weekly budget. Bumps BOTH the
-// household pool (paid enforcement + fleet analytics) and the per-user counter
-// (free enforcement), keyed by explicit ids — phone calls settle during a lazy
-// refresh with no `req` in scope. Fire-and-forget; returns the seconds recorded.
-function recordCallSecondsById({ householdId, userId }, seconds) {
+// Record connected call seconds on the per-user counter and debit the user's
+// credit balance for the call's cost. Keyed by explicit id — phone calls
+// settle during a lazy refresh with no `req` in scope. Fire-and-forget;
+// returns the seconds recorded.
+function recordCallSecondsById({ userId }, seconds) {
   const s = Math.round(Number(seconds) || 0);
   if (s <= 0) return 0;
   const period = currentPeriodKey();
-  if (householdId) {
-    Household.updateOne({ _id: householdId }, { $inc: { [`usageCallSeconds.${period}.seconds`]: s } })
-      .catch((err) => console.error('[recordCallSeconds] household inc failed:', err.message));
-  }
   if (userId) {
     User.updateOne({ _id: userId }, { $inc: { [`usageCallSeconds.${period}.seconds`]: s } })
       .catch((err) => console.error('[recordCallSeconds] user inc failed:', err.message));
+    getConfig()
+      .then((config) => credits.debitUsageMc(userId, credits.callDebitMc(s, config)))
+      .catch((err) => console.error('[recordCallSeconds] credit debit failed:', err.message));
   }
   return s;
 }
 
-function isUpgrade(oldPlan, newPlan) {
-  return TIER_ORDER.indexOf(newPlan) > TIER_ORDER.indexOf(oldPlan);
-}
-
-// `$set` fragment that resets the pooled weekly budget when a household moves to a
-// higher tier ("fresh pool on upgrade"): baseline the current period to its raw
-// counts/tokens so effective usage restarts at 0. Only a strict upgrade qualifies,
-// so downgrading can't wipe the counter. Returns {} for non-upgrades.
-function upgradeBaselineUpdate(household, newPlan) {
-  const oldPlan = household?.plan || 'free';
-  if (!isUpgrade(oldPlan, newPlan)) return {};
-  const period = currentPeriodKey();
-  const snapshot = { ...(household?.usage?.[period] || {}) };
-  delete snapshot.breakdown;
-  const tokenSnapshot = { ...(household?.usageTokens?.[period] || {}) };
-  delete tokenSnapshot.byAction;
-  const callSecondsSnapshot = { ...(household?.usageCallSeconds?.[period] || {}) };
+// 402 payload for an exhausted balance, shared by meter() and
+// meterCallSeconds(). Includes the pack catalog so the buy-credits sheet can
+// render before the store loads.
+function exhaustedPayload(action, status, config) {
   return {
-    usageBaseline: { [period]: snapshot },
-    usageTokensBaseline: { [period]: tokenSnapshot },
-    usageCallSecondsBaseline: { [period]: callSecondsSnapshot },
+    error: 'You’re out of AI credits. Buy a credit pack to continue.',
+    code: 'CREDITS_EXHAUSTED',
+    action,
+    balance: status.balance,
+    packs: credits.packsHint(config),
   };
 }
 
-// `action` is the quota bucket (chat/scan/generation/manualParse/aiHelper).
+// Count a refused request per user: repeated attempts after the block are the
+// primary abuse signal the admin AI-usage view surfaces.
+function countBlocked(user, action) {
+  if (!user?._id) return;
+  const period = currentPeriodKey();
+  User.updateOne({ _id: user._id }, { $inc: { [`usageBlocked.${period}.${action}`]: 1 } })
+    .catch((err) => console.error('[usageMeter] blocked-attempt inc failed:', err.message));
+}
+
+// `action` is the analytics bucket (chat/scan/generation/manualParse/aiHelper).
 // Optional `surface` records a finer-grained analytics label (e.g. which chat
 // surface) under a separate `breakdown` path — additive only, it never affects
-// quota enforcement, so a metered action's cap is always on the coarse bucket.
-//
-// Enforcement scope depends on the plan:
-//   - free: per USER (req.user.usage). Each member gets their own free allowance,
-//     so a family member joining doesn't shrink everyone's quota. Also means solo
-//     free users (no household) are tracked properly now.
-//   - paid: per HOUSEHOLD (household.usage) — one subscription funds a shared pool.
-// The household counter is ALWAYS incremented (even on free) so the admin
-// analytics fleet totals/breakdown stay complete regardless of tier.
+// enforcement.
 function meter(action, surface = null) {
   return async function usageMeter(req, res, next) {
     try {
-      const household = req.household;
       const user = req.user;
-      const plan = household?.plan || 'free';
-      const perUser = plan === 'free';
-
       const config = await getConfig();
-      const tier = config.tiers?.[plan] || config.tiers?.free || {};
-
       const period = currentPeriodKey();
 
-      // The enforced cap is the weekly TOKEN budget (null = unlimited). We only
-      // know a call's token cost AFTER it runs, so this is a pre-check on the
-      // running total: once at/over budget, the NEXT AI call is blocked. Per-user
-      // on free, pooled on paid.
-      //
-      // Admin accounts (internal team / testing) can be exempted from blocking
-      // regardless of plan via the admin-config toggle (`adminUnlimited`) — usage
-      // is still counted below so the admin analytics stay complete.
-      const limit = tier.weeklyTokenLimit;
-      if (limit != null && !adminUnlimited(config, user)) {
-        const used = enforcedTokens(req, period);
-        if (used >= limit) {
-          // Count the refusal per user: repeated attempts after hitting the cap
-          // are the primary abuse signal the admin AI-usage view surfaces.
-          if (user?._id) {
-            User.updateOne(
-              { _id: user._id },
-              { $inc: { [`usageBlocked.${period}.${action}`]: 1 } }
-            ).catch((err) => console.error('[usageMeter] blocked-attempt inc failed:', err.message));
-          }
-          return res.status(402).json({
-            error: 'You’ve reached your weekly AI limit. Upgrade for more.',
-            code: 'TOKENS_EXCEEDED',
-            action,
-            plan,
-            scope: perUser ? 'user' : 'household',
-            limit,
-            used,
-            pct: Math.min(100, Math.round((used / limit) * 100)),
-            upgradeTo: nextTier(plan),
-          });
-        }
+      // Pre-check the prepaid balance (see file header: last call may overdraw;
+      // the NEXT one is blocked). Exempt admins skip the block, not the debit.
+      const status = creditStatus(user, config);
+      if (status.exhausted) {
+        countBlocked(user, action);
+        return res.status(402).json(exhaustedPayload(action, status, config));
       }
 
-      // Increment the per-action COUNT on success (analytics only — no longer a
-      // cap). Token consumption is recorded separately by recordTokens() in each
-      // AI handler, since token cost is known only after the Claude call returns.
+      // Increment the per-action COUNT on success (analytics only). Credit cost
+      // is debited separately by recordTokens() once the Claude call returns,
+      // since token cost is known only after it runs.
       res.on('finish', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) return;
-        // Household counter (analytics fleet totals + paid-tier enforcement).
-        if (household?._id) {
+        // Per-user counter: drives the Credits screen's "By feature" display
+        // AND fleet admin analytics (which sum the user counters). Household
+        // counters were retired — AI usage/credits are per-user concerns.
+        if (user?._id) {
           const inc = { [`usage.${period}.${action}`]: 1 };
-          // Also track the finer-grained surface, when provided, so the admin
-          // app can break "chat" down by feature area without changing quotas.
+          // Finer-grained surface, when provided, so the admin app can break
+          // "chat" down by feature area (periodUsage() skips `breakdown`).
           if (surface) inc[`usage.${period}.breakdown.${action}.${surface}`] = 1;
-          Household.updateOne(
-            { _id: household._id },
-            { $inc: inc }
-          ).catch((err) => console.error('[usageMeter] household increment failed:', err.message));
-        }
-        // Per-user counter drives free-tier enforcement + display.
-        if (perUser && user?._id) {
-          User.updateOne(
-            { _id: user._id },
-            { $inc: { [`usage.${period}.${action}`]: 1 } }
-          ).catch((err) => console.error('[usageMeter] user increment failed:', err.message));
+          User.updateOne({ _id: user._id }, { $inc: inc })
+            .catch((err) => console.error('[usageMeter] user increment failed:', err.message));
         }
       });
 
@@ -374,41 +279,30 @@ function meter(action, surface = null) {
   };
 }
 
-// Pre-check the weekly call-time budget before placing an assistant phone call,
-// and count the placement on success. Used on the direct call-placement routes
-// (the chat call_business tool pre-checks inline via callSecondsStatus). Runs
-// AFTER requireAuth so req.household / req.user are set. The seconds a call
-// actually consumes are recorded later, when Vapi reports its duration
-// (services/phoneCalls → recordCallSecondsById), so this is a pre-check on the
-// running total: once at/over budget, the NEXT call is blocked.
+// Pre-check the credit balance before placing an assistant phone call, and count
+// the placement on success. A call must be affordable up front — the balance has
+// to cover at least ONE MINUTE at the call rate (calls can't be stopped
+// mid-sentence when the balance hits zero, so we demand a sensible floor). The
+// seconds a call actually consumes are debited later, when Vapi reports its
+// duration (services/phoneCalls → recordCallSecondsById). Used on the direct
+// call-placement routes; the chat call_business tool pre-checks inline.
 function meterCallSeconds() {
   return async function guard(req, res, next) {
     try {
-      const status = await callSecondsStatus({ household: req.household, user: req.user });
-      if (status.exceeded) {
-        const period = currentPeriodKey();
-        if (req.user?._id) {
-          User.updateOne({ _id: req.user._id }, { $inc: { [`usageBlocked.${period}.call`]: 1 } })
-            .catch((err) => console.error('[meterCallSeconds] blocked-attempt inc failed:', err.message));
-        }
-        return res.status(402).json({
-          error: 'You’ve used all your assistant call time for this week. Upgrade for more.',
-          code: 'CALL_SECONDS_EXCEEDED',
-          plan: status.plan,
-          scope: status.scope,
-          limit: status.limit,
-          used: status.used,
-          pct: status.pct,
-          upgradeTo: nextTier(status.plan),
-        });
+      const config = await getConfig();
+      const status = creditStatus(req.user, config);
+      const floorMc = credits.callDebitMc(60, config);
+      if (!status.unlimited && status.balanceMc < floorMc) {
+        countBlocked(req.user, 'call');
+        return res.status(402).json(exhaustedPayload('call', status, config));
       }
       // Count the placement on a 2xx (analytics; same shape as meter()'s counter).
       res.on('finish', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) return;
         const period = currentPeriodKey();
-        if (req.household?._id) {
-          Household.updateOne({ _id: req.household._id }, { $inc: { [`usage.${period}.call`]: 1 } })
-            .catch((err) => console.error('[meterCallSeconds] household increment failed:', err.message));
+        if (req.user?._id) {
+          User.updateOne({ _id: req.user._id }, { $inc: { [`usage.${period}.call`]: 1 } })
+            .catch((err) => console.error('[meterCallSeconds] user increment failed:', err.message));
         }
       });
       next();
@@ -419,8 +313,8 @@ function meterCallSeconds() {
   };
 }
 
-// In-process daily abuse guard for the Google Maps endpoints. Maps is available
-// on every tier (it's a fundamental feature), so this is NOT a product limit —
+// In-process daily abuse guard for the Google Maps endpoints. Maps is a
+// fundamental feature (not credit-metered), so this is NOT a product limit —
 // just a runaway-cost backstop keyed per household per UTC day. In-memory is
 // fine for a backstop; on multi-instance deploys swap for a shared store.
 const mapsHits = new Map(); // `${householdId}:${day}` -> count
@@ -454,9 +348,9 @@ if (typeof mapsSweep.unref === 'function') mapsSweep.unref();
 
 module.exports = {
   meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt,
-  nextTier, TIER_ORDER, effectivePeriodUsage, upgradeBaselineUpdate, adminUnlimited,
-  // Token metering
-  recordTokens, totalTokens, effectiveTokens, enforcedTokens,
-  // Call-time metering
-  meterCallSeconds, recordCallSecondsById, effectiveCallSeconds, enforcedCallSeconds, callSecondsStatus,
+  adminUnlimited, creditStatus, periodUsage,
+  // Token recording
+  recordTokens, totalTokens, bumpTokenCounters,
+  // Call-time recording
+  meterCallSeconds, recordCallSecondsById,
 };

@@ -39,6 +39,26 @@ function notifyActivated(): void {
   for (const cb of activationListeners) { try { cb(); } catch { /* listener isolation */ } }
 }
 
+// Fired when the household data key (HDK) first becomes available this session —
+// the current-version key transitions from absent → held inside ensureHouseholdKey
+// (a fresh login/relaunch unwrap, a just-minted owner key, or a household switch).
+// Distinct from subscribeLockState (which flips the instant the *keypair* unlocks,
+// BEFORE the HDK is loaded) and from subscribeE2eeActivated (born-encrypted drop):
+// this is the "records are now decryptable" signal. The record-sync pull races
+// ahead of unlock on sign-in — its first pass blocks every undecryptable row and
+// parks the cursor — so the app-root subscriber re-pulls + refetches the replica-
+// backed views here, otherwise the calendar/people/etc. stay empty until a manual
+// mutation invalidates them. Fires only on a genuine transition (not on every
+// ensureHouseholdKey call once the key is already held), so it can't loop.
+const keysReadyListeners = new Set<() => void>();
+export function subscribeKeysReady(cb: () => void): () => void {
+  keysReadyListeners.add(cb);
+  return () => keysReadyListeners.delete(cb);
+}
+function notifyKeysReady(): void {
+  for (const cb of keysReadyListeners) { try { cb(); } catch { /* listener isolation */ } }
+}
+
 function currentHDK(): Uint8Array | null {
   return hdks.get(hdkVersion) ?? null;
 }
@@ -178,6 +198,17 @@ export async function unlockFromDeviceCache(): Promise<boolean> {
   }
 }
 
+// Fresh biometric re-authentication for a sensitive change (e.g. changing the
+// password on PrivacyDataScreen), used in place of re-typing the current
+// password. Unlike unlockFromDeviceCache this always forces a Face ID / Touch ID
+// prompt even when the key is already in memory — proof of presence, not an
+// unlock. Returns false when the cache isn't armed, the user cancels, or the
+// blob is unreadable (callers fall back to the typed current password).
+export async function reauthWithBiometric(): Promise<boolean> {
+  if (!(await isDeviceKeyEnabled())) return false;
+  return (await loadDeviceKey()) != null;
+}
+
 // Whether this device has armed the biometric unlock cache (for a settings row
 // and to decide whether to attempt a Face ID unlock on relaunch).
 export { isDeviceKeyEnabled as hasDeviceKeyCache };
@@ -213,6 +244,10 @@ export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pendin
     bornEncryptedActivated = false;
   }
 
+  // Whether we already held the current-version HDK on entry — so we only signal a
+  // genuine absent → held transition below (not every ready re-check on focus).
+  const hadCurrentHDK = current > 0 && hdks.has(current);
+
   // Unwrap every envelope we don't already hold — including older versions — so a
   // record sealed before a rotation stays decryptable.
   for (const e of data.envelopes || []) {
@@ -227,6 +262,9 @@ export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pendin
     // now, best-effort — a concurrent rotation by another member just 409s and
     // we pick up their new envelope on the next call.
     if (data.keyRotationPending) { try { await rotateHouseholdKey(); } catch { /* non-fatal */ } }
+    // HDK just became available (sign-in/relaunch unwrap): tell the app to re-pull
+    // + refetch the replica-backed views, whose first sync raced ahead of unlock.
+    if (!hadCurrentHDK) notifyKeysReady();
     void maybeActivateBornEncrypted(); // fire-and-forget: drop plaintext if still pending
     return 'ready';
   }
@@ -235,6 +273,7 @@ export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pendin
     await householdApi.mintKey({ wrappedHDK: crypto.wrapHDKForMember(fresh, keyPair.publicKey), keyVersion: 1 });
     hdks.set(1, fresh);
     hdkVersion = 1;
+    notifyKeysReady(); // fresh owner key minted — records are now sealable/readable
     void maybeActivateBornEncrypted(); // fresh owner: finalize born-encrypted state
     return 'ready';
   }

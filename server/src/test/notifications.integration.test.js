@@ -1,7 +1,7 @@
 // Integration tests for the notifications server surface (spec:
 // features/notifications.md): push-device registration (web + native), the
 // replace-on-re-register semantics, and the local-reminders flag the daily
-// reminder cron honors. Reminder *scheduling* logic (7am-per-timezone fan-out,
+// reminder cron honors. Reminder *scheduling* logic (9am-per-timezone fan-out,
 // audience resolution, the E2EE-household skip) is unit-tested in
 // server/src/jobs/scheduler.test.js; delivery is on-device.
 const { test, before, after } = require('node:test');

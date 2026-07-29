@@ -1,82 +1,118 @@
-// Plan management.
-//   GET  /api/billing/status        → plan, usage, quotas, tier catalog (any user)
-//   POST /api/billing/webhook       → RevenueCat purchase events (no auth; shared secret)
-//   POST /api/billing/select {tier} → manual plan override (admin only)
+// Monetization endpoints: the per-user $4.99 app unlock, the prepaid AI-credit
+// balance, and the household's one-time feature-calendar add-ons.
+//   GET  /api/billing/status          → unlock state, credit balance, packs, usage, add-ons (any user)
+//   GET  /api/billing/credits/ledger  → the caller's credit purchase/grant history
+//   POST /api/billing/webhook         → RevenueCat purchase events (no auth; shared secret)
+//   POST /api/billing/addons/claim    → claim a FREE add-on (price-0 catalog item; any member)
+//   POST /api/billing/addons {addons} → manual add-on override (admin only)
 //
-// Real consumer payments flow through native in-app purchase (App Store / Play)
-// → RevenueCat → the webhook below, which flips the household's plan. The
-// `/select` route is kept for admin/manual overrides only.
+// Real payments flow through native in-app purchase (App Store / Play) →
+// RevenueCat → the webhook below. RevenueCat's app_user_id is the USER id (the
+// mobile app logs the RC SDK in as the signed-in user), so the unlock and
+// credit packs land on the purchasing user; feature-calendar add-ons resolve
+// user → household and stay household-wide.
 
 const express = require('express');
 const mongoose = require('mongoose');
 const Household = require('../models/Household');
 const User = require('../models/User');
 const PhoneCall = require('../models/PhoneCall');
+const CreditLedger = require('../models/CreditLedger');
 const MonetizationConfig = require('../models/MonetizationConfig');
+const credits = require('../services/credits');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { getConfig, currentPeriodKey, nextPeriodResetAt, effectivePeriodUsage, upgradeBaselineUpdate, enforcedTokens, callSecondsStatus, adminUnlimited } = require('../middleware/usageMeter');
+const { getConfig, currentPeriodKey, nextPeriodResetAt, periodUsage, creditStatus } = require('../middleware/usageMeter');
 
 const router = express.Router();
 
 // --- RevenueCat webhook (must be BEFORE requireAuth; authenticated by a shared
 // secret RevenueCat sends in the Authorization header). ---
-//
-// Map RevenueCat entitlement identifiers → our plan tiers. Configure the
-// matching entitlement ids ('premium', 'unlimited') in the RevenueCat dashboard.
-const ENTITLEMENT_TO_TIER = { premium: 'premium', unlimited: 'unlimited' };
 
-// Pick the highest-value active entitlement (unlimited > premium > free).
-function tierFromEntitlements(entitlementIds = []) {
-  const tiers = entitlementIds.map((e) => ENTITLEMENT_TO_TIER[e]).filter(Boolean);
-  if (tiers.includes('unlimited')) return 'unlimited';
-  if (tiers.includes('premium')) return 'premium';
-  return 'free';
+// The RevenueCat entitlement granted by the app-unlock non-consumable.
+const UNLOCK_ENTITLEMENT = 'app_unlock';
+
+// Map RevenueCat entitlement identifiers → feature-calendar add-on keys
+// (calendar ids, stored in Household.addons). The bundle product is attached to
+// all three entitlements in the RevenueCat dashboard, so a bundle purchase
+// event carries all three ids — the server has no bundle concept of its own.
+// (Birthdays was briefly an add-on pre-release, then made free 2026-07-26.)
+const ENTITLEMENT_TO_ADDON = {
+  addon_meals: 'recipes',
+  addon_maintenance: 'maintenance',
+  addon_trips: 'trips',
+};
+
+// Event types that grant a one-time purchase. Everything else is either a
+// revoke (refund/expiration) or lifecycle noise.
+const GRANT_TYPES = ['INITIAL_PURCHASE', 'NON_RENEWING_PURCHASE', 'UNCANCELLATION', 'TRANSFER'];
+
+function isRefund(event) {
+  return event.type === 'CANCELLATION' && event.cancel_reason === 'CUSTOMER_SUPPORT';
 }
 
-// Decide what a webhook event does to a household: the plan change (null = the
-// plan itself doesn't change) plus lifecycle-state $set/$unset fragments. Pure —
-// exported for tests.
-function planUpdateForEvent(event) {
-  let plan = null;
-  const set = {};
-  const unset = {};
-  const revoke = () => {
-    plan = 'free';
-    set.planBillingIssue = false;
-    unset.planAutoRenew = 1;
-    unset.planExpiresAt = 1;
-    unset.planProductId = 1;
-  };
-  if (event.type === 'EXPIRATION' || event.type === 'SUBSCRIPTION_PAUSED') {
-    revoke();
-  } else if (event.type === 'CANCELLATION') {
-    // CANCELLATION = auto-renew turned off; access continues until EXPIRATION
-    // fires. Only a refund (CUSTOMER_SUPPORT) revokes immediately.
-    if (event.cancel_reason === 'CUSTOMER_SUPPORT') revoke();
-    else set.planAutoRenew = false;
-  } else if (event.type === 'BILLING_ISSUE') {
-    // Payment failed; the store's grace period governs access, so the plan
-    // stays put. EXPIRATION arrives later if recovery fails.
-    set.planBillingIssue = true;
-  } else {
-    // Grant-shaped events (INITIAL_PURCHASE, RENEWAL, PRODUCT_CHANGE,
-    // UNCANCELLATION, …) set the entitlement tier. A grant never downgrades,
-    // so unrecognized entitlement ids are ignored rather than silently
-    // flipping the household to free.
-    const tier = tierFromEntitlements(event.entitlement_ids);
-    if (tier !== 'free') {
-      plan = tier;
-      set.planAutoRenew = true;
-      set.planBillingIssue = false;
-      if (event.expiration_at_ms) set.planExpiresAt = new Date(event.expiration_at_ms);
-      if (event.product_id) set.planProductId = event.product_id;
-      // Who bought it: the client sets this subscriber attribute just before
-      // purchase (all members share one app_user_id, so it's the only signal).
-      const purchaser = event.subscriber_attributes?.purchaser_user_id?.value;
-      if (purchaser && mongoose.isValidObjectId(purchaser)) set.planPurchasedBy = purchaser;
-    }
+// Decide what a webhook event does to the user's app unlock. Returns
+// { unlocked: true|false|null } — null = event doesn't touch the unlock. The
+// unlock is matched by entitlement (with a product-id fallback so a dashboard
+// misconfiguration can't silently drop purchases). Pure — exported for tests.
+function unlockUpdateForEvent(event, config) {
+  const ids = event.entitlement_ids || [];
+  const touches = ids.includes(UNLOCK_ENTITLEMENT)
+    || (event.product_id && event.product_id === (config?.unlock?.productId || 'app_unlock_499'));
+  if (!touches) return { unlocked: null };
+  if (GRANT_TYPES.includes(event.type)) return { unlocked: true };
+  // A refund revokes; EXPIRATION handled defensively (shouldn't occur for a
+  // non-consumable).
+  if (isRefund(event) || event.type === 'EXPIRATION') return { unlocked: false };
+  return { unlocked: null };
+}
+
+// Decide what a webhook event does to the user's credit balance. Consumable
+// packs carry NO entitlement — they're matched by product id against the pack
+// catalog. Returns { deltaMc, kind, productId, transactionId } or null. The
+// transactionId (store txn id, falling back to the RC event id) is the ledger's
+// idempotency key; a refund gets a ':refund' suffix so it dedupes independently
+// of its purchase. Pure — exported for tests.
+function creditUpdateForEvent(event, config) {
+  const pack = credits.packForProduct(event.product_id, config);
+  if (!pack) return null;
+  const txn = event.transaction_id || event.id;
+  const deltaMc = Math.round(pack.credits * credits.MC_PER_CREDIT);
+  if (GRANT_TYPES.includes(event.type)) {
+    return { deltaMc, kind: 'purchase', productId: pack.productId, transactionId: txn };
   }
-  return { plan, set, unset };
+  if (isRefund(event)) {
+    return { deltaMc: -deltaMc, kind: 'refund', productId: pack.productId, transactionId: `${txn}:refund` };
+  }
+  return null;
+}
+
+// Decide what a webhook event does to the household's one-time feature-calendar
+// add-ons: `add`/`remove` are Household.addons keys. Add-ons are non-consumable
+// (no renewal lifecycle) — a purchase-shaped event grants, a refund revokes
+// (RevenueCat sends CANCELLATION with cancel_reason CUSTOMER_SUPPORT for
+// refunded one-time purchases; EXPIRATION is handled defensively). Pure —
+// exported for tests.
+function addonUpdateForEvent(event) {
+  const keys = (event.entitlement_ids || []).map((e) => ENTITLEMENT_TO_ADDON[e]).filter(Boolean);
+  if (!keys.length) return { add: [], remove: [] };
+  if (isRefund(event) || event.type === 'EXPIRATION') return { add: [], remove: keys };
+  // Non-grant lifecycle noise (auto-renew toggles, billing issues) never touches
+  // a one-time purchase.
+  if (event.type === 'CANCELLATION' || event.type === 'BILLING_ISSUE' || event.type === 'SUBSCRIPTION_PAUSED') {
+    return { add: [], remove: [] };
+  }
+  // Grant-shaped events: NON_RENEWING_PURCHASE, INITIAL_PURCHASE,
+  // UNCANCELLATION, TRANSFER, …
+  return { add: keys, remove: [] };
+}
+
+// Resolve the webhook's app_user_id to a user. Matches the stored revenueCatId
+// first (covers aliased/anonymous ids RC may send) and falls back to the raw
+// user id the mobile app logs in with.
+async function userForAppUserId(appUserId) {
+  const or = [{ revenueCatId: appUserId }];
+  if (mongoose.isValidObjectId(appUserId)) or.push({ _id: appUserId });
+  return User.findOne({ $or: or }).catch(() => null);
 }
 
 router.post('/webhook', async (req, res) => {
@@ -91,37 +127,95 @@ router.post('/webhook', async (req, res) => {
     const event = req.body?.event;
     if (!event) return res.status(400).json({ error: 'Missing event' });
 
-    // Decide the plan change + lifecycle-state updates before requiring
-    // app_user_id: events we ignore (e.g. TRANSFER) don't carry one and must
-    // not 400 into RC's retry loop.
-    const { plan, set, unset } = planUpdateForEvent(event);
-    if (!plan && !Object.keys(set).length) {
+    const config = (await getConfig().catch(() => null)) || MonetizationConfig.DEFAULTS;
+
+    // TRANSFER (Restore Purchases under a different account): RC moves the
+    // store transactions between app_user_ids and sends only the id lists — no
+    // entitlement/product fields — so it's handled before the partition. Move
+    // the unlock flag from the losing user to the gaining one (consumed credit
+    // packs and household add-ons stay where they were applied).
+    if (event.type === 'TRANSFER') {
+      const resolveFirst = async (ids) => {
+        for (const id of ids || []) {
+          const u = await userForAppUserId(id);
+          if (u) return u;
+        }
+        return null;
+      };
+      const toUser = await resolveFirst(event.transferred_to);
+      const fromUser = await resolveFirst(event.transferred_from);
+      if (!toUser || (fromUser && String(fromUser._id) === String(toUser._id))) {
+        return res.json({ ok: true, ignored: event.type, matched: Boolean(toUser) });
+      }
+      if (fromUser?.appUnlocked) {
+        await User.updateOne({ _id: toUser._id }, {
+          $set: {
+            appUnlocked: true,
+            appUnlockedAt: new Date(),
+            ...(fromUser.unlockProductId ? { unlockProductId: fromUser.unlockProductId } : {}),
+          },
+        });
+        await User.updateOne({ _id: fromUser._id }, { $set: { appUnlocked: false } });
+      }
+      return res.json({ ok: true, transferred: Boolean(fromUser?.appUnlocked) });
+    }
+
+    // Partition the event. Credit packs are matched by product id and never
+    // fall through to the other paths; the unlock and add-ons are matched by
+    // entitlement. Anything left over — including legacy subscription-era
+    // premium/unlimited events and their CANCELLATION/EXPIRATION tails — is
+    // acked so RevenueCat doesn't retry.
+    const credit = creditUpdateForEvent(event, config);
+    const { unlocked } = credit ? { unlocked: null } : unlockUpdateForEvent(event, config);
+    const { add, remove } = credit ? { add: [], remove: [] } : addonUpdateForEvent(event);
+    if (!credit && unlocked === null && !add.length && !remove.length) {
       return res.json({ ok: true, ignored: event.type });
     }
 
+    // Only demand app_user_id when there's something to apply — ignorable
+    // events without one must not 400 into RC's retry loop.
     const appUserId = event.app_user_id;
     if (!appUserId) return res.status(400).json({ error: 'Missing app_user_id' });
 
-    // app_user_id is the household id (or a household's stored revenueCatId).
-    const household = await Household.findOne({
-      $or: [{ revenueCatId: appUserId }, { _id: appUserId }],
-    }).catch(() => null);
-    if (!household) {
-      // Acknowledge so RevenueCat doesn't retry forever for unknown users.
+    const user = await userForAppUserId(appUserId);
+    if (!user) {
+      // Acknowledge so RevenueCat doesn't retry forever for unknown users
+      // (includes legacy events keyed to a household id).
       return res.json({ ok: true, matched: false });
     }
 
-    const update = {
-      $set: {
-        ...set,
-        revenueCatId: appUserId,
-        // Fresh pool on upgrade: baseline the current week's counter when moving up.
-        ...(plan ? { plan, ...upgradeBaselineUpdate(household, plan) } : {}),
-      },
-    };
-    if (Object.keys(unset).length) update.$unset = unset;
-    await Household.updateOne({ _id: household._id }, update);
-    res.json({ ok: true, plan: plan ?? household.plan });
+    // Remember the RC identity that reached this user (aliases included).
+    if (user.revenueCatId !== appUserId) {
+      await User.updateOne({ _id: user._id }, { $set: { revenueCatId: appUserId } });
+    }
+
+    if (credit) {
+      const result = await CreditLedger.grant({ userId: user._id, ...credit });
+      if (result.duplicate) return res.json({ ok: true, duplicate: true });
+      return res.json({ ok: true, credited: credit.deltaMc / credits.MC_PER_CREDIT });
+    }
+
+    if (unlocked !== null) {
+      const set = unlocked
+        ? { appUnlocked: true, appUnlockedAt: new Date(), ...(event.product_id ? { unlockProductId: event.product_id } : {}) }
+        : { appUnlocked: false };
+      await User.updateOne({ _id: user._id }, { $set: set });
+    }
+
+    if (add.length || remove.length) {
+      if (!user.householdId) {
+        // No household to grant into; ack (Restore after joining re-delivers).
+        return res.json({ ok: true, unlocked, addons: false, matched: false });
+      }
+      const update = {};
+      // add/remove are mutually exclusive by construction (a single event either
+      // grants or revokes), so $addToSet and $pull never conflict on `addons`.
+      if (add.length) update.$addToSet = { addons: { $each: add } };
+      if (remove.length) update.$pull = { addons: { $in: remove } };
+      await Household.updateOne({ _id: user.householdId }, update);
+    }
+
+    res.json({ ok: true, ...(unlocked !== null ? { unlocked } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -132,113 +226,83 @@ router.use(requireAuth);
 router.get('/status', async (req, res) => {
   try {
     const config = await getConfig();
-    const plan = req.household?.plan || 'free';
     const period = currentPeriodKey();
-    const tiers = config.tiers || {};
-    // Free-tier quotas are per-user; paid tiers share a household pool. Report the
-    // counter that's actually enforced so the usage bars match what the user hits.
-    const perUser = plan === 'free';
-    const usage = perUser
-      ? (req.user?.usage?.[period] || {})
-      : effectivePeriodUsage(req.household, period);
+    const standing = creditStatus(req.user, config);
 
-    // Token budget is the enforced metric. Report used / limit / % for the gauge.
-    // Exempt admin accounts aren't metered (see usageMeter / adminUnlimited), so
-    // surface them as unlimited here too — otherwise the gauge would show a cap
-    // they never hit.
-    const weeklyTokenLimit = adminUnlimited(config, req.user) ? null : (tiers[plan]?.weeklyTokenLimit ?? null);
-    const tokensUsed = enforcedTokens(req, period);
-    const tokenPct = weeklyTokenLimit
-      ? Math.min(100, Math.round((tokensUsed / weeklyTokenLimit) * 100))
-      : 0;
+    // Per-action counts for this user (analytics — the Credits screen's "By
+    // feature" card). Enforcement is the credit balance, not these counts.
+    const usage = periodUsage(req.user, period);
 
-    // Assistant call-time budget — the separate enforced metric for phone calls,
-    // in connected seconds (admins unlimited, same as tokens). Drives its own
-    // gauge alongside the token gauge.
-    const callBudget = await callSecondsStatus({ household: req.household, user: req.user });
-
-    // Subscription lifecycle (paid plans only): renewal/cancellation/billing
-    // state maintained by the RevenueCat webhook, plus who bought it.
-    let subscription;
-    if (plan !== 'free' && req.household) {
-      const h = req.household;
-      let managedBy = null;
-      if (h.planPurchasedBy) {
-        const buyer = await User.findById(h.planPurchasedBy)
-          .select('firstName lastName')
-          .catch(() => null);
-        if (buyer) managedBy = { userId: buyer._id, name: buyer.name };
-      }
-      subscription = {
-        autoRenew: h.planAutoRenew ?? null, // null = unknown (predates lifecycle tracking)
-        expiresAt: h.planExpiresAt ? h.planExpiresAt.toISOString() : null,
-        billingIssue: Boolean(h.planBillingIssue),
-        productId: h.planProductId ?? null,
-        managedBy,
-      };
-    }
-
-    // Per-member token usage for the shared pool (paid plans). Per-user counters
-    // aren't baselined at a mid-week upgrade (only the household pool is), so
-    // these are relative shares, not a reconciliation against tokensUsed.
-    let members;
-    // User ids whose activity counts toward this view: just this user on free
-    // (per-user allowance), the whole household on a shared paid pool.
-    let scopeUserIds = req.user?._id ? [req.user._id] : [];
-    if (!perUser && req.household) {
-      const users = await User.find({ householdId: req.household._id })
-        .select('firstName lastName usageTokens');
-      scopeUserIds = users.map((u) => u._id);
-      members = users
-        .map((u) => ({
-          userId: u._id,
-          name: u.name,
-          tokens: u.usageTokens?.[period]?.tokens || 0,
-        }))
-        .sort((a, b) => b.tokens - a.tokens);
-    }
-
-    // Assistant phone calls placed this week — a distinct AI feature surfaced
-    // separately from chat/scan/etc. Calls are metered by their own weekly
-    // call-time budget (see callBudget above / callSecondsStatus); this "By
-    // feature" row shows a placement COUNT from PhoneCall. Period start = one week
-    // before the next weekly reset.
+    // Assistant phone calls placed this week — a distinct AI feature surfaced as
+    // its own "By feature" row (a placement COUNT from PhoneCall; the enforced
+    // cost is the per-second credit debit). Period start = one week before the
+    // next weekly reset.
     const periodStart = new Date(nextPeriodResetAt().getTime() - 7 * 24 * 60 * 60 * 1000);
     const callCount = await PhoneCall.countDocuments({
-      userId: { $in: scopeUserIds },
+      userId: req.user._id,
       createdAt: { $gte: periodStart },
     }).catch(() => 0);
-    // Fold the call count into the per-action breakdown so it renders as its own
-    // "By feature" row, without mutating the stored analytics usage document.
     const usageWithCalls = callCount > 0 ? { ...usage, call: callCount } : usage;
 
     res.json({
-      plan,
-      planLabel: tiers[plan]?.label || plan,
-      // Token budget (primary — drives the Plan view gauge).
-      tokensUsed,
-      weeklyTokenLimit,     // null = unlimited
-      tokenPct,             // 0–100 (0 when unlimited)
-      // Assistant call-time budget (seconds) — the enforced metric for phone calls.
-      callSecondsUsed: callBudget.used,
-      weeklyCallSecondsLimit: callBudget.limit,   // null = unlimited
-      callSecondsPct: callBudget.pct,             // 0–100 (0 when unlimited)
-      // Per-action counts (analytics / legacy usage list), plus assistant calls.
+      // The per-user $4.99 app unlock (drives the hard paywall).
+      unlocked: Boolean(req.user.appUnlocked),
+      unlockPrice: config.unlock?.price ?? 4.99,
+      // Prepaid credit balance. `creditBalance` is whole credits and may be
+      // NEGATIVE after a refund (clients floor display at 0); `unlimited` means
+      // an exempt admin (render "Unlimited", ignore the balance).
+      creditBalance: standing.balance,
+      creditBalanceMc: standing.balanceMc,
+      lowBalance: standing.low,
+      unlimited: standing.unlimited,
+      // Credit-pack catalog (display fallbacks; the store's localized price is
+      // authoritative whenever RC packages load).
+      packs: credits.packsHint(config),
+      // Per-action counts, always this user's own (analytics only).
       usage: usageWithCalls,
-      usageScope: perUser ? 'user' : 'household',
-      quotas: tiers[plan]?.quotas || {},
+      usageScope: 'user',
       resetsAt: nextPeriodResetAt().toISOString(),
       models: config.models || {},
       hasHousehold: Boolean(req.household),
-      ...(subscription ? { subscription } : {}),
-      ...(members ? { members } : {}),
-      catalog: MonetizationConfig.TIERS.map((key) => ({
-        key,
-        label: tiers[key]?.label || key,
-        price: tiers[key]?.price ?? 0,
-        quotas: tiers[key]?.quotas || {},
-        weeklyTokenLimit: tiers[key]?.weeklyTokenLimit ?? null,
-        weeklyCallSecondsLimit: tiers[key]?.weeklyCallSecondsLimit ?? null,
+      // One-time feature-calendar add-ons owned by this household (calendar-id
+      // keys). Clients gate the feature UIs on this — the record store is
+      // opaque, so the server can't enforce per-feature data access itself.
+      addons: req.household?.addons || [],
+      // Display catalog for the Add-ons store screen. Prices are USD fallbacks;
+      // the store's localized price wins whenever RC packages load.
+      addonCatalog: {
+        items: MonetizationConfig.ADDON_KEYS.map((key) => ({
+          key,
+          label: config.addons?.items?.[key]?.label || key,
+          price: config.addons?.items?.[key]?.price ?? 2.99,
+          description: config.addons?.items?.[key]?.description || '',
+        })),
+        bundle: {
+          label: config.addons?.bundle?.label || 'All add-ons',
+          price: config.addons?.bundle?.price ?? 7.99,
+          description: config.addons?.bundle?.description || '',
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The caller's credit history: pack purchases, the starter grant, refunds and
+// admin adjustments (usage debits aren't ledgered — the balance reflects them).
+router.get('/credits/ledger', async (req, res) => {
+  try {
+    const rows = await CreditLedger.find({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(50);
+    res.json({
+      entries: rows.map((r) => ({
+        kind: r.kind,
+        credits: r.deltaMc / credits.MC_PER_CREDIT,
+        productId: r.productId ?? null,
+        note: r.note ?? null,
+        createdAt: r.createdAt,
       })),
     });
   } catch (err) {
@@ -246,26 +310,48 @@ router.get('/status', async (req, res) => {
   }
 });
 
-// Manual plan override (admin only). Consumer upgrades flow through the
-// RevenueCat webhook above; this is a back-office / testing escape hatch.
-router.post('/select', requireAdmin, async (req, res) => {
+// Claim a FREE add-on (catalog price 0 — Birthdays/Chores). Free add-ons are
+// included with the app but opt-in: they are never default-granted, never sold
+// through the store, and any member's claim unlocks them household-wide (same
+// ledger as paid add-ons). Validating price === 0 against the catalog means a
+// paid key can never be claimed for free.
+router.post('/addons/claim', async (req, res) => {
   try {
-    const { tier } = req.body;
-    if (!MonetizationConfig.TIERS.includes(tier)) {
-      return res.status(400).json({ error: 'Invalid plan' });
+    const { addon } = req.body;
+    const config = await getConfig();
+    const isFree = MonetizationConfig.ADDON_KEYS.includes(addon)
+      && (config.addons?.items?.[addon]?.price ?? 1) === 0;
+    if (!isFree) return res.status(400).json({ error: 'Not a free add-on' });
+    if (!req.household) {
+      return res.status(400).json({ error: 'Join or create a household first' });
+    }
+    await Household.updateOne({ _id: req.household._id }, { $addToSet: { addons: addon } });
+    res.json({ addons: [...new Set([...(req.household.addons || []), addon])] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual add-on override (admin only). Real add-on purchases flow through the
+// RevenueCat webhook; this is the QA/simulator escape hatch (store sandbox not
+// available in dev builds). Replaces the whole owned set.
+router.post('/addons', requireAdmin, async (req, res) => {
+  try {
+    const { addons } = req.body;
+    if (!Array.isArray(addons) || addons.some((a) => !MonetizationConfig.ADDON_KEYS.includes(a))) {
+      return res.status(400).json({ error: 'Invalid addons' });
     }
     if (!req.household) {
       return res.status(400).json({ error: 'Join or create a household first' });
     }
-    await Household.updateOne(
-      { _id: req.household._id },
-      { $set: { plan: tier, ...upgradeBaselineUpdate(req.household, tier) } }
-    );
-    res.json({ plan: tier });
+    await Household.updateOne({ _id: req.household._id }, { $set: { addons } });
+    res.json({ addons });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 module.exports = router;
-module.exports.planUpdateForEvent = planUpdateForEvent;
+module.exports.unlockUpdateForEvent = unlockUpdateForEvent;
+module.exports.creditUpdateForEvent = creditUpdateForEvent;
+module.exports.addonUpdateForEvent = addonUpdateForEvent;

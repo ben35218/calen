@@ -1,33 +1,42 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { billingApi } from '../api';
+import { billingApi, BillingStatus } from '../api';
+import { cacheOwnedAddons } from '../lib/addons';
+import { cacheUnlocked } from '../lib/unlock';
 
-// Single source for the billing/plan status query so every surface (paywall,
-// usage banners, profile row) shares one cache entry and staleTime.
+// Single source for the billing status query so every surface (unlock paywall,
+// credit banners, profile row) shares one cache entry and staleTime.
 export function useBilling() {
   return useQuery({
     queryKey: ['billing', 'status'],
-    queryFn: async () => (await billingApi.status()).data,
+    queryFn: async () => {
+      const { data } = await billingApi.status();
+      // Mirror the owned add-on set + unlock state into the device caches so
+      // feature gating and the hard paywall track the server truth offline.
+      cacheOwnedAddons(data.addons ?? []);
+      cacheUnlocked(Boolean(data.unlocked));
+      return data;
+    },
     staleTime: 60_000,
   });
 }
 
-export type PlanActivationState = 'idle' | 'activating' | 'active' | 'timeout';
+export type PurchaseActivationState = 'idle' | 'activating' | 'active' | 'timeout';
 
 const POLL_MS = 3_000;
 const TIMEOUT_MS = 45_000;
 
-// After a purchase, the plan flips server-side via the RevenueCat webhook, so
-// there's a gap where /billing/status still reports the old plan. Poll until
-// the plan changes so the UI never shows "Free" to someone who just paid.
-// 'timeout' means payment went through but the webhook hasn't landed yet —
-// callers should reassure, not alarm.
-export function usePlanActivation() {
+// Shared post-purchase poll: the store has charged, but server state flips only
+// once RevenueCat calls our webhook, so poll /billing/status until `done(data)`
+// reports the change landed. 'timeout' means payment went through but the
+// webhook hasn't landed yet — callers should reassure, not alarm.
+function useActivationPoll(done: (data: BillingStatus) => boolean) {
   const qc = useQueryClient();
-  const [state, setState] = useState<PlanActivationState>('idle');
-  const [plan, setPlan] = useState<string | null>(null);
+  const [state, setState] = useState<PurchaseActivationState>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const alive = useRef(true);
+  const doneRef = useRef(done);
+  doneRef.current = done;
 
   useEffect(() => {
     alive.current = true;
@@ -37,7 +46,7 @@ export function usePlanActivation() {
     };
   }, []);
 
-  function start(previousPlan: string) {
+  function begin() {
     if (timer.current) clearTimeout(timer.current);
     setState('activating');
     const startedAt = Date.now();
@@ -47,8 +56,11 @@ export function usePlanActivation() {
         const { data } = await billingApi.status();
         if (!alive.current) return;
         qc.setQueryData(['billing', 'status'], data);
-        if (data.plan !== previousPlan) {
-          setPlan(data.plan);
+        // Every poll re-mirrors the device caches — that's what actually flips
+        // the paywall / feature gates.
+        cacheOwnedAddons(data.addons ?? []);
+        cacheUnlocked(Boolean(data.unlocked));
+        if (doneRef.current(data)) {
           setState('active');
           return;
         }
@@ -65,5 +77,44 @@ export function usePlanActivation() {
     poll();
   }
 
-  return { state, plan, start };
+  return { state, begin };
+}
+
+// Post-purchase poll for the $4.99 app unlock: done once the server reports
+// `unlocked` (the RootNavigator gate re-renders off the unlock cache).
+export function useUnlockActivation() {
+  const { state, begin } = useActivationPoll((data) => data.unlocked === true);
+  return { state, start: () => begin() };
+}
+
+// Post-purchase poll for a consumable credit pack: done once the balance rises
+// above the snapshot taken at purchase time.
+export function useCreditsActivation() {
+  const beforeMc = useRef<number>(0);
+  const { state, begin } = useActivationPoll(
+    (data) => (data.creditBalanceMc ?? 0) > beforeMc.current
+  );
+  return {
+    state,
+    start: (previousBalanceMc: number) => {
+      beforeMc.current = previousBalanceMc;
+      begin();
+    },
+  };
+}
+
+// Post-purchase poll for one-time feature-calendar add-ons: done once the owned
+// set differs from the snapshot taken at purchase time.
+export function useAddonActivation() {
+  const before = useRef<string>('');
+  const { state, begin } = useActivationPoll(
+    (data) => (data.addons ?? []).slice().sort().join(',') !== before.current
+  );
+  return {
+    state,
+    start: (previousAddons: string[]) => {
+      before.current = [...previousAddons].sort().join(',');
+      begin();
+    },
+  };
 }

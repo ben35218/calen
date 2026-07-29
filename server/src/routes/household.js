@@ -6,8 +6,8 @@ const JoinRequest = require('../models/JoinRequest');
 const HouseholdInvitation = require('../models/HouseholdInvitation');
 const AuditLog = require('../models/AuditLog');
 const { requireAuth } = require('../middleware/auth');
-const { sendHouseholdInvitation } = require('../services/mailer');
 const { resolveShareTarget } = require('../services/phone');
+const { pushToUser } = require('../services/notify');
 const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
@@ -44,6 +44,11 @@ async function handleDeparture(householdId, departedUserId) {
   if (!householdId) return;
   const members = await User.find({ householdId }, '_id').sort('createdAt').lean();
   if (!members.length) {
+    // Invariant: never destroy key material while ciphertext that needs it still
+    // exists. A memberless household is only safe to reap once its records are
+    // gone — deleting the envelope out from under live records orphans them
+    // permanently. If any remain, leave the household + envelope in place.
+    if (await Record.exists({ householdId })) return;
     await Household.deleteOne({ _id: householdId });
     await HouseholdKeyEnvelope.deleteMany({ householdId });
     return;
@@ -612,9 +617,30 @@ router.post('/invitations', async (req, res) => {
       },
       { new: true, upsert: true, setDefaultsOnInsert: true },
     );
-    // Phone invites carry no email to send — the inviter's device texts them.
-    if (toEmail) {
-      sendHouseholdInvitation({ toEmail, fromName, householdName: req.household.name || null, hasAccount: !!recipient });
+    // Outreach is device-composed: the server never sends the invite email/text
+    // (nor handles the invitee's address beyond the discovery record above). The
+    // inviter's device composes both channels — mailto: for email, sms: for phone
+    // — from the response's userExists flag. See mobile lib/shareInvite.
+    //
+    // Existing account? Nudge their registered devices too — this is the one push
+    // the server does send, since it needs the recipient's tokens. Best-effort (no
+    // token / permission denied) and fire-and-forget: `recipient` from
+    // resolveShareTarget lacks the subscription list, so load the full user here.
+    if (recipient) {
+      const householdName = req.household.name || null;
+      const senderName = fromName || req.user.email;
+      (async () => {
+        const account = await User.findById(recipient._id).select('pushSubscriptions');
+        if (!account) return;
+        await pushToUser(account, {
+          title: 'Household invite',
+          body: householdName
+            ? `${senderName} invited you to join “${householdName}”`
+            : `${senderName} invited you to join their household`,
+          data: { type: 'household_invite', invitationId: String(invitation._id) },
+          tag: `household-invite-${invitation._id}`,
+        });
+      })().catch(() => {});
     }
     res.status(201).json({ invitation, userExists: !!recipient });
   } catch (err) {
@@ -891,10 +917,23 @@ router.post('/join-requests/:id/reject', async (req, res) => {
   }
 });
 
-// Leave the current household → start a fresh solo one.
+// Leave the current household → start a fresh solo one. Only meaningful when you
+// share the household with someone: leaving hands the shared data to the others
+// and drops you into your own fresh space. A SOLE member has no one to leave and
+// nothing to hand over — their household IS their data — so this is a no-op that
+// keeps them where they are. (Tearing it down would send handleDeparture through
+// its empty-household branch, which deletes the household + its ONLY key envelope
+// while the encrypted records stay behind, orphaning every one of them with no
+// key left to reopen it — silent, irreversible data loss.)
 router.post('/leave', async (req, res) => {
   try {
     const oldId = req.user.householdId;
+    if (oldId) {
+      const others = await User.countDocuments({ householdId: oldId, _id: { $ne: req.user._id } });
+      if (others === 0) {
+        return res.json({ message: 'Already in your own household', householdId: oldId });
+      }
+    }
     const fresh = await Household.createForOwner(req.user._id, `${req.user.firstName}'s Household`);
     await User.updateOne({ _id: req.user._id }, { $set: { householdId: fresh._id } });
     if (String(oldId) !== String(fresh._id)) await handleDeparture(oldId, req.user._id);

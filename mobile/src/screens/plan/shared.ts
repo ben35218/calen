@@ -1,36 +1,34 @@
-// Shared pieces of the plan/billing surfaces (the inline plan cards on
-// ProfileHome, ComparePlans, AiUsage, UpsellSheet): formatting helpers, the
-// RevenueCat package↔tier mapping, and the usePurchase hook that owns the buy flow.
+// Shared pieces of the billing surfaces (the Profile credits card, the Unlock
+// paywall, Credits, BuyCredits, Add-ons): formatting helpers, the RevenueCat
+// package↔product mappings, and the purchase hooks that own the buy flows.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import type { PurchasesPackage } from 'react-native-purchases';
-import type { BillingStatus } from '../../api';
+import type { CreditPack } from '../../api';
 import { useAuth } from '../../store/auth';
-import { useBilling, usePlanActivation } from '../../hooks/useBilling';
+import {
+  useBilling, useUnlockActivation, useCreditsActivation, useAddonActivation,
+} from '../../hooks/useBilling';
+import type { AddonId } from '../../lib/addons';
 import {
   isPurchasesConfigured,
   configurePurchases,
+  logInPurchases,
   getCurrentOffering,
+  getOfferingById,
   purchasePackage,
   restorePurchases,
-  setPurchaserAttribute,
 } from '../../lib/purchases';
-
-export type CatalogTier = BillingStatus['catalog'][number];
 
 export const STORE_NAME = Platform.OS === 'ios' ? 'App Store' : 'Google Play';
 
-export const MANAGE_SUBSCRIPTIONS_URL = Platform.select({
-  ios: 'https://apps.apple.com/account/subscriptions',
-  default: 'https://play.google.com/store/account/subscriptions',
-});
-
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// The server resets usage every Wednesday at 5PM Eastern and returns that next
-// reset instant. Render it in the device's own timezone: how many whole days
-// remain, plus the local weekday + clock time it happens.
+// The server rolls the usage-ANALYTICS window every Wednesday at 5PM Eastern and
+// returns that next instant. Render it in the device's own timezone: how many
+// whole days remain, plus the local weekday + clock time it happens. (Nothing is
+// enforced weekly anymore — this captions the "By feature this week" card.)
 export function describeReset(resetsAt?: string): string | null {
   if (!resetsAt) return null;
   const reset = new Date(resetsAt);
@@ -47,11 +45,11 @@ export function describeReset(resetsAt?: string): string | null {
   const min = reset.getMinutes();
   const time = min ? `${hour}:${String(min).padStart(2, '0')} ${ampm}` : `${hour} ${ampm}`;
 
-  if (days <= 0) return `Resets today at ${time}`;
-  return `${days} ${days === 1 ? 'day' : 'days'} left · resets ${WEEKDAYS[reset.getDay()]} at ${time}`;
+  if (days <= 0) return `New week starts today at ${time}`;
+  return `New week starts ${WEEKDAYS[reset.getDay()]} at ${time}`;
 }
 
-// "July 20" (with the year only when it isn't this year) for renewal/expiry dates.
+// "July 20" (with the year only when it isn't this year) for ledger dates.
 export function shortDate(iso?: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
@@ -64,7 +62,7 @@ export function shortDate(iso?: string | null): string | null {
   });
 }
 
-// "150000" reads as noise; "150k" reads as a budget.
+// "150000" reads as noise; "150k" reads as a number.
 export function humanTokens(n: number | null | undefined): string | null {
   if (n == null) return null;
   if (n >= 1_000_000) {
@@ -75,8 +73,8 @@ export function humanTokens(n: number | null | undefined): string | null {
   return String(n);
 }
 
-// Call-time budget is stored in seconds but reads best in minutes: "15 min",
-// "1.5 min", "45 sec" (sub-minute, so a small "used" value isn't shown as "0 min").
+// Call time is stored in seconds but reads best in minutes: "15 min",
+// "1.5 min", "45 sec" (sub-minute, so a small value isn't shown as "0 min").
 export function humanCallSeconds(seconds: number | null | undefined): string | null {
   if (seconds == null) return null;
   if (seconds < 60) return `${Math.round(seconds)} sec`;
@@ -84,130 +82,141 @@ export function humanCallSeconds(seconds: number | null | undefined): string | n
   return `${Number.isInteger(mins) ? mins : mins.toFixed(1)} min`;
 }
 
-// Marketing copy per tier. The server catalog stays the source of truth for
-// label/price/limits; only the benefit phrasing lives client-side. Model claims
-// mirror the server's MonetizationConfig.models (free = fast model, paid = the
-// smarter one).
-export function tierBenefits(t: CatalogTier): string[] {
-  switch (t.key) {
-    case 'free':
-      return [
-        'Weekly AI to answer household questions, plan meals & schedules, and scan receipts — per person',
-        'Calendar, chores, recipes, trips & maintenance',
-        'AI assistants on our fast model',
-      ];
-    case 'premium':
-      return [
-        'A bigger weekly AI allowance, shared by your whole household',
-        'Smarter AI model behind every assistant',
-        'Everything in Free',
-      ];
-    case 'unlimited':
-      return [
-        'Unlimited AI — no weekly cap on chat, recipes, plans or scans',
-        'Smarter AI model behind every assistant',
-        'Everything in Premium',
-      ];
-    default:
-      return [];
-  }
+// "1,050 credits" — whole credits with a thousands separator, floored at 0 for
+// display (a refund can drive the raw balance negative).
+export function humanCredits(n: number | null | undefined): string {
+  return Math.max(0, Math.floor(n ?? 0)).toLocaleString();
 }
 
-// RevenueCat packages are claimed by tier via the product identifier containing
-// the tier key (e.g. app.householdcalendar.premium_monthly → premium). Keep the
-// store products named accordingly when configuring RevenueCat.
-export function tierForPackage(pkg: PurchasesPackage, tierKeys: string[]): string | null {
-  const id = `${pkg.product.identifier} ${pkg.identifier}`.toLowerCase();
-  return tierKeys.find((key) => key !== 'free' && id.includes(key)) ?? null;
+// Configure/refresh the RevenueCat identity for the signed-in user. Purchases
+// are per-USER (app_user_id = user id): configure() covers the cold start,
+// logIn() covers account switches and upgrades legacy installs that were keyed
+// to the household id (RC aliases the old identity onto the user).
+function useRcIdentity(userId: string | undefined) {
+  useEffect(() => {
+    if (!isPurchasesConfigured() || !userId) return;
+    configurePurchases(userId);
+    void logInPurchases(userId);
+  }, [userId]);
 }
 
-export const PERIOD_LABEL: Record<string, string> = {
-  WEEKLY: 'Weekly',
-  MONTHLY: 'Monthly',
-  TWO_MONTH: 'Every 2 months',
-  THREE_MONTH: 'Every 3 months',
-  SIX_MONTH: 'Every 6 months',
-  ANNUAL: 'Yearly',
-  LIFETIME: 'Lifetime',
-};
+// ── The $4.99 app unlock (UnlockPaywallScreen) ──────────────────────────────
 
-export function priceLine(pkg: PurchasesPackage): string {
-  const per =
-    pkg.packageType === 'MONTHLY' ? ' / month'
-    : pkg.packageType === 'ANNUAL' ? ' / year'
-    : pkg.packageType === 'WEEKLY' ? ' / week'
-    : pkg.packageType === 'TWO_MONTH' ? ' / 2 months'
-    : pkg.packageType === 'THREE_MONTH' ? ' / 3 months'
-    : pkg.packageType === 'SIX_MONTH' ? ' / 6 months'
-    : pkg.packageType === 'LIFETIME' ? ''
-    // CUSTOM/UNKNOWN: our catalog only sells recurring plans, and a bare price
-    // reads as one-time — default to monthly rather than say nothing.
-    : ' / month';
-  return `${pkg.product.priceString}${per}`;
+// The unlock's package in the `current` offering: prefer the lifetime package,
+// fall back to a product-id match so a mis-set package type still sells.
+export function unlockPackage(packages: PurchasesPackage[]): PurchasesPackage | null {
+  return (
+    packages.find((p) => p.packageType === 'LIFETIME') ??
+    packages.find((p) => `${p.product.identifier} ${p.identifier}`.toLowerCase().includes('app_unlock')) ??
+    null
+  );
 }
 
-// Localized price of the ACTIVE subscription, by matching the server-stored
-// store product id against the loaded packages. Null when unknown.
-export function activePriceLine(
-  productId: string | null | undefined,
-  packages: PurchasesPackage[]
-): string | null {
-  if (!productId) return null;
-  const pkg = packages.find((p) => p.product.identifier === productId);
-  return pkg ? priceLine(pkg) : null;
-}
-
-// The tier we push hardest: the next step up from wherever the user is now.
-export function recommendedTierKey(plan: string | null | undefined): string | null {
-  return plan === 'free' ? 'premium' : plan === 'premium' ? 'unlimited' : null;
-}
-
-// Owns the whole purchase flow: RevenueCat init, offering load, tier↔package
-// grouping, and buy() (purchaser attribution → store sheet → activation poll).
-// Shared by ComparePlansScreen and UpsellSheet so both surfaces behave the same.
-export function usePurchase() {
+// Owns the unlock purchase flow: RC identity, `current` offering load, buy()
+// (store sheet → unlock activation poll), restore().
+export function useUnlockPurchase() {
   const { user } = useAuth();
   const billing = useBilling();
-  const activation = usePlanActivation();
+  const activation = useUnlockActivation();
   const [packages, setPackages] = useState<PurchasesPackage[]>([]);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  // Configure RevenueCat with the household as app_user_id, then load offerings.
+  useRcIdentity(user?._id);
   useEffect(() => {
-    if (!isPurchasesConfigured()) return;
-    const appUserId = user?.householdId || user?._id;
-    if (!appUserId) return;
-    configurePurchases(appUserId);
+    if (!isPurchasesConfigured() || !user?._id) return;
     getCurrentOffering()
       .then((offering) => setPackages(offering?.availablePackages ?? []))
       .catch(() => setPackages([]));
-  }, [user?.householdId, user?._id]);
+  }, [user?._id]);
 
-  const catalog = billing.data?.catalog ?? [];
-  const tierKeys = catalog.map((t) => t.key);
-  const { packagesByTier, orphanPackages } = useMemo(() => {
-    const byTier: Record<string, PurchasesPackage[]> = {};
-    const orphans: PurchasesPackage[] = [];
-    for (const pkg of packages) {
-      const tier = tierForPackage(pkg, tierKeys);
-      if (tier) (byTier[tier] ??= []).push(pkg);
-      else orphans.push(pkg);
-    }
-    return { packagesByTier: byTier, orphanPackages: orphans };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [packages, tierKeys.join(',')]);
+  const pkg = useMemo(() => unlockPackage(packages), [packages]);
 
-  async function buy(pkg: PurchasesPackage) {
-    const previousPlan = billing.data?.plan ?? 'free';
-    setBusyId(pkg.identifier);
+  async function buy() {
+    if (!pkg) return;
+    setBusy(true);
     try {
-      // Stamp who's buying before the store sheet opens, so the webhook can
-      // attribute the household subscription to this member.
-      if (user?._id) await setPurchaserAttribute(user._id);
       await purchasePackage(pkg);
-      // The plan flips server-side via the RevenueCat webhook — poll until it
-      // does so the screen never shows the old plan to someone who just paid.
-      activation.start(previousPlan);
+      // The unlock flips server-side via the RevenueCat webhook — poll until it
+      // lands so the paywall opens for someone who just paid.
+      activation.start();
+    } catch (e: any) {
+      if (!e?.userCancelled) Alert.alert('Purchase failed', e?.message || 'Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Restore reports what actually came back instead of claiming success blindly:
+  // no entitlements is the common case (wrong store account, nothing bought).
+  async function restore() {
+    try {
+      const info = await restorePurchases();
+      const active = Object.keys(info?.entitlements?.active ?? {});
+      if (!active.includes('app_unlock')) {
+        Alert.alert('Nothing to restore', 'No previous purchase was found for this account.');
+        return;
+      }
+      const { data } = await billing.refetch();
+      // Store shows the entitlement but the server hasn't flipped yet — the
+      // webhook (or a TRANSFER) is in flight; poll like a fresh purchase.
+      if (!data?.unlocked) activation.start();
+    } catch {
+      Alert.alert('Restore failed', 'Could not restore purchases.');
+    }
+  }
+
+  return { billing, activation, pkg, busy, buy, restore };
+}
+
+// ── Prepaid AI-credit packs (CreditsScreen / BuyCreditsSheet) ───────────────
+
+// Match a RevenueCat package to a catalog pack by product id (consumables carry
+// no entitlement). Never claims add-on or unlock products.
+export function packForRcPackage(pkg: PurchasesPackage, packs: CreditPack[]): CreditPack | null {
+  const id = `${pkg.product.identifier} ${pkg.identifier}`.toLowerCase();
+  if (id.includes('addon_') || id.includes('app_unlock')) return null;
+  return packs.find((p) => id.includes(p.productId.toLowerCase())) ?? null;
+}
+
+// Owns the credit-pack purchase flow: RC identity, `credits` offering load,
+// catalog↔package pairing, buy() (store sheet → balance activation poll).
+export function useCreditsPurchase() {
+  const { user } = useAuth();
+  const billing = useBilling();
+  const activation = useCreditsActivation();
+  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  useRcIdentity(user?._id);
+  useEffect(() => {
+    if (!isPurchasesConfigured() || !user?._id) return;
+    getOfferingById('credits')
+      .then((offering) => setPackages(offering?.availablePackages ?? []))
+      .catch(() => setPackages([]));
+  }, [user?._id]);
+
+  const packs = billing.data?.packs ?? [];
+
+  // One row per catalog pack, with the matching store package (for the
+  // localized price) when RC has loaded. Catalog order = display order.
+  const rows = useMemo(
+    () =>
+      packs.map((pack) => ({
+        pack,
+        pkg: packages.find((p) => packForRcPackage(p, packs)?.productId === pack.productId) ?? null,
+      })),
+    [packs, packages]
+  );
+
+  async function buy(row: { pack: CreditPack; pkg: PurchasesPackage | null }) {
+    if (!row.pkg) return;
+    const previousMc = billing.data?.creditBalanceMc ?? 0;
+    setBusyId(row.pack.productId);
+    try {
+      await purchasePackage(row.pkg);
+      // Credits land server-side via the RevenueCat webhook — poll until the
+      // balance rises so the screen never shows the old balance to a buyer.
+      activation.start(previousMc);
     } catch (e: any) {
       if (!e?.userCancelled) Alert.alert('Purchase failed', e?.message || 'Please try again.');
     } finally {
@@ -215,9 +224,77 @@ export function usePurchase() {
     }
   }
 
-  // Restore reports what actually came back instead of claiming success blindly:
-  // no active entitlements is the common case (wrong store account, nothing
-  // bought) and deserves a straight answer.
+  return { billing, activation, rows, busyId, buy };
+}
+
+// ── Feature-calendar add-ons (the "Add-ons" store screen) ────────────────────
+
+// The RevenueCat 'addons' offering holds the three one-time add-on packages plus
+// the bundle. Product ids carry marketing names (addon_meals, addon_bundle, …);
+// map them back to our calendar-id keys. Bundle → 'bundle' (client display
+// only — server-side the bundle product grants all three entitlements).
+const PRODUCT_TO_ADDON: Record<string, AddonId> = {
+  addon_meals: 'recipes',
+  addon_maintenance: 'maintenance',
+  addon_trips: 'trips',
+};
+
+export function addonForPackage(pkg: PurchasesPackage): AddonId | 'bundle' | null {
+  const id = `${pkg.product.identifier} ${pkg.identifier}`.toLowerCase();
+  if (id.includes('addon_bundle')) return 'bundle';
+  for (const [productKey, addonId] of Object.entries(PRODUCT_TO_ADDON)) {
+    if (id.includes(productKey)) return addonId;
+  }
+  return null;
+}
+
+// Owns the add-on purchase flow: RC identity, the 'addons' offering load,
+// package↔add-on mapping, buy() (store sheet → owned-set activation poll), and
+// restore(). Add-ons stay household-wide: the webhook resolves the purchasing
+// user to their household.
+export function useAddonPurchase() {
+  const { user } = useAuth();
+  const billing = useBilling();
+  const activation = useAddonActivation();
+  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  useRcIdentity(user?._id);
+  useEffect(() => {
+    if (!isPurchasesConfigured() || !user?._id) return;
+    getOfferingById('addons')
+      .then((offering) => setPackages(offering?.availablePackages ?? []))
+      .catch(() => setPackages([]));
+  }, [user?._id]);
+
+  // Package per add-on key (plus 'bundle'), for price buttons on the store cards.
+  const packagesByAddon = useMemo(() => {
+    const byAddon: Partial<Record<AddonId | 'bundle', PurchasesPackage>> = {};
+    for (const pkg of packages) {
+      const key = addonForPackage(pkg);
+      if (key && !byAddon[key]) byAddon[key] = pkg;
+    }
+    return byAddon;
+  }, [packages]);
+
+  async function buy(pkg: PurchasesPackage) {
+    const previousAddons = billing.data?.addons ?? [];
+    setBusyId(pkg.identifier);
+    try {
+      await purchasePackage(pkg);
+      // Ownership flips server-side via the RevenueCat webhook — poll until the
+      // owned set changes so the store never shows "locked" to someone who paid.
+      activation.start(previousAddons);
+    } catch (e: any) {
+      if (!e?.userCancelled) Alert.alert('Purchase failed', e?.message || 'Please try again.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // Restore covers add-ons and the unlock alike (one store account). Reports
+  // what came back; if the store shows add-on entitlements the server hasn't
+  // granted yet, poll like a fresh purchase.
   async function restore() {
     try {
       const info = await restorePurchases();
@@ -226,17 +303,17 @@ export function usePurchase() {
         Alert.alert('Nothing to restore', 'No previous purchases were found for this account.');
         return;
       }
-      const previousPlan = billing.data?.plan ?? 'free';
+      const previousAddons = billing.data?.addons ?? [];
       const { data } = await billing.refetch();
-      // Store shows an entitlement but the server still says free — the webhook
-      // hasn't landed yet, so poll like a fresh purchase.
-      if (data?.plan === 'free') activation.start(previousPlan);
-      const label = active.map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(', ');
-      Alert.alert('Restored', `Your ${label} subscription has been restored.`);
+      const restoredAddons = active.filter((e) => e.startsWith('addon_'));
+      if (restoredAddons.length && (data?.addons ?? []).length === previousAddons.length) {
+        activation.start(previousAddons);
+      }
+      Alert.alert('Restored', 'Your purchases have been restored.');
     } catch {
       Alert.alert('Restore failed', 'Could not restore purchases.');
     }
   }
 
-  return { billing, activation, packages, packagesByTier, orphanPackages, busyId, buy, restore };
+  return { billing, activation, packages, packagesByAddon, busyId, buy, restore };
 }

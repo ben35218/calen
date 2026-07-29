@@ -49,7 +49,10 @@ const VCF = [
   'VERSION:3.0',
   'FN:Carol Chen',
   'TEL;TYPE=CELL:+1 555 010 2000',
-  'EMAIL:carol@example.com',
+  'TEL;TYPE=WORK:+1 555 010 2999', // second, labeled phone → multi-value
+  'EMAIL;TYPE=HOME:carol@example.com',
+  'EMAIL;TYPE=WORK:carol@work.example', // second, labeled email
+  'URL;TYPE=WORK:https://carol.example',
   'BDAY:19840215',
   'ADR;TYPE=HOME:;;12 Oak Street;Springfield;IL;62704;USA',
   'NOTE:Loves gardening and long',
@@ -77,13 +80,29 @@ test('vCard import parses names, phones, emails, birthdays, addresses, folded no
   const [carol, bao, nelly] = res.body.contacts;
 
   assert.equal(carol.name, 'Carol Chen');
-  assert.equal(carol.phone, '+1 555 010 2000');
-  assert.equal(carol.email, 'carol@example.com');
+  // FN-only vCard: no structured N, so first/last are left for the client to split.
+  assert.equal(carol.firstName, undefined);
+  assert.equal(carol.lastName, undefined);
+  assert.equal(carol.phone, '+1 555 010 2000', 'primary phone is the first TEL');
+  assert.equal(carol.email, 'carol@example.com', 'primary email is the first EMAIL');
+  // Labeled multi-value fields: every TEL/EMAIL/URL with its TYPE normalized.
+  assert.deepEqual(carol.phones, [
+    { label: 'mobile', value: '+1 555 010 2000' }, // CELL → mobile
+    { label: 'work', value: '+1 555 010 2999' },
+  ]);
+  assert.deepEqual(carol.emails, [
+    { label: 'home', value: 'carol@example.com' },
+    { label: 'work', value: 'carol@work.example' },
+  ]);
+  assert.deepEqual(carol.urls, [{ label: 'work', value: 'https://carol.example' }]);
   assert.equal(carol.birthday, '1984-02-15', 'YYYYMMDD normalizes to dashed');
   assert.equal(carol.address, '12 Oak Street, Springfield, IL, 62704, USA');
   assert.equal(carol.notes, 'Loves gardening and longwalks', 'folded line is unfolded');
 
   assert.equal(bao.name, 'Bao Nguyen', 'assembled from N when FN is absent');
+  // N present → structured first/last (given → first, family → last).
+  assert.equal(bao.firstName, 'Bao');
+  assert.equal(bao.lastName, 'Nguyen');
   assert.equal(bao.birthday, '1990-06-01', 'dashed birthday passes through');
 
   assert.equal(nelly.name, 'No-Year Nelly');
@@ -115,7 +134,9 @@ test('classify sends the model names + companies only; contact details merge bac
   const u = await registerUser({ firstName: 'Classifier' });
 
   createQueue = [classifyResponse([
-    { key: 'a', type: 'family', name: 'Mimi Example', relationship: 'grandmother' },
+    // `interests` is a retired field — even if the model volunteers it, the
+    // route must not echo it back.
+    { key: 'a', type: 'family', name: 'Mimi Example', relationship: 'grandmother', interests: ['bridge'] },
     { key: 'b', type: 'service', name: 'Jo Plumber', businessName: 'DrainRight LLC', relationship: 'plumber' },
     { key: 'zz-not-sent', type: 'friend', name: 'Phantom' }, // unknown key — must be dropped
   ])];
@@ -140,6 +161,7 @@ test('classify sends the model names + companies only; contact details merge bac
   assert.equal(mimi.phone, '+15550104000');
   assert.equal(mimi.email, 'mimi@example.com');
   assert.equal(mimi.birthday, '1955-03-09');
+  assert.ok(!('interests' in mimi), 'retired interests field never appears in classify results');
   assert.equal(jo.type, 'service');
   assert.equal(jo.businessName, 'DrainRight LLC');
   assert.equal(jo.phone, '+15550105000');

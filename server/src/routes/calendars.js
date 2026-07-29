@@ -4,7 +4,7 @@ const CalendarInvitation = require('../models/CalendarInvitation');
 const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
 const User = require('../models/User');
 const { requireAuth } = require('../middleware/auth');
-const { sendCalendarInvitation } = require('../services/mailer');
+const { pushToUser } = require('../services/notify');
 const { normalizePhone } = require('../services/phone');
 const {
   normalizeMemberEntry,
@@ -123,8 +123,8 @@ async function syncOutsideInvitations(cal, prevEntries, req) {
     if (!prev.has(key)) {
       try {
         const recipient = entry.phone
-          ? await User.findOne({ phone: entry.phone }).select('_id').lean()
-          : await User.findOne({ email: entry.email }).select('_id').lean();
+          ? await User.findOne({ phone: entry.phone }).select('_id pushSubscriptions').lean()
+          : await User.findOne({ email: entry.email }).select('_id pushSubscriptions').lean();
         await CalendarInvitation.create({
           fromUserId: req.user._id,
           fromName,
@@ -137,9 +137,17 @@ async function syncOutsideInvitations(cal, prevEntries, req) {
           color: cal.color,
           access,
         });
-        // Phone invites carry no email — the owner's device texts them.
-        if (entry.email) {
-          sendCalendarInvitation({ toEmail: entry.email, fromName, calendarName: cal.name, hasAccount: !!recipient });
+        // Outreach is device-composed — the owner's mail/Messages app sends the
+        // invite (see mobile lib/shareInvite); the server sends no email/text.
+        // Existing accounts also get a push nudge — the one channel the server
+        // sends, since it needs their device tokens. Fire-and-forget, best-effort.
+        if (recipient) {
+          pushToUser(recipient, {
+            title: 'Calendar shared with you',
+            body: `${fromName || req.user.email} shared ${cal.name ? `“${cal.name}”` : 'a calendar'} with you`,
+            data: { type: 'calendar_invitation', calendarKey: cal.key },
+            tag: `calendar-invite-${cal.key}`,
+          }).catch(() => {});
         }
       } catch (err) {
         console.error('[calendars] invitation create failed:', err.message);

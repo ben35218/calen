@@ -5,18 +5,31 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { settingsApi } from '../../api';
-import { Card, SegmentedControl } from '../../components/ui';
+import { Card, CenteredLoader, SegmentedControl } from '../../components/ui';
 import PlannerPane from './PlannerPane';
 import GroceryPane from './GroceryPane';
 import { GroceryFrequency, iso, periodDaysOf, periodStartOf, scheduleSummary, startOfWeek } from './constants';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useOwnedAddons } from '../../lib/addons';
+import AddonLockedView from '../plan/AddonLockedView';
 import { colors, spacing } from '../../theme';
 import type { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import type { KitchenPane } from '../../navigation/types';
 
 type Nav = NativeStackNavigationProp<KitchenStackParamList>;
 
+// Add-on gate: Meals is a one-time purchase (see billing-plans spec). Gating at
+// the home screen covers every entry path — Calendars row, deep links, AI
+// navigation, restored nav state — since sub-screens are reached through here.
 export default function KitchenScreen() {
+  const { isUnlocked, loaded } = useOwnedAddons();
+  const accent = useCalendarColors().colors.recipes;
+  if (!loaded) return <CenteredLoader color={accent} />;
+  if (!isUnlocked('recipes')) return <AddonLockedView addon="recipes" />;
+  return <KitchenHome />;
+}
+
+function KitchenHome() {
   const [pane, setPane] = useState<KitchenPane>('planner');
   const navigation = useNavigation<Nav>();
   const params = useRoute<RouteProp<KitchenStackParamList, 'KitchenHome'>>().params;

@@ -18,6 +18,26 @@ function normalizePhone(raw) {
   return (s.startsWith('+') ? '+' : '') + digits;
 }
 
+// Strict E.164 normalization (+1XXXXXXXXXX for US/CA numbers) used for OUTBOUND
+// AI calls and the do-not-call suppression key — a different, stricter need than
+// `normalizePhone` above (which just dedupes invite addresses). Already-plus
+// numbers pass through untouched so international numbers aren't mangled. Kept
+// here so services/phoneCalls.js and services/dnc.js share one definition
+// without a require cycle. phoneCalls.js re-exports `toE164` for back-compat.
+function toE164(phone) {
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (String(phone).startsWith('+')) return phone;
+  return `+${digits}`;
+}
+
+// Last four digits, for privacy-preserving display of a suppressed number (a
+// DncEntry stores the HMAC of the full number, never the raw value).
+function last4(phone) {
+  return String(phone || '').replace(/\D/g, '').slice(-4);
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Resolve an invite address to { toEmail, toPhone, toUserId }. Exactly one of
@@ -37,4 +57,4 @@ async function resolveShareTarget({ email, phone } = {}) {
   return { toEmail, toPhone: null, toUserId: recipient?._id || null, recipient };
 }
 
-module.exports = { normalizePhone, resolveShareTarget, EMAIL_RE };
+module.exports = { normalizePhone, resolveShareTarget, EMAIL_RE, toE164, last4 };

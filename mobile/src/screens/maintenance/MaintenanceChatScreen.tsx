@@ -4,7 +4,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { itemsApi, tasksApi, householdApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import { TASK_ENC } from '../../lib/encSubsets';
@@ -104,7 +104,7 @@ export default function MaintenanceChatScreen() {
 
   const banner = (
     <>
-      <AiUsageBanner />
+      <CreditsBanner />
       {createdTasks.length > 0 ? (
         <View style={styles.banner}>
           <Text style={styles.bannerTitle}>

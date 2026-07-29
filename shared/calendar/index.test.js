@@ -9,7 +9,8 @@ const {
   computeNextDueKm,
   expandRecurringEvent,
   expandRecurringTaskChore,
-  birthdayOccurrences,
+  occasionOccurrences,
+  occasionKindFromLabel,
   assembleCalendarData,
 } = require('./index');
 
@@ -189,10 +190,27 @@ test('calendar-type task fires in listed months only', () => {
   assert.deepEqual(out.map(o => o._instanceDate), ['2026-03-15', '2026-09-15']);
 });
 
-// ── birthdayOccurrences ───────────────────────────────────────────────────────
-test('birthday recurs yearly on the anniversary', () => {
-  const out = birthdayOccurrences(new Date('1990-07-04'), new Date('2026-01-01'), new Date('2027-12-31'));
-  assert.deepEqual(out, ['2026-07-04', '2027-07-04']);
+// ── occasionOccurrences / occasionKindFromLabel ───────────────────────────────
+test('occasion recurs yearly on its anniversary (Date or YYYY-MM-DD string)', () => {
+  assert.deepEqual(
+    occasionOccurrences(new Date('1990-07-04'), new Date('2026-01-01'), new Date('2027-12-31')),
+    ['2026-07-04', '2027-07-04'],
+  );
+  // A bare YYYY-MM-DD string (dates[].value) reads the same month/day.
+  assert.deepEqual(
+    occasionOccurrences('2010-07-04', new Date('2026-01-01'), new Date('2027-12-31')),
+    ['2026-07-04', '2027-07-04'],
+  );
+  // Unparseable value yields no occurrences.
+  assert.deepEqual(occasionOccurrences('', new Date('2026-01-01'), new Date('2026-12-31')), []);
+});
+
+test('occasionKindFromLabel: known nouns match case-insensitively, else custom', () => {
+  assert.equal(occasionKindFromLabel('Anniversary'), 'anniversary');
+  assert.equal(occasionKindFromLabel('marriage'), 'marriage');
+  assert.equal(occasionKindFromLabel('DEATH'), 'death');
+  assert.equal(occasionKindFromLabel('Graduation'), 'custom');
+  assert.equal(occasionKindFromLabel(''), 'custom');
 });
 
 // ── assembleCalendarData ──────────────────────────────────────────────────────
@@ -212,7 +230,8 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
     ],
     chores: [],
     people: [
-      { _id: 'p1', name: 'Me', accountId: 'u1', birthday: new Date('1990-01-20') },
+      { _id: 'p1', name: 'Me', accountId: 'u1', birthday: new Date('1990-01-20'),
+        dates: [{ label: 'anniversary', value: '2015-01-10' }, { label: 'Graduation', value: '2008-06-01' }] },
       { _id: 'p2', name: 'NoBday' },
     ],
     recipeSchedules: [
@@ -229,9 +248,32 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
   assert.equal(data.events.filter(e => e._id === 'rec').length, 4);
   // Inactive task filtered out.
   assert.deepEqual(data.tasks.map(t => t._id), ['t1']);
-  // Birthday: self labelled "you", people without a birthday dropped.
-  assert.equal(data.birthdays.length, 1);
-  assert.equal(data.birthdays[0].relationship, 'you');
+  // Occasions: p1's birthday (Jan 20) + anniversary (Jan 10) fall in range; the
+  // Graduation date (June) is out of range; p2 has no dates. Self is "you".
+  assert.equal(data.occasions.length, 2);
+  const bday = data.occasions.find(o => o.kind === 'birthday');
+  const anniv = data.occasions.find(o => o.kind === 'anniversary');
+  assert.ok(bday && anniv);
+  assert.equal(bday.relationship, 'you');
+  assert.equal(bday.date, '2026-01-20');
+  assert.equal(anniv.date, '2026-01-10');
+  assert.equal(anniv.label, 'anniversary');
+  // A custom-labeled date keeps its raw label as the kind's display name.
+  const custom = assembleCalendarData({
+    fromDate: new Date('2026-06-01'), toDate: new Date('2026-06-30'),
+    people: [{ _id: 'p1', name: 'Me', dates: [{ label: 'Graduation', value: '2008-06-01' }] }],
+  }).occasions;
+  assert.equal(custom.length, 1);
+  assert.equal(custom[0].kind, 'custom');
+  assert.equal(custom[0].label, 'Graduation');
+
+  // A contact with occasionsHidden contributes no occasions.
+  const hidden = assembleCalendarData({
+    fromDate: new Date('2026-01-01'), toDate: new Date('2026-12-31'),
+    people: [{ _id: 'p1', name: 'Hidden', occasionsHidden: true, birthday: new Date('1990-03-03'),
+      dates: [{ label: 'anniversary', value: '2015-04-04' }] }],
+  }).occasions;
+  assert.equal(hidden.length, 0);
   // Recipe schedule kept.
   assert.equal(data.recipes.length, 1);
   // Grocery day recurs weekly across the range: Saturdays Jan 3,10,17,24,31.

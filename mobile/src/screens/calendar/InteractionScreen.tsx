@@ -7,6 +7,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi, callsApi } from '../../api';
 import { Screen, ScreenTitle, SectionTitle, CardRow, Button, Badge, CenteredLoader, FormError } from '../../components/ui';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
+import { formatDisplay } from '../../lib/phone';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'Interaction'>;
@@ -165,7 +166,7 @@ export default function InteractionScreen() {
         {call.phone ? (
           <CardRow
             title="Business phone"
-            right={<Text style={styles.rightValue}>{call.phone}</Text>}
+            right={<Text style={styles.rightValue}>{formatDisplay(call.phone)}</Text>}
             onPress={() => Linking.openURL(`tel:${call.phone}`)}
           />
         ) : null}

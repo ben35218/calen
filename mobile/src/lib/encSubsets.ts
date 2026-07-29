@@ -32,10 +32,19 @@ export const EVENT_ENC = (p: Rec) => ({
   invitationId: p.invitationId, cancelled: p.cancelled, recurrence: p.recurrence,
 });
 
+// Multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames)
+// + jobTitle/company are the current shape; the legacy singles (phone/email/
+// address/businessName) stay in the subset so re-saving an upgraded record can
+// clear them (a field set to undefined is dropped from the sealed blob). See
+// lib/personFields for the read-time fold and the save-time clear.
 export const PERSON_ENC = (p: Rec) => ({
-  type: p.type, name: p.name, relationship: p.relationship, birthday: p.birthday,
-  interests: p.interests, notes: p.notes, address: p.address,
-  businessName: p.businessName, phone: p.phone, email: p.email,
+  type: p.type, name: p.name, firstName: p.firstName, lastName: p.lastName,
+  relationship: p.relationship, birthday: p.birthday,
+  notes: p.notes, occasionsHidden: p.occasionsHidden,
+  phones: p.phones, emails: p.emails, addresses: p.addresses,
+  dates: p.dates, urls: p.urls, relatedNames: p.relatedNames,
+  jobTitle: p.jobTitle, company: p.company,
+  address: p.address, businessName: p.businessName, phone: p.phone, email: p.email,
   accountId: p.accountId, deviceContactId: p.deviceContactId,
 });
 

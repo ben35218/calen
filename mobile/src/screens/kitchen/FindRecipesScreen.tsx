@@ -6,7 +6,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi } from '../../api';
 import { Button, Card, Chip, Input } from '../../components/ui';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
 import type { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -113,7 +113,7 @@ export default function FindRecipesScreen() {
   // ── Selector ──
   return (
     <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.container} contentContainerStyle={styles.content}>
-      <AiUsageBanner />
+      <CreditsBanner />
       <Card style={styles.card}>
         <Text style={styles.title}>What are you in the mood for?</Text>
         <Input

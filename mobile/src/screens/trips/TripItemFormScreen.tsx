@@ -17,12 +17,13 @@ import { getCachedToken } from '../../lib/secureToken';
 const TRIP_ITEM_ENC = (p: Record<string, unknown>) => ({
   title: p.title, location: p.location, url: p.url, phone: p.phone, notes: p.notes, details: p.details,
 });
-import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, useHeaderCheckButton, CenteredLoader, FormError } from '../../components/ui';
+import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, PhoneField, useHeaderCheckButton, CenteredLoader, FormError } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_TYPES, tripTypeMeta } from '../../lib/tripTypes';
+import { startKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { zonedWallclockToUtc, zonedParts } from '../../lib/tz';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
@@ -138,6 +139,36 @@ export default function TripItemFormScreen() {
   const set = (patch: Partial<typeof form>) => {
     setForm((f) => ({ ...f, ...patch }));
     assist.clear(Object.keys(patch));
+  };
+
+  // Editing an end (date/time) to at/before the start drags the start back so the
+  // booking keeps its length (see lib/datetime). `sk`/`ek` name the start/end
+  // field prefixes so this serves both the standard Starts/Ends pair and the
+  // journey Departs/Arrives pair.
+  const setEnd = (
+    sk: { date: 'startDate' | 'depDate'; time: 'startTime' | 'depTime' },
+    ek: { date: 'endDate' | 'arrDate'; time: 'endTime' | 'arrTime' },
+    part: 'date' | 'time',
+    v: string
+  ) => {
+    const patch: Partial<typeof form> = { [ek[part]]: v } as Partial<typeof form>;
+    const startDate = (form as any)[sk.date] as string;
+    if (startDate) {
+      const startTime = ((form as any)[sk.time] as string) || '00:00';
+      const endDate = ((form as any)[ek.date] as string) || startDate;
+      const endTime = ((form as any)[ek.time] as string) || '00:00';
+      const newEnd = {
+        date: part === 'date' ? v : endDate,
+        time: part === 'time' ? v : endTime,
+      };
+      const shifted = startKeepingDuration({ date: startDate, time: startTime }, { date: endDate, time: endTime }, newEnd);
+      if (shifted) {
+        (patch as any)[sk.date] = shifted.date;
+        if ((form as any)[sk.time]) (patch as any)[sk.time] = shifted.time;
+        if (part === 'date') (patch as any)[ek.date] = v;
+      }
+    }
+    set(patch);
   };
 
   const applyPatch = (patch: Record<string, unknown>) => {
@@ -531,7 +562,7 @@ export default function TripItemFormScreen() {
               <View style={fs.dtFields}>
                 <DateField
                   value={form.arrDate}
-                  onChange={(v) => set({ arrDate: v })}
+                  onChange={(v) => setEnd({ date: 'depDate', time: 'depTime' }, { date: 'arrDate', time: 'arrTime' }, 'date', v)}
                   highlight={assist.changed.has('arrDate')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -540,7 +571,7 @@ export default function TripItemFormScreen() {
                 />
                 <TimeField
                   value={form.arrTime}
-                  onChange={(v) => set({ arrTime: v })}
+                  onChange={(v) => setEnd({ date: 'depDate', time: 'depTime' }, { date: 'arrDate', time: 'arrTime' }, 'time', v)}
                   highlight={assist.changed.has('arrTime')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -569,6 +600,7 @@ export default function TripItemFormScreen() {
                 <Input
                   value={form.airline}
                   onChangeText={(v) => set({ airline: v })}
+                  clearable={false}
                   containerStyle={[fs.headField, fs.rowInputWrap]}
                   style={[fs.headInput, fs.rowInput, assist.changed.has('airline') && fs.headInputHighlight]}
                 />
@@ -579,6 +611,7 @@ export default function TripItemFormScreen() {
                 <Input
                   value={form.flightNumber}
                   onChangeText={(v) => set({ flightNumber: v })}
+                  clearable={false}
                   containerStyle={[fs.headField, fs.rowInputWrap]}
                   style={[fs.headInput, fs.rowInput, assist.changed.has('flightNumber') && fs.headInputHighlight]}
                 />
@@ -589,6 +622,7 @@ export default function TripItemFormScreen() {
                 <Input
                   value={form.seat}
                   onChangeText={(v) => set({ seat: v })}
+                  clearable={false}
                   containerStyle={[fs.headField, fs.rowInputWrap]}
                   style={[fs.headInput, fs.rowInput, assist.changed.has('seat') && fs.headInputHighlight]}
                 />
@@ -602,6 +636,7 @@ export default function TripItemFormScreen() {
                   value={form.mode}
                   onChangeText={(v) => set({ mode: v })}
                   placeholder="train / bus / ferry"
+                  clearable={false}
                   containerStyle={[fs.headField, fs.rowInputWrap]}
                   style={[fs.headInput, fs.rowInput, assist.changed.has('mode') && fs.headInputHighlight]}
                 />
@@ -645,7 +680,7 @@ export default function TripItemFormScreen() {
                     clearable
                     placeholder="None"
                     value={form.endDate}
-                    onChange={(v) => set({ endDate: v })}
+                    onChange={(v) => setEnd({ date: 'startDate', time: 'startTime' }, { date: 'endDate', time: 'endTime' }, 'date', v)}
                     defaultValue={form.startDate}
                     highlight={assist.changed.has('endDate')}
                     containerStyle={fs.dtFieldWrap}
@@ -656,7 +691,7 @@ export default function TripItemFormScreen() {
                   <TimeField
                     clearable
                     value={form.endTime}
-                    onChange={(v) => set({ endTime: v })}
+                    onChange={(v) => setEnd({ date: 'startDate', time: 'startTime' }, { date: 'endDate', time: 'endTime' }, 'time', v)}
                     defaultValue={addMinutesToTime(form.startTime || '09:00', 60)}
                     highlight={assist.changed.has('endTime')}
                     containerStyle={fs.dtFieldWrap}
@@ -722,6 +757,7 @@ export default function TripItemFormScreen() {
           <Input
             value={form.confirmation}
             onChangeText={(v) => set({ confirmation: v })}
+            clearable={false}
             containerStyle={[fs.headField, fs.rowInputWrap]}
             style={[fs.headInput, fs.rowInput, assist.changed.has('confirmation') && fs.headInputHighlight]}
           />
@@ -733,6 +769,7 @@ export default function TripItemFormScreen() {
             keyboardType="decimal-pad"
             value={form.cost}
             onChangeText={(v) => set({ cost: v })}
+            clearable={false}
             containerStyle={[fs.headField, fs.rowInputWrap]}
             style={[fs.headInput, fs.rowInput, assist.changed.has('cost') && fs.headInputHighlight]}
           />
@@ -823,13 +860,13 @@ export default function TripItemFormScreen() {
           style={[fs.headInput, assist.changed.has('url') && fs.headInputHighlight]}
         />
         <CardDivider />
-        <Input
+        <PhoneField
           value={form.phone}
           onChangeText={(v) => set({ phone: v })}
           placeholder="Phone (optional)"
-          keyboardType="phone-pad"
+          highlight={assist.changed.has('phone')}
           containerStyle={fs.headField}
-          style={[fs.headInput, assist.changed.has('phone') && fs.headInputHighlight]}
+          fieldStyle={fs.headInput}
         />
       </GroupCard>
 

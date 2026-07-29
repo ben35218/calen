@@ -3,26 +3,27 @@
     <div class="d-flex align-center mb-1" style="gap: 12px">
       <h1 class="text-h5 font-weight-bold">Audit log</h1>
       <v-spacer />
-      <v-btn variant="text" prepend-icon="mdi-refresh" :loading="loading" @click="reload">Refresh</v-btn>
+      <v-btn variant="text" prepend-icon="mdi-download" @click="exportCsv">Export CSV</v-btn>
+      <v-btn variant="text" prepend-icon="mdi-refresh" :loading="list.loading.value" @click="list.load">Refresh</v-btn>
     </div>
     <p class="text-body-2 text-medium-emphasis mb-4">
-      E2EE key &amp; membership lifecycle plus sensitive admin actions (role &amp; plan changes).
-      Content is never logged — only who did what, and when.
+      E2EE key &amp; membership lifecycle plus sensitive admin actions (roles, billing overrides,
+      config edits, support-mail access). Content is never logged — only who did what, and when.
     </p>
 
     <div class="d-flex mb-4" style="gap: 12px; max-width: 420px">
       <v-select
-        v-model="eventFilter" :items="EVENT_OPTIONS" label="Event type" density="comfortable"
-        variant="outlined" hide-details clearable @update:model-value="reload" />
+        v-model="list.filters.value.event" :items="EVENT_OPTIONS" label="Event type" density="comfortable"
+        variant="outlined" hide-details clearable @update:model-value="list.reload" />
     </div>
 
     <v-card rounded="lg" variant="outlined">
       <v-card-text>
-        <div v-if="loading" class="text-center py-8"><v-progress-circular indeterminate color="primary" /></div>
+        <v-skeleton-loader v-if="list.loading.value" type="table-row@8" />
         <v-table v-else density="comfortable">
           <thead>
             <tr>
-              <th style="width: 180px">When</th>
+              <th style="width: 140px">When</th>
               <th>Event</th>
               <th>Household</th>
               <th>Actor</th>
@@ -30,24 +31,25 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="l in logs" :key="l._id">
-              <td class="text-caption">{{ fmt(l.at) }}</td>
+            <tr v-for="l in list.items.value" :key="l._id">
+              <td class="text-caption"><Timestamp :date="l.at" /></td>
               <td><v-chip size="small" :color="color(l.event)" variant="tonal">{{ l.event }}</v-chip></td>
               <td>{{ l.householdName || '—' }}</td>
               <td class="text-caption">{{ l.userEmail || '—' }}</td>
               <td class="text-caption text-medium-emphasis">{{ metaStr(l.meta) }}</td>
             </tr>
-            <tr v-if="!logs.length">
-              <td colspan="5" class="text-medium-emphasis py-4">No audit events.</td>
+            <tr v-if="!list.items.value.length">
+              <td colspan="5" class="text-medium-emphasis py-4">
+                No audit events{{ list.filters.value.event ? ' of this type' : '' }}.
+              </td>
             </tr>
           </tbody>
         </v-table>
 
-        <div class="d-flex align-center mt-3" v-if="total">
-          <span class="text-caption text-medium-emphasis">{{ rangeLabel }}</span>
+        <div class="d-flex align-center mt-3" v-if="list.total.value">
+          <span class="text-caption text-medium-emphasis">{{ list.rangeLabel.value }}</span>
           <v-spacer />
-          <v-pagination v-model="page" :length="pageCount" :total-visible="5" density="comfortable"
-            @update:model-value="load" />
+          <v-pagination v-model="list.page.value" :length="list.pageCount.value" :total-visible="5" density="comfortable" />
         </div>
       </v-card-text>
     </v-card>
@@ -57,33 +59,32 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
 import { adminApi } from '../services/api';
 import { useSnackbar } from '../composables/useSnackbar';
+import { usePagedList } from '../composables/usePagedList';
+import { downloadCsv } from '../lib/csv';
 import SnackbarHost from '../components/SnackbarHost.vue';
+import Timestamp from '../components/Timestamp.vue';
 
+// Mirrors AuditLog.EVENTS on the server (minus purely-historical ones would
+// still appear in unfiltered results).
 const EVENT_OPTIONS = [
   'hdk_minted', 'member_approved', 'hdk_rotated', 'key_enrolled',
   'deletion_scheduled', 'deletion_canceled', 'deletion_purged', 'plaintext_dropped',
-  'admin_role_changed', 'plan_changed',
+  'admin_role_changed', 'unlock_changed', 'credits_adjusted', 'config_changed',
+  'moderation_status_changed', 'support_message_read', 'support_reply_sent', 'support_message_moved',
+  'plan_changed', // legacy (subscription era)
 ];
-const PAGE_SIZE = 50;
 
 const { snack, fromError } = useSnackbar();
-const loading = ref(true);
-const logs = ref([]);
-const eventFilter = ref(null);
-const page = ref(1);
-const total = ref(0);
 
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
-const rangeLabel = computed(() => {
-  const start = (page.value - 1) * PAGE_SIZE + 1;
-  const end = Math.min(page.value * PAGE_SIZE, total.value);
-  return `${start}–${end} of ${total.value}`;
+const list = usePagedList({
+  pageSize: 50,
+  filters: { event: null },
+  fetch: ({ page, pageSize, filters }) =>
+    adminApi.audit({ event: filters.event || undefined, page, pageSize }),
+  onError: (e) => fromError(e, 'Failed to load audit log'),
 });
-
-function fmt(d) { return d ? new Date(d).toLocaleString() : '—'; }
 
 function metaStr(meta) {
   if (!meta || !Object.keys(meta).length) return '';
@@ -92,28 +93,31 @@ function metaStr(meta) {
 
 function color(event) {
   if (event === 'plaintext_dropped') return 'success';
-  if (event === 'plan_changed' || event === 'admin_role_changed') return 'orange';
+  if (['plan_changed', 'admin_role_changed', 'unlock_changed', 'credits_adjusted', 'config_changed'].includes(event)) return 'orange';
   if (event.startsWith('deletion')) return 'error';
+  if (event.startsWith('support_') || event === 'moderation_status_changed') return 'teal';
   if (event.startsWith('hdk') || event === 'key_enrolled') return 'primary';
   return 'default';
 }
 
-function reload() { page.value = 1; load(); }
-
-async function load() {
-  loading.value = true;
+async function exportCsv() {
   try {
-    const { data } = await adminApi.audit({
-      event: eventFilter.value || undefined, page: page.value, pageSize: PAGE_SIZE,
-    });
-    logs.value = data.items;
-    total.value = data.total;
+    const event = list.filters.value.event || undefined;
+    const rows = [];
+    for (let page = 1; page <= 10; page++) { // safety cap: 10 × 200 = 2000 rows
+      const { data } = await adminApi.audit({ event, page, pageSize: 200 });
+      rows.push(...data.items);
+      if (rows.length >= data.total) break;
+    }
+    downloadCsv('audit-log.csv', [
+      { label: 'When', key: 'at' },
+      { label: 'Event', key: 'event' },
+      { label: 'Household', key: 'householdName' },
+      { label: 'Actor', key: 'userEmail' },
+      { label: 'Details', value: (l) => metaStr(l.meta) },
+    ], rows);
   } catch (e) {
-    fromError(e, 'Failed to load audit log');
-  } finally {
-    loading.value = false;
+    fromError(e, 'Failed to export audit log');
   }
 }
-
-onMounted(load);
 </script>

@@ -18,11 +18,51 @@ const CalendarEvent = require('../models/CalendarEvent');
 const Trip = require('../models/Trip');
 const TripItem = require('../models/TripItem');
 const Record = require('../models/Record');
+const Category = require('../models/Category');
 const AuditLog = require('../models/AuditLog');
 const { dropPlaintext } = require('../scripts/dropPlaintext');
 
 before(startDb);
 after(stopDb);
+
+// Regression: a household must activate when its Record store is fully sealed,
+// EVEN IF a legacy per-collection table still holds an orphaned plaintext
+// author-hidden row (a pre-C3b seeded Category with no Record twin, no
+// householdId). The sealer (/e2ee/seal) writes ciphertext to Record, so such a
+// row can never be sealed in place — counting it as a straggler used to deadlock
+// activation permanently ("ready, not live"). The gate now reads Record.
+test('an orphaned legacy plaintext author-hidden row does not block activation', async () => {
+  const owner = await registerUser({ firstName: 'Cara' });
+  await enrollKeys(owner.auth);
+  await request().post('/api/household/key')
+    .set('Authorization', owner.auth).send({ keyVersion: 1, wrappedHDK: b64u(96) });
+  const hh = await request().get('/api/household').set('Authorization', owner.auth);
+  const householdId = hh.body._id;
+
+  // Seal the household name/location blob so it isn't the straggler under test.
+  await request().put('/api/settings').set('Authorization', owner.auth)
+    .send({ enc: fakeEnc(), keyVersion: 1 });
+
+  // Real content, sealed, in the unified store — written pre-activation, so it
+  // still carries the plaintext author `userId` (as a not-yet-active household's
+  // records legitimately do).
+  const rec = await Record.create({ userId: owner.user._id, householdId, enc: fakeEnc(), keyVersion: 1 });
+
+  // The orphan: legacy plaintext, no Record twin, no householdId → unsealable.
+  await Category.create({ userId: owner.user._id, name: 'Vehicles', keyVersion: 1 });
+
+  // Gate reads Record (all sealed) → no stragglers → dry-run, not a deadlock.
+  let result = await dropPlaintext(householdId);
+  assert.equal(result.status, 'dry-run', 'the orphaned legacy plaintext row must not block the drop');
+
+  result = await dropPlaintext(householdId, { commit: true });
+  assert.equal(result.status, 'committed');
+  assert.equal((await Household.findById(householdId)).e2eeActive, true);
+  // C4 author-hiding reaches the Record store: the pre-activation record's
+  // plaintext author is nulled at the drop, so the server can't attribute it.
+  const after = await Record.findById(rec._id).lean();
+  assert.equal(after.userId, undefined, 'the Record author userId must be nulled at activation');
+});
 
 test('the whole drop journey: seal → readiness → dry run → commit → post-drop API', async (t) => {
   // ── Setup: a household of two with real onboarding ─────────────────────────

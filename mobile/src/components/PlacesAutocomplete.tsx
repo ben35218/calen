@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, StyleProp, TextStyle, ViewStyle } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Keyboard, StyleProp, TextStyle, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { placesApi, PlacePrediction } from '../api';
 import { getPlaceBias } from '../lib/placeBias';
-import { Input } from './ui';
+import { Input, useRevealOnOpen } from './ui';
 import { colors, spacing } from '../theme';
 
 // Reusable Google-Places address autocomplete (debounced) used across every
@@ -40,6 +40,9 @@ export default function PlacesAutocomplete({
   // field being pre-filled from saved settings (e.g. the Account home address),
   // which would otherwise pop the dropdown open on load without any input.
   const userTyped = useRef(false);
+  // The dropdown renders below the input, which the keyboard-aware scroll
+  // keeps just above the keyboard — scroll the pair clear when it opens.
+  const wrapRef = useRevealOnOpen(open, Math.min(suggestions.length, 6));
 
   useEffect(() => {
     if (justSelected.current) { justSelected.current = false; return; }
@@ -74,10 +77,14 @@ export default function PlacesAutocomplete({
     onSelect?.(p);
     setSuggestions([]);
     setOpen(false);
+    // Picking a suggestion completes the entry: blur + close the keyboard so
+    // the field shows the chosen address from its start instead of a cursor
+    // parked at the end of a long string.
+    Keyboard.dismiss();
   }
 
   return (
-    <View style={styles.wrap}>
+    <View ref={wrapRef} collapsable={false} style={styles.wrap}>
       <Input
         label={label}
         value={value}
@@ -108,7 +115,9 @@ export default function PlacesAutocomplete({
 
 const styles = StyleSheet.create({
   wrap: { position: 'relative' },
-  spinner: { position: 'absolute', right: 10, top: 34 },
+  // Left of the Input's clear ✕ (loading only happens mid-typing, when the
+  // clear button is showing too).
+  spinner: { position: 'absolute', right: 40, top: 34 },
   dropdown: {
     borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface,
     marginTop: -spacing.sm, marginBottom: spacing.sm, overflow: 'hidden',

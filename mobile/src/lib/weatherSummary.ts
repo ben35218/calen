@@ -80,3 +80,11 @@ export function summarizeNext24h(days: SummaryDay[], tz?: string): string | null
   // Dry throughout.
   return `${CONDITION[startKind]} over the next 24 hours; temps ${tempPart}.`;
 }
+
+// Rain/snow amount for display: sub-millimetre amounts keep one decimal
+// ("0.4"), everything else rounds whole ("3"); trims float noise either way.
+// Returns null under 0.1 mm — not worth a label.
+export function formatMm(mm: number | null | undefined): string | null {
+  if (mm == null || mm < 0.1) return null;
+  return mm < 1 ? mm.toFixed(1) : String(Math.round(mm));
+}

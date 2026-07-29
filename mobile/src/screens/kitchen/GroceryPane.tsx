@@ -11,7 +11,7 @@ import {
 } from '../../api';
 import { loadGroceryList } from '../../lib/groceryList';
 import { Card, Divider, Input } from '../../components/ui';
-import AiUsageBanner from '../../components/AiUsageBanner';
+import CreditsBanner from '../../components/CreditsBanner';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
@@ -190,9 +190,9 @@ export default function GroceryPane({ weekStart, onShowPlanner }: { weekStart: D
           </View>
         </View>
         <Divider />
-        {/* Organize is an AI call; this card warns as the weekly budget runs
-            down and, at 100%, explains why Organize is refused (taps to Plan). */}
-        <AiUsageBanner />
+        {/* Organize is an AI call; this card warns as the credit balance runs
+            low and, at zero, explains why Organize is refused (taps to Buy credits). */}
+        <CreditsBanner />
         {groceryQ.isLoading ? (
           <ActivityIndicator color={colors.primary} style={{ margin: spacing.md }} />
         ) : list.length === 0 ? (

@@ -59,7 +59,7 @@ function patchAnthropic() {
     return result.then(async (msg) => {
       const ctx = store.getStore();
       if (ctx && msg && msg.usage) {
-        try { ctx.tokens += await recordTokens(ctx.req, msg.usage, ctx.action); } catch { /* never break AI */ }
+        try { ctx.tokens += await recordTokens(ctx.req, msg.usage, ctx.action, msg.model); } catch { /* never break AI */ }
       }
       return msg;
     });

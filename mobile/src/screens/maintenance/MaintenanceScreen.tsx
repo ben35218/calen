@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -15,10 +15,12 @@ import { tasksApi, itemsApi, propertiesApi, settingsApi, Task, Item, LinkedRef }
 import { openRecord } from '../../lib/e2ee';
 import { ensureDefaultCategories } from '../../lib/categories';
 import * as replica from '../../lib/replica';
-import { Card, RoundIconButton, SectionHeader, SkeletonList, EmptyState, IconAvatar } from '../../components/ui';
+import { Card, CenteredLoader, RoundIconButton, SectionHeader, SkeletonList, EmptyState, IconAvatar, Select, Hint } from '../../components/ui';
 import { parseCalendarDate } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useOwnedAddons } from '../../lib/addons';
+import AddonLockedView from '../plan/AddonLockedView';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
@@ -54,6 +56,15 @@ const STATUS_COLORS: Record<StatusKey, string> = {
   paused: colors.textMuted,
 };
 const STATUS_ORDER: Record<StatusKey, number> = { overdue: 0, 'due-soon': 1, upcoming: 2, paused: 3 };
+
+// Preset "due soon" windows offered for the household reminderLeadDays setting.
+const LEAD_PRESETS = [3, 7, 14, 30];
+function leadLabel(d: number): string {
+  if (d === 7) return '1 week';
+  if (d === 14) return '2 weeks';
+  if (d === 30) return '30 days';
+  return `${d} day${d === 1 ? '' : 's'}`;
+}
 
 function refName(ref?: LinkedRef | string | null): string | null {
   if (!ref) return null;
@@ -101,9 +112,21 @@ function timeUntil(dueDate?: string | null): string {
   return rem ? `${plur(weeks, 'week')} ${plur(rem, 'day')}` : plur(weeks, 'week');
 }
 
+// Add-on gate: Maintenance is a one-time purchase (see billing-plans spec).
+// Gating at the home screen covers every entry path — Calendars row, deep
+// links, AI navigation, restored nav state.
 export default function MaintenanceScreen() {
+  const { isUnlocked, loaded } = useOwnedAddons();
+  const accent = useCalendarColors().colors.maintenance;
+  if (!loaded) return <CenteredLoader color={accent} />;
+  if (!isUnlocked('maintenance')) return <AddonLockedView addon="maintenance" />;
+  return <MaintenanceHome />;
+}
+
+function MaintenanceHome() {
   const navigation = useNavigation<Nav>();
   const accent = useCalendarColors().colors.maintenance;
+  const qc = useQueryClient();
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -151,6 +174,18 @@ export default function MaintenanceScreen() {
   // Overdue / due-soon buckets over the decrypted tasks (mirrors the retired
   // server ?status= filters, including the reminderLeadDays window).
   const leadDays = settingsQ.data?.reminderLeadDays ?? 7;
+
+  // reminderLeadDays is a household-shared setting (see households-sharing spec):
+  // it sets how far ahead a task counts as "due soon". Edited here, where it
+  // takes effect; the write applies to the whole household. Fold the current
+  // value into the preset list so an off-preset value still shows selected.
+  const leadOptions = [...new Set([...LEAD_PRESETS, leadDays])]
+    .sort((a, b) => a - b)
+    .map((d) => ({ value: d, label: leadLabel(d) }));
+  const updateSettings = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => settingsApi.update(patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  });
   const allTasks = useMemo((): StatusTask[] => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -379,6 +414,19 @@ export default function MaintenanceScreen() {
             })}
           </View>
         ))}
+
+        {/* Household-shared "due soon" window. Sets how far ahead a task shows
+            as due soon (the flag list at the top); applies to everyone. */}
+        <SectionHeader>Reminders</SectionHeader>
+        <Select
+          inlineLabel="Flag tasks due within"
+          value={leadDays}
+          options={leadOptions}
+          onChange={(v) => { if (v != null && v !== leadDays) updateSettings.mutate({ reminderLeadDays: v }); }}
+          disabled={updateSettings.isPending}
+          chevronIcon="chevron-expand"
+        />
+        <Hint>Shared with everyone in your household.</Hint>
       </ScrollView>
     </View>
   );

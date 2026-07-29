@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Switch, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useOwnedAddons } from '../../lib/addons';
 import {
   CALENDARS,
   useCalendarVisibility,
@@ -56,15 +57,19 @@ export default function PrintCalendarScreen() {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<'print' | 'share' | null>(null);
 
-  // Every printable calendar row, in the checklist's order.
+  // Every printable calendar row, in the checklist's order. Locked add-on
+  // calendars are excluded (their items are already dropped at the
+  // loadCalendarData chokepoint; hiding the row keeps the checklist honest).
+  const { owned, isUnlocked } = useOwnedAddons();
   const allCalendars: PrintCalendar[] = useMemo(() => {
     const defaults = CALENDARS.filter(
-      (c) => !NON_PRINTABLE_IDS.includes(c.id) && !deletedIds.includes(c.id)
+      (c) => !NON_PRINTABLE_IDS.includes(c.id) && !deletedIds.includes(c.id) && isUnlocked(c.id)
     ).map((c) => ({ id: c.id, name: c.name, color: calColors[c.id] ?? c.color }));
     const custom = customCalendars.map((c) => ({ id: c.id, name: c.name, color: c.color }));
     const holidays = holidayCals.map((c) => ({ id: c.id, name: c.name, color: calColors[c.id] ?? c.color }));
     return [...defaults, ...custom, ...holidays];
-  }, [deletedIds, calColors, customCalendars, holidayCals]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deletedIds, calColors, customCalendars, holidayCals, owned]);
 
   // Selection: null = "follow visibility" until the user touches a switch.
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});

@@ -42,6 +42,13 @@ router.get('/autocomplete', async (req, res) => {
     if (type === 'address') {
       body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise'];
       body.includedRegionCodes = [region ?? 'CA'];
+    } else if (type === 'addressCity') {
+      // Contacts whose home we may only know to the city: precise street
+      // addresses *and* localities, so an address can be as coarse as a city.
+      // (locality is a Table-A type, so it mixes with the street types — unlike
+      // the "(cities)" collection, which can't be combined.) No region filter —
+      // contacts can live anywhere; the location bias still favours nearby.
+      body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise', 'locality'];
     } else if (type === 'city') {
       // Cities worldwide (no region restriction) for trip destinations
       body.includedPrimaryTypes = ['(cities)'];

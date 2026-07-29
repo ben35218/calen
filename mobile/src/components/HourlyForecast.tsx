@@ -4,6 +4,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WeatherHour } from '../api';
 import WeatherIcon from './WeatherIcon';
 import { zonedParts } from '../lib/tz';
+import { formatMm } from '../lib/weatherSummary';
 import { spacing } from '../theme';
 
 // The slice of a forecast day this strip needs (WeatherData.forecast entries).
@@ -102,6 +103,7 @@ export default function HourlyForecast({ days, tz }: { days: ForecastDay[]; tz?:
             <WeatherIcon code={item.h.weatherCode} night={item.night} size={24} style={styles.icon} />
             <Text style={styles.temp}>{Math.round(item.h.temperature)}°</Text>
             {item.h.precipProbability > 0 ? <Text style={styles.prob}>{item.h.precipProbability}%</Text> : null}
+            {formatMm(item.h.precipitation) ? <Text style={styles.mm}>{formatMm(item.h.precipitation)}mm</Text> : null}
           </View>
         ),
       )}
@@ -116,4 +118,5 @@ const styles = StyleSheet.create({
   icon: { marginVertical: 14 },
   temp: { fontSize: 17, fontWeight: '600', color: '#fff' },
   prob: { fontSize: 11, color: '#CFE8FF', marginTop: 2 },
+  mm: { fontSize: 10, color: '#9BD1FF', marginTop: 1 },
 });

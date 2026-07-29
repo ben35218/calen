@@ -15,9 +15,10 @@ import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_PURPLE } from '../../lib/tripTypes';
+import { startKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
-import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
+import { classifyRecipient, composeShareSms, composeShareEmail } from '../../lib/shareInvite';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<TripsStackParamList, 'TripForm'>;
@@ -245,13 +246,26 @@ export default function TripFormScreen() {
     onError: (e: any) => setInviteError(e?.message || e?.response?.data?.error || 'Please try again.'),
   });
 
-  // Text a phone recipient the invite from this device (no SMTP for phone).
+  // Compose the invite from this device — the server sends no invite mail/text.
+  const inviteWhat = () => (form.name ? `the trip “${form.name}”` : 'our trip');
   const textPhoneInvite = async (phone: string) => {
     try {
-      await composeShareSms(phone, form.name ? `the trip “${form.name}”` : 'our trip');
+      await composeShareSms(phone, inviteWhat());
     } catch (e: any) {
       setInviteError(e?.message || 'Saved, but the text couldn’t be started.');
     }
+  };
+  const emailInvite = async (email: string) => {
+    try {
+      await composeShareEmail(email, inviteWhat());
+    } catch (e: any) {
+      setInviteError(e?.message || 'Saved, but the email couldn’t be started.');
+    }
+  };
+  const composeInvite = (recipient: ShareRecipient) => {
+    if (recipient.phone) return textPhoneInvite(recipient.phone);
+    if (recipient.email) return emailInvite(recipient.email);
+    return Promise.resolve();
   };
 
   const addRecipient = async () => {
@@ -265,12 +279,12 @@ export default function TripFormScreen() {
     setInviteEmail('');
     if (isEdit) {
       await setEmails.mutateAsync([...serverRecipients, recipient]);
-      if ('phone' in recipient) await textPhoneInvite(recipient.phone);
+      await composeInvite(recipient);
     } else {
       setPendingEmails((es) => [...es, recipient]);
-      // Pending invites are created on save; text the person now (the link is a
-      // generic app link, so it's valid regardless of when the invite lands).
-      if ('phone' in recipient) await textPhoneInvite(recipient.phone);
+      // Pending invites are created on save; reach out now (the invite is a
+      // generic app nudge, so it's valid regardless of when the invite lands).
+      await composeInvite(recipient);
     }
   };
 
@@ -382,7 +396,19 @@ export default function TripFormScreen() {
               clearable
               placeholder="None"
               value={form.endDate}
-              onChange={(v) => set({ endDate: v })}
+              onChange={(v) => {
+                // A trip is date-only; treat both ends as midnight. Moving the end
+                // before the start slides the start back to keep the trip's length.
+                if (form.startDate && form.endDate) {
+                  const shifted = startKeepingDuration(
+                    { date: form.startDate, time: '00:00' },
+                    { date: form.endDate, time: '00:00' },
+                    { date: v, time: '00:00' }
+                  );
+                  if (shifted) { set({ endDate: v, startDate: shifted.date }); return; }
+                }
+                set({ endDate: v });
+              }}
               highlight={assist.changed.has('endDate')}
               containerStyle={fs.dtFieldWrap}
               fieldStyle={fs.dtField}

@@ -386,9 +386,47 @@ function expandRecurringTaskChore(item, fromDate, toDate) {
   return instances;
 }
 
-// ── Birthdays ────────────────────────────────────────────────────────────────
-function birthdayOccurrences(birthdayDate, fromDate, toDate) {
-  const d = new Date(birthdayDate);
+// ── Occasions (birthdays + labeled contact dates) ─────────────────────────────
+// A contact's dedicated `birthday` field plus any `dates[]` entries surface on
+// the Occasions calendar. The date label carries the kind: 'anniversary',
+// 'marriage', and 'death' are recognised nouns; any other label is a 'custom'
+// occasion whose display name is the raw label. Every kind recurs annually on
+// its month/day, exactly like birthdays always have.
+const KNOWN_OCCASION_KINDS = ['anniversary', 'marriage', 'death'];
+
+// Map a `dates[]` label to an occasion kind. Known nouns match case-insensitively;
+// anything else (including empty) is a free-form 'custom' occasion.
+function occasionKindFromLabel(label) {
+  const key = String(label || '').trim().toLowerCase();
+  return KNOWN_OCCASION_KINDS.includes(key) ? key : 'custom';
+}
+
+// Slug for building a stable, collision-free occurrence id from a free-form label.
+function occasionSlug(s) {
+  return String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'date';
+}
+
+// Normalise a Date or a YYYY-MM-DD string to a UTC Date (bare dates → UTC
+// midnight), so a noon-UTC stored `birthday` and a plain `dates[].value` string
+// both read the same month/day.
+function toOccasionDate(dateValue) {
+  const d = dateValue instanceof Date ? dateValue : new Date(`${String(dateValue).slice(0, 10)}T00:00:00Z`);
+  return isNaN(d) ? null : d;
+}
+
+// The original year an occasion happened, when plausibly real (some dates are
+// stored without a true year). Drives "turns N" / "N years" copy in the UI.
+function occasionYear(dateValue) {
+  const d = toOccasionDate(dateValue);
+  if (!d) return null;
+  const y = d.getUTCFullYear();
+  return y > 1900 ? y : null;
+}
+
+// Expand one occasion date into its yearly occurrences (YYYY-MM-DD) within range.
+function occasionOccurrences(dateValue, fromDate, toDate) {
+  const d = toOccasionDate(dateValue);
+  if (!d) return [];
   const month = d.getUTCMonth();
   const day   = d.getUTCDate();
   const results = [];
@@ -406,7 +444,7 @@ function birthdayOccurrences(birthdayDate, fromDate, toDate) {
 // Pure: pass already-fetched raw records (server: Mongo + populate; client:
 // decrypted replica). Owns ALL date filtering in memory so no server-side index
 // on the (soon-encrypted) date fields is needed. Returns the exact shape the
-// clients already render: { tasks, chores, events, birthdays, recipes,
+// clients already render: { tasks, chores, events, occasions, recipes,
 // groceryShopping, trips }.
 function assembleCalendarData({
   events = [], tasks = [], chores = [], people = [],
@@ -445,21 +483,40 @@ function assembleCalendarData({
   const evented = [...regularEvents, ...expandedRecurring]
     .sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
 
-  const birthdaySources = people
-    .filter(p => p.birthday != null)
-    .map(p => ({
-      id:           String(p._id),
-      name:         p.name,
-      relationship: selfId && String(p.accountId) === selfId ? 'you' : (p.relationship || p.type),
-      birthday:     p.birthday,
-    }));
-  const birthdays = birthdaySources.flatMap(src =>
-    birthdayOccurrences(src.birthday, from, to).map(date => ({
-      id:           `birthday-${src.id}-${date}`,
+  // Occasions come from two per-person sources: the dedicated `birthday` field
+  // (kind 'birthday') and each labeled `dates[]` entry (kind from its label).
+  const occasionSources = [];
+  for (const p of people) {
+    // A contact excluded from the Occasions calendar contributes nothing.
+    if (p.occasionsHidden) continue;
+    const personId = String(p._id);
+    const relationship = selfId && String(p.accountId) === selfId ? 'you' : (p.relationship || p.type);
+    if (p.birthday != null) {
+      occasionSources.push({ personId, name: p.name, relationship, kind: 'birthday', label: 'Birthday', value: p.birthday });
+    }
+    for (const entry of (p.dates || [])) {
+      const value = entry && entry.value;
+      if (!value) continue;
+      occasionSources.push({
+        personId, name: p.name, relationship,
+        kind:  occasionKindFromLabel(entry.label),
+        label: String(entry.label || '').trim() || 'Date',
+        value,
+      });
+    }
+  }
+  const occasions = occasionSources.flatMap(src =>
+    occasionOccurrences(src.value, from, to).map(date => ({
+      id:           src.kind === 'birthday'
+        ? `birthday-${src.personId}-${date}`
+        : `occasion-${occasionSlug(src.label)}-${src.personId}-${date}`,
+      kind:         src.kind,
       name:         src.name,
       relationship: src.relationship,
+      label:        src.label,
       date,
-      birthYear:    new Date(src.birthday).getUTCFullYear(),
+      personId:     src.personId,
+      year:         occasionYear(src.value),
     }))
   ).sort((a, b) => a.date.localeCompare(b.date));
 
@@ -513,7 +570,7 @@ function assembleCalendarData({
     tasks: expandedTasks,
     chores: expandedChores,
     events: evented,
-    birthdays,
+    occasions,
     recipes: scheduledInRange,
     groceryShopping,
     trips: tripOverlays,
@@ -529,6 +586,8 @@ module.exports = {
   computeNextDueKm,
   expandRecurringEvent,
   expandRecurringTaskChore,
-  birthdayOccurrences,
+  occasionOccurrences,
+  occasionKindFromLabel,
+  KNOWN_OCCASION_KINDS,
   assembleCalendarData,
 };
