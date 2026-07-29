@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Alert, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -36,6 +36,7 @@ import { MultiValueField } from '../../components/MultiValueField';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
@@ -188,6 +189,9 @@ export default function PersonFormScreen() {
   }
 
   function advance() {
+    // Save→next and "Skip this contact" both leave the current review copy
+    // intentionally — bypass the discard guard.
+    allowLeave();
     if (hasNext) (nav as any).replace('PersonForm', { prefills, queueIndex: queueIndex + 1 });
     else nav.goBack();
   }
@@ -244,7 +248,7 @@ export default function PersonFormScreen() {
       }
       qc.invalidateQueries({ queryKey: ['people'] });
       if (inQueue) advance();
-      else nav.goBack();
+      else { allowLeave(); nav.goBack(); }
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.error || 'Save failed');
     } finally {
@@ -262,6 +266,7 @@ export default function PersonFormScreen() {
         onPress: async () => {
           await peopleApi.delete(editing._id);
           qc.invalidateQueries({ queryKey: ['people'] });
+          allowLeave();
           nav.goBack();
         },
       },
@@ -269,6 +274,18 @@ export default function PersonFormScreen() {
   }
 
   useHeaderCheckButton(nav, { onPress: save, loading: saving, disabled: !composedName });
+
+  // Discard guard. Every field is seeded synchronously from `src`, so the form
+  // is ready on first render — snapshot it once as the clean baseline. Dirty =
+  // any scalar or labeled-array edit since. The self ("You") card is read-only
+  // here (managed in Account), so it never prompts.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ type, form, phones, emails, addresses, dates, occasionsHidden, urls, relatedNames });
+  useEffect(() => {
+    if (baselineRef.current === null) baselineRef.current = snapshot;
+  }, [snapshot]);
+  const dirty = !isSelf && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   useLayoutEffect(() => {
     if (inQueue) nav.setOptions({ title: `Review ${queueIndex + 1} of ${prefills!.length}` });

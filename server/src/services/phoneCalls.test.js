@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { hasFinalResult, applyVapiToRow, outcomeFrom, toE164, meterCallSecondsUsage } = require('./phoneCalls');
+const { hasFinalResult, applyVapiToRow, outcomeFrom, dncRequestedInAnalysis, toE164, meterCallSecondsUsage } = require('./phoneCalls');
 
 // A minimal stand-in for a PhoneCall mongoose doc. No userId/householdId by
 // default, so metering's counter writes are skipped (no DB in these unit tests).
@@ -10,6 +10,7 @@ function row(fields = {}) {
     endedReason: undefined,
     summary: undefined,
     durationSeconds: undefined,
+    dncCaptured: false, // schema default — a real row never has this undefined
     metered: false,
     saved: false,
     async save() { this.saved = true; },
@@ -75,6 +76,29 @@ test('applyVapiToRow: captures the outcome', async () => {
   const r = row({ status: 'in-progress' });
   await applyVapiToRow(r, { status: 'ended', summary: 'Cancelled.', analysis: { successEvaluation: 'true' } });
   assert.equal(r.outcome, 'confirmed');
+});
+
+test('dncRequestedInAnalysis: true only when the analysis flag is exactly true', () => {
+  assert.equal(dncRequestedInAnalysis({ analysis: { structuredData: { doNotCallRequested: true } } }), true);
+  assert.equal(dncRequestedInAnalysis({ analysis: { structuredData: { doNotCallRequested: false } } }), false);
+  assert.equal(dncRequestedInAnalysis({ analysis: { structuredData: {} } }), false);
+  assert.equal(dncRequestedInAnalysis({ analysis: {} }), false);
+  assert.equal(dncRequestedInAnalysis({}), false);
+});
+
+test('applyVapiToRow: flags dncCaptured when the analysis reports a do-not-call request', async () => {
+  // No phone on the row, so the suppression backstop (which needs a DB) is
+  // skipped — we're asserting only that the outcome view gets its notice flag.
+  const r = row({ status: 'in-progress' });
+  await applyVapiToRow(r, { status: 'ended', summary: 'They asked not to be called.', analysis: { structuredData: { doNotCallRequested: true } } });
+  assert.equal(r.dncCaptured, true);
+  assert.equal(r.saved, true);
+});
+
+test('applyVapiToRow: dncCaptured stays set even if a later refresh lacks the flag', async () => {
+  const r = row({ status: 'ended', summary: 'Done.', dncCaptured: true });
+  await applyVapiToRow(r, { status: 'ended', summary: 'Done.', analysis: { structuredData: {} } });
+  assert.equal(r.dncCaptured, true);
 });
 
 test('toE164: normalizes US/CA numbers', () => {

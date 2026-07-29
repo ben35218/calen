@@ -34,6 +34,11 @@
               <v-chip v-if="badges.openReports" size="x-small" color="error" variant="flat">{{ badges.openReports }}</v-chip>
             </template>
           </v-list-item>
+          <v-list-item to="/feedback" prepend-icon="mdi-comment-question-outline" title="Feedback">
+            <template #append>
+              <v-chip v-if="badges.newFeedback" size="x-small" color="error" variant="flat">{{ badges.newFeedback }}</v-chip>
+            </template>
+          </v-list-item>
 
           <v-list-subheader>Operations</v-list-subheader>
           <v-list-item to="/users" prepend-icon="mdi-account-multiple" title="Users" />
@@ -71,18 +76,20 @@ const env = computed(() => {
 // Nav badges double as a to-do list: unseen support mail + open content
 // reports, refreshed on a slow poll (the support count hits IMAP, so keep the
 // interval generous). Failures are silent — badges are best-effort.
-const badges = ref({ supportUnseen: 0, openReports: 0 });
+const badges = ref({ supportUnseen: 0, openReports: 0, newFeedback: 0 });
 let badgeTimer = null;
 
 async function loadBadges() {
-  const [s, m] = await Promise.allSettled([
+  const [s, m, f] = await Promise.allSettled([
     emailApi.supportStatus(),
     adminApi.moderation({ page: 1, pageSize: 1 }),
+    adminApi.feedback({ page: 1, pageSize: 1 }),
   ]);
   if (s.status === 'fulfilled' && s.value.data.configured !== false) {
     badges.value.supportUnseen = s.value.data.boxes?.find((b) => b.path === 'INBOX')?.unseen || 0;
   }
   if (m.status === 'fulfilled') badges.value.openReports = m.value.data.openCount || 0;
+  if (f.status === 'fulfilled') badges.value.newFeedback = f.value.data.newCount || 0;
 }
 
 watch(() => auth.isLoggedIn, (loggedIn) => {

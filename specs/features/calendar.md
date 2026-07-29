@@ -1,7 +1,7 @@
 ---
 title: Calendar & events
 status: current
-last-verified: 55bfc65+ (2026-07-29); Starts/Ends picker commits on dismiss (tap-away accepts) + start-time change past the end drags the end to preserve duration, and the symmetric reverse — editing the end (time or date) before the start drags the start back to preserve duration, via shared lib/datetime.startKeepingDuration reused by every Starts/Ends form (2026-07-28, reverse 2026-07-29); event detail view renders both alerts grouped in one divided card, with the Delete Event pill floating over the location map (2026-07-28); Birthdays→Occasions calendar (labeled contact dates as annual occasions), calendar-level occasion alerts, scheduled e-cards (2026-07-28); per-contact occasion exclusion (`occasionsHidden`) + occasion rows open PersonForm scrolled to Dates (2026-07-28); e-card recipients scoped to the occasion's contact + linked contacts, with inline add-email + per-recipient address picker for multi-email contacts (2026-07-28); scheduled-card indicator on the occasion row + edit/cancel + live email preview (2026-07-28); occasions render as kind icons (not chips) on the month grid and tap through to the Occasions screen from calendar/day/agenda surfaces (2026-07-28); a tapped occasion scrolls to the top of the Occasions list and is highlighted (`focus` param) (2026-07-28); e-card hour picker opens scrolled to noon (2026-07-28); e-card style gallery — 3 designs per occasion kind, greeting-card email with CSS-motion progressive enhancement, in-form style picker + animated live preview (2026-07-28); e-card personalization — fully editable card lines (greeting/sign-off/signature overrides), email-safe font menu, up to 3 inline CID photos (2026-07-28); default greeting + subject address recipients by first name only (2026-07-28); travel-time origin is an editable "starting address" (home-seeded, not labelled as home) with Current-location + Home one-tap shortcuts via shared `lib/currentLocation.ts` (2026-07-28); the two event alert slots must be distinct — each picker excludes the other slot's value (`excludeUsedAlert`) so the same lead time can't be set twice (2026-07-28); event attachments always seal on-device before upload (removed the plaintext fallback) and the server accepts iOS's relabeled opaque-binary content-types so the encrypted `.bin` ciphertext isn't dropped as "No file uploaded"; the event view previews attachments in-app via a WebView (images + PDFs render inline on the AttachmentPreview screen, Share button in the header) — WebView is used instead of RN's <Image>, which hard-crashes on the new architecture in both an RN <Modal> and a plain native-stack screen; expo-sharing alone (the interim fix) only gave the share sheet, not a direct preview (2026-07-29); the End Repeat (`until`) date loads back as the local Y-M-D via `ymd(new Date(until))` instead of slicing the ISO's UTC date, fixing a one-day-forward drift on every edit in behind-UTC timezones (2026-07-29); new events default travel time **on** with the origin seeded from the household home address when one is set (off when there's no home address); editing an existing event leaves its saved travel-time setting untouched; the home address is decrypted client-side from the E2EE-sealed settings blob via shared `lib/homeAddress.ts` (the raw column is ciphertext, so the default + "Home" origin shortcut now resolve) and the Travel Time row shows "On" while enabled but not yet computed instead of "None" (2026-07-29); the Occasions empty-state CTA now reads "Add dates in Contacts" (was "…in People") to match the app-wide Contacts naming (copy-only) (2026-07-29); the Add-ons storefront row's subtitle names the full add-on catalog in store order with **no price** (every add-on, owned or not; the store screen does the selling) — spec + CalendarsScreen tests aligned to the shipped component, which dropped the earlier per-locked price line (2026-07-29)
+last-verified: f8e4627+ (2026-07-29); calendar loading is now cache-first — `loadCalendarData` gained a `sync: 'inline' | 'background'` mode: the interactive views (month grid, List layer, day timeline/agenda, search) paint immediately from the local replica while `revalidateCalendar()` pulls records+settings+trips concurrently behind the paint and invalidates `['calendar']` only on actual change (deduped, 10s floor; trips reconciled into the replica including removals; grocery config cached device-local in `hc_grocery_settings`); a never-synced device falls back to inline; holiday chips render on mount independent of the data query; the month grid's first-load spinner was replaced with deterministic per-cell skeleton placeholders (per density) and the List layer's day list with `SkeletonList` (2026-07-29); deleting a recurring event offers Apple's "Delete This Event Only" (adds the occurrence's day to a sealed `exceptionDates` list the shared engine skips) vs "Delete All Future Events" (sets `recurrence.until` to the day before, or deletes the series when it's the first occurrence); shared by the detail view + edit form via `lib/eventDelete.ts` + `calendarApi.excludeOccurrence`/`truncateSeries` (HDK-sealed; outside-shared calendars not yet handled) (2026-07-29); event detail view now reflects every configured field — recurrence summary line ("Repeats weekly … until <date>", accent-coloured), a Travel Time row (duration + "Leave by" on timed events), and an Apple-style mini hour-grid timeline card placing the event block by its clock time (timed events only; all-day omits it), whose block content adapts to duration — >1h shows title+location+time, exactly 1h drops location, <1h shows title only; the "Delete Event" control is an Apple-style translucent floating pill **pinned to the screen** (a sibling of the scroll view, so it stays fixed while content scrolls beneath it instead of scrolling away attached to the map); the location map closes the scroll content below it (2026-07-29); the event detail view re-pulls the event on focus (`useFocusEffect`) so edits made in the form — e.g. turning off recurrence, which un-hides the Cancel/Reschedule card — are reflected on return without a manual refresh; the Cancel/Reschedule card moved to sit directly below the timeline card and above the Calendar row (was down among the alert/travel rows); its title shortened to "Cancel/Reschedule" (was "Cancel or Reschedule", which truncated in the one-line card title) (2026-07-29); Starts/Ends picker commits on dismiss (tap-away accepts) + start-time change past the end drags the end to preserve duration, and the symmetric reverse — editing the end (time or date) before the start drags the start back to preserve duration, via shared lib/datetime.startKeepingDuration reused by every Starts/Ends form (2026-07-28, reverse 2026-07-29); event detail view renders both alerts grouped in one divided card, with the Delete Event pill floating over the location map (2026-07-28); Birthdays→Occasions calendar (labeled contact dates as annual occasions), calendar-level occasion alerts, scheduled e-cards (2026-07-28); per-contact occasion exclusion (`occasionsHidden`) + occasion rows open PersonForm scrolled to Dates (2026-07-28); e-card recipients scoped to the occasion's contact + linked contacts, with inline add-email + per-recipient address picker for multi-email contacts (2026-07-28); scheduled-card indicator on the occasion row + edit/cancel + live email preview (2026-07-28); occasions render as kind icons (not chips) on the month grid and tap through to the Occasions screen from calendar/day/agenda surfaces (2026-07-28); a tapped occasion scrolls to the top of the Occasions list and is highlighted (`focus` param) (2026-07-28); e-card hour picker opens scrolled to noon (2026-07-28); e-card style gallery — 3 designs per occasion kind, greeting-card email with CSS-motion progressive enhancement, in-form style picker + animated live preview (2026-07-28); e-card personalization — fully editable card lines (greeting/sign-off/signature overrides), email-safe font menu, up to 3 inline CID photos (2026-07-28); default greeting + subject address recipients by first name only (2026-07-28); travel-time origin is an editable "starting address" (home-seeded, not labelled as home) with Current-location + Home one-tap shortcuts via shared `lib/currentLocation.ts` (2026-07-28); the two event alert slots must be distinct — each picker excludes the other slot's value (`excludeUsedAlert`) so the same lead time can't be set twice (2026-07-28); event attachments always seal on-device before upload (removed the plaintext fallback) and the server accepts iOS's relabeled opaque-binary content-types so the encrypted `.bin` ciphertext isn't dropped as "No file uploaded"; the event view previews attachments in-app via a WebView (images + PDFs render inline on the AttachmentPreview screen, Share button in the header) — WebView is used instead of RN's <Image>, which hard-crashes on the new architecture in both an RN <Modal> and a plain native-stack screen; expo-sharing alone (the interim fix) only gave the share sheet, not a direct preview (2026-07-29); the End Repeat (`until`) date loads back as the local Y-M-D via `ymd(new Date(until))` instead of slicing the ISO's UTC date, fixing a one-day-forward drift on every edit in behind-UTC timezones (2026-07-29); new events default travel time **on** only once the event location (destination) is set, then with the origin seeded from the user's current location, but only when location has already been shared with the app (`resolveCurrentAddressIfShared` reads the granted permission without prompting, and no GPS fix is taken until a destination exists); applied once so it doesn't override the user turning it back off; with no destination or no shared location the default is off; editing an existing event leaves its saved travel-time setting untouched; the Travel Time row shows "On" while enabled but not yet computed instead of "None"; the "Home" origin shortcut decrypts the E2EE-sealed home address client-side via shared `lib/homeAddress.ts` (2026-07-29); the Occasions empty-state CTA now reads "Add dates in Contacts" (was "…in People") to match the app-wide Contacts naming (copy-only) (2026-07-29); the Add-ons storefront row's subtitle names the full add-on catalog in store order with **no price** (every add-on, owned or not; the store screen does the selling) — spec + CalendarsScreen tests aligned to the shipped component, which dropped the earlier per-locked price line (2026-07-29); leaving the event form or its Invitees screen with unsaved edits (header ✕ / back / swipe-back / Android back) prompts an Apple-style "Discard Changes?" action sheet, guarded app-wide via the shared `useUnsavedChangesGuard` hook (listens on React Navigation `beforeRemove`; a successful save/delete/leave calls `allowLeave` to exit without prompting) (2026-07-29); editing an event **never** auto-changes its travel time — the debounced drive-time recompute is suppressed while the destination/origin still match what the event loaded with (a `travelSeedRef` snapshot), so merely opening a travel-enabled event no longer silently nulls-and-refetches its saved minutes (which also spuriously dirtied the unsaved-changes guard); recompute resumes only once the user actually edits the destination or starting point (2026-07-29); the pushed **Travel Time** sub-screen now carries a header ✓ checkmark (+ ✕ close) like the app's other form sub-screens — edits already sync back live via the travelDraft store, so the checkmark just confirms/returns (2026-07-29); do-not-call is now surfaced on both call screens — the Event Action screen pre-checks the event's number (`GET /calls/suppressed`) and disables the call button with a reason when it's suppressed, and the Interaction outcome view shows an explicit "asked not to be called again" notice driven by the per-call `dncCaptured` flag (2026-07-29); the Cancel/Reschedule card now appears on **recurring** events too, scoped to the tapped occurrence — the call carries `PhoneCall.occurrenceDate` (the occurrence's local Y-M-D) + that day's start instant, and the call-derived cancelled/reschedule dimming is re-keyed from series-id to event+occurrenceDate (`lib/callStatus.buildEventStatus`, consumed across the month grid / day timeline / agenda / list / detail), so one call dims only its own instance; unscoped/legacy calls still match every day; the series-wide "Mark appointment as cancelled" fallback is hidden on recurring occurrences (2026-07-29); the card moved to be the first row of the details group (directly above the Calendar card) and its title relabelled "Reschedule/Cancel" (was "Cancel/Reschedule"); the two idle states (no-phone / ready-to-call) dropped their explanatory subtitle so the row is a clean single-line "Reschedule/Cancel" button (2026-07-29); tapping the card with no business number yet routes to the Location view with a `promptPhone` flag that shows a prominent callout banner at the top ("Add a business phone number to activate calling.", styled per the app's tinted-banner convention and tinted with the event's own calendar colour rather than the app primary — was a muted hint that blended in) and highlights the phone field (2026-07-29)
 code:
   - mobile/src/screens/calendar/
   - mobile/src/lib/calendar.ts
@@ -25,7 +25,7 @@ tests:
   - shared/calendar/index.test.js
   - server/src/test/ecards.integration.test.js
   - server/src/services/ecardTemplates.test.js
-  - mobile/src/lib/__tests__/{calendarFeeds,calendarPrefs,holidays,homeRegion,weatherSource,recurrence,tz,printCalendar,addons}.test.ts
+  - mobile/src/lib/__tests__/{calendarData,calendarFeeds,calendarPrefs,holidays,homeRegion,weatherSource,recurrence,tz,printCalendar,addons}.test.ts
   - mobile/src/screens/calendar/__tests__/CalendarsScreen.test.tsx
   - mobile/src/screens/calendar/dayview/__tests__/dayViewLayout.test.ts
 ---
@@ -50,6 +50,18 @@ and printing. It is also the anchor for the calendar AI assistant.
   `startDate`, optional `endDate`, and an `allDay` flag (default true). The
   business `phone` (which Calen dials for cancel/reschedule) is entered on the
   location screen via the shared `PhoneField` and stored as canonical E.164.
+- **Discard-changes guard:** leaving a form with unsaved edits — via the header
+  ✕, the back chevron, the swipe-back gesture, or Android hardware back — first
+  shows the Apple-style "Discard Changes?" action sheet; the exit only proceeds
+  on **Discard Changes**. A form is "dirty" when it differs from the baseline
+  captured once it initialized (a create's empty defaults; an edit's loaded
+  record), or when a new event has queued invitees or attachments. A successful
+  save/delete/leave exits without the prompt. Read-only guest/collaborator views
+  never prompt (nothing to save). Implemented via the shared
+  `useUnsavedChangesGuard` hook and applied across every edit form — here the
+  event form, Invitees, Location, Add/Subscribe Calendar, Occasion Alerts, and
+  E-Card screens, and app-wide on the People, Account, Chore, Task, Item, Trip,
+  Trip Item, and Recipe forms (see [mobile/CLAUDE.md](../../mobile/CLAUDE.md)).
 - **Starts / Ends editing:** the shared date/time picker (`DateField`/`TimeField`)
   accepts the value the wheel is currently on when the sheet is **dismissed** —
   tapping the backdrop (or the Done button) commits it; there is no discard-on-
@@ -73,7 +85,27 @@ and printing. It is also the anchor for the calendar AI assistant.
   so the last occurrence is included. Because that instant can fall on the next
   UTC calendar date, the edit form must recover the **local** Y-M-D when it loads
   `until` (via `ymd(new Date(until))`), not slice the ISO string's UTC date —
-  slicing drifts the shown End Repeat one day forward on every edit.
+  slicing drifts the shown End Repeat one day forward on every edit. The event
+  **detail view** renders the recurrence as a summary line under the date/time
+  ("Repeats weekly", "Repeats every 2 weeks on Monday"), with `… until <date>`
+  appended when an End Repeat is set — accent-coloured, mirroring the form's
+  Repeat / End Repeat rows.
+- **Deleting a recurring event** (from the detail view's Delete Event control or
+  the edit form's Delete) is an **Apple-style two-way choice** — a native alert
+  ("This is a repeating event.") offering **Delete This Event Only** and **Delete
+  All Future Events** (a one-off event keeps the plain single-button confirm). The
+  occurrence the choice acts on is the calendar day the user opened the event from
+  (the screens' `date` route param; absent — e.g. from search — it falls back to
+  the series start). *This Event Only* adds that day (`YYYY-MM-DD`) to the event's
+  **`exceptionDates`** list, which the shared engine skips on expansion (Apple's
+  EXDATE); the day key matches the calendar's per-cell bucketing (all-day = UTC
+  date, timed = local date). *All Future Events* ends the series the day before the
+  occurrence by setting `recurrence.until` (past occurrences stay), or **deletes
+  the whole event** when the occurrence is the series' first (nothing precedes it).
+  The server can't edit sealed content, so both re-seal the whole event through the
+  store (`lib/eventDelete.ts` builds the prompt; `calendarApi.excludeOccurrence` /
+  `truncateSeries` re-seal). Both seal under the HDK — a recurring event on an
+  outside-shared calendar isn't handled by this path yet.
 - **Reminders/alerts:** up to two alerts per event (`reminderMinutes`/`At`,
   `alert2Minutes`/`At`), delivered as on-device local notifications. In a shared
   household, `alertAudience` targets `everyone` or just the `owner` (creator).
@@ -86,25 +118,36 @@ and printing. It is also the anchor for the calendar AI assistant.
   would fire two identical notifications). The "None" and "Custom…" rows are never
   filtered out.
 - **Travel time** (`travelMinutes`, `travelDistanceKm`) may be attached so an
-  event's reminder accounts for getting there. On a **new** event, travel time
-  defaults **on** with the origin seeded from the household **home address** when
-  one is set; with no home address it defaults **off**. The home address is
-  E2EE-sealed, so it is decrypted client-side (`lib/homeAddress.ts`, shared with
-  the same "Home" origin shortcut) — the raw settings column holds ciphertext.
-  Editing an existing event keeps that event's saved travel-time setting
-  untouched. On the event form the Travel Time row reads the drive time (with
-  "Leave by…") once computed; **"On"** while enabled but not yet computed (e.g. a
-  new event before its location is set); **"None"** when off. The Travel Time
+  event's reminder accounts for getting there. On a **new** event, travel time is
+  irrelevant until a destination exists, so it defaults **on** only **once the
+  event location (the destination) is set** — and then with the origin seeded from
+  the user's **current location**, but only when they've **already shared**
+  location with the app. The default never prompts for the permission and takes no
+  GPS fix until a destination exists (`resolveCurrentAddressIfShared` in
+  `lib/currentLocation.ts`, which reads the granted status without requesting it).
+  It applies once, so it never overrides the user turning travel back off. With no
+  destination, or no shared location, the default is **off**. Editing an existing event
+  **never changes its travel time automatically** — neither the auto-on default
+  nor the drive-time recompute fires. Merely opening the event (which seeds the
+  saved destination) must not rewrite its saved minutes; the drive time
+  recomputes only when the user actually edits the destination or the starting
+  point. On the event form the
+  Travel Time row reads the drive time (with "Leave by…") once computed; **"On"**
+  while enabled but not yet computed (e.g. a new event before its location is
+  set); **"None"** when off. The Travel Time
   sub-screen sets a **starting location** (origin) that the drive time is computed
-  from. The origin field seeds from the household **home address** on first load,
-  but is a plain
+  from. The origin field is pre-filled from the event's current origin (the
+  default above, or whatever was last set), but is a plain
   editable address (generic "Starting address" placeholder — never labelled as
   the home field). Two one-tap shortcuts sit under it while a manual duration is
   **not** set (a manual duration ignores the origin): **Current location** — the
   opt-in device-GPS reverse-geocode path shared with the Account home-address
   field (`lib/currentLocation.ts`; same denied/unavailable/not-found fallbacks) —
   and **Home** (shown only when a home address exists and differs from the current
-  origin).
+  origin). The event **detail view** shows a **Travel Time** row whenever a drive
+  time (or manual duration) is saved — the duration as the value, with a "Leave
+  by <clock time>" subtitle (start − drive time) on a timed event whose departure
+  falls on the same day.
 - **Cancellation via AI call:** when Calen's cancellation call gets a business to
   confirm, the user resolves the outcome **from the event view itself** — the
   event stays on the calendar (faded/struck) until they **delete** it. The event
@@ -112,6 +155,39 @@ and printing. It is also the anchor for the calendar AI assistant.
   summary). The Event Action screen's **"Share my contact details if asked"**
   switch (default off) controls whether the AI caller may give the user's
   phone/email for identity checks. See [ai-assistant.md](ai-assistant.md).
+  When the event has **no business number yet**, the Reschedule/Cancel card routes
+  to the event's **Location view** to add one (via the `promptPhone` route param).
+  Because the user was sent there to enable calling, that view surfaces a
+  **prominent callout banner at the top** — a tinted box (the app's banner
+  convention, cf. `CreditsBanner`: `accent+'1A'` fill, `accent+'55'` border, a
+  filled phone-icon disc, bold text) reading **"Add a business phone number to
+  activate calling."** — **not** a muted hint (which blended into the page). The
+  banner is tinted with the **event's own calendar colour** (the calendar whose
+  Reschedule/Cancel card sent the user here), not the app primary — falling back to
+  primary until the event decrypts. The phone field is also **highlighted**. Both
+  clear once a number is typed.
+- **Recurring events call per occurrence.** The Cancel/Reschedule card is shown on
+  recurring events too (not just one-offs). Because a recurring event is a single
+  record whose occurrences share one id, a call placed from a recurring occurrence
+  is **scoped to that instance**: the call carries the tapped occurrence's local
+  Y-M-D (`PhoneCall.occurrenceDate`) and its own start instant (the tapped day +
+  the series' time of day), so Calen tells the business the correct specific date
+  and the confirmed outcome dims/strikes **only that occurrence**, not the whole
+  series (see *Resolved events are dimmed* below). A call with no `occurrenceDate`
+  (a non-recurring event, or a legacy row) stays **unscoped** — it matches the
+  event on every day it renders (preserving multi-day-span behavior). The
+  series-wide **"Mark appointment as cancelled"** fallback (couldn't-confirm path,
+  which sets a whole-event flag) is **hidden on recurring occurrences** — deleting
+  that single occurrence is the path there instead.
+- **Do-not-call is surfaced on both call screens.** If a business asked (on a
+  prior call) not to receive automated calls, Calen refuses to dial it. The user
+  learns this without hitting a dead end: the **Event Action** screen pre-checks
+  the event's number and, when it's suppressed, **disables the "Call to
+  Cancel/Reschedule" button** with a one-line reason; the **Interaction** (call
+  outcome) view of the call where the opt-out happened shows an explicit
+  "asked not to be called again" notice (the per-call `dncCaptured` flag), so the
+  suppression isn't left implicit in the free-text summary. See the do-not-call
+  section of [ai-assistant.md](ai-assistant.md).
 - **Resolved events are dimmed on every calendar surface** (month grid, agenda,
   day view): a **confirmed-cancelled** event renders faded with a strike-through
   title; an event with a **confirmed reschedule not yet applied** to its time
@@ -121,12 +197,44 @@ and printing. It is also the anchor for the calendar AI assistant.
   notice is acknowledged** — Dismiss on the event view or OK in Invitations
   (one shared `acknowledged` flag) — returning the event to a normal appearance.
   A **hand-set** `cancelled` flag (from the "couldn't confirm → mark cancelled"
-  path) persists until the event is deleted.
-- **Detail-screen close (Apple-style).** When the event has a location whose map
-  imagery loads, the location map (static map + street-view thumbnail) is the
-  **last element on the page** and the **"Delete Event"** control is a translucent
-  pill **floating over the map**. With no location — or if the map tiles fail to
-  load — it falls back to a plain full-width danger button.
+  path) persists until the event is deleted. The derivation is **occurrence-aware**
+  (`lib/callStatus` `buildEventStatus`): a call carrying an `occurrenceDate` dims
+  only the matching day, an unscoped call dims the event on every day it renders,
+  and each surface passes the date of the occurrence it's drawing — so a confirmed
+  cancel of one occurrence of a recurring series never strikes the other
+  occurrences.
+- **Detail view reflects every configured field.** The guiding principle: whatever
+  the edit form lets the user set MUST be visible on the read-only detail view.
+  Title, location, calendar, invitees, alerts, URL, attachments, and notes render
+  as before; recurrence and travel time render as described above. The detail
+  view **re-pulls the event whenever it regains focus** (e.g. returning from the
+  edit form), so an edit that changes what's rendered here is reflected without a
+  manual refresh. The **"Reschedule/Cancel" card** renders as the **first row of
+  the details group, directly above the Calendar card** (not down among the
+  alert/travel rows), on both one-off and recurring events (recurring calls are
+  scoped to the tapped occurrence — see *Recurring events call per occurrence*
+  above). A **timed**
+  event additionally shows an **Apple-style mini timeline card** under the
+  date/time block: a compact hour-grid (gutter hour labels around the event) with
+  the event drawn as an accent-tinted block — solid accent left bar, accent-colour
+  text — positioned by its clock time. The block's **content adapts to its height**
+  (a short event has no room for every line): an event **longer than an hour**
+  shows title + location + start–end time; an event of **exactly an hour** drops
+  the location (title + time); an event **shorter than an hour** shows the title
+  only. The window brackets the event by roughly an hour on each side; a multi-day
+  timed event is clipped to its first day. All-day events omit the card (they have
+  no clock position). The card carries no map imagery — the location map closes
+  the page (below).
+- **Detail-screen close (Apple-style).** The **"Delete Event"** control is a
+  translucent floating pill (dark scrim, danger-red label) **pinned to the bottom
+  of the screen** — it is a sibling of the scroll view (not a child), so it stays
+  **fixed in place while the event content scrolls beneath it**, rather than
+  scrolling away attached to the map. It sits above the bottom safe-area inset and
+  is always present. The scroll content reserves bottom padding so its last
+  element clears the pill. The location map (static map + street-view thumbnail),
+  when the event has a location whose imagery loads, closes the scroll content
+  (Apple-style); with no location — or if the map tiles fail to load — the map is
+  simply omitted (the pill still floats fixed).
 - **Attachments** (photos / PDFs, `EventAttachment`, ≤25 MB). Files are **always
   sealed on-device before upload** — a fresh per-file key, ciphertext uploaded as
   an opaque part, no plaintext lane (see [Encryption boundary](#encryption-boundary)
@@ -182,6 +290,45 @@ separate layer. The switcher crossfades between the grid family and List; the
 shared floating chrome (avatar, switcher/search/add, Today, Calendars/
 Invitations/Assistant) never moves. The single **Today** button re-centres
 whichever layer is active.
+
+### Loading (cache-first, stale-while-revalidate)
+
+`loadCalendarData` takes a `sync` mode. **`inline`** (the default) awaits the
+server pull before assembling — the shape for one-shot consumers that must see
+fresh truth (Print, the reminder scheduler, the assistant's sources); its
+records pull and settings fetch run **in parallel**, not sequentially.
+**`background`** — passed by every interactive calendar view (month grid, List
+layer, day timeline/agenda, search) — assembles **immediately from the local
+replica** and kicks off `revalidateCalendar()` behind the paint, so a warm
+launch shows the calendar without waiting on the network.
+
+- `revalidateCalendar()` pulls the records feed, the grocery settings, and the
+  trips collection concurrently, then invalidates the `['calendar']` queries
+  **only when something actually changed** (records upserted/removed, grocery
+  config differing from its cache, or the trips (_id, updatedAt) set moving) —
+  an unchanged pass ends quietly, which is what keeps the
+  invalidate → refetch → revalidate cycle from spinning. Passes are deduped
+  (concurrent callers share one in-flight pull) and floored at 10s apart.
+- The trips pull **reconciles the replica bucket** (server-deleted trips are
+  removed, not just left to age) since the background path reads trips from the
+  replica alone.
+- The grocery config (`groceryShoppingDay`/`groceryFrequency`/`groceryAnchor`)
+  is cached device-local (`hc_grocery_settings`) so the background path — and
+  inline loads that fail offline — render the real shopping-day markers instead
+  of resetting to defaults.
+- A device that has **never completed a sync pass** (fresh install, or the
+  post-unlock/account-switch cursor reset — `hasSyncedRecords()`) has an empty
+  replica, so `background` falls back to `inline` rather than flash an empty
+  calendar.
+- **Holidays never wait for sync.** Month-grid holiday chips are computed
+  on-device from prefs and MUST render as soon as the grid mounts, independent
+  of the network-backed data query (the List layer and day views already did).
+- **Skeleton, not a spinner.** During the first-ever load (the inline-fallback
+  case above — the only time there is no replica to paint) the month grid shows
+  shimmering per-cell placeholders shaped per density (chip-, bar-, or
+  dot-shaped; deterministic per date, some cells left empty like a real month)
+  instead of a floating `ActivityIndicator`; the List layer's day list shows
+  `SkeletonList` rows instead of a premature "Nothing scheduled.".
 
 ### Day view (tap a day)
 
@@ -591,7 +738,8 @@ forecast. All of it follows the Weather calendar's visibility toggle.
 
 - **Everything is sealed.** In the live opaque record store a calendar event is a
   `Record` whose entire content — `title`, `description`, `location`, dates,
-  `calendarType`, `alertAudience`, `cancelled`, recurrence, and even the fact
+  `calendarType`, `alertAudience`, `cancelled`, recurrence, `exceptionDates`
+  (deleted-occurrence days), and even the fact
   that it *is* a calendar event — rides inside the encrypted `enc` blob. The
   server sees only the record's routing metadata (`householdId`, key version,
   ciphertext, optional shared-resource `scope`, tombstone, timestamps). See

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, Linking, Share } from 'react-native';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -21,6 +21,7 @@ import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, S
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_TYPES, tripTypeMeta } from '../../lib/tripTypes';
 import { startKeepingDuration } from '../../lib/datetime';
@@ -134,6 +135,10 @@ export default function TripItemFormScreen() {
   const [shareRows, setShareRows] = useState<ShareRow[]>([]);
   const [error, setError] = useState('');
   const [endMode, setEndMode] = useState<'time' | 'duration'>('time');
+  // A new booking is ready immediately; an edit waits for the item (and the
+  // families list its share rows build from) to load and hydrate below before
+  // the discard guard snapshots its clean baseline.
+  const [seeded, setSeeded] = useState(!isEdit);
   const assist = useFormAssist();
 
   const set = (patch: Partial<typeof form>) => {
@@ -247,6 +252,9 @@ export default function TripItemFormScreen() {
     }
     const existing = it.shares ?? (it.participants ?? []).map((hid: string) => ({ householdId: hid, amount: null }));
     if (existing.length) buildShareRows(existing);
+    // Only baseline once the families list is in — the share rows build from it,
+    // so seeding earlier would let that fill register as an unsaved edit.
+    if (familiesQ.data) setSeeded(true);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -343,6 +351,7 @@ export default function TripItemFormScreen() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips', tripId] });
+      allowLeave();
       navigation.goBack();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
@@ -352,6 +361,7 @@ export default function TripItemFormScreen() {
     mutationFn: () => tripsApi.removeItem(tripId, itemId!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips', tripId] });
+      allowLeave();
       navigation.goBack();
     },
   });
@@ -439,6 +449,16 @@ export default function TripItemFormScreen() {
   };
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
+  // Discard guard: prompt before leaving with unsaved edits to the booking
+  // fields or its cost-share rows. Baseline is taken once the form has seeded.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ form, shareRows });
+  useEffect(() => {
+    if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seeded, snapshot]);
+  const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (isEdit && tripQ.isLoading) {
     return <CenteredLoader color={accent} />;

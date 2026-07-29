@@ -1,7 +1,7 @@
 ---
 title: AI assistant (Calen)
 status: current
-last-verified: 55bfc65 (2026-07-29)
+last-verified: f8e4627 (2026-07-29)
 code:
   - mobile/src/screens/chat/
   - mobile/src/hooks/{useChat,useDictation}.ts
@@ -165,10 +165,12 @@ as if it were typed. `aiEnabled` hard-gates the surface. (There is no hands-free
   and invokes the `record_do_not_call` Vapi function tool, which posts to the
   unauthenticated, shared-secret `POST /calls/vapi/webhook` (`X-Vapi-Secret`) and
   suppresses **the number actually dialed** (`call.customer.number`, taken
-  server-side — never a model-supplied number) immediately. (2) **Backstop** —
-  a `structuredDataPlan.doNotCallRequested` flag on the call analysis is honored
-  on the next lazy `PhoneCall` refresh (`applyVapiToRow`), covering the case where
-  the real-time webhook isn't wired (no `PUBLIC_BASE_URL`/`RENDER_EXTERNAL_URL`).
+  server-side — never a model-supplied number) immediately; it also sets
+  `dncCaptured` on the originating `PhoneCall` row (matched by Vapi call id).
+  (2) **Backstop** — a `structuredDataPlan.doNotCallRequested` flag on the call
+  analysis is honored on the next lazy `PhoneCall` refresh (`applyVapiToRow`,
+  which also sets `dncCaptured`), covering the case where the real-time webhook
+  isn't wired (no `PUBLIC_BASE_URL`/`RENDER_EXTERNAL_URL`).
   (3) **Admin/support** — an admin adds/releases numbers from the portal
   (`GET/POST /api/admin/dnc`, `DELETE /api/admin/dnc/:id`). (4) **Inbound SMS
   `STOP`** is a designed-in source (`source: 'inbound-sms'`) but deferred until a
@@ -183,6 +185,18 @@ as if it were typed. `aiEnabled` hard-gates the surface. (There is no hands-free
   number. Suppress is idempotent (upsert on the hash); adds and releases are
   audited (`dnc_suppressed`, `dnc_released`, actor + source + last4 in meta,
   never the full number).
+- **The user is told, both after and before.** A do-not-call outcome is
+  surfaced to the requesting user in two places, so a suppressed number is never
+  a silent surprise: **(after)** when the recipient opts out on a call, the
+  call's outcome/Interaction view shows an explicit notice ("This business asked
+  not to receive automated calls. Calen won't call this number again.") driven by
+  the per-call `dncCaptured` flag — independent of whatever the free-text summary
+  says. **(before)** the event's call screen (Event Action) pre-checks the number
+  against the list (`GET /calls/suppressed?phone=`, a boolean — attempting the
+  call already reveals the same bit via the 403) and, when suppressed, **disables
+  the "Call to Cancel/Reschedule" button** and explains why, so the user doesn't
+  set up a call that can only fail. The chat `call_business` path still surfaces
+  the `DoNotCallError` message conversationally.
 - **Resolving the outcome** the user acts on the captured result, they don't just
   dismiss it. The primary place to resolve is **the event view** (the call-status
   card), so no drill-through is needed; the same actions also exist in the call

@@ -1,7 +1,7 @@
 ---
 title: People & contacts
 status: current
-last-verified: 55bfc65+ (2026-07-28); contacts hold Apple-style multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames) + jobTitle/company, migrated from the legacy single fields on read (2026-07-27); phone fields use shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); import handles iOS limited-contacts access + hide-imported filter (2026-07-27); import config moved to an options bottom sheet so the contact list is the hero (2026-07-27); out-of-credits forces Direct + Review each import (2026-07-27); import rows fully tappable, per-row Family/Friend switch removed (2026-07-27); contact address accepts a city via addressCity autocomplete (2026-07-27); labeled `dates[]` (anniversary/marriage/death/custom) now surface on the Occasions calendar alongside `birthday` (2026-07-28); `occasionsHidden` per-contact exclusion toggle by the Dates section (2026-07-28); linked related names auto-mirror onto the other contact with the inverse label, client-side add-only (2026-07-28); person-form phone rows use picker-free `PhoneTextField` (type local number, or leading +country-code for international; no country selector), still stored E.164 (2026-07-28); contacts gain Apple-style structured `firstName`/`lastName` (personal contacts edit two inputs; `name` is the composed source of truth; legacy names split on read; service/self keep a single name field; imports carry structured names) (2026-07-28)
+last-verified: 55bfc65+ (2026-07-28); contacts hold Apple-style multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames) + jobTitle/company, migrated from the legacy single fields on read (2026-07-27); phone fields use shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); import handles iOS limited-contacts access + hide-imported filter (2026-07-27); import config moved to an options bottom sheet so the contact list is the hero (2026-07-27); out-of-credits forces Direct + Review each import (2026-07-27); import rows fully tappable, per-row Family/Friend switch removed (2026-07-27); contact address accepts a city via addressCity autocomplete (2026-07-27); labeled `dates[]` (anniversary/marriage/death/custom) now surface on the Occasions calendar alongside `birthday` (2026-07-28); `occasionsHidden` per-contact exclusion toggle by the Dates section (2026-07-28); linked related names auto-mirror onto the other contact with the inverse label, client-side add-only (2026-07-28); person-form phone rows use picker-free `PhoneTextField` (type local number, or leading +country-code for international; no country selector), still stored E.164 (2026-07-28); contacts gain Apple-style structured `firstName`/`lastName` (personal contacts edit two inputs; `name` is the composed source of truth; legacy names split on read; service/self keep a single name field; imports carry structured names) (2026-07-28); the contact add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29)
 code:
   - mobile/src/screens/profile/PeopleScreen.tsx
   - mobile/src/screens/profile/PersonDetailScreen.tsx
@@ -27,6 +27,13 @@ surface on the calendar. Contacts can be imported directly from the device or
 with AI assistance.
 
 ## Behavior (normative)
+
+- **Unsaved-changes guard:** the contact (Person) add/edit form prompts an
+  Apple-style "Discard Changes?" sheet before leaving with unsaved edits (header
+  ✕ / back / swipe-back / Android back), via the shared `useUnsavedChangesGuard`
+  hook — a successful save/delete (or a review-queue skip/advance) exits without
+  prompting; the read-only self ("You") card never prompts. See
+  [calendar.md](calendar.md) and [mobile/CLAUDE.md](../../mobile/CLAUDE.md).
 
 ### People
 

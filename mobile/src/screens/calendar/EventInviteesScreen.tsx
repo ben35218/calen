@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Alert, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
@@ -14,6 +14,8 @@ import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import {
   InviteeEntry, inviteeKey, normalizePhone, composeSmsInvite, sendInvitations,
 } from '../../lib/invitees';
+import { normalizePerson, NormalizedPerson } from '../../lib/personFields';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { openRecord } from '../../lib/e2ee';
 import { useAuth } from '../../store/auth';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -79,6 +81,11 @@ export default function EventInviteesScreen() {
   // Entries added this visit, committed/sent only on ✓. A draft starts from
   // the queue so previously added entries can still be removed.
   const [staged, setStaged] = useState<InviteeEntry[]>(() => (isDraft ? getQueuedInvitees() : []));
+  // Clean baseline for the unsaved-changes guard: the staged list this visit
+  // opened with (a draft starts from the queued invitees; a saved event starts
+  // empty). Anything added/removed since — or half-typed in the field — is
+  // unsaved and prompts before leaving.
+  const initialStaged = useRef(JSON.stringify(isDraft ? getQueuedInvitees() : []));
   const { user } = useAuth();
 
   // The event's calendar colour tints the inline ✓, same as the event form's
@@ -117,11 +124,13 @@ export default function EventInviteesScreen() {
     return set;
   }, [staged, inviteesQ.data, user?.email]);
 
-  // What a contact suggestion would stage: their email, unless the typed text
-  // is digit-y and they have a number (or email is all they're missing).
-  const entryFor = (p: Person, queryIsDigits: boolean): InviteeEntry | null => {
-    const email = p.email?.trim().toLowerCase();
-    const phone = p.phone ? normalizePhone(p.phone) : null;
+  // What a contact suggestion would stage: their primary email, unless the typed
+  // text is digit-y and they have a number (or email is all they're missing).
+  // Reads the multi-value fields (via normalizePerson) so contacts stored as
+  // emails[]/phones[] arrays — not just the legacy single scalars — resolve.
+  const entryFor = (n: NormalizedPerson, queryIsDigits: boolean): InviteeEntry | null => {
+    const email = n.emails[0]?.value.trim().toLowerCase();
+    const phone = n.phones[0]?.value ? normalizePhone(n.phones[0].value) : null;
     const emailOk = !!email && EMAIL_RE.test(email) && !taken.has(email);
     const phoneOk = !!phone && !taken.has(phone);
     if (queryIsDigits && phoneOk) return { phone: phone! };
@@ -131,23 +140,23 @@ export default function EventInviteesScreen() {
   };
 
   // Contacts matching the piece being typed (the text after the last comma),
-  // by name, email, or phone.
+  // by name, or any of their emails/phones.
   const suggestions = useMemo(() => {
     const q = (input.split(/[,;\n]+/).pop() ?? '').trim().toLowerCase();
     if (!q) return [];
     const qDigits = q.replace(/[^\d]/g, '');
     const queryIsDigits = qDigits.length > 0 && qDigits.length >= q.replace(/[\s()+.-]/g, '').length;
     return (peopleQ.data ?? [])
-      .filter((p: Person) => {
-        if (!entryFor(p, queryIsDigits)) return false;
-        const em = p.email?.trim().toLowerCase();
-        const ph = p.phone ? normalizePhone(p.phone) : null;
-        if (em?.includes(q)) return true;
-        if (qDigits && ph?.includes(qDigits)) return true;
-        return (p.name ?? '').toLowerCase().includes(q);
+      .map((p: Person) => ({ person: p, n: normalizePerson(p) }))
+      .filter(({ person: p, n }) => {
+        if (!entryFor(n, queryIsDigits)) return false;
+        if ((p.name ?? '').toLowerCase().includes(q)) return true;
+        if (n.emails.some((e) => e.value.toLowerCase().includes(q))) return true;
+        if (qDigits && n.phones.some((ph) => ph.value.replace(/[^\d]/g, '').includes(qDigits))) return true;
+        return false;
       })
       .slice(0, 5)
-      .map((p) => ({ person: p, entry: entryFor(p, queryIsDigits)! }));
+      .map(({ person, n }) => ({ person, entry: entryFor(n, queryIsDigits)! }));
   }, [peopleQ.data, input, taken]);
 
   // The suggestion dropdown renders below the input, which the keyboard-aware
@@ -189,10 +198,12 @@ export default function EventInviteesScreen() {
     if (!ok) return;
     if (isDraft) {
       setQueuedInvitees(entries);
+      allowLeave();
       navigation.goBack();
       return;
     }
     if (!entries.length) {
+      allowLeave();
       navigation.goBack();
       return;
     }
@@ -204,6 +215,7 @@ export default function EventInviteesScreen() {
         setStaged(failures.map((f) => f.entry));
         setError(failures.map((f) => `${inviteeKey(f.entry)}: ${f.error}`).join('\n'));
       } else {
+        allowLeave();
         navigation.goBack();
       }
     } finally {
@@ -212,6 +224,11 @@ export default function EventInviteesScreen() {
   };
 
   useHeaderCheckButton(navigation, { onPress: onConfirm, loading: busy, color: calColor });
+
+  // Guard the ✕ / back / swipe-back against dropping staged invitees or
+  // half-typed text; `allowLeave` above lets ✓ exit without the prompt.
+  const dirty = JSON.stringify(staged) !== initialStaged.current || !!input.trim();
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const revoke = useMutation({
     mutationFn: (invitationId: string) => invitationsApi.revoke(invitationId),

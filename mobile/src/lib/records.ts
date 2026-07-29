@@ -124,3 +124,10 @@ export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<R
 export async function resetRecordCursor(): Promise<void> {
   await store().removeItem(CURSOR_KEY);
 }
+
+// Whether this device has completed at least one sync pass (a cursor exists).
+// While false the replica is empty (fresh install, or post-unlock/account-switch
+// reset), so cache-first readers must fall back to an inline sync.
+export async function hasSyncedRecords(): Promise<boolean> {
+  return (await store().getItem(CURSOR_KEY)) != null;
+}

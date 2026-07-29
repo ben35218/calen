@@ -6,7 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi, invitationsApi, placesApi, eventAttachmentsApi, EventAttachment, FormAssistField } from '../../api';
-import { resolveHomeAddress } from '../../lib/homeAddress';
+import { resolveCurrentAddressIfShared } from '../../lib/currentLocation';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { pickDocument, takePhoto, pickImage, PickedFile } from '../../lib/media';
@@ -20,6 +20,7 @@ import { Button, Input, Select, Screen, SwitchRow, SegmentedControl, SectionTitl
 import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
 import { startKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
@@ -30,6 +31,7 @@ import {
 import { getFeedEventById, FEED_EVENT_ID_PREFIX } from '../../lib/calendarFeeds';
 import { formatDuration } from '../../lib/format';
 import { excludeUsedAlert } from '../../lib/recurrence';
+import { eventDeletePrompt } from '../../lib/eventDelete';
 import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from '../../components/WheelPicker';
 import {
   getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees,
@@ -283,6 +285,16 @@ export default function EventFormScreen() {
     recurrUntil: '',
   });
   const [error, setError] = useState('');
+  // Baseline for the unsaved-changes guard: a serialized snapshot of the form
+  // once it's initialized (a new event is ready immediately; an edit waits for
+  // the event to load and seed below). `dirty` compares the live form to it.
+  const [seeded, setSeeded] = useState(!isEdit);
+  const baselineRef = useRef<string | null>(null);
+  // The destination/origin an edited event loads with. The auto-recompute effect
+  // below skips while the live values still match this snapshot, so merely
+  // opening an event never rewrites its saved travel time — only a user edit to
+  // the location or starting point does. Null for new events (no baseline).
+  const travelSeedRef = useRef<{ location: string; fromAddress: string } | null>(null);
   const [travelLoading, setTravelLoading] = useState(false);
   const [travelError, setTravelError] = useState('');
   // Set when the assistant asked for a "time to leave" alert before the drive
@@ -470,18 +482,27 @@ export default function EventFormScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill, isEdit]);
 
-  // Default the "From" origin to the household home address once it resolves,
-  // and — for new events only — turn travel time ON by default when a home
-  // address exists. Without a home address travel time stays off. Edit keeps
+  // For a new event, once a destination (the event location) is set, default
+  // travel time ON with the origin seeded from the user's CURRENT location — but
+  // only when they've already shared location with the app (this never prompts;
+  // the GPS fix is only taken once a destination exists). Travel time is not
+  // relevant before then, so it stays off. With no shared location it stays off
+  // too. Applied once so it never fights the user turning it back off. Edit keeps
   // the event's saved setting (the eventQ effect above owns those fields).
-  // The home address is E2EE-sealed, so it must be decrypted, not read raw.
-  const homeQ = useQuery({ queryKey: ['homeAddress'], queryFn: resolveHomeAddress });
+  const hasDestination = !!form.location.trim();
+  const currentLocQ = useQuery({
+    queryKey: ['currentLocationAddress'],
+    queryFn: resolveCurrentAddressIfShared,
+    enabled: !isEdit && hasDestination,
+  });
+  const travelDefaulted = useRef(false);
   useEffect(() => {
-    if (isEdit) return;
-    const home = homeQ.data;
-    if (!home) return;
-    setForm((f) => (f.fromAddress ? f : { ...f, fromAddress: home, travelEnabled: true }));
-  }, [homeQ.data, isEdit]);
+    if (isEdit || travelDefaulted.current || !hasDestination) return;
+    const origin = currentLocQ.data;
+    if (!origin) return;
+    travelDefaulted.current = true;
+    setForm((f) => ({ ...f, travelEnabled: true, fromAddress: f.fromAddress || origin }));
+  }, [currentLocQ.data, hasDestination, isEdit]);
 
   // Compute traffic-aware drive time from the origin to the event location.
   const fetchTravelTime = async () => {
@@ -507,6 +528,12 @@ export default function EventFormScreen() {
   useEffect(() => {
     if (!form.travelEnabled || form.travelManual) return;
     if (!form.location.trim()) return;
+    // Editing: never auto-change travel time just from opening the event. The
+    // seed populates location (and leaves origin blank), which would otherwise
+    // trigger a recompute that overwrites the saved minutes. Only recompute once
+    // the user actually changes the destination or starting point.
+    const seed = travelSeedRef.current;
+    if (seed && seed.location === form.location && seed.fromAddress === form.fromAddress) return;
     const t = setTimeout(fetchTravelTime, 700);
     return () => clearTimeout(t);
   }, [form.location, form.fromAddress, form.travelEnabled, form.travelManual]);
@@ -704,9 +731,16 @@ export default function EventFormScreen() {
         // on every edit.
         recurrUntil: e.recurrence?.until ? ymd(new Date(String(e.recurrence.until))) : '',
       });
+      // Remember what travel loaded with so the recompute effect can tell an
+      // untouched open (skip) from a real user edit (recompute). Origin isn't
+      // seeded onto the form, so it starts blank.
+      travelSeedRef.current = { location: e.location ?? '', fromAddress: '' };
       // Seed the Invitees screen's guest-list switch (missing on events that
       // predate the setting — treated as visible).
       setDraftGuestListVisible(e.guestListVisible !== false);
+      // The form now mirrors the saved event — let the guard snapshot it as the
+      // clean baseline (any later edit registers as unsaved).
+      setSeeded(true);
     })();
     return () => { cancelled = true; };
   }, [eventQ.data]);
@@ -850,6 +884,7 @@ export default function EventFormScreen() {
         }
       }
       qc.invalidateQueries({ queryKey: ['calendar'] });
+      allowLeave();
       navigation.goBack();
     },
     // Surface save failures (e.g. the E2EE write-guard rejecting a locked save)
@@ -857,12 +892,17 @@ export default function EventFormScreen() {
     onError: (e: any) => Alert.alert("Couldn't save event", e.response?.data?.error || 'Save failed'),
   });
 
+  // A one-off event deletes outright; a recurring occurrence offers Apple's
+  // "this event" / "all future" choices (eventDeletePrompt) — the chosen action's
+  // api call is the mutation's argument, so Delete keeps its pending state.
   const del = useMutation({
-    mutationFn: () => calendarApi.deleteEvent(eventId!),
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['calendar'] });
+      allowLeave();
       navigation.goBack();
     },
+    onError: (e: any) => Alert.alert("Couldn't delete event", e.response?.data?.error || 'Delete failed'),
   });
 
   // An event copy accepted from a cross-household invitation. The recipient is
@@ -994,6 +1034,7 @@ export default function EventFormScreen() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['calendar'] });
       qc.invalidateQueries({ queryKey: ['invitations'] });
+      allowLeave();
       navigation.goBack();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Could not leave the event'),
@@ -1008,6 +1049,24 @@ export default function EventFormScreen() {
     save.mutate();
   };
 
+  // Delete from the edit form: a one-off event confirms once; a recurring one
+  // offers Apple's "this event" / "all future" choices. Uses the decrypted event
+  // (eventQ.data) so the recurrence + start day are the real ones, and `date`
+  // (the occurrence the form was opened from) as the target occurrence.
+  const onDelete = () => {
+    if (!eventQ.data) return;
+    const { title, message, choices } = eventDeletePrompt(eventQ.data, date);
+    Alert.alert(
+      title,
+      message,
+      choices.map((c) => ({
+        text: c.text,
+        style: c.style,
+        onPress: c.perform ? () => del.mutate(c.perform!) : undefined,
+      })),
+    );
+  };
+
   // The active calendar's colour, tinting this area's accents (save check, the
   // Add-attachment row, spinners) per the app's section-accent convention.
   const accent = cal[form.calendarType] || customCalendars.find((c) => c.id === form.calendarType)?.color || colors.primary;
@@ -1019,6 +1078,23 @@ export default function EventFormScreen() {
     // Guests and calendar collaborators have nothing to save — read-only view below.
     enabled: !readOnlyView,
   });
+
+  // Snapshot the clean baseline once the form is initialized (immediately for a
+  // new event; after the edit seed sets `seeded`). Captured before the prefill
+  // effect commits, so an assistant-prefilled draft correctly reads as dirty.
+  useEffect(() => {
+    if (baselineRef.current !== null || !seeded) return;
+    baselineRef.current = JSON.stringify(form);
+  }, [seeded, form]);
+
+  // The form differs from its clean baseline, or a new event has queued invitees
+  // or attachments that would be lost on leave. Read-only viewers can't edit, so
+  // they never trigger the discard prompt.
+  const dirty =
+    !readOnlyView &&
+    ((baselineRef.current !== null && JSON.stringify(form) !== baselineRef.current) ||
+      (!isEdit && (queuedInvitees.length > 0 || queuedAttachments.length > 0)));
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (isEdit && eventQ.isLoading) {
     return <CenteredLoader color={cal[form.calendarType] || colors.primary} />;
@@ -1463,12 +1539,8 @@ export default function EventFormScreen() {
           <Button
             title="Delete"
             variant="danger"
-            onPress={() =>
-              Alert.alert('Delete event?', '', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
-              ])
-            }
+            loading={del.isPending}
+            onPress={onDelete}
           />
         </View>
       ) : null}

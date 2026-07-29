@@ -50,6 +50,28 @@ test('weekly event expands to the right occurrences and preserves duration', () 
   assert.equal(new Date(out[0].endDate) - new Date(out[0].startDate), 30 * 60000);
 });
 
+test('exceptionDates skip the individually-deleted occurrences ("Delete This Event Only")', () => {
+  const event = {
+    _id: 'e1', title: 'Standup', allDay: true,
+    startDate: new Date('2026-01-05T12:00:00.000Z'), // Monday
+    recurrence: { freq: 'weekly', interval: 1 },
+    exceptionDates: ['2026-01-12', '2026-01-26'],
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-01-31'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-05', '2026-01-19']);
+});
+
+test('recurrence.until ends the series ("Delete All Future Events" truncation)', () => {
+  const event = {
+    _id: 'e1', title: 'Standup', allDay: true,
+    startDate: new Date('2026-01-05T12:00:00.000Z'),
+    // Truncated to end the day before the 2026-01-19 occurrence.
+    recurrence: { freq: 'weekly', interval: 1, until: new Date('2026-01-18T23:59:59') },
+  };
+  const out = expandRecurringEvent(event, new Date('2026-01-01'), new Date('2026-02-28'));
+  assert.deepEqual(out.map(o => ymd(o.startDate)), ['2026-01-05', '2026-01-12']);
+});
+
 test('custom interval event skips the in-between periods', () => {
   const event = {
     startDate: new Date('2026-01-05T09:00:00Z'),

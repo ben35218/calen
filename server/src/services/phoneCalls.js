@@ -39,7 +39,7 @@ function dncToolServer() {
  * the agent can answer identity-verification questions.
  * Throws on Vapi/config errors; the caller maps them to tool/HTTP responses.
  */
-async function placeCall({ userId, householdId, event, action, callerName, newDateTime, additionalInstructions, contact }) {
+async function placeCall({ userId, householdId, event, action, callerName, newDateTime, additionalInstructions, contact, occurrenceDate }) {
   const phone = toE164(event.phone);
 
   // Do-not-call gate (spec: ai-assistant.md) — FIRST, before anything else. This
@@ -253,6 +253,7 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
     eventId: String(event._id),
     eventTitle: event.title,
     eventDate: dateLabel,
+    occurrenceDate: occurrenceDate || undefined,
     action,
     phone,
     status: data.status || 'queued',
@@ -276,6 +277,14 @@ async function fetchVapiCall(callId) {
 function hasFinalResult(row) {
   if (!PhoneCall.isTerminal(row.status)) return false;
   return row.status !== 'ended' || Boolean(row.summary);
+}
+
+// Did the recipient ask, on this call, not to be called again? Read from the
+// post-call analysis' structuredData (the doNotCallRequested flag placeCall
+// asks Vapi to extract). Drives both the do-not-call suppression backstop and
+// the per-call `dncCaptured` notice shown on the outcome.
+function dncRequestedInAnalysis(data) {
+  return data.analysis?.structuredData?.doNotCallRequested === true;
 }
 
 // The PassFail success evaluation arrives as the string 'true'/'false'.
@@ -310,6 +319,9 @@ async function applyVapiToRow(row, data) {
     summary: data.summary ?? data.analysis?.summary ?? row.summary,
     durationSeconds: data.callLength ?? row.durationSeconds,
     outcome: outcomeFrom(data) ?? row.outcome,
+    // Sticky: once set (here or by the in-call webhook), a later refresh whose
+    // analysis no longer carries the flag must not clear it.
+    dncCaptured: row.dncCaptured || dncRequestedInAnalysis(data),
   };
   const changed = Object.keys(next).some((k) => next[k] !== row[k]);
   if (changed) Object.assign(row, next);
@@ -330,8 +342,7 @@ async function applyVapiToRow(row, data) {
 
 // Suppress the dialed number when the call analysis flags a do-not-call request.
 async function maybeSuppressFromAnalysis(row, data) {
-  const requested = data.analysis?.structuredData?.doNotCallRequested;
-  if (requested !== true || !row.phone) return;
+  if (!dncRequestedInAnalysis(data) || !row.phone) return;
   try {
     await suppress(row.phone, {
       source: 'callee-request',
@@ -373,4 +384,4 @@ async function refreshPendingCalls(scopeIds) {
   );
 }
 
-module.exports = { placeCall, toE164, fetchVapiCall, applyVapiToRow, refreshPendingCalls, hasFinalResult, outcomeFrom, meterCallSecondsUsage, markEventCancelledIfConfirmed };
+module.exports = { placeCall, toE164, fetchVapiCall, applyVapiToRow, refreshPendingCalls, hasFinalResult, outcomeFrom, dncRequestedInAnalysis, meterCallSecondsUsage, markEventCancelledIfConfirmed };

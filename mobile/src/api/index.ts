@@ -1,4 +1,5 @@
 import api from './client';
+import type { Diagnostics } from '../lib/diagnostics';
 
 // Signal-parity C3b: the per-collection content groups (tasks/chores/items/…)
 // route their CRUD through the unified opaque store instead of a per-collection
@@ -126,6 +127,13 @@ export interface DeviceSessionsResponse {
 export const moderationApi = {
   report: (data: { content: string; reason?: string; surface?: string }) =>
     api.post<{ ok: boolean }>('/moderation/report', data),
+};
+
+// In-app "Help & feedback" — a question, bug report, or idea (spec:
+// features/feedback.md). Plaintext support content by design (not sealed).
+export const feedbackApi = {
+  submit: (data: { type: 'question' | 'bug' | 'idea'; message: string; contactEmail?: string; diagnostics?: Diagnostics }) =>
+    api.post<{ ok: boolean; id: string }>('/feedback', data),
 };
 
 // E2EE key material (Phase 1). The server is a blind store: it only sees the
@@ -1331,6 +1339,9 @@ export interface CalendarEvent {
     weekOfMonth?: number;
     weekdayKind?: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'day' | 'weekday' | 'weekend';
   };
+  // Calendar days (YYYY-MM-DD) removed from the series one at a time ("Delete This
+  // Event Only"); the shared expansion engine skips these occurrences.
+  exceptionDates?: string[];
   // Whether cross-household invitees may see who else is invited (default true).
   guestListVisible?: boolean;
   // Set when this event is a copy accepted from a cross-household invitation —
@@ -1431,6 +1442,34 @@ export const calendarApi = {
   createEvent: (data: Record<string, unknown>) => store().create<CalendarEvent>('CalendarEvent', withCalScope(data)),
   updateEvent: (id: string, data: Record<string, unknown>) => store().update<CalendarEvent>('CalendarEvent', id, withCalScope(data)),
   deleteEvent: (id: string) => store().remove('CalendarEvent', id),
+  // Recurring-event deletes (Apple-style). The server can't edit sealed content,
+  // so each re-seals the whole event (reseal reads the decrypted record from the
+  // replica, so callers never reconstruct the recurrence). Both seal under the
+  // HDK — an outside-shared calendar's own recurring events aren't handled here.
+  //
+  // "Delete This Event Only": add the tapped occurrence's day to exceptionDates;
+  // the shared engine skips it.
+  excludeOccurrence: async (id: string, occurrenceDate: string) => {
+    const rep = require('../lib/replica') as typeof import('../lib/replica');
+    const existing = (await rep.getAll<CalendarEvent>('CalendarEvent')).find((r) => r._id === id);
+    const exceptionDates = Array.from(
+      new Set([...((existing?.exceptionDates as string[]) ?? []), occurrenceDate]),
+    ).sort();
+    return reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { exceptionDates });
+  },
+  // "Delete All Future Events" for a non-first occurrence: end the series on the
+  // day before it (past occurrences stay). `until` is the end of that local day,
+  // matching the Repeat form's convention.
+  truncateSeries: async (id: string, occurrenceDate: string) => {
+    const rep = require('../lib/replica') as typeof import('../lib/replica');
+    const existing = (await rep.getAll<CalendarEvent>('CalendarEvent')).find((r) => r._id === id);
+    const prev = new Date(`${occurrenceDate}T00:00:00`);
+    prev.setDate(prev.getDate() - 1);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const untilDay = `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-${pad(prev.getDate())}`;
+    const recurrence = { ...(existing?.recurrence ?? {}), until: new Date(`${untilDay}T23:59:59`).toISOString() };
+    return reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { recurrence });
+  },
 };
 
 // ----- Custom calendars (Calendars → Add Calendar) ----------------------------
@@ -1704,6 +1743,10 @@ export interface PhoneCallRecord {
   eventId?: string;
   eventTitle?: string;
   eventDate?: string;
+  // Local Y-M-D of the recurring-event occurrence this call was placed for;
+  // null for non-recurring events (unscoped). Scopes the confirmed-cancel /
+  // reschedule dimming to a single instance.
+  occurrenceDate?: string | null;
   action: 'cancel' | 'reschedule';
   phone: string | null; // the business number dialed
   status: string; // queued/ringing/in-progress → ended | failed
@@ -1713,6 +1756,10 @@ export interface PhoneCallRecord {
   // cancellation?"). Drives the Invitations outcome notice; a confirmed cancel
   // also sets the event's `cancelled` flag server-side.
   outcome: 'confirmed' | 'unconfirmed' | null;
+  // The recipient asked, on this call, not to be called again — their number was
+  // added to Calen's do-not-call list. The Interaction view shows an explicit
+  // notice so the user knows why no future call will go to this number.
+  dncCaptured: boolean;
   durationSeconds: number | null;
   seen: boolean;
   // Whether the outcome notice was dismissed in Invitations → New.
@@ -1746,8 +1793,15 @@ export const callsApi = {
     feeAccepted: boolean;
     windows?: string[];
     shareContact?: boolean;
+    // Recurring event: the local Y-M-D of the occurrence being cancelled/moved.
+    occurrenceDate?: string;
   }) => api.post<PhoneCallRecord>('/calls/event-action', payload),
   ack: (id: string) => api.post<PhoneCallRecord>(`/calls/${id}/ack`),
+  // Is this business number on the do-not-call list? The Event Action screen
+  // checks before enabling its call button so a suppressed number is blocked
+  // with a reason rather than failing on tap (spec: ai-assistant.md).
+  suppressed: (phone: string) =>
+    api.get<{ suppressed: boolean }>('/calls/suppressed', { params: { phone } }),
 };
 
 // Native push device registration (server: routes/notifications.js).

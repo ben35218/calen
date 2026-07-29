@@ -15,6 +15,16 @@
 import { CalendarData } from '../api';
 import { buildMonth, colorOf, ymd } from './calendar';
 import { occasionTitle } from './occasions';
+import { DOWNLOAD_QR_SVG } from './printAssets';
+
+// "Scan to download" QR, printed in the header of every layout so a paper
+// calendar can point someone back to the app. Static asset (see printAssets.ts)
+// — the QR encodes a fixed URL, so it is generated once, not per print.
+const BRAND_HTML =
+  `<div class="brand">` +
+  `<div class="brand-copy"><div class="brand-name">Calen</div><div class="brand-cta">Scan to download</div></div>` +
+  `<div class="brand-qr">${DOWNLOAD_QR_SVG}</div>` +
+  `</div>`;
 
 export type PrintLayout = 'month' | 'agenda';
 
@@ -180,7 +190,7 @@ function footerHtml(o: PrintOptions, codes: Record<string, string>): string {
               : `<span class="leg"><span class="code">${codes[c.id]}</span>${esc(c.name)}</span>`
           )
           .join('');
-  return `<div class="footer"><div class="legend">${legend}</div><div class="printed">Printed ${esc(printedOn)}</div></div>`;
+  return `<div class="footer"><div class="legend">${legend}</div><div class="printed">Printed ${esc(printedOn)} · Calen</div></div>`;
 }
 
 function itemMarker(calendarId: string, o: PrintOptions, codes: Record<string, string>): string {
@@ -193,35 +203,81 @@ function itemMarker(calendarId: string, o: PrintOptions, codes: Record<string, s
 
 const BASE_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, 'Helvetica Neue', Roboto, sans-serif; color: #111; }
-  .header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-  .header .title { font-size: 18px; font-weight: 700; }
-  .header .sub { font-size: 11px; color: #666; }
-  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 4px; margin-right: 4px; vertical-align: middle; }
-  .code { display: inline-block; font-size: 7px; font-weight: 700; border: 0.5px solid #444; border-radius: 2px; padding: 0 2px; margin-right: 3px; vertical-align: middle; }
-  .footer { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 9px; color: #444; }
-  .legend { display: flex; flex-wrap: wrap; gap: 10px; }
-  .leg { white-space: nowrap; }
-  .printed { color: #999; white-space: nowrap; margin-left: 12px; }
+  /* Force the print engine to honour our fills — WebKit/expo-print otherwise
+     drops background colours (weekend wash, today pill, coloured dots) and the
+     sheet prints washed-out. */
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif;
+    color: #1f2430;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'tnum' 1, 'kern' 1;
+    line-height: 1.4;
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;
+    margin-bottom: 16px; padding-bottom: 10px;
+    border-bottom: 2px solid #1f2430;
+  }
+  .head-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .header .title { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; line-height: 1.05; }
+  .header .sub { font-size: 10px; font-weight: 600; color: #9aa0ac; text-transform: uppercase; letter-spacing: 1.4px; }
+  /* Download QR (top-right of every layout). */
+  .brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+  .brand-copy { text-align: right; line-height: 1.2; }
+  .brand-name { font-size: 12px; font-weight: 800; letter-spacing: -0.2px; color: #1f2430; }
+  .brand-cta { font-size: 7.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.7px; color: #9aa0ac; }
+  .brand-qr { width: 42px; height: 42px; }
+  .brand-qr svg { width: 100%; height: 100%; display: block; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .code { display: inline-block; font-size: 7px; font-weight: 700; letter-spacing: 0.3px; color: #4b5160; border: 0.75px solid #c2c7d0; border-radius: 3px; padding: 0 2px; margin-right: 4px; vertical-align: middle; line-height: 1.5; }
+  .footer {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 16px; padding-top: 8px; border-top: 1px solid #e6e8ee;
+    font-size: 9px; color: #6b7280;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 5px 16px; align-items: center; }
+  .leg { display: inline-flex; align-items: center; white-space: nowrap; font-weight: 500; color: #4b5160; }
+  .printed { color: #aeb3bd; white-space: nowrap; margin-left: 16px; text-transform: uppercase; letter-spacing: 0.6px; font-size: 8px; }
 `;
 
 // ── Month grid layout ───────────────────────────────────────────────────────
 
 const MONTH_CSS = `
-  @page { size: landscape; margin: 12mm; }
-  .page { page-break-after: always; }
+  /* Margins come from .page PADDING, not @page — iOS expo-print ignores @page
+     margins, so relying on them printed edge-to-edge. Padding is honoured by
+     every renderer; @page margin is zeroed so nothing double-applies. */
+  @page { size: landscape; margin: 0; }
+  /* The whole month must fit on ONE landscape sheet — landscape Letter/A4 give
+     ~182–188mm of printable height, and only weeks containing a day of the
+     month are rendered (no all-next-month trailing row), so the header, weekday
+     row, five–six 24mm cell rows, and footer stay well under that. Keep the
+     chrome tight when editing or the footer spills to a second page. */
+  .page { page-break-after: always; padding: 13mm 14mm; }
   .page:last-child { page-break-after: auto; }
+  .page .header { margin-bottom: 9px; padding-bottom: 6px; }
+  .page .header .title { font-size: 24px; letter-spacing: -0.6px; }
+  .page .footer { margin-top: 10px; padding-top: 6px; }
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  th { font-size: 9px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; padding: 3px 0; border: 0.5px solid #bbb; }
-  td { border: 0.5px solid #bbb; vertical-align: top; height: 25mm; padding: 2px 3px; overflow: hidden; }
-  td.out { background: #f4f4f4; }
-  td.out .daynum { color: #bbb; }
-  .daynum { font-size: 10px; font-weight: 600; text-align: right; color: #333; }
-  td.today .daynum { color: #fff; }
-  td.today .daynum span { background: #111; border-radius: 8px; padding: 0 4px; }
-  .item { font-size: 7.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .item .time { color: #555; }
-  .more { font-size: 7px; color: #888; }
+  thead th {
+    font-size: 9px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1.2px;
+    text-align: center; padding: 5px 0 7px; border-bottom: 1.5px solid #1f2430;
+  }
+  td {
+    border: 0.75px solid #e6e8ee; vertical-align: top; height: 23mm; padding: 4px 6px 3px;
+    overflow: hidden; background: #fff;
+  }
+  td.weekend { background: #fafbfc; }
+  td.out { background: #f6f7f9; }
+  td.out .daynum { color: #c8ccd4; }
+  .daynum { font-size: 11px; font-weight: 700; color: #3a4150; line-height: 1; margin-bottom: 4px; }
+  .item {
+    font-size: 8px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: #2b3140; padding: 0.5px 0;
+  }
+  .item .dot { width: 6px; height: 6px; margin-right: 4px; }
+  .item .time { color: #7a8090; font-weight: 600; margin-right: 2px; }
+  .more { font-size: 7.5px; font-weight: 600; color: #aeb3bd; margin-top: 1px; }
 `;
 
 const MAX_CELL_ITEMS = 6;
@@ -236,9 +292,13 @@ function monthPageHtml(
 ): string {
   const grid = buildMonth(year, month);
   const rows = grid.weeks
+    // Only weeks that hold at least one day of this month — drops a leading or
+    // trailing row that is entirely the adjacent month (e.g. the all-August row
+    // under July), so the page shows the month, not a fixed 6-week block.
+    .filter((week) => week.some((cell) => cell.currentMonth))
     .map((week) => {
       const cells = week
-        .map((cell) => {
+        .map((cell, idx) => {
           const items = byDate.get(cell.date) ?? [];
           const shown = items.slice(0, MAX_CELL_ITEMS);
           const lines = shown
@@ -248,7 +308,11 @@ function monthPageHtml(
             })
             .join('');
           const more = items.length > shown.length ? `<div class="more">+${items.length - shown.length} more</div>` : '';
-          const cls = [cell.currentMonth ? '' : 'out', cell.isToday ? 'today' : ''].filter(Boolean).join(' ');
+          // Today is deliberately not marked — a printed month is a reference
+          // sheet, not a live view, so "today" would be stale the next day.
+          const cls = [cell.currentMonth ? '' : 'out', idx === 0 || idx === 6 ? 'weekend' : '']
+            .filter(Boolean)
+            .join(' ');
           return `<td class="${cls}"><div class="daynum"><span>${cell.day}</span></div>${lines}${more}</td>`;
         })
         .join('');
@@ -257,7 +321,7 @@ function monthPageHtml(
     .join('');
 
   return `<div class="page">
-    <div class="header"><span class="title">${esc(grid.label)}</span></div>
+    <div class="header"><div class="head-main"><span class="title">${esc(grid.label)}</span></div>${BRAND_HTML}</div>
     <table><thead><tr>${WEEKDAYS.map((d) => `<th>${d}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>
     ${footerHtml(o, codes)}
   </div>`;
@@ -266,13 +330,22 @@ function monthPageHtml(
 // ── Agenda layout ───────────────────────────────────────────────────────────
 
 const AGENDA_CSS = `
-  @page { margin: 15mm; }
-  .day { margin-bottom: 10px; page-break-inside: avoid; }
-  .day h2 { font-size: 12px; font-weight: 700; border-bottom: 1px solid #999; padding-bottom: 2px; margin-bottom: 4px; }
-  .row { display: flex; align-items: baseline; font-size: 10px; line-height: 1.6; }
-  .row .when { width: 64px; flex-shrink: 0; color: #555; font-size: 9px; }
-  .row .sec { color: #777; margin-left: 6px; font-size: 9px; }
-  .empty { font-size: 11px; color: #777; margin-top: 12px; }
+  /* Margins are body PADDING, not @page (iOS expo-print ignores @page margins). */
+  @page { size: portrait; margin: 0; }
+  body { padding: 15mm 16mm; }
+  .day { margin-bottom: 16px; page-break-inside: avoid; }
+  .day h2 {
+    font-size: 12px; font-weight: 700; color: #1f2430; letter-spacing: -0.1px;
+    padding-bottom: 5px; margin-bottom: 7px; border-bottom: 1px solid #e6e8ee;
+  }
+  .row { display: flex; align-items: baseline; font-size: 10.5px; line-height: 1.5; padding: 2.5px 0; }
+  .row .when {
+    width: 66px; flex-shrink: 0; color: #7a8090; font-size: 8.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px; padding-top: 1px;
+  }
+  .row .what { flex: 1; color: #2b3140; }
+  .row .sec { color: #9aa0ac; margin-left: 8px; font-size: 9px; }
+  .empty { font-size: 12px; color: #9aa0ac; margin-top: 24px; text-align: center; }
 `;
 
 function agendaHtml(byDate: Map<string, PrintItem[]>, o: PrintOptions, codes: Record<string, string>): string {
@@ -282,17 +355,17 @@ function agendaHtml(byDate: Map<string, PrintItem[]>, o: PrintOptions, codes: Re
       const rows = byDate
         .get(date)!
         .map((i) => {
-          const when = i.timeLabel ?? 'all-day';
+          const when = i.timeLabel ?? 'All day';
           const sec = i.secondary ? `<span class="sec">${esc(i.secondary)}</span>` : '';
-          return `<div class="row"><span class="when">${esc(when)}</span><span>${itemMarker(i.calendarId, o, codes)}${esc(i.title)}${sec}</span></div>`;
+          return `<div class="row"><span class="when">${esc(when)}</span><span class="what">${itemMarker(i.calendarId, o, codes)}${esc(i.title)}${sec}</span></div>`;
         })
         .join('');
       return `<div class="day"><h2>${esc(dayHeading(date))}</h2>${rows}</div>`;
     })
     .join('');
 
-  const heading = `${dayHeading(o.from)} – ${dayHeading(o.to)}`;
-  return `<div class="header"><span class="title">${esc(heading)}</span></div>
+  const range = `${dayHeading(o.from)} – ${dayHeading(o.to)}`;
+  return `<div class="header"><div class="head-main"><span class="title">Agenda</span><span class="sub">${esc(range)}</span></div>${BRAND_HTML}</div>
     ${days || '<div class="empty">No events in this range.</div>'}
     ${footerHtml(o, codes)}`;
 }

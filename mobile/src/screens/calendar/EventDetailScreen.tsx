@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, Linking, Share, Image, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi, callsApi, invitationsApi, eventAttachmentsApi, EventAttachment, CalendarEvent, PhoneCallRecord } from '../../api';
 import { API_URL } from '../../config';
@@ -12,11 +13,12 @@ import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { decryptDownloadedFile } from '../../lib/attachments';
 import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar } from '../../components/ui';
-import { formatDisplay } from '../../lib/phone';
 import { EVENT_CALENDAR_TYPES } from '../../lib/calendar';
 import { useCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { formatDuration } from '../../lib/format';
+import { RepeatRule, repeatSummary } from '../../lib/eventRepeat';
+import { eventDeletePrompt } from '../../lib/eventDelete';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -86,6 +88,7 @@ function EventActionCard({
   event,
   eventId,
   accent,
+  occurrenceDate,
   onAddPhone,
   onOpen,
   onOpenCall,
@@ -94,6 +97,9 @@ function EventActionCard({
   event: CalendarEvent;
   eventId: string;
   accent: string;
+  // Recurring event: the tapped occurrence's local Y-M-D. Scopes the call and
+  // its outcome to that instance; undefined for a non-recurring event.
+  occurrenceDate?: string;
   onAddPhone: () => void;
   // Open the Event Action view (cancel/reschedule setup).
   onOpen: () => void;
@@ -103,13 +109,18 @@ function EventActionCard({
   onUpdateTime: () => void;
 }) {
   const qc = useQueryClient();
+  const isRecurring = !!event.recurrence?.freq;
   const callsQ = useQuery({
     queryKey: ['calls'],
     queryFn: async () => (await callsApi.list()).data,
     refetchInterval: (query) =>
       (query.state.data ?? []).some((c) => !CALL_TERMINAL.includes(c.status)) ? 10_000 : false,
   });
-  const forEvent = (callsQ.data ?? []).filter((c) => c.eventId === eventId);
+  // Scope to this occurrence: a call carrying an occurrenceDate matches only its
+  // own instance; an unscoped call (non-recurring / legacy) matches regardless.
+  const forEvent = (callsQ.data ?? []).filter(
+    (c) => c.eventId === eventId && (c.occurrenceDate == null || c.occurrenceDate === occurrenceDate),
+  );
   const activeCall = forEvent.find((c) => !CALL_TERMINAL.includes(c.status));
   const lastCall: PhoneCallRecord | undefined = forEvent[0];
 
@@ -226,7 +237,9 @@ function EventActionCard({
         summary={lastCall?.summary}
       >
         <Button title="Try the call again" color={accent} onPress={onOpen} />
-        {lastCall?.action === 'cancel' ? (
+        {/* Marking cancelled sets a series-wide flag, so it's hidden on a
+            recurring occurrence — deleting that single occurrence is the path. */}
+        {lastCall?.action === 'cancel' && !isRecurring ? (
           <Button
             title="Mark appointment as cancelled"
             variant="ghost"
@@ -253,8 +266,7 @@ function EventActionCard({
     return (
       <CardRow
         leading={<IconAvatar icon="call" bg={accent} />}
-        title="Cancel or Reschedule"
-        subtitle="Add the business phone number and Calen can call to cancel or reschedule it for you"
+        title="Reschedule/Cancel"
         onPress={onAddPhone}
       />
     );
@@ -264,8 +276,7 @@ function EventActionCard({
   return (
     <CardRow
       leading={<IconAvatar icon="call" bg={accent} />}
-      title="Cancel or Reschedule"
-      subtitle={`Calen will call ${formatDisplay(event.phone)} and cancel or reschedule this appointment for you`}
+      title="Reschedule/Cancel"
       onPress={onOpen}
     />
   );
@@ -302,9 +313,81 @@ function LocationCard({ location, onOpen, onUnavailable }: { location: string; o
   );
 }
 
+// A compact hour-grid card (Apple Calendar-style) that places the event as a
+// block on a few hours of timeline, so its start/end read at a glance. Timed
+// events only — an all-day event has no clock position. A multi-day timed event
+// is clipped to its first day (the mini card shows a single day).
+const TIME_CARD_HOUR = 44; // px per hour
+const TIME_CARD_PAD = 10; // vertical breathing room around the hour lines
+function EventTimeCard({ event, accent }: { event: CalendarEvent; accent: string }) {
+  const start = new Date(event.startDate);
+  const end = event.endDate ? new Date(event.endDate) : new Date(start.getTime() + 3600_000);
+  const startDec = start.getHours() + start.getMinutes() / 60;
+  let endDec = end.getHours() + end.getMinutes() / 60;
+  // Spans past midnight or has a non-positive length once clipped → run to end of day.
+  if (end.toDateString() !== start.toDateString() || endDec <= startDec) endDec = 24;
+
+  // The block's height caps how much text fits. > 1 hour: title + location +
+  // time; exactly 1 hour: title + time (no room for location); < 1 hour: title
+  // only. (`endDec` was clamped to 24 above for midnight-spanning events, which
+  // are long enough to show everything.)
+  const durationHours = endDec - startDec;
+  const showTime = durationHours >= 1;
+  const showLocation = durationHours > 1 && !!event.location;
+
+  const winStart = Math.max(0, Math.floor(startDec) - 1);
+  const winEnd = Math.min(24, Math.max(Math.ceil(endDec), Math.floor(startDec) + 2));
+  const hours: number[] = [];
+  for (let h = winStart; h <= winEnd; h++) hours.push(h);
+
+  const y = (dec: number) => TIME_CARD_PAD + (dec - winStart) * TIME_CARD_HOUR;
+  const blockTop = y(startDec);
+  const blockH = Math.max(TIME_CARD_HOUR * 0.6, y(endDec) - blockTop);
+  const canvasH = TIME_CARD_PAD * 2 + (winEnd - winStart) * TIME_CARD_HOUR;
+
+  const hourLabel = (h: number) => {
+    if (h === 12) return 'Noon';
+    const ampm = h < 12 || h === 24 ? 'AM' : 'PM';
+    return `${h % 12 === 0 ? 12 : h % 12} ${ampm}`;
+  };
+  const fmtTime = (d: Date) =>
+    d.toLocaleTimeString(undefined, { hour: 'numeric', minute: d.getMinutes() ? '2-digit' : undefined, hour12: true });
+
+  return (
+    <Card style={styles.timeCard}>
+      <View style={{ height: canvasH }}>
+        {hours.map((h) => (
+          <View key={h} style={[styles.hourRow, { top: y(h) - 8 }]}>
+            <Text style={styles.hourLabel}>{hourLabel(h)}</Text>
+            <View style={styles.hourRule} />
+          </View>
+        ))}
+        <View
+          style={[styles.timeBlock, { top: blockTop, height: blockH, backgroundColor: accent + '33', borderLeftColor: accent }]}
+        >
+          <Text style={[styles.timeBlockTitle, { color: accent }]} numberOfLines={1}>{event.title}</Text>
+          {showLocation ? (
+            <View style={styles.timeBlockMeta}>
+              <Ionicons name="location-outline" size={11} color={accent} />
+              <Text style={[styles.timeBlockMetaText, { color: accent }]} numberOfLines={1}>{event.location}</Text>
+            </View>
+          ) : null}
+          {showTime ? (
+            <View style={styles.timeBlockMeta}>
+              <Ionicons name="time-outline" size={11} color={accent} />
+              <Text style={[styles.timeBlockMetaText, { color: accent }]}>{fmtTime(start)} – {fmtTime(end)}</Text>
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </Card>
+  );
+}
+
 export default function EventDetailScreen() {
   const navigation = useNavigation<Nav>();
   const { eventId, date } = useRoute<Rt>().params;
+  const insets = useSafeAreaInsets();
   const qc = useQueryClient();
   const { colors: calColors } = useCalendarColors();
   const { calendars: customCalendars } = useCustomCalendars();
@@ -318,6 +401,18 @@ export default function EventDetailScreen() {
     queryKey: ['calendar', 'event', eventId],
     queryFn: async () => (await calendarApi.getEvent(eventId)).data,
   });
+
+  // Re-pull the event whenever this screen regains focus (e.g. returning from the
+  // edit form). Edits to fields that drive what's rendered here — turning off
+  // recurrence, which un-hides the Reschedule/Cancel card — must be reflected
+  // without a manual refresh. The refetch keeps the current data during the
+  // fetch, so there's no loading flicker.
+  useFocusEffect(
+    React.useCallback(() => {
+      eventQ.refetch();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [eventId]),
+  );
 
   // E2EE dual-write: decrypt the content over the plaintext fields.
   const [event, setEvent] = useState<CalendarEvent | null>(null);
@@ -340,6 +435,23 @@ export default function EventDetailScreen() {
 
   const calType: string = event?.calendarType ?? 'activities';
   const accent = calColors[calType] || customCalendars.find((c) => c.id === calType)?.color || colors.primary;
+
+  // Per-occurrence identity for the AI cancel/reschedule call. A recurring event
+  // is one record; the detail screen was opened for a specific day (`date`), so
+  // scope the call to THAT occurrence: its own local Y-M-D (`occurrenceDate`)
+  // and its own start instant (`occurrenceStart` = the tapped day + the series'
+  // time of day). A non-recurring event uses its stored values unchanged.
+  const eventRecurs = !!event?.recurrence?.freq;
+  const occurrenceDate = eventRecurs && date ? date : undefined;
+  const occurrenceStart = useMemo(() => {
+    if (!event) return undefined;
+    if (!eventRecurs || !date) return event.startDate;
+    if (event.allDay) return `${date}T12:00:00.000Z`;
+    const s = new Date(event.startDate);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return new Date(`${date}T${pad(s.getHours())}:${pad(s.getMinutes())}:00`).toISOString();
+  }, [event, eventRecurs, date]);
+
   const calName =
     EVENT_CALENDAR_TYPES.find((o) => o.value === calType)?.label ||
     customCalendars.find((c) => c.id === calType)?.name ||
@@ -370,8 +482,11 @@ export default function EventDetailScreen() {
   });
   const attachments = attachmentsQ.data ?? [];
 
+  // A one-off event deletes outright; a recurring occurrence offers Apple's
+  // "this event" / "all future" choices (eventDeletePrompt). The chosen action's
+  // api call is the mutation's argument, so the Delete control keeps its spinner.
   const del = useMutation({
-    mutationFn: () => calendarApi.deleteEvent(eventId),
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['calendar'] });
       navigation.goBack();
@@ -441,16 +556,62 @@ export default function EventDetailScreen() {
   const alertLabel = useMemo(() => fmtAlert(event?.reminderMinutes) ?? 'None', [event]);
   const alert2Label = useMemo(() => fmtAlert(event?.alert2Minutes), [event]);
 
+  // "Repeats weekly" / "Repeats every 2 weeks on Monday until Jul 29, 2027" —
+  // the recurrence summary, mirroring the form's Repeat + End Repeat rows.
+  const repeatLabel = useMemo(() => {
+    const rec = event?.recurrence;
+    if (!rec?.freq) return null;
+    const rule: RepeatRule = {
+      freq: rec.freq as RepeatRule['freq'],
+      interval: rec.interval ?? 1,
+      daysOfWeek: rec.daysOfWeek ?? [],
+      daysOfMonth: rec.daysOfMonth ?? [],
+      months: rec.months ?? [],
+      weekOfMonth: rec.weekOfMonth ?? null,
+      weekdayKind: rec.weekdayKind ?? null,
+    };
+    const summary = repeatSummary(rule); // "Weekly", "Every 2 weeks on Monday", …
+    let s = `Repeats ${summary.charAt(0).toLowerCase()}${summary.slice(1)}`;
+    if (rec.until) {
+      const until = new Date(rec.until).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      s += ` until ${until}`;
+    }
+    return s;
+  }, [event]);
+
+  // Travel time: the drive duration plus the clock time to leave by (start −
+  // drive time) when the event is timed and the departure lands on the same day.
+  const travelLabel = useMemo(() => {
+    if (event?.travelMinutes == null) return null;
+    const start = new Date(event.startDate);
+    let leaveBy: string | null = null;
+    if (event.allDay === false) {
+      const dep = new Date(start.getTime() - event.travelMinutes * 60000);
+      if (dep.toDateString() === start.toDateString()) {
+        leaveBy = dep.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+      }
+    }
+    return { duration: formatDuration(event.travelMinutes), leaveBy };
+  }, [event]);
+
   const openInMaps = () => {
     if (!event?.location) return;
     Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`);
   };
 
-  const confirmDelete = () =>
-    Alert.alert('Delete event?', '', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
-    ]);
+  const confirmDelete = () => {
+    if (!event) return;
+    const { title, message, choices } = eventDeletePrompt(event, date);
+    Alert.alert(
+      title,
+      message,
+      choices.map((c) => ({
+        text: c.text,
+        style: c.style,
+        onPress: c.perform ? () => del.mutate(c.perform!) : undefined,
+      })),
+    );
+  };
 
   if (eventQ.isLoading || (!event && !eventQ.isError)) {
     return <CenteredLoader color={accent} />;
@@ -471,7 +632,8 @@ export default function EventDetailScreen() {
     .join(', ');
 
   return (
-    <Screen>
+    <View style={styles.root}>
+    <Screen style={{ paddingBottom: insets.bottom + 96 }}>
       <ScreenTitle>{event.title}</ScreenTitle>
 
       {event.cancelled ? (
@@ -487,9 +649,49 @@ export default function EventDetailScreen() {
         </TouchableOpacity>
       ) : null}
 
-      <Text style={styles.when}>{when}</Text>
+      <View style={styles.whenBlock}>
+        <Text style={styles.when}>{when}</Text>
+
+        {repeatLabel ? <Text style={[styles.repeat, { color: accent }]}>{repeatLabel}</Text> : null}
+
+        {/* Apple-style mini timeline: the event as a block on a few hours of grid,
+            so its start/end read at a glance. Timed events only. */}
+        {!event.allDay ? <EventTimeCard event={event} accent={accent} /> : null}
+      </View>
 
       <View style={styles.rows}>
+        {/* Reschedule/Cancel is the first row, directly above the Calendar card.
+            On a recurring event the call is scoped to the specific tapped
+            occurrence (occurrenceDate + that day's start instant), so it
+            cancels/reschedules just that instance — not the whole series. */}
+        {aiEnabled ? (
+          <EventActionCard
+            event={event}
+            eventId={eventId}
+            accent={accent}
+            occurrenceDate={occurrenceDate}
+            // No phone yet → the event's Location view, where the details (and
+            // the business number) can be filled in and saved directly.
+            // `promptPhone` nudges the user to add the number to activate calling.
+            onAddPhone={() => navigation.navigate('EventLocation', { eventId, promptPhone: true })}
+            onOpen={() =>
+              navigation.navigate('EventAction', {
+                eventId,
+                occurrenceDate,
+                event: {
+                  title: event.title,
+                  startDate: occurrenceStart ?? event.startDate,
+                  phone: event.phone!,
+                  allDay: event.allDay !== false,
+                  calendarType: calType,
+                },
+              })
+            }
+            onOpenCall={(id) => navigation.navigate('Interaction', { id })}
+            onUpdateTime={() => navigation.navigate('EventForm', { eventId, date })}
+          />
+        ) : null}
+
         <CardRow
           title="Calendar"
           right={
@@ -540,6 +742,14 @@ export default function EventDetailScreen() {
           />
         ) : null}
 
+        {travelLabel ? (
+          <CardRow
+            title="Travel Time"
+            subtitle={travelLabel.leaveBy ? `Leave by ${travelLabel.leaveBy}` : undefined}
+            right={<Text style={styles.rightValue}>{travelLabel.duration}</Text>}
+          />
+        ) : null}
+
         {/* Alert + Second alert share one card (divided), mirroring the form's
             two Alert slots and Apple Calendar's grouped alert block. */}
         <Card style={styles.alertCard}>
@@ -557,33 +767,6 @@ export default function EventDetailScreen() {
             </>
           ) : null}
         </Card>
-
-        {/* One event, one appointment: hidden on recurring series, where a
-            single call couldn't speak for every occurrence. */}
-        {aiEnabled && !event.recurrence?.freq ? (
-          <EventActionCard
-            event={event}
-            eventId={eventId}
-            accent={accent}
-            // No phone yet → the event's Location view, where the details (and
-            // the business number) can be filled in and saved directly.
-            onAddPhone={() => navigation.navigate('EventLocation', { eventId })}
-            onOpen={() =>
-              navigation.navigate('EventAction', {
-                eventId,
-                event: {
-                  title: event.title,
-                  startDate: event.startDate,
-                  phone: event.phone!,
-                  allDay: event.allDay !== false,
-                  calendarType: calType,
-                },
-              })
-            }
-            onOpenCall={(id) => navigation.navigate('Interaction', { id })}
-            onUpdateTime={() => navigation.navigate('EventForm', { eventId, date })}
-          />
-        ) : null}
       </View>
 
       {event.url ? (
@@ -633,38 +816,38 @@ export default function EventDetailScreen() {
 
       <FormError>{error}</FormError>
 
-      {/* Apple-style close: the map is the last thing on the page, with the
-          "Delete Event" pill floating over it. Without map imagery (no location,
-          or the tiles failed to load) it falls back to a plain full-width button. */}
+      {/* The location map closes the page (Apple-style). Hidden when there's no
+          location or the tiles fail to load. */}
       {event.location && mapAvailable ? (
-        <View style={styles.mapDeleteWrap}>
-          <LocationCard location={event.location} onOpen={openInMaps} onUnavailable={() => setMapAvailable(false)} />
-          <View style={styles.floatingDeleteWrap} pointerEvents="box-none">
-            <TouchableOpacity
-              style={styles.floatingDelete}
-              activeOpacity={0.85}
-              disabled={del.isPending}
-              onPress={confirmDelete}
-            >
-              {del.isPending ? (
-                <ActivityIndicator color={colors.error} />
-              ) : (
-                <Text style={styles.floatingDeleteText}>Delete Event</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        <View style={styles.footer}>
-          <Button title="Delete Event" variant="danger" loading={del.isPending} onPress={confirmDelete} />
-        </View>
-      )}
+        <LocationCard location={event.location} onOpen={openInMaps} onUnavailable={() => setMapAvailable(false)} />
+      ) : null}
 
     </Screen>
+
+      {/* Apple-style "Delete Event" pill — a translucent floating control PINNED
+          to the screen (a sibling of the scroll view, not inside it), so it stays
+          fixed in place as the event content scrolls beneath it. */}
+      <View style={[styles.floatingDeleteWrap, { bottom: insets.bottom + spacing.lg }]} pointerEvents="box-none">
+        <TouchableOpacity
+          style={styles.floatingDelete}
+          activeOpacity={0.85}
+          disabled={del.isPending}
+          onPress={confirmDelete}
+        >
+          {del.isPending ? (
+            <ActivityIndicator color={colors.error} />
+          ) : (
+            <Text style={styles.floatingDeleteText}>Delete Event</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Root wrapper: the scroll view plus the fixed floating Delete pill sibling.
+  root: { flex: 1, backgroundColor: colors.background },
   // Call-outcome status card (cancelled / rescheduled / couldn't-confirm).
   statusCard: { gap: spacing.md },
   statusHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
@@ -675,7 +858,24 @@ const styles = StyleSheet.create({
   statusActions: { gap: spacing.sm },
   editBtn: { fontSize: 17, fontWeight: '500' },
   location: { fontSize: 16, marginTop: 6, lineHeight: 22 },
-  when: { fontSize: 15, color: colors.text, marginTop: spacing.md, marginBottom: spacing.lg, lineHeight: 22 },
+  // Wraps the date/time text, the repeat line, and the mini timeline so the gap
+  // before the rows group is uniform whether or not a timeline card is present.
+  whenBlock: { marginTop: spacing.md, marginBottom: spacing.lg },
+  when: { fontSize: 15, color: colors.text, lineHeight: 22 },
+  repeat: { fontSize: 15, marginTop: 2, lineHeight: 22 },
+  // Mini hour-grid timeline card (Apple Calendar-style event block preview).
+  timeCard: { marginTop: spacing.lg, marginBottom: 0 },
+  hourRow: { position: 'absolute', left: 0, right: 0, height: 16, flexDirection: 'row', alignItems: 'center' },
+  hourLabel: { width: 44, fontSize: 11, color: colors.textMuted, textAlign: 'right' },
+  hourRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: spacing.sm },
+  timeBlock: {
+    position: 'absolute', left: 56, right: spacing.xs,
+    borderRadius: radius.md, borderLeftWidth: 3, overflow: 'hidden',
+    paddingHorizontal: spacing.sm, paddingVertical: 6, justifyContent: 'center',
+  },
+  timeBlockTitle: { fontSize: 13, fontWeight: '700' },
+  timeBlockMeta: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
+  timeBlockMetaText: { fontSize: 11, flexShrink: 1 },
   rows: { gap: spacing.md },
   // Alert + Second alert grouped in one card (rows own their padding; a hairline
   // divides them), matching Apple Calendar's alert block.
@@ -705,13 +905,10 @@ const styles = StyleSheet.create({
   },
   attIcon: { marginRight: spacing.sm },
   notes: { fontSize: 15, color: colors.text, lineHeight: 22, marginTop: spacing.xs },
-  footer: { marginTop: spacing.xl },
-  // The map at the page bottom with the "Delete Event" pill floating over it.
-  // The overlay is inset by the map card's own top margin so it centres on the
-  // imagery, not the empty margin above it.
-  mapDeleteWrap: { position: 'relative' },
+  // Fixed floating "Delete Event" pill (Apple-style translucent overlay), pinned
+  // to the bottom of the screen. `bottom` is set inline from the safe-area inset.
   floatingDeleteWrap: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, top: spacing.lg,
+    position: 'absolute', left: 0, right: 0,
     alignItems: 'center', justifyContent: 'center',
   },
   floatingDelete: {

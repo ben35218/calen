@@ -20,6 +20,7 @@ import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
 import HouseholdItemIcon from '../../components/HouseholdItemIcon';
 import { useFormAssist } from '../../hooks/useFormAssist';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { mdiName } from '../../lib/recurrence';
 import { ITEM_TYPES, itemTypeConfig, TYPE_CATEGORY_MATCH, VEHICLE_CATEGORY, ItemField } from '../../lib/itemTypes';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -77,6 +78,9 @@ export default function ItemFormScreen() {
   const [customMap, setCustomMap] = useState<Record<string, string>>({});
   const [userFields, setUserFields] = useState<CustomField[]>([]);
   const [error, setError] = useState('');
+  // A new item's form is ready immediately; an edit waits for the item to load
+  // and seed below before the discard guard snapshots its clean baseline.
+  const [seeded, setSeeded] = useState(!isEdit);
   const assist = useFormAssist();
 
   const set = (patch: Partial<CoreForm>) => {
@@ -378,6 +382,7 @@ export default function ItemFormScreen() {
       itemTypeConfig(it.type).fieldGroups.flatMap((g) => g.fields.filter((f) => f.customKey).map((f) => f.customKey!))
     );
     applyCustomFields(it.customFields, keys);
+    setSeeded(true);
     })();
     return () => { cancelled = true; };
   }, [itemQ.data]);
@@ -438,6 +443,7 @@ export default function ItemFormScreen() {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['items'] });
       const newId = (res.data as Item)?._id;
+      allowLeave();
       if (!isEdit && newId) navigation.replace('ItemDetail', { id: newId });
       else navigation.goBack();
     },
@@ -455,6 +461,18 @@ export default function ItemFormScreen() {
 
   // No save during the add wizard — only once the form itself is shown.
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, enabled: step === 'form' });
+
+  // Discard guard: only meaningful once the form itself is shown (the wizard
+  // steps carry no typed-in data to lose). Baseline is the form as it enters the
+  // 'form' step — for a manual add that already includes the wizard's type/
+  // property picks — so only edits made on the form count as unsaved.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ form, customMap, userFields });
+  useEffect(() => {
+    if (step === 'form' && seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [step, seeded, snapshot]);
+  const dirty = step === 'form' && seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (isEdit && itemQ.isLoading) {
     return (

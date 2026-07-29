@@ -21,6 +21,7 @@ import {
   Input, Select, Screen, useHeaderCheckButton, CenteredLoader, SectionHeader, InfoCard, ListRow, Hint, BottomSheet, Button,
 } from '../../components/ui';
 import { form as fs, GroupCard } from '../../components/formStyles';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { colors, spacing, radius } from '../../theme';
 import { ECARD_GALLERY, resolveTemplate, ECardTemplateMeta, ECardDeco } from '../../lib/ecardTemplates';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -265,10 +266,14 @@ export default function ECardFormScreen() {
   // recipients (match each saved email back to a candidate + its address). New
   // card: pre-select the occasion's contact when they have an email.
   const seeded = useRef(false);
+  // State mirror of the ref, so the discard guard's baseline effect re-runs once
+  // seeding is done (a ref change alone wouldn't trigger it).
+  const [seededReady, setSeededReady] = useState(false);
   useEffect(() => {
     if (seeded.current || !people) return;
     if (ecardId && !existing) return; // wait for the cards list before seeding an edit
     seeded.current = true;
+    setSeededReady(true);
     if (existing) {
       setMessage(existing.message ?? '');
       // Unknown/legacy keys (old rows stored `template: <kind>`) fall back to
@@ -330,7 +335,7 @@ export default function ECardFormScreen() {
       }
       return res;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['ecards'] }); nav.goBack(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['ecards'] }); allowLeave(); nav.goBack(); },
     onError: () => Alert.alert('Could not schedule', 'Please check your connection and try again.'),
   });
 
@@ -355,7 +360,7 @@ export default function ECardFormScreen() {
 
   const cancelCard = useMutation({
     mutationFn: () => ecardsApi.remove(existing!._id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['ecards'] }); nav.goBack(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['ecards'] }); allowLeave(); nav.goBack(); },
     onError: () => Alert.alert('Could not cancel', 'Please try again.'),
   });
 
@@ -380,6 +385,21 @@ export default function ECardFormScreen() {
 
   useHeaderCheckButton(nav, { onPress: onSave, loading: save.isPending, color: accent });
   useEffect(() => { nav.setOptions({ title: existing ? 'Edit E-Card' : 'Schedule E-Card' }); }, [nav, existing]);
+
+  // Discard guard: prompt before leaving with unsaved edits to the card (style,
+  // font, its editable lines, send time, recipients, or newly-picked photos).
+  // Server photos and inline-added contact emails persist immediately, so they
+  // aren't part of the dirty check. Baseline is taken once seeding completes.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({
+    message, template, font, greeting, signoff, signature, sendTime,
+    selected: [...selected].sort(), chosenEmail, localPhotos: localPhotos.map((f) => f.uri),
+  });
+  useEffect(() => {
+    if (seededReady && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seededReady, snapshot]);
+  const dirty = seededReady && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   if (isLoading) return <CenteredLoader color={accent} />;
 

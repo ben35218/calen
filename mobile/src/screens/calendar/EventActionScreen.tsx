@@ -10,6 +10,7 @@ import {
   DateField, TimeField, Button, Hint, FormError, CardRow, IconAvatar,
 } from '../../components/ui';
 import { form as formStyles } from '../../components/formStyles';
+import { DNC_BLOCK_MESSAGE, isCallBlockedBySuppression } from '../../lib/callBlock';
 import { ymd } from '../../lib/calendar';
 import { startTimeKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
@@ -51,7 +52,7 @@ function nextDay(date: string): string {
 // on the Interaction view to watch it live.
 export default function EventActionScreen() {
   const navigation = useNavigation<Nav>();
-  const { eventId, event } = useRoute<Rt>().params;
+  const { eventId, event, occurrenceDate } = useRoute<Rt>().params;
   const qc = useQueryClient();
   const { colors: calColors } = useCalendarColors();
   const { calendars: customCalendars } = useCustomCalendars();
@@ -103,7 +104,22 @@ export default function EventActionScreen() {
   // The most recent finished call for this event — a "review the last call"
   // pointer replacing the old card's popup options.
   const callsQ = useQuery({ queryKey: ['calls'], queryFn: async () => (await callsApi.list()).data });
-  const lastCall = (callsQ.data ?? []).find((c) => c.eventId === eventId && CALL_TERMINAL.includes(c.status));
+  const lastCall = (callsQ.data ?? []).find(
+    (c) =>
+      c.eventId === eventId &&
+      (c.occurrenceDate == null || c.occurrenceDate === occurrenceDate) &&
+      CALL_TERMINAL.includes(c.status),
+  );
+
+  // Do-not-call pre-check: if the business asked not to receive automated calls,
+  // the server refuses the placement — so block the button here with a reason
+  // rather than letting the user set up a call that fails on tap.
+  const suppressedQ = useQuery({
+    queryKey: ['call-suppressed', event.phone],
+    queryFn: async () => (await callsApi.suppressed(event.phone)).data.suppressed,
+    enabled: Boolean(event.phone),
+  });
+  const callBlocked = isCallBlockedBySuppression(suppressedQ.data);
 
   const place = useMutation({
     mutationFn: () =>
@@ -112,6 +128,7 @@ export default function EventActionScreen() {
         action,
         feeAccepted,
         shareContact,
+        occurrenceDate,
         windows: action === 'reschedule' ? windows.map(windowLabel) : undefined,
       }),
     onSuccess: (res) => {
@@ -289,6 +306,7 @@ export default function EventActionScreen() {
         </>
       ) : null}
 
+      {callBlocked ? <Hint>{DNC_BLOCK_MESSAGE}</Hint> : null}
       <FormError>{error}</FormError>
 
       <View style={formStyles.footer}>
@@ -296,6 +314,7 @@ export default function EventActionScreen() {
           title={action === 'cancel' ? 'Call to Cancel' : 'Call to Reschedule'}
           color={accent}
           loading={place.isPending}
+          disabled={callBlocked}
           onPress={onPlace}
         />
       </View>

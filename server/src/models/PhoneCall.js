@@ -19,6 +19,12 @@ const schema = new mongoose.Schema({
   eventId: { type: String },
   eventTitle: String,
   eventDate:  String, // human label, e.g. "July 22, 2026"
+  // For a call placed against ONE occurrence of a recurring event, the local
+  // Y-M-D of that occurrence (e.g. "2026-08-07"). Scopes the confirmed-cancel /
+  // reschedule dimming to that instance so one call doesn't strike the whole
+  // series. Null for non-recurring events (unscoped — matches the event on every
+  // day it renders, e.g. a multi-day span) and legacy rows.
+  occurrenceDate: { type: String },
   action: { type: String, enum: ['cancel', 'reschedule'], required: true },
   phone:  String,
   // queued/ringing/in-progress → ended (terminal) or failed (terminal).
@@ -29,6 +35,14 @@ const schema = new mongoose.Schema({
   // Vapi's PassFail success evaluation of the call's goal. A 'confirmed'
   // cancel call marks the event cancelled and files an Invitations notice.
   outcome: { type: String, enum: ['confirmed', 'unconfirmed'] },
+  // Set when the recipient asked, on THIS call, not to be called again (their
+  // number was added to the do-not-call list — see services/dnc.js). The
+  // suppression itself is platform-wide and invisible; this per-call flag lets
+  // the outcome view show an explicit "asked not to be called" notice so the
+  // user knows why Calen won't dial this number again. Set by the in-call
+  // webhook (routes/calls.js) and, as a backstop, by applyVapiToRow from the
+  // post-call analysis (spec: features/ai-assistant.md do-not-call).
+  dncCaptured: { type: Boolean, default: false },
   // Once the call ends we charge its connected `durationSeconds` against the
   // household's weekly call-time budget exactly once. `metered` guards against
   // double-counting across the lazy status refreshes.

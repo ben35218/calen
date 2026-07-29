@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -9,6 +9,7 @@ import { useAuth } from '../../store/auth';
 import { COLOR_PRESETS, useCustomCalendars } from '../../lib/calendarPrefs';
 import { previewFeed, refreshFeed, FeedError } from '../../lib/calendarFeeds';
 import { Screen, Input, SectionTitle, useHeaderCheckButton, ColorPicker } from '../../components/ui';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -94,6 +95,7 @@ export default function SubscribeCalendarScreen() {
       // Warm the cache so events appear right away; failures self-heal on the
       // next calendar load.
       refreshFeed(created.id).catch(() => {});
+      allowLeave();
       // Skip back past the Add Calendar chooser to the calendar list.
       const routes = nav.getState()?.routes ?? [];
       const below = routes[routes.length - 2];
@@ -111,6 +113,17 @@ export default function SubscribeCalendarScreen() {
     loading: saving,
     enabled: !!preview,
   });
+
+  // Discard guard: this create-only screen is ready on first render, so its
+  // baseline is the empty form. Dirty = a pasted link or any confirmed-phase
+  // edit (name / colour / sharing) that would be lost on leaving.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ url, name, color, sharedWithHousehold, memberIds: [...memberIds] });
+  useEffect(() => {
+    if (baselineRef.current === null) baselineRef.current = snapshot;
+  }, [snapshot]);
+  const dirty = baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   const toggleMember = (id: string) =>
     setMemberIds((prev) => {

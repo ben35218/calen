@@ -8,7 +8,8 @@ import { calendarApi, callsApi } from '../../api';
 import { Screen, ScreenTitle, SectionTitle, CardRow, Button, Badge, CenteredLoader, FormError } from '../../components/ui';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { formatDisplay } from '../../lib/phone';
-import { colors, spacing } from '../../theme';
+import { DNC_CAPTURED_NOTICE } from '../../lib/callBlock';
+import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'Interaction'>;
 type Rt = RouteProp<CalendarStackParamList, 'Interaction'>;
@@ -147,6 +148,16 @@ export default function InteractionScreen() {
         {live ? <ActivityIndicator size="small" color={colors.primary} /> : null}
       </View>
 
+      {/* The recipient asked not to be called again — their number is now on the
+          do-not-call list. Tell the user explicitly, so a future call that Calen
+          refuses isn't a surprise. */}
+      {call.dncCaptured ? (
+        <View style={styles.dncNotice}>
+          <Ionicons name="hand-left-outline" size={18} color={colors.warning} style={styles.dncIcon} />
+          <Text style={styles.dncText}>{DNC_CAPTURED_NOTICE}</Text>
+        </View>
+      ) : null}
+
       <View style={styles.rows}>
         <CardRow
           title="Appointment"
@@ -267,6 +278,19 @@ export default function InteractionScreen() {
 
 const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.lg },
+  dncNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.warning,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  dncIcon: { marginTop: 1 },
+  dncText: { flex: 1, fontSize: 14, color: colors.text, lineHeight: 20 },
   rows: { gap: spacing.md },
   rightRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, flexShrink: 1 },
   rightValue: { fontSize: 16, color: colors.textMuted, flexShrink: 1 },

@@ -30,6 +30,9 @@ export const EVENT_ENC = (p: Rec) => ({
   reminderMinutes: p.reminderMinutes, alert2Minutes: p.alert2Minutes,
   alertAudience: p.alertAudience, guestListVisible: p.guestListVisible,
   invitationId: p.invitationId, cancelled: p.cancelled, recurrence: p.recurrence,
+  // YYYY-MM-DD occurrences removed from a recurring series ("Delete This Event
+  // Only"); the shared engine skips them on expansion.
+  exceptionDates: p.exceptionDates,
 });
 
 // Multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames)

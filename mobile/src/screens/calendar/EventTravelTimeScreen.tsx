@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { Screen, SwitchRow } from '../../components/ui';
+import { Screen, SwitchRow, useHeaderCheckButton } from '../../components/ui';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { resolveHomeAddress } from '../../lib/homeAddress';
 import { setTravelDraft } from '../../lib/travelDraft';
@@ -13,6 +14,7 @@ import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 
 type Rt = RouteProp<CalendarStackParamList, 'EventTravelTime'>;
+type Nav = NativeStackNavigationProp<Record<string, object | undefined>>;
 
 const MANUAL_OPTIONS = [
   { label: '5 minutes', value: 5 },
@@ -26,6 +28,7 @@ const MANUAL_OPTIONS = [
 // Pushed from the event form's Travel Time row. Edits sync back to the form
 // live through the travelDraft store; going back is the only "save".
 export default function EventTravelTimeScreen() {
+  const navigation = useNavigation<Nav>();
   const params = useRoute<Rt>().params;
   const [enabled, setEnabled] = useState(params.enabled);
   const [fromAddress, setFromAddress] = useState(params.fromAddress);
@@ -44,6 +47,10 @@ export default function EventTravelTimeScreen() {
     if (next.manualMinutes !== undefined) setManualMinutes(next.manualMinutes);
     setTravelDraft({ enabled, fromAddress, manualMinutes, ...next });
   };
+
+  // Edits sync back to the event form live through the travelDraft store, so the
+  // checkmark is just "done" — go back and let the form apply the draft.
+  useHeaderCheckButton(navigation, { onPress: () => navigation.goBack() });
 
   // One-shot device GPS → reverse-geocoded address, dropped straight into the
   // origin. Same opt-in path as the Account home-address field.

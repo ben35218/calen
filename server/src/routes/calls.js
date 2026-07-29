@@ -8,7 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meterCallSeconds } = require('../middleware/usageMeter');
 const { refreshPendingCalls, placeCall, fetchVapiCall, applyVapiToRow, markEventCancelledIfConfirmed } = require('../services/phoneCalls');
-const { suppress } = require('../services/dnc');
+const { suppress, isSuppressed } = require('../services/dnc');
 
 const router = express.Router();
 
@@ -32,6 +32,12 @@ router.post('/vapi/webhook', async (req, res) => {
     const dialed = msg.call?.customer?.number || msg.customer?.number;
     if (dialed && toolCalls.some(isOptOut)) {
       await suppress(dialed, { source: 'callee-request', note: 'Requested during the call.' });
+      // Flag the originating call row so its outcome view tells the user this
+      // number was added to the do-not-call list (the post-call analysis backstop
+      // sets the same flag, so this is just the immediate path). Keyed by the Vapi
+      // call id when present; harmless no-op otherwise.
+      const callId = msg.call?.id;
+      if (callId) await PhoneCall.updateOne({ callId }, { $set: { dncCaptured: true } });
     }
     // Vapi expects a results array keyed by each toolCallId.
     const results = toolCalls
@@ -58,12 +64,16 @@ const serialize = (c) => ({
   eventId: c.eventId,
   eventTitle: c.eventTitle,
   eventDate: c.eventDate,
+  occurrenceDate: c.occurrenceDate ?? null,
   action: c.action,
   phone: c.phone ?? null,
   status: c.status,
   endedReason: c.endedReason ?? null,
   summary: c.summary ?? null,
   outcome: c.outcome ?? null,
+  // The recipient asked, on this call, not to be called again — the outcome view
+  // shows an explicit notice so the user knows why no future call will go out.
+  dncCaptured: Boolean(c.dncCaptured),
   durationSeconds: c.durationSeconds ?? null,
   seen: Boolean(c.seenAt),
   acknowledged: Boolean(c.acknowledgedAt),
@@ -81,6 +91,21 @@ router.get('/', async (req, res) => {
     res.json(calls.map(serialize));
   } catch (err) {
     console.error('Calls list error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/calls/suppressed?phone=<number> → is this business number on the
+// do-not-call list? Lets the event's call screen disable the "Call to…" button
+// with a reason instead of failing the placement on tap (spec: ai-assistant.md
+// do-not-call). Returns only a boolean — attempting the call already reveals the
+// same bit (403 DNC_SUPPRESSED). Must be declared BEFORE `/:id` so the literal
+// path isn't captured as a call id.
+router.get('/suppressed', async (req, res) => {
+  try {
+    res.json({ suppressed: await isSuppressed(req.query.phone) });
+  } catch (err) {
+    console.error('Calls suppressed-check error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -159,7 +184,7 @@ router.post('/cancel-event', requireAiEnabled, meterCallSeconds(), async (req, r
 // date/time windows to propose, pre-formatted labels in preference order.
 router.post('/event-action', requireAiEnabled, meterCallSeconds(), async (req, res) => {
   try {
-    const { event: ev, action, feeAccepted, windows, shareContact } = req.body || {};
+    const { event: ev, action, feeAccepted, windows, shareContact, occurrenceDate } = req.body || {};
     if (!ev || !mongoose.isValidObjectId(ev._id) || !ev.title || !ev.startDate) {
       return res.status(400).json({ error: 'event with _id, title and startDate is required' });
     }
@@ -212,6 +237,10 @@ router.post('/event-action', requireAiEnabled, meterCallSeconds(), async (req, r
       action,
       callerName,
       newDateTime,
+      // Scope the call to a specific occurrence of a recurring event (a local
+      // Y-M-D), so its confirmed outcome dims only that instance. Ignored for
+      // non-recurring events (client sends none).
+      occurrenceDate: typeof occurrenceDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(occurrenceDate) ? occurrenceDate : undefined,
       additionalInstructions: feeClause,
       contact: shareContact === true
         ? {

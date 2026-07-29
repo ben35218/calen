@@ -16,6 +16,7 @@ import { SUGGESTED_TASK_ICONS } from '../../lib/maintenanceCategories';
 import FormAssist from '../../components/FormAssist';
 import IconPicker from '../../components/IconPicker';
 import { useFormAssist } from '../../hooks/useFormAssist';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import {
   recurrenceToRule,
   ruleToRecurrence,
@@ -74,6 +75,9 @@ export default function TaskFormScreen() {
   // here and convert to/from the task recurrence shape on load/save.
   const [repeatRule, setRepeatRule] = useState<RepeatRule>({ ...EMPTY_REPEAT, freq: 'monthly', interval: 3 });
   const [error, setError] = useState('');
+  // A new task is ready immediately; an edit waits for the task to load and seed
+  // below before the discard guard snapshots its clean baseline.
+  const [seeded, setSeeded] = useState(!isEdit);
   const assist = useFormAssist();
 
   useEffect(() => {
@@ -152,6 +156,7 @@ export default function TaskFormScreen() {
       alertUserIds: (t.alertUserIds ?? []).map(String),
     });
     setRepeatRule(recurrenceToRule(t.recurrence));
+    setSeeded(true);
     })();
     return () => { cancelled = true; };
   }, [taskQ.data]);
@@ -231,6 +236,7 @@ export default function TaskFormScreen() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] });
       qc.invalidateQueries({ queryKey: ['calendar'] });
+      allowLeave();
       navigation.goBack();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
@@ -246,6 +252,16 @@ export default function TaskFormScreen() {
   };
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
+  // Discard guard: prompt before leaving with unsaved edits to the task fields
+  // or its repeat rule. Baseline snapshot is taken once the form has seeded.
+  const baselineRef = React.useRef<string | null>(null);
+  const snapshot = JSON.stringify({ form, repeatRule });
+  useEffect(() => {
+    if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seeded, snapshot]);
+  const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   // Tapping the Repeat field opens the shared Repeat screen directly.
   const openRepeatScreen = () =>

@@ -20,6 +20,7 @@ const AUDIT_EVENTS = [
   'credits_adjusted',   // an admin manually adjusted a user's credit balance
   'config_changed',     // an admin saved the monetization config (meta: changed leaf paths)
   'moderation_status_changed', // an admin triaged a content report (meta: reportId, from, to)
+  'feedback_status_changed', // an admin triaged in-app feedback (meta: feedbackId, from, to)
   // Do-not-call suppression for outbound AI calls (spec: features/ai-assistant.md).
   // Meta carries source + last4 + actor — never the full number.
   'dnc_suppressed', // a number was added to the do-not-call list (callee request / admin / sms)

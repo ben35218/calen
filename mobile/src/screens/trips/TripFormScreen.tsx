@@ -13,6 +13,7 @@ import { Button, Input, Select, Screen, SectionTitle, DateField, useHeaderCheckB
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_PURPLE } from '../../lib/tripTypes';
 import { startKeepingDuration } from '../../lib/datetime';
@@ -69,6 +70,9 @@ export default function TripFormScreen() {
   const [inviteError, setInviteError] = useState('');
   // Invites entered while creating a new trip (no id yet); applied on save.
   const [pendingEmails, setPendingEmails] = useState<ShareRecipient[]>([]);
+  // A new trip is ready immediately; an edit waits for the trip to load and
+  // populate below before the discard guard snapshots its clean baseline.
+  const [seeded, setSeeded] = useState(!isEdit);
   const assist = useFormAssist();
 
   const set = (patch: Partial<typeof form>) => {
@@ -120,6 +124,7 @@ export default function TripFormScreen() {
       color: t.color || TRIP_PURPLE,
       notes: t.notes ?? '',
     });
+    setSeeded(true);
     })();
     return () => { cancelled = true; };
   }, [tripQ.data]);
@@ -180,6 +185,7 @@ export default function TripFormScreen() {
     },
     onSuccess: ({ id: newId, shareFailed }) => {
       qc.invalidateQueries({ queryKey: ['trips'] });
+      allowLeave();
       if (!isEdit && newId) {
         navigation.replace('TripDetail', { id: newId });
         // The trip saved fine; only the invitations didn't go out. Say so
@@ -204,6 +210,7 @@ export default function TripFormScreen() {
       // popTo (not navigate) so the deleted trip's TripDetail + this Edit form are
       // removed from the back stack — otherwise closing Trips lands back on
       // the now-deleted trip's form.
+      allowLeave();
       navigation.dispatch(StackActions.popTo('Trips'));
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Delete failed'),
@@ -310,6 +317,7 @@ export default function TripFormScreen() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips'] });
       // popTo so the left trip's detail + this form don't linger in the back stack.
+      allowLeave();
       navigation.dispatch(StackActions.popTo('Trips'));
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Could not leave trip'),
@@ -336,6 +344,18 @@ export default function TripFormScreen() {
   };
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
+  // Discard guard: prompt before leaving with unsaved edits to the trip fields
+  // (or, on a new trip, pending share invites — edits to an existing trip's
+  // sharing persist to the server immediately, so they don't count). Sharing/
+  // delete/leave exits call allowLeave() above to skip the prompt.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ form, pendingEmails });
+  useEffect(() => {
+    if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seeded, snapshot]);
+  const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (isEdit && tripQ.isLoading) {
     return (

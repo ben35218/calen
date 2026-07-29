@@ -61,6 +61,10 @@ export const adminApi = {
   audit: (params) => api.get('/admin/audit', { params }),
   moderation: (params) => api.get('/admin/moderation', { params }),
   setReportStatus: (id, status) => api.post(`/admin/moderation/${id}/status`, { status }),
+  // In-app feedback triage queue (questions / bugs / ideas). `feedback` returns
+  // { items, total, newCount, page, pageSize }.
+  feedback: (params) => api.get('/admin/feedback', { params }),
+  setFeedbackStatus: (id, status) => api.post(`/admin/feedback/${id}/status`, { status }),
   // Do-not-call list for outbound AI calls. `dnc` returns { items, total, page, pageSize }.
   dnc: (params) => api.get('/admin/dnc', { params }),
   addDnc: (phone, note) => api.post('/admin/dnc', { phone, note }),

@@ -20,6 +20,7 @@ import {
   SectionTitle, SectionHeader, PhoneField,
 } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing } from '../../theme';
 
@@ -51,6 +52,10 @@ export default function AccountScreen() {
     firstName: '', lastName: '', phone: '', birthday: '', homeAddress: '',
   });
   const [saving, setSaving] = useState(false);
+  // Gate for the discard guard's baseline: the identity form seeds from the
+  // settings query (and, for E2EE households, an async home-address decrypt), so
+  // we only snapshot the clean baseline once that seeding has settled.
+  const [seeded, setSeeded] = useState(false);
   // The decrypted household blob (name + homeAddress — C2): spread under the
   // update at seal time so re-sealing the address never drops the sealed name.
   const decryptedHH = useRef<Record<string, unknown>>({});
@@ -79,7 +84,12 @@ export default function AccountScreen() {
             setForm((f) => ({ ...f, homeAddress: dec.homeAddress }));
           }
         })
-        .catch(() => { /* locked / wrong key */ });
+        .catch(() => { /* locked / wrong key */ })
+        // Baseline only after the decrypt resolves, so the async address fill
+        // isn't itself mistaken for an unsaved edit.
+        .finally(() => setSeeded(true));
+    } else {
+      setSeeded(true);
     }
   }, [settings]);
 
@@ -127,6 +137,7 @@ export default function AccountScreen() {
       // profile hub automatically (matching PersonFormScreen and the iOS
       // edit-and-done convention) — no blocking "Saved" confirmation to tap
       // through only to land back on a screen the user is finished with.
+      allowLeave();
       navigation.goBack();
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.error || 'Save failed');
@@ -136,6 +147,16 @@ export default function AccountScreen() {
   }
 
   useHeaderCheckButton(navigation, { onPress: save, loading: saving });
+
+  // Discard guard on the identity form (the header-check saves it). The inline
+  // email-change and delete-account flows are separate and don't feed this.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify(form);
+  useEffect(() => {
+    if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seeded, snapshot]);
+  const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   // ── "Use my current location" (opt-in, foreground one-shot) ────────────────
   // Prefills the home-address field from device GPS + reverse geocoding; the

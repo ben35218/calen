@@ -41,7 +41,9 @@ export default function CalendarSearchScreen() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['calendar', 'events-list'],
-    queryFn: async () => loadCalendarData({ from: range.from.toISOString(), to: range.to.toISOString() }),
+    // background sync: search over the replica; the server pull revalidates behind it.
+    queryFn: async () =>
+      loadCalendarData({ from: range.from.toISOString(), to: range.to.toISOString(), sync: 'background' }),
   });
 
   const all = useMemo<Result[]>(() => {

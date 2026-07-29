@@ -25,6 +25,7 @@ const Household = require('../models/Household');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const AuditLog = require('../models/AuditLog');
 const ContentReport = require('../models/ContentReport');
+const Feedback = require('../models/Feedback');
 const DncEntry = require('../models/DncEntry');
 const { computeReadiness, versionSatisfied } = require('../services/dropReadiness');
 const { pushToUser } = require('../services/notify');
@@ -348,6 +349,75 @@ router.post('/moderation/:id/status', async (req, res) => {
       });
     }
     res.json({ _id: report._id, status: report.status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- In-app feedback (questions / bugs / ideas) ----------------------------
+
+// Paginated user-submitted feedback, newest first, filterable by status. Like
+// moderation, a report deliberately carries the user's message + captured
+// diagnostics so it can actually be acted on (spec: features/feedback.md).
+// Resolves the reporter's email for follow-up.
+router.get('/feedback', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const { page, pageSize, skip } = paginate(req.query, { defaultSize: 50, maxSize: 200 });
+    const filter = {};
+    if (status && ['new', 'triaged', 'resolved'].includes(status)) filter.status = status;
+
+    const [total, newCount, rows] = await Promise.all([
+      Feedback.countDocuments(filter),
+      Feedback.countDocuments({ status: 'new' }),
+      Feedback.find(filter).sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean(),
+    ]);
+
+    const userIds = [...new Set(rows.map((r) => r.userId).filter(Boolean).map(String))];
+    const users = userIds.length
+      ? await User.find({ _id: { $in: userIds } }).select('email').lean()
+      : [];
+    const emailById = Object.fromEntries(users.map((u) => [String(u._id), u.email]));
+
+    res.json({
+      items: rows.map((r) => ({
+        _id: r._id,
+        type: r.type,
+        message: r.message,
+        contactEmail: r.contactEmail || null,
+        diagnostics: r.diagnostics || {},
+        status: r.status,
+        createdAt: r.createdAt,
+        reporterEmail: r.userId ? emailById[String(r.userId)] || null : null,
+      })),
+      total, newCount, page, pageSize,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Triage a feedback item: new → triaged/resolved (or back). Audited.
+router.post('/feedback/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['new', 'triaged', 'resolved'].includes(status)) {
+      return res.status(400).json({ error: 'status must be new, triaged, or resolved' });
+    }
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const before = await Feedback.findById(req.params.id).select('status').lean();
+    if (!before) return res.status(404).json({ error: 'Not found' });
+    const fb = await Feedback.findByIdAndUpdate(
+      req.params.id, { $set: { status } }, { new: true },
+    ).lean();
+    if (before.status !== status) {
+      await AuditLog.create({
+        userId: req.user._id,
+        event: 'feedback_status_changed',
+        meta: { feedbackId: fb._id, from: before.status, to: status },
+      });
+    }
+    res.json({ _id: fb._id, status: fb.status });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

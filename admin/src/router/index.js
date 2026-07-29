@@ -18,6 +18,7 @@ const routes = [
   { path: '/e2ee', redirect: '/households' },
   { path: '/audit', name: 'Audit', component: () => import('../views/AuditLogView.vue') },
   { path: '/moderation', name: 'Moderation', component: () => import('../views/ModerationView.vue') },
+  { path: '/feedback', name: 'Feedback', component: () => import('../views/FeedbackView.vue') },
   { path: '/do-not-call', name: 'DoNotCall', component: () => import('../views/DoNotCallView.vue') },
 ];
 

@@ -1,7 +1,7 @@
 ---
 title: Maintenance (items, tasks, chores)
 status: current
-last-verified: 55bfc65 (2026-07-28); chore/task Alert + Second alert must be distinct — second picker excludes the first's value (`excludeUsedAlert`) (2026-07-28)
+last-verified: 55bfc65 (2026-07-28); chore/task Alert + Second alert must be distinct — second picker excludes the first's value (`excludeUsedAlert`) (2026-07-28); the item/task/chore add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (the Item form guards its final details step, not the add wizard) (2026-07-29)
 code:
   - mobile/src/screens/maintenance/
   - server/src/routes/{items,tasks,chores,taskTemplates,choreTemplates,odometer,manuals}.js
@@ -23,6 +23,13 @@ Home **items** (appliances, vehicles, systems) with attached manuals; recurring
 odometer tracking for mileage-based service.
 
 ## Behavior (normative)
+
+- **Unsaved-changes guard:** the item, task, and chore add/edit forms prompt an
+  Apple-style "Discard Changes?" sheet before leaving with unsaved edits (header
+  ✕ / back / swipe-back / Android back), via the shared `useUnsavedChangesGuard`
+  hook — a successful save/delete exits without prompting. On the Item form the
+  guard covers only the final details step, not the add wizard. See
+  [calendar.md](calendar.md) and [mobile/CLAUDE.md](../../mobile/CLAUDE.md).
 
 ### Add-on gating
 

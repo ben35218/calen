@@ -220,6 +220,16 @@ function ordinalDayOfMonth(year, month, weekOfMonth, weekdayKind) {
   return matches[idx] ?? null;
 }
 
+// The calendar-day key an occurrence is filed under — MUST match the client's
+// per-cell bucketing (lib/calendar.ymd for timed, UTC slice for all-day), so a
+// user's "delete this occurrence" (which stores the tapped cell's date) lines up
+// with the instance it excludes. See EventDetail's `exceptionDates`.
+function occurrenceKey(event, d) {
+  if (event.allDay) return d.toISOString().slice(0, 10);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function expandRecurringEvent(event, fromDate, toDate) {
   const r = event.recurrence;
   const { freq, interval = 1, until } = r;
@@ -227,10 +237,14 @@ function expandRecurringEvent(event, fromDate, toDate) {
   const endBound = (until && new Date(until) < toDate) ? new Date(until) : new Date(toDate);
   const durationMs = event.endDate ? new Date(event.endDate) - new Date(event.startDate) : null;
   const start = new Date(event.startDate);
+  // Occurrences the user deleted individually ("Delete This Event Only"): a set
+  // of YYYY-MM-DD calendar days the series skips (Apple's EXDATE).
+  const exdates = new Set(event.exceptionDates || []);
   const instances = [];
 
   const emit = (d) => {
     if (d < start || d < fromDate || d > endBound) return;
+    if (exdates.size && exdates.has(occurrenceKey(event, d))) return;
     instances.push({
       ...event,
       startDate: new Date(d),

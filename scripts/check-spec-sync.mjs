@@ -74,6 +74,13 @@ const RULES = [
     tests: /^(server\/src\/test\/billingWebhook\.|server\/src\/routes\/billing\.test\.js$|mobile\/src\/(lib\/__tests__\/addons\.|screens\/plan\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/notifications\.js|server\/src\/jobs\/scheduler\.js|server\/src\/services\/(push|notify)\.js|mobile\/src\/lib\/(notifications|push)\.ts)/, specs: ['specs/features/notifications.md'],
     tests: /^(server\/src\/test\/notifications\.|server\/src\/jobs\/scheduler\.test\.js$|mobile\/src\/lib\/__tests__\/notifications\.)/ },
+  // In-app feedback (questions/bugs/ideas): plaintext model + submit route + the
+  // mobile screen + admin triage view. Ordered BEFORE the admin rule so the
+  // feedback view maps to its own spec; the admin router's feedback endpoints
+  // still live in admin.js (admin-portal.md).
+  { re: /^(server\/src\/routes\/feedback\.js|server\/src\/models\/Feedback\.js|mobile\/src\/screens\/profile\/HelpFeedbackScreen\.tsx|mobile\/src\/lib\/diagnostics\.ts|admin\/src\/views\/FeedbackView\.vue)/,
+    specs: ['specs/features/feedback.md'],
+    tests: /^server\/src\/test\/feedback\./ },
   // Occasion e-cards (Occasions calendar): plaintext model + CRUD route, spec'd in calendar.md.
   { re: /^(server\/src\/routes\/ecards\.js|server\/src\/models\/ECard\.js)/, specs: ['specs/features/calendar.md'],
     tests: /^server\/src\/test\/ecards\./ },

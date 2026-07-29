@@ -44,7 +44,7 @@ const TimelineView = forwardRef<
   const { visibility } = useCalendarVisibility();
   const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
-  const { cancelledIds, reschedulePendingIds } = useCallEventStatus();
+  const callStatus = useCallEventStatus();
 
   const gridRef = useRef<TodayHandle>(null);
   useImperativeHandle(ref, () => ({
@@ -61,7 +61,8 @@ const TimelineView = forwardRef<
   const range = useMemo(() => windowFor(anchor), [anchor]);
   const calQ = useQuery({
     queryKey: ['calendar', range.from, range.to],
-    queryFn: async () => loadCalendarData(range),
+    // background sync: paint from the replica; the server pull revalidates behind it.
+    queryFn: async () => loadCalendarData({ ...range, sync: 'background' }),
     // Keep the previous window on screen while the next loads, so day swipes
     // aren't interrupted by a spinner.
     placeholderData: (prev) => prev,
@@ -100,12 +101,12 @@ const TimelineView = forwardRef<
   }, [dates, holidayCals, visibility, calColors]);
 
   const layouts: DayLayout[] = useMemo(() => {
-    const status = { cancelledIds, reschedulePendingIds };
+    const status = callStatus;
     return dates.map((d) => {
       const { allDay, timed } = normalizeDay(itemsForDate(calQ.data, d), holidaysByDate[d] ?? [], d, calColors, status);
       return { allDay, blocks: packLanes(timed) };
     });
-  }, [dates, calQ.data, holidaysByDate, calColors, cancelledIds, reschedulePendingIds]);
+  }, [dates, calQ.data, holidaysByDate, calColors, callStatus]);
 
   // Directional slide between day windows, ported from the old day screen:
   // slide out in the swipe direction, swap the anchor, slide back in.

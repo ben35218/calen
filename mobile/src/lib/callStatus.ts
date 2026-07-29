@@ -28,23 +28,69 @@ export function useCalls() {
 //   • cancelled          — a confirmed CANCEL call, dims + strikes the event.
 //   • reschedulePending  — a confirmed RESCHEDULE the user hasn't applied yet
 //                          (still at the old time), dims the event.
-// Memoised on the calls data so the Sets keep a stable identity across renders —
-// safe to pass into other hooks' dependency arrays.
-export function useCallEventStatus(): { cancelledIds: Set<string>; reschedulePendingIds: Set<string> } {
-  const { data } = useCalls();
-  return useMemo(() => {
-    const cancelledIds = new Set<string>();
-    const reschedulePendingIds = new Set<string>();
-    for (const c of data ?? []) {
-      if (!c.eventId || c.outcome !== 'confirmed' || c.acknowledged) continue;
-      if (c.action === 'cancel') cancelledIds.add(c.eventId);
-      else if (c.action === 'reschedule') reschedulePendingIds.add(c.eventId);
-    }
-    return { cancelledIds, reschedulePendingIds };
-  }, [data]);
+//
+// **Per-occurrence scoping.** A recurring event is one record: every occurrence
+// shares its id. A call placed against one occurrence carries that occurrence's
+// local Y-M-D (`occurrenceDate`), so its confirmed outcome dims ONLY that
+// instance. A call with no `occurrenceDate` (non-recurring event, or a legacy
+// row) is unscoped — it matches the event on every day it renders (preserving
+// the multi-day-span behavior). Callers pass the date of the occurrence they're
+// rendering; `isCancelled(id, date)` returns true when a matching call exists.
+export interface EventStatus {
+  isCancelled: (eventId: string, occurrenceDate?: string) => boolean;
+  isReschedulePending: (eventId: string, occurrenceDate?: string) => boolean;
 }
 
-// The most recent call placed for a given event, if any (newest first from the API).
-export function latestCallForEvent(calls: PhoneCallRecord[] | undefined, eventId: string): PhoneCallRecord | undefined {
-  return (calls ?? []).find((c) => c.eventId === eventId);
+// Per event id: `true` = an unscoped confirmed call (matches every day); a Set =
+// the specific occurrence dates confirmed calls resolved.
+type DateMatch = Map<string, true | Set<string>>;
+
+function addMatch(map: DateMatch, id: string, date: string | null | undefined) {
+  const cur = map.get(id);
+  if (cur === true) return; // an unscoped call already covers every day
+  if (!date) { map.set(id, true); return; }
+  if (cur instanceof Set) cur.add(date);
+  else map.set(id, new Set([date]));
+}
+
+function matches(map: DateMatch, id: string, date?: string): boolean {
+  const v = map.get(id);
+  if (v === undefined) return false;
+  if (v === true) return true; // unscoped call → every occurrence
+  return date != null && v.has(date); // scoped → only the matching date
+}
+
+// Pure builder (exported so the day-view layout test can construct a status).
+export function buildEventStatus(calls: PhoneCallRecord[] | undefined): EventStatus {
+  const cancelled: DateMatch = new Map();
+  const reschedule: DateMatch = new Map();
+  for (const c of calls ?? []) {
+    if (!c.eventId || c.outcome !== 'confirmed' || c.acknowledged) continue;
+    if (c.action === 'cancel') addMatch(cancelled, c.eventId, c.occurrenceDate);
+    else if (c.action === 'reschedule') addMatch(reschedule, c.eventId, c.occurrenceDate);
+  }
+  return {
+    isCancelled: (id, date) => matches(cancelled, id, date),
+    isReschedulePending: (id, date) => matches(reschedule, id, date),
+  };
+}
+
+// Memoised on the calls data so the returned matchers keep a stable identity
+// across renders — safe to pass into other hooks' dependency arrays.
+export function useCallEventStatus(): EventStatus {
+  const { data } = useCalls();
+  return useMemo(() => buildEventStatus(data), [data]);
+}
+
+// The most recent call placed for a given event / occurrence, if any (newest
+// first from the API). A non-null `occurrenceDate` scopes to that instance
+// (matching calls placed for that date, plus unscoped/legacy calls).
+export function latestCallForEvent(
+  calls: PhoneCallRecord[] | undefined,
+  eventId: string,
+  occurrenceDate?: string,
+): PhoneCallRecord | undefined {
+  return (calls ?? []).find(
+    (c) => c.eventId === eventId && (c.occurrenceDate == null || c.occurrenceDate === occurrenceDate),
+  );
 }

@@ -17,6 +17,7 @@ const RECIPE_ENC = (p: Record<string, unknown>) => ({
 import { Button, Input, Screen, SectionTitle, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import StepIngredientLinker from '../../components/StepIngredientLinker';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import CalenChatIcon from '../../components/CalenChatIcon';
 import CreditsBanner from '../../components/CreditsBanner';
 import { useAiEnabled } from '../../lib/privacyPrefs';
@@ -85,6 +86,10 @@ export default function RecipeFormScreen() {
   const [aiInput, setAiInput] = useState('');
   const [importer, setImporter] = useState<'url' | null>(null);
   const [error, setError] = useState('');
+  // A blank new recipe is ready immediately; an edit or an AI-review prefill
+  // waits for its data to populate below before the discard guard snapshots the
+  // clean baseline.
+  const [seeded, setSeeded] = useState(!isEdit && !initial);
 
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -159,7 +164,7 @@ export default function RecipeFormScreen() {
   useEffect(() => {
     if (!recipeQ.data) return;
     let cancelled = false;
-    openRecord('Recipe', recipeQ.data).then((r) => { if (!cancelled) populate(r); }); // decrypt over plaintext
+    openRecord('Recipe', recipeQ.data).then((r) => { if (!cancelled) { populate(r); setSeeded(true); } }); // decrypt over plaintext
     return () => { cancelled = true; };
   }, [recipeQ.data]);
 
@@ -170,6 +175,7 @@ export default function RecipeFormScreen() {
     if (isEdit || !initial || initialLoaded.current) return;
     initialLoaded.current = true;
     populate(initial);
+    setSeeded(true);
   }, [isEdit, initial]);
 
   const fromUrl = useMutation({
@@ -229,6 +235,7 @@ export default function RecipeFormScreen() {
     },
     onSuccess: async (res) => {
       qc.invalidateQueries({ queryKey: ['recipes'] });
+      allowLeave();
       const newId = (res.data as Recipe)?._id;
       // Came from the planner's "Add recipe" for a date: schedule the new recipe
       // to that date, then return to the Meals/Planner view (not the detail page).
@@ -258,6 +265,7 @@ export default function RecipeFormScreen() {
     mutationFn: () => recipesApi.delete(id!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['recipes'] });
+      allowLeave();
       navigation.goBack();
     },
   });
@@ -340,6 +348,17 @@ export default function RecipeFormScreen() {
   };
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
+
+  // Discard guard: prompt before leaving with unsaved edits to any recipe field
+  // (title, ingredients, steps, tags, timers, links). Baseline is taken once the
+  // form has seeded — imports/AI edits repopulate it and so read as changes.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify(form);
+  useEffect(() => {
+    if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seeded, snapshot]);
+  const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const onPhoto = () =>
     Alert.alert('Import from Photo', 'Scan a recipe card or cookbook page.', [

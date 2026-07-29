@@ -127,7 +127,9 @@ export type RootStackParamList = {
   // The event's Location view. With `initial` (from the event form) the picked
   // location flows back via locationDraft; with `eventId` (e.g. Call to Cancel
   // needing a phone number) the checkmark saves straight onto the event.
-  EventLocation: { eventId?: string; initial?: { location?: string; phone?: string; placeId?: string } } | undefined;
+  // `promptPhone` = arrived from the event view's Reschedule/Cancel card with no
+  // business number yet, so the screen nudges the user to add one to enable calling.
+  EventLocation: { eventId?: string; initial?: { location?: string; phone?: string; placeId?: string }; promptPhone?: boolean } | undefined;
   // A phone call Calen placed: live status, outcome, summary, and the
   // confirm-cancellation actions. `id` is the PhoneCall record id.
   Interaction: { id: string };
@@ -138,6 +140,10 @@ export type RootStackParamList = {
   EventAction: {
     eventId: string;
     event: { title: string; startDate: string; phone: string; allDay?: boolean; calendarType?: string };
+    // Recurring event: the tapped occurrence's local Y-M-D. The call is scoped to
+    // this instance (its outcome dims only that occurrence). Omitted / undefined
+    // for a non-recurring event.
+    occurrenceDate?: string;
   };
 
   // ----- Maintenance (item-centric) -----
@@ -230,6 +236,8 @@ export type RootStackParamList = {
   };
   ContactImport: undefined;
   Household: undefined;
+  // Help & feedback — submit a question, bug report, or idea (features/feedback.md).
+  HelpFeedback: undefined;
 
   // ----- Billing (credits summary card is inlined on ProfileHome) -----
   // Prepaid AI credits: balance, pack store, history, usage + AI preferences.

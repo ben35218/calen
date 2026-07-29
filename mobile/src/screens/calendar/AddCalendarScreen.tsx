@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -20,6 +20,7 @@ import type { CountryCode } from '../../lib/holidays';
 import { detectHomeRegion } from '../../lib/homeRegion';
 import { refreshFeed, getFeedMeta, dropFeedCache, FeedError } from '../../lib/calendarFeeds';
 import { Screen, Input, SectionTitle, Button, SwitchRow, useHeaderCheckButton, ColorPicker } from '../../components/ui';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -192,6 +193,7 @@ export default function AddCalendarScreen() {
         setDefaultColor(defaultDef.id, color);
       }
       setDefaultAlerts(defaultDef.id, alertsEnabled);
+      allowLeave();
       nav.goBack();
       return;
     }
@@ -216,6 +218,7 @@ export default function AddCalendarScreen() {
     try {
       if (calendarId) await updateCalendar(calendarId, payload);
       else await addCalendar(payload);
+      allowLeave();
       dismissAfterSave();
     } catch (e: any) {
       // Outside sharing on an E2EE-active household needs the (unbuilt)
@@ -233,6 +236,18 @@ export default function AddCalendarScreen() {
     }
   };
   useHeaderCheckButton(nav, { onPress: save, disabled: !name.trim(), loading: saving, enabled: !readOnly });
+
+  // Discard guard. Create + default calendars are ready on first render (their
+  // fields seed synchronously); a custom-calendar edit loads async, gated by the
+  // existing `seeded` flag. Read-only (shared-with-me) calendars can't be edited.
+  const formReady = isDefault || seeded;
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ name, sharedWithHousehold, householdAccess, memberAccess, outside, color, alertsEnabled });
+  useEffect(() => {
+    if (formReady && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [formReady, snapshot]);
+  const dirty = !readOnly && formReady && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   const toggleMember = (id: string) =>
     setMemberAccess((prev) => {
@@ -343,6 +358,7 @@ export default function AddCalendarScreen() {
     if (isDefault && defaultDef) {
       const remove = () => {
         deleteDefault(defaultDef.id);
+        allowLeave();
         dismissAfterDefaultDelete(defaultDef.id);
       };
       // Deleting the Occasions calendar only hides it here; any scheduled
@@ -383,6 +399,7 @@ export default function AddCalendarScreen() {
           try {
             await removeCalendar(calendarId!);
             if (isSubscription) await dropFeedCache(calendarId!);
+            allowLeave();
             nav.goBack();
           } catch {
             Alert.alert(

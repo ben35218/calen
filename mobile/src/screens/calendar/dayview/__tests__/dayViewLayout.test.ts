@@ -14,6 +14,7 @@ import {
   hourLabel,
   nowBadgeLabel,
   TimedBlock,
+  EventStatus,
   WEEK_WINDOW,
   MIN_BLOCK,
   DAY_MIN,
@@ -27,7 +28,7 @@ const CAL_COLORS = {
   birthdays: '#E91E63',
 };
 
-const NO_STATUS = { cancelledIds: new Set<string>(), reschedulePendingIds: new Set<string>() };
+const NO_STATUS: EventStatus = { isCancelled: () => false, isReschedulePending: () => false };
 
 function emptyDay(): DayItems {
   return { events: [], tasks: [], chores: [], recipes: [], trips: [], occasions: [], grocery: false };
@@ -113,7 +114,10 @@ describe('normalizeDay routing', () => {
       { _id: 'e1', title: 'A', calendarType: 'appointments', startDate: iso('2026-07-27', '10:00'), endDate: iso('2026-07-27', '11:00') },
       { _id: 'e2', title: 'B', calendarType: 'appointments', startDate: iso('2026-07-27', '12:00'), endDate: iso('2026-07-27', '13:00') },
     ] as any;
-    const status = { cancelledIds: new Set(['e1']), reschedulePendingIds: new Set(['e2']) };
+    const status: EventStatus = {
+      isCancelled: (id) => id === 'e1',
+      isReschedulePending: (id) => id === 'e2',
+    };
     const { timed } = normalizeDay(day, [], '2026-07-27', CAL_COLORS, status);
     const a = timed.find((b) => b.eventId === 'e1')!;
     const b = timed.find((b) => b.eventId === 'e2')!;

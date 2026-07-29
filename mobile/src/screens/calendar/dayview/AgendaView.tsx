@@ -43,7 +43,7 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
   const { visibility } = useCalendarVisibility();
   const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
-  const { cancelledIds, reschedulePendingIds } = useCallEventStatus();
+  const callStatus = useCallEventStatus();
 
   const [window, setWindow] = useState(() => ({
     start: anchor,
@@ -84,7 +84,8 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
   );
   const calQ = useQuery({
     queryKey: ['calendar', range.from, range.to],
-    queryFn: async () => loadCalendarData(range),
+    // background sync: paint from the replica; the server pull revalidates behind it.
+    queryFn: async () => loadCalendarData({ ...range, sync: 'background' }),
     placeholderData: (prev) => prev,
   });
   // The header weather glance follows the Weather calendar's visibility
@@ -114,7 +115,7 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
 
   const sections: DaySection[] = useMemo(() => {
     if (!calQ.data) return [];
-    const status = { cancelledIds, reschedulePendingIds };
+    const status = callStatus;
     const out: DaySection[] = [];
     const days = diffDays(window.start, window.end);
     for (let i = 0; i <= days; i++) {
@@ -129,7 +130,7 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
       out.push({ date: d, title: dayHeaderLabel(d), wx, data: rows });
     }
     return out;
-  }, [calQ.data, window, holidaysByDate, calColors, cancelledIds, reschedulePendingIds, weatherOn, weatherQ.data]);
+  }, [calQ.data, window, holidaysByDate, calColors, callStatus, weatherOn, weatherQ.data]);
 
   // "Load earlier" prepends 4 weeks, then restores the previously-first day so
   // the list doesn't visually jump. This is the one scrollToLocation into

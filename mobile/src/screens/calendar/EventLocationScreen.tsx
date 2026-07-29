@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { View, Image, StyleSheet, Alert } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Image, StyleSheet, Alert, Text } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -8,12 +9,14 @@ import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
 import { setLocationDraft } from '../../lib/locationDraft';
+import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader } from '../../components/ui';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<Record<string, object | undefined>>;
-type Rt = RouteProp<{ EventLocation: { eventId?: string; initial?: { location?: string; phone?: string; placeId?: string } } }, 'EventLocation'>;
+type Rt = RouteProp<{ EventLocation: { eventId?: string; initial?: { location?: string; phone?: string; placeId?: string }; promptPhone?: boolean } }, 'EventLocation'>;
 
 // The content payload the event API accepts — the subset re-sealed on save.
 // Must stay the full content set (mirrors EventFormScreen's payload): sealing
@@ -41,14 +44,19 @@ interface PlaceDetails {
 //    checkmark saves straight onto the event.
 export default function EventLocationScreen() {
   const navigation = useNavigation<Nav>();
-  const { eventId, initial } = useRoute<Rt>().params ?? {};
+  const { eventId, initial, promptPhone } = useRoute<Rt>().params ?? {};
   const qc = useQueryClient();
+  const { colors: calColors } = useCalendarColors();
+  const { calendars: customCalendars } = useCustomCalendars();
 
   const [search, setSearch] = useState('');
   const [name, setName] = useState('');
   const [address, setAddress] = useState(initial?.location ?? '');
   const [phone, setPhone] = useState(initial?.phone ?? '');
   const [placeId, setPlaceId] = useState<string | undefined>(initial?.placeId);
+  // Draft mode is ready immediately; event mode waits for the decrypt below
+  // before the discard guard snapshots its clean baseline.
+  const [seeded, setSeeded] = useState(!eventId);
 
   // Event mode: load + decrypt the event, seed the fields once.
   const eventQ = useQuery({
@@ -67,6 +75,7 @@ export default function EventLocationScreen() {
       setAddress((prev) => prev || String(e.location ?? ''));
       setPhone((prev) => prev || String(e.phone ?? ''));
       setPlaceId((prev) => prev ?? (e.placeId ? String(e.placeId) : undefined));
+      setSeeded(true);
     })();
     return () => { cancelled = true; };
   }, [eventQ.data]);
@@ -108,6 +117,7 @@ export default function EventLocationScreen() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['calendar'] });
+      allowLeave();
       navigation.goBack();
     },
     onError: (e: any) =>
@@ -120,6 +130,7 @@ export default function EventLocationScreen() {
       save.mutate();
     } else {
       setLocationDraft({ location: locationString(), phone: phone.trim(), placeId });
+      allowLeave();
       navigation.goBack();
     }
   };
@@ -129,13 +140,41 @@ export default function EventLocationScreen() {
     loading: save.isPending || (!!eventId && !event),
   });
 
+  // Discard guard: prompt before leaving with unsaved edits to the place details
+  // (name / address / phone / picked place). Baseline is taken once seeded.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ name, address, phone, placeId });
+  useEffect(() => {
+    if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
+  }, [seeded, snapshot]);
+  const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
+
   if (eventId && eventQ.isLoading) return <CenteredLoader />;
 
   const previewAddress = address.trim();
   const token = getCachedToken();
 
+  // The callout is tinted with the event's own calendar colour (the calendar
+  // whose Reschedule/Cancel card sent the user here), not the app primary —
+  // falling back to primary until the event decrypts / for a non-event draft.
+  const calType = String((event?.calendarType as string | undefined) ?? 'activities');
+  const accent = calColors[calType] || customCalendars.find((c) => c.id === calType)?.color || colors.primary;
+
   return (
     <Screen>
+      {/* Sent here from the event view's Reschedule/Cancel card with no number
+          yet: a prominent accent callout (not a muted hint) so the reason the
+          user is here — and the action to take — is the first thing they see. */}
+      {promptPhone && !phone.trim() ? (
+        <View style={[styles.callout, { backgroundColor: accent + '1A', borderColor: accent + '55' }]}>
+          <View style={[styles.calloutIcon, { backgroundColor: accent }]}>
+            <Ionicons name="call" size={16} color="#fff" />
+          </View>
+          <Text style={styles.calloutText}>Add a business phone number to activate calling.</Text>
+        </View>
+      ) : null}
+
       <PlacesAutocomplete
         value={search}
         onChangeText={setSearch}
@@ -151,6 +190,8 @@ export default function EventLocationScreen() {
         value={phone}
         onChangeText={setPhone}
         placeholder="Business phone number"
+        // Draw attention to the empty field when we sent the user here to add one.
+        highlight={promptPhone && !phone.trim()}
       />
       <Hint>Calen uses the phone number to call the business — for example to cancel this appointment for you.</Hint>
 
@@ -167,6 +208,28 @@ export default function EventLocationScreen() {
 }
 
 const styles = StyleSheet.create({
+  // Accent callout (mirrors the app's tinted-banner convention, e.g. CreditsBanner):
+  // a calendar-colour-tinted fill + border, a filled icon disc, and bold text —
+  // deliberately louder than a muted Hint so the CTA doesn't blend into the page.
+  // The tint colours are applied inline from the event's calendar accent.
+  callout: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  calloutIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calloutText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text, lineHeight: 19 },
   mapCard: {
     height: 160, borderRadius: radius.lg, overflow: 'hidden',
     marginTop: spacing.lg, backgroundColor: colors.surface,

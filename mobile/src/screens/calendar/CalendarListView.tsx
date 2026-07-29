@@ -13,7 +13,7 @@ import { useCallEventStatus } from '../../lib/callStatus';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { mdiName } from '../../lib/recurrence';
 import { occasionIcon, occasionNoun, occasionFocusFrom } from '../../lib/occasions';
-import { CardRow } from '../../components/ui';
+import { CardRow, SkeletonList } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import type { TodayHandle } from './todayHandle';
@@ -74,7 +74,7 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
   const { visibility } = useCalendarVisibility();
   const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
-  const { cancelledIds, reschedulePendingIds } = useCallEventStatus();
+  const callStatus = useCallEventStatus();
 
   const today = ymd(new Date());
   const [cursor, setCursor] = useState(() => {
@@ -94,9 +94,11 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
     return { from: from.toISOString(), to: to.toISOString(), fromDate: from, toDate: to };
   }, [cursor]);
 
+  // background sync: paint instantly from the local replica; the server pull
+  // runs behind it and invalidates ['calendar'] only when something changed.
   const calQ = useQuery({
     queryKey: ['calendar', range.from, range.to],
-    queryFn: async () => loadCalendarData({ from: range.from, to: range.to }),
+    queryFn: async () => loadCalendarData({ from: range.from, to: range.to, sync: 'background' }),
     placeholderData: (prev) => prev,
   });
 
@@ -289,7 +291,10 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
         style={styles.list}
         contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: insets.bottom + 96 }}
       >
-        {listEmpty ? <Text style={styles.empty}>Nothing scheduled.</Text> : null}
+        {/* First-ever load (no replica yet): skeleton rows, not a premature
+            "Nothing scheduled." that flips to content when the sync lands. */}
+        {calQ.isLoading && listEmpty ? <SkeletonList count={3} /> : null}
+        {!calQ.isLoading && listEmpty ? <Text style={styles.empty}>Nothing scheduled.</Text> : null}
 
         {day.trips.map((t) => (
           <ListItem key={`trip-${t.id}`} icon="bag-suitcase" color={t.color} title={t.name} subtitle="Trip" onPress={() => nav.navigate('TripDetail', { id: t.id })} />
@@ -301,8 +306,8 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
           <ListItem key={`occ-${o.id}`} icon={occasionIcon(o.kind)} color={calColors.birthdays} title={o.name} subtitle={occasionNoun(o)} onPress={() => nav.navigate('Birthdays', { focus: occasionFocusFrom(o) })} />
         ))}
         {day.events.map((e) => {
-          const faded = Boolean(e.cancelled) || cancelledIds.has(e._id) || reschedulePendingIds.has(e._id);
-          const strike = Boolean(e.cancelled) || cancelledIds.has(e._id);
+          const faded = Boolean(e.cancelled) || callStatus.isCancelled(e._id, selected) || callStatus.isReschedulePending(e._id, selected);
+          const strike = Boolean(e.cancelled) || callStatus.isCancelled(e._id, selected);
           return (
             <ListItem
               key={e._id}

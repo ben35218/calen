@@ -1,6 +1,7 @@
 import { CalendarEvent, CalendarOccasion } from '../../../api';
 import { DayItems, eventColor, ymd } from '../../../lib/calendar';
 import { occasionTitle } from '../../../lib/occasions';
+import type { EventStatus } from '../../../lib/callStatus';
 
 // Pure layout logic for the Apple-style day view (no JSX, unit-testable):
 // routing day items into the all-day row vs. timed hour-grid blocks, greedy
@@ -88,10 +89,8 @@ export function diffDays(a: string, b: string): number {
 
 // ── All-day vs. timed routing ───────────────────────────────────────────────
 
-export interface EventStatus {
-  cancelledIds: Set<string>;
-  reschedulePendingIds: Set<string>;
-}
+// Re-exported from callStatus so the layout + its consumers share one shape.
+export type { EventStatus };
 
 // Split one day's records into the all-day row and clipped timed blocks.
 // `holidays` come pre-resolved (id/name/color) exactly as the old day screen
@@ -117,8 +116,8 @@ export function normalizeDay(
   }
 
   for (const e of day.events) {
-    const faded = Boolean(e.cancelled) || status.cancelledIds.has(e._id) || status.reschedulePendingIds.has(e._id);
-    const strike = Boolean(e.cancelled) || status.cancelledIds.has(e._id);
+    const faded = Boolean(e.cancelled) || status.isCancelled(e._id, dateStr) || status.isReschedulePending(e._id, dateStr);
+    const strike = Boolean(e.cancelled) || status.isCancelled(e._id, dateStr);
     const rawStart = e.allDay ? 0 : minutesInto(dateStr, e.startDate);
     const rawEnd = e.allDay ? DAY_MIN : e.endDate ? minutesInto(dateStr, e.endDate) : rawStart + 60;
     // All-day events — and timed events covering this entire day (a multi-day

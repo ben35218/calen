@@ -29,6 +29,7 @@ test('every admin surface 403s for non-admins and answers for admins', async () 
     '/api/admin/e2ee',
     '/api/admin/audit',
     '/api/admin/moderation',
+    '/api/admin/feedback',
     '/api/admin/dnc',
     '/api/admin/analytics/overview',
     '/api/admin/email/log',

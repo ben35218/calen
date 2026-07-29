@@ -1,7 +1,7 @@
 ---
 title: Trips
 status: current
-last-verified: 55bfc65+ (2026-07-27); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29)
+last-verified: 55bfc65+ (2026-07-27); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29); the trip and trip-item add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29)
 code:
   - mobile/src/screens/trips/
   - server/src/routes/trips.js
@@ -23,6 +23,15 @@ Plan trips with itinerary/booking items, split and settle expenses across
 participating households, and share a trip with people outside your household.
 
 ## Behavior (normative)
+
+- **Unsaved-changes guard:** the trip and trip-item (booking) add/edit forms
+  prompt an Apple-style "Discard Changes?" sheet before leaving with unsaved
+  edits (header ✕ / back / swipe-back / Android back), via the shared
+  `useUnsavedChangesGuard` hook — a successful save/delete/leave exits without
+  prompting. On the trip form, changes to an existing trip's outside-sharing
+  persist to the server immediately and so don't count as unsaved (a new trip's
+  pending invites do). See [calendar.md](calendar.md) and
+  [mobile/CLAUDE.md](../../mobile/CLAUDE.md).
 
 ### Add-on gating
 

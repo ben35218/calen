@@ -56,6 +56,12 @@ const GROUPS: { header: string; items: Section[] }[] = [
       { route: 'People', label: 'Contacts', icon: 'people-outline' },
     ],
   },
+  {
+    header: 'Help & support',
+    items: [
+      { route: 'HelpFeedback', label: 'Help & feedback', icon: 'chatbubble-ellipses-outline' },
+    ],
+  },
 ];
 
 export default function ProfileScreen() {

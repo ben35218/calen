@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -18,6 +18,7 @@ import { mdiName } from '../../lib/recurrence';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
+import { Skeleton } from '../../components/ui';
 import AssistantButton from '../../components/AssistantButton';
 import InvitationsButton from '../../components/InvitationsButton';
 import AnchoredMenu, { AnchoredMenuItem } from '../../components/AnchoredMenu';
@@ -120,7 +121,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
   const { calendars: holidayCals } = useHolidayCalendars();
   const { colors: calColors } = useCalendarColors();
   // Events an AI call has resolved → dimmed (cancelled also struck through).
-  const { cancelledIds, reschedulePendingIds } = useCallEventStatus();
+  const callStatus = useCallEventStatus();
 
   const cellSize = (width - spacing.md * 2) / 7;
   const headerH = insets.top + TOP_BAR_ROW + HEADER_MONTH_H + WEEKDAY_ROW_H;
@@ -162,9 +163,11 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
 
   const [curIdx, setCurIdx] = useState(initialWeekIndex);
 
+  // background sync: paint instantly from the local replica; the server pull
+  // runs behind it and invalidates ['calendar'] only when something changed.
   const calQ = useQuery({
     queryKey: ['calendar', range.from, range.to],
-    queryFn: async () => loadCalendarData({ from: range.from, to: range.to }),
+    queryFn: async () => loadCalendarData({ from: range.from, to: range.to, sync: 'background' }),
   });
 
   // The Weather calendar's toggle drives a 7-day forecast strip in the grid
@@ -231,9 +234,11 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 
     const content = (dateStr: string): CellContent => {
-      if (!data) return { chips: [], tasks: [], chores: [], recipes: [], grocery: false, occasions: [] };
+      // Holidays are computed on-device from prefs, so they render the moment
+      // the grid mounts — never held back waiting on the synced data below.
       const chips: Chip[] = [];
       for (const h of holidaysByDate[dateStr] ?? []) chips.push({ key: `hol-${h.id}`, label: h.name, color: h.color });
+      if (!data) return { chips, tasks: [], chores: [], recipes: [], grocery: false, occasions: [] };
       // Occasions render as icons (below), not event-style chips.
       const occasions = visible('birthdays') ? (data.occasions ?? []).filter((o) => ld(o.date) === dateStr) : [];
       for (const e of data.events ?? []) {
@@ -244,8 +249,8 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
           const time = e.allDay ? undefined : chipTimeLabel(e.startDate);
           chips.push({
             key: `e-${e._id}`, label: e.title, color: eventColor(e), time, eventId: e._id,
-            cancelled: Boolean(e.cancelled) || cancelledIds.has(e._id),
-            reschedulePending: reschedulePendingIds.has(e._id),
+            cancelled: Boolean(e.cancelled) || callStatus.isCancelled(e._id, dateStr),
+            reschedulePending: callStatus.isReschedulePending(e._id, dateStr),
           });
         }
       }
@@ -341,7 +346,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
     const twOff = tIdx >= 0 ? offs[tIdx] : 0;
 
     return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff };
-  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, cancelledIds, reschedulePendingIds, density, forecastByDate]);
+  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, callStatus, density, forecastByDate]);
 
   // Place today's week at the top of the viewport, just below the sticky header.
   const goToday = (animated = true) =>
@@ -373,6 +378,10 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
     }
     if (idx !== curIdx) setCurIdx(idx);
   };
+
+  // First-ever load only (empty replica, the initial sync still running):
+  // cached launches paint real data instantly and never show placeholders.
+  const showSkeleton = calQ.isLoading;
 
   const renderWeek = ({ item: week }: { item: RenderWeek }) => {
     // The weather lane (when this week holds forecast days) sits above the
@@ -437,6 +446,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
                 {dots.slice(0, DOT_MAX).map((color, i) => (
                   <View key={i} style={[styles.dot, { backgroundColor: color }]} />
                 ))}
+                {showSkeleton && !dots.length ? <CellSkeleton date={cell.date} density={density} /> : null}
               </View>
             ) : density === 'stacked' ? (
               <>
@@ -462,6 +472,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
                       <View key={i} style={barStyle} />
                     );
                   })}
+                  {showSkeleton && !stackItems.length ? <CellSkeleton date={cell.date} density={density} /> : null}
                 </View>
               </>
             ) : (
@@ -504,6 +515,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
                 </TouchableOpacity>
               ))}
               {c.chips.length > CHIP_MAX ? <Text style={styles.moreText}>+{c.chips.length - CHIP_MAX} more</Text> : null}
+              {showSkeleton && !c.chips.length ? <CellSkeleton date={cell.date} density={density} /> : null}
 
               {/* Each icon opens its own item view; a task/recipe icon aggregates
                   multiple items, so it opens the item when it's the only one and
@@ -670,7 +682,6 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
 
   return (
     <View style={styles.screen}>
-      {calQ.isLoading ? <ActivityIndicator color={colors.primary} style={[styles.loader, { top: topPad }]} /> : null}
       <FlatList
         ref={listRef}
         data={weeks}
@@ -857,6 +868,41 @@ export default function CalendarScreen() {
   );
 }
 
+// Placeholder chips for the first-ever load: the grid chrome, day numbers, and
+// holiday chips are already real, so each cell only shims where its event data
+// will land — shaped per density (chips / thin bars / dots). Deterministic per
+// date so the pattern is stable across renders, with some cells left empty the
+// way a real month is.
+function CellSkeleton({ date, density }: { date: string; density: GridDensity }) {
+  const seed = (Number(date.slice(8, 10)) * 5 + Number(date.slice(5, 7))) % 7;
+  const count = seed < 3 ? 1 : seed < 5 ? 2 : 0;
+  if (!count) return null;
+  if (density === 'compact') {
+    return (
+      <>
+        {Array.from({ length: count }).map((_, i) => (
+          <Skeleton key={i} width={6} height={6} radius={3} />
+        ))}
+      </>
+    );
+  }
+  const widths = ['85%', '60%'] as const;
+  const height = density === 'stacked' ? STACK_BAR_H - 3 : CHIP_H1 - 4;
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <Skeleton
+          key={i}
+          width={widths[i]}
+          height={height}
+          radius={density === 'stacked' ? 2 : 4}
+          style={{ marginBottom: density === 'stacked' ? 2 : 4, marginHorizontal: 1 }}
+        />
+      ))}
+    </>
+  );
+}
+
 // A small icon with a count (e.g. 2 maintenance tasks).
 function IconChip({ count, icon, color }: { count: number; icon: string; color: string }) {
   return (
@@ -869,7 +915,6 @@ function IconChip({ count, icon, color }: { count: number; icon: string; color: 
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
-  loader: { position: 'absolute', alignSelf: 'center', zIndex: 1 },
   content: { paddingHorizontal: spacing.md, paddingBottom: 96 },
   monthLabel: { fontSize: 20, fontWeight: '700', color: colors.text },
   weekdayRow: { flexDirection: 'row' },

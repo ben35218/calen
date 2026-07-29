@@ -1,7 +1,7 @@
 ---
 title: Data model
 status: current
-last-verified: 55bfc65+ (2026-07-29); phone fields stored E.164 via shared PhoneField (2026-07-27); added plaintext `ECard` model (scheduled occasion e-cards) + occasion derivation from `Person.dates[]` (2026-07-28); ECard gains font + framing-line overrides + plaintext photo rows (2026-07-28); `Person` gains structured `firstName`/`lastName` (sealed content; `name` stays the composed source of truth) (2026-07-28); `EmailLog` upgraded to a delivery ledger + transient retry outbox, added `EmailLifecycleConfig` + `EmailSuppression` operational models (email-lifecycle.md) (2026-07-29); documented client record-sync cursor safety (never advance past an unreconciled row; reset the cursor whenever the replica is wiped) after a sign-out/sign-in content-loss bug (2026-07-29); activation straggler gate now counts author-hidden content from the `Record` store (not legacy tables) so an orphaned/un-migrated legacy plaintext row can't deadlock born-encrypted activation (2026-07-29); added personal `User.dayAlertTime` (`HH:mm`, null=9am) — the configurable day-based alert default (2026-07-29); record-sync now re-pulls + refetches the replica-backed views when the HDK first lands (`subscribeKeysReady` → auth-store subscriber), fixing first-login calendar/people showing only weather+holidays until a manual mutation (2026-07-29)
+last-verified: f8e4627+ (2026-07-29); added plaintext `Feedback` model (in-app questions/bugs/ideas + captured device diagnostics; support content, not sealed) and the `feedback_status_changed` audit event — see [feedback](../features/feedback.md) (2026-07-29); phone fields stored E.164 via shared PhoneField (2026-07-27); added plaintext `ECard` model (scheduled occasion e-cards) + occasion derivation from `Person.dates[]` (2026-07-28); ECard gains font + framing-line overrides + plaintext photo rows (2026-07-28); `Person` gains structured `firstName`/`lastName` (sealed content; `name` stays the composed source of truth) (2026-07-28); `EmailLog` upgraded to a delivery ledger + transient retry outbox, added `EmailLifecycleConfig` + `EmailSuppression` operational models (email-lifecycle.md) (2026-07-29); documented client record-sync cursor safety (never advance past an unreconciled row; reset the cursor whenever the replica is wiped) after a sign-out/sign-in content-loss bug (2026-07-29); activation straggler gate now counts author-hidden content from the `Record` store (not legacy tables) so an orphaned/un-migrated legacy plaintext row can't deadlock born-encrypted activation (2026-07-29); added personal `User.dayAlertTime` (`HH:mm`, null=9am) — the configurable day-based alert default (2026-07-29); record-sync now re-pulls + refetches the replica-backed views when the HDK first lands (`subscribeKeysReady` → auth-store subscriber), fixing first-login calendar/people showing only weather+holidays until a manual mutation (2026-07-29); added `PhoneCall.dncCaptured` (set when the recipient asked, on that call, not to be called again) so the call outcome view can surface an explicit do-not-call notice (2026-07-29)
 code:
   - server/src/models/Record.js        # the live opaque content store
   - server/src/models/encFields.js
@@ -170,7 +170,8 @@ versioned (`DROP_FIELDS_VERSION`); notable additions over time: `nextDueDate`,
 ## Operational / metadata models
 
 `AuditLog` (security lifecycle + admin-console actions — role/billing/config
-changes, moderation triage, support-mailbox access; who/when, never content),
+changes, moderation triage, feedback triage, support-mailbox access; who/when,
+never content),
 `EmailLog`
 (outbound delivery ledger + transient retry outbox: `to`/`subject`/`kind` +
 `status` `sent|dry|canceled|suppressed|queued|failed`, `attempts`/`responseCode`/
@@ -184,7 +185,9 @@ can query it; hard-bounce auto-adds, admins add/release), `MonetizationConfig`,
 `CreditLedger` (append-only AI-credit grants/refunds/adjustments; unique
 `transactionId` = webhook idempotency gate — usage debits are not ledgered),
 `PhoneCall`
-(AI call outcome summary), `DncEntry` (do-not-call suppression for outbound AI
+(AI call outcome summary; `dncCaptured` flags a call on which the recipient
+asked not to be called again, so the outcome view can say so explicitly),
+`DncEntry` (do-not-call suppression for outbound AI
 calls — HMAC-SHA256 of the E.164 number as the match key + last4 for admin
 display, never the raw number; queried before every call so it must be
 plaintext/unsealed), `ContentReport` (moderation), `WeatherRecord`

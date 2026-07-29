@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Select, TimeField, Screen, useHeaderCheckButton } from '../../components/ui';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useOccasionAlertPrefs, useCalendarColors } from '../../lib/calendarPrefs';
 import { OCCASION_ALERT_OFFSET_OPTIONS, excludeUsedAlert } from '../../lib/recurrence';
@@ -34,10 +35,21 @@ export default function OccasionAlertsScreen() {
     const offsets = [alert1, alert2].filter((v): v is number => v != null);
     setOccasionAlertPrefs({ offsets, time: time || '12:00' });
     rescheduleReminders().catch(() => {});
+    allowLeave();
     navigation.goBack();
   };
 
   useHeaderCheckButton(navigation, { onPress: onSave, color: accent });
+
+  // Discard guard: prompt before leaving with unsaved alert-offset/time changes.
+  // The prefs seed synchronously, so the baseline is the form on first render.
+  const baselineRef = useRef<string | null>(null);
+  const snapshot = JSON.stringify({ alert1, alert2, time });
+  useEffect(() => {
+    if (baselineRef.current === null) baselineRef.current = snapshot;
+  }, [snapshot]);
+  const dirty = baselineRef.current !== null && snapshot !== baselineRef.current;
+  const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const anyAlert = alert1 != null || alert2 != null;
 

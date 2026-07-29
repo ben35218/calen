@@ -121,6 +121,26 @@ Alert.alert('Delete X?', 'This cannot be undone.', [
 
 Do not build a custom `<Modal>` confirm dialog.
 
+## Unsaved-changes guard
+
+Any form/edit screen that can lose typed-but-unsaved data on the way out must
+guard it with `useUnsavedChangesGuard(navigation, isDirty)`
+([src/hooks/useUnsavedChangesGuard.ts](src/hooks/useUnsavedChangesGuard.ts)). It
+listens on React Navigation's `beforeRemove`, so a single call covers **every**
+exit — the header ✕, the back chevron, the iOS swipe-back gesture, and Android
+hardware back — and shows the Apple-style "Discard Changes?" action sheet when
+`isDirty` is true. Don't wire the confirm onto the ✕ button alone; that misses
+the gesture and hardware back.
+
+- Compute `isDirty` by comparing the live form to a baseline snapshot captured
+  once the form is initialized (immediately for a create; after the edit query
+  seeds for an update). A `JSON.stringify(form) !== baselineRef.current` compare
+  is the norm.
+- The hook returns `allowLeave` — call it right before an intentional
+  programmatic exit (inside a save/delete mutation's `onSuccess`, just before
+  `navigation.goBack()`) so a successful save doesn't re-prompt on its own way
+  out.
+
 ## Known distinct patterns (intentionally not the above)
 
 - Removable **tag tokens** (RecipeForm) are a chip with an ✕ — not the filter `Chip`.

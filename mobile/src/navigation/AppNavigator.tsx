@@ -78,6 +78,7 @@ import ProfileScreen from '../screens/ProfileScreen';
 import AccountScreen from '../screens/profile/AccountScreen';
 import RemindersScreen from '../screens/profile/RemindersScreen';
 import PrivacyDataScreen from '../screens/profile/PrivacyDataScreen';
+import HelpFeedbackScreen from '../screens/profile/HelpFeedbackScreen';
 import GuardianRecoveryScreen from '../screens/profile/GuardianRecoveryScreen';
 import RecoveryCodeScreen from '../screens/profile/RecoveryCodeScreen';
 import LinkDeviceScreen from '../screens/profile/LinkDeviceScreen';
@@ -284,6 +285,7 @@ export default function AppNavigator() {
       <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
+      <Stack.Screen name="HelpFeedback" component={HelpFeedbackScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Help & feedback' }} />
       {/* Billing: the credits summary card lives inline on ProfileHome; these
           are its drill-ins — the Credits screen and the top-up sheet the
           AI-surface nudges open as a modal. */}

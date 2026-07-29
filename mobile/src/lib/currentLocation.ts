@@ -8,24 +8,52 @@ export type CurrentAddressResult =
   | { ok: true; address: string }
   | { ok: false; reason: 'unavailable' | 'denied' | 'notfound' };
 
-export async function resolveCurrentAddress(): Promise<CurrentAddressResult> {
-  let ExpoLocation: typeof import('expo-location');
+function loadExpoLocation(): typeof import('expo-location') | null {
   try {
-    ExpoLocation = require('expo-location');
+    return require('expo-location');
   } catch {
-    return { ok: false, reason: 'unavailable' };
+    return null;
   }
+}
+
+// GPS fix → reverse-geocoded postal string (empty → null). Caller owns permission.
+async function currentAddress(ExpoLocation: typeof import('expo-location')): Promise<string | null> {
+  const pos = await ExpoLocation.getCurrentPositionAsync({ accuracy: ExpoLocation.Accuracy.Balanced });
+  const [g] = await ExpoLocation.reverseGeocodeAsync(pos.coords);
+  const street = [g?.streetNumber, g?.street].filter(Boolean).join(' ');
+  const address = [street || g?.name, g?.city, g?.region, g?.postalCode, g?.country]
+    .filter(Boolean).join(', ');
+  return address || null;
+}
+
+// Explicit request: prompts for foreground permission when undetermined. For the
+// user-initiated "Current location" shortcut.
+export async function resolveCurrentAddress(): Promise<CurrentAddressResult> {
+  const ExpoLocation = loadExpoLocation();
+  if (!ExpoLocation) return { ok: false, reason: 'unavailable' };
   const { status } = await ExpoLocation.requestForegroundPermissionsAsync();
   if (status !== 'granted') return { ok: false, reason: 'denied' };
   try {
-    const pos = await ExpoLocation.getCurrentPositionAsync({ accuracy: ExpoLocation.Accuracy.Balanced });
-    const [g] = await ExpoLocation.reverseGeocodeAsync(pos.coords);
-    const street = [g?.streetNumber, g?.street].filter(Boolean).join(' ');
-    const address = [street || g?.name, g?.city, g?.region, g?.postalCode, g?.country]
-      .filter(Boolean).join(', ');
-    if (!address) return { ok: false, reason: 'notfound' };
-    return { ok: true, address };
+    const address = await currentAddress(ExpoLocation);
+    return address ? { ok: true, address } : { ok: false, reason: 'notfound' };
   } catch {
     return { ok: false, reason: 'notfound' };
+  }
+}
+
+// Never prompts: resolves the current address only when foreground location has
+// ALREADY been granted (the user has shared their location with the app).
+// Returns null otherwise — permission not (yet) granted, module unavailable, or
+// lookup failed. Used to seed a travel-time origin by default without triggering
+// a permission dialog on form open.
+export async function resolveCurrentAddressIfShared(): Promise<string | null> {
+  const ExpoLocation = loadExpoLocation();
+  if (!ExpoLocation) return null;
+  const { status } = await ExpoLocation.getForegroundPermissionsAsync();
+  if (status !== 'granted') return null;
+  try {
+    return await currentAddress(ExpoLocation);
+  } catch {
+    return null;
   }
 }

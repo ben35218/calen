@@ -1,7 +1,7 @@
 ---
 title: Kitchen (recipes, meal planning, grocery)
 status: current
-last-verified: d96d6b3 (2026-07-24)
+last-verified: d96d6b3 (2026-07-24); the recipe add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29)
 code:
   - mobile/src/screens/kitchen/
   - server/src/routes/recipes.js
@@ -22,6 +22,12 @@ A recipe box, a weekly meal planner, auto-generated grocery lists, and a
 hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
 
 ## Behavior (normative)
+
+- **Unsaved-changes guard:** the recipe add/edit form prompts an Apple-style
+  "Discard Changes?" sheet before leaving with unsaved edits (header ✕ / back /
+  swipe-back / Android back), via the shared `useUnsavedChangesGuard` hook — a
+  successful save/delete exits without prompting. See
+  [calendar.md](calendar.md) and [mobile/CLAUDE.md](../../mobile/CLAUDE.md).
 
 ### Add-on gating
 

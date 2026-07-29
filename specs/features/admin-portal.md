@@ -1,7 +1,7 @@
 ---
 title: Admin portal (web console)
 status: current
-last-verified: 55bfc65+ (2026-07-29); added the Email lifecycle view (editable send map + retry policy + suppression list) and upgraded the Email log to a delivery-outbox view (retry/cancel/reconcile) — behavior in email-lifecycle.md (2026-07-29)
+last-verified: f8e4627+ (2026-07-29); added the Feedback triage view (in-app questions/bugs/ideas → `GET /admin/feedback` + `POST /admin/feedback/:id/status`, audited, new-count nav badge) — behavior in feedback.md (2026-07-29); added the Email lifecycle view (editable send map + retry policy + suppression list) and upgraded the Email log to a delivery-outbox view (retry/cancel/reconcile) — behavior in email-lifecycle.md (2026-07-29)
 code:
   - admin/
   - server/src/routes/admin.js
@@ -28,8 +28,9 @@ admin-only server surfaces behind it.
 
 - **Content-blind by default.** Admin surfaces expose metadata only — counts,
   timestamps, versions, roles, key-enrollment state. Household content is E2EE
-  and unreadable server-side. The two deliberate exceptions: content reports
-  (the user chose to send us the flagged AI message) and the support mailbox
+  and unreadable server-side. The deliberate exceptions are all user-initiated
+  support content: content reports (the user chose to send us the flagged AI
+  message), in-app feedback ([feedback](feedback.md)), and the support mailbox
   (the user emailed us).
 - **Sensitive actions are audited.** Role changes, unlock grants/revokes,
   credit adjustments, monetization-config saves, moderation triage, and every
@@ -57,11 +58,11 @@ admin-only server surfaces behind it.
 ## App shell
 
 - Nav is grouped — Analytics (Insights, AI usage), Revenue (Monetization,
-  Billing, Households), Support (Support inbox, Content reports), Operations
-  (Users, Do-not-call, Email lifecycle, Email log, Audit log) — and doubles as a
-  work queue: badge counts for
-  unseen support mail and open content reports refresh on a slow poll (~2 min;
-  best-effort, failures silent).
+  Billing, Households), Support (Support inbox, Content reports, Feedback),
+  Operations (Users, Do-not-call, Email lifecycle, Email log, Audit log) — and
+  doubles as a work queue: badge counts for
+  unseen support mail, open content reports, and new feedback refresh on a slow
+  poll (~2 min; best-effort, failures silent).
 - The app bar shows an environment chip (`VITE_ENV_LABEL`, defaulting to
   PRODUCTION in prod builds / DEV otherwise) so prod is never edited by
   accident.
@@ -89,6 +90,7 @@ admin-only server surfaces behind it.
 | Users | `GET /api/admin/users`, `POST /api/admin/users/:id/role` | Role toggle always confirmed; CSV export. |
 | Support inbox | `GET/POST /api/admin/email/support/*` | Live IMAP; untrusted HTML renders only in a fully sandboxed iframe. |
 | Content reports | `GET /api/admin/moderation`, `POST /api/admin/moderation/:id/status` | Apple 1.2 triage; status changes audited. |
+| Feedback | `GET /api/admin/feedback`, `POST /api/admin/feedback/:id/status` | In-app questions/bugs/ideas triage (`new`→`triaged`→`resolved`); status changes audited (`feedback_status_changed`). Message + captured device diagnostics + reporter email shown. Behavior: [feedback](feedback.md). |
 | Email lifecycle | `GET/PUT /api/admin/email/catalog`, `GET …/catalog/:key/preview`, `GET/POST/DELETE …/suppressions` | The full send map (grouped by lifecycle stage), editable metadata (enable/subject/note per template, retry policy, suppression toggle) with review-diff confirm + unsaved-changes guard; template preview (sandboxed iframe); the suppression list (add/release). Bodies are code-owned — not editable here. Behavior: [email-lifecycle](email-lifecycle.md). |
 | Email log | `GET /api/admin/email/log`, `…/log/stats`, `POST …/log/:id/{retry,cancel}`, `POST …/reconcile` | Outbound no-reply@ delivery ledger + outbox; bodies never stored. Per-row retry/cancel on queued sends, suppress-recipient on failures, "Reconcile now", header stat chips. Behavior: [email-lifecycle](email-lifecycle.md). |
 | Audit log | `GET /api/admin/audit` | Filterable by event; CSV export; includes the admin-action events above. |
