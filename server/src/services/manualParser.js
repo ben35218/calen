@@ -94,7 +94,10 @@ async function tasksFromManualText(text) {
   const client = new Anthropic({ apiKey });
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    // Sonnet, deliberately: manuals are long (~16k tokens of input) and the
+    // extracted maintenance schedule must be right — the flat manualParse
+    // credit price (credits.actionCosts) is set against Sonnet-class cost.
+    model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
     messages: [

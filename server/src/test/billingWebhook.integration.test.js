@@ -427,7 +427,7 @@ test('billing status reports the plan state and the flat action prices', async (
   assert.equal(res.body.aiPlan.active, false);
   assert.equal(res.body.aiPlan.productId, 'calen_ai_monthly_499');
   assert.equal(res.body.aiPlan.monthlyCredits, 600);
-  assert.equal(res.body.actionCosts.chat, 2);
+  assert.equal(res.body.actionCosts.chat, 5);
   assert.equal(res.body.actionCosts.callPerMinute, 20);
 
   await post({

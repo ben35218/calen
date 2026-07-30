@@ -11,7 +11,7 @@ const CONFIG = {
     tokenRatesPer1M: { default: 6, haiku: 3, sonnet: 10 },
     callRatePerMinute: 0.10,
     actionCosts: {
-      chat: 2, scan: 3, generation: 3, manualParse: 1, aiHelper: 1,
+      chat: 5, scan: 3, generation: 3, manualParse: 40, aiHelper: 1,
       callPerMinute: 20,
     },
     packs: {
@@ -30,9 +30,9 @@ test('rateForModel matches by family substring, else the default rate', () => {
 });
 
 test('actionDebitMc: the flat published price for one completed action', () => {
-  assert.equal(actionDebitMc('chat', CONFIG), 2_000);
+  assert.equal(actionDebitMc('chat', CONFIG), 5_000);
   assert.equal(actionDebitMc('scan', CONFIG), 3_000);
-  assert.equal(actionDebitMc('manualParse', CONFIG), 1_000);
+  assert.equal(actionDebitMc('manualParse', CONFIG), 40_000);
   // Unknown action / missing config → 0: fail open on cost, never on features.
   assert.equal(actionDebitMc('someFutureAction', CONFIG), 0);
   assert.equal(actionDebitMc('chat', {}), 0);

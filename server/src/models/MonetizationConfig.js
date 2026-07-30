@@ -71,10 +71,12 @@ const DEFAULTS = {
     // spend for margin reconciliation, never to debit. Flat prices mean users
     // can predict spend and a new model id can never misprice a debit.
     actionCosts: {
-      chat: 2,
+      chat: 5,
       scan: 3,
       generation: 3,
-      manualParse: 1,
+      // Manual parsing runs on Sonnet over long documents (~$0.18/parse with
+      // headroom) — priced rare-but-heavy, ~2× retail.
+      manualParse: 40,
       aiHelper: 1,
       callPerMinute: 20,
     },
@@ -107,7 +109,8 @@ const DEFAULTS = {
     haikuChat:   0.01,
     scan:        0.015,
     generation:  0.012,
-    manualParse: 0.15,
+    // Sonnet over a long manual (~16k in + ~4k out) with upgrade headroom.
+    manualParse: 0.18,
     mapsMonthly: 0.10,
   },
   models: {
