@@ -24,3 +24,11 @@ update. Resolve drift on the files you touched, or note in the PR why the change
 doesn't alter documented behavior.
 
 Mobile UI conventions live in [mobile/CLAUDE.md](mobile/CLAUDE.md).
+
+## Release notes (TestFlight / App Store Connect)
+
+When asked to prepare a new App Store Connect build — or for the "What to Test"
+notes for one — run `npm run release:notes` and write tester-facing notes that
+follow [docs/release-notes-style.md](docs/release-notes-style.md) exactly (group
+by user-facing area, drop internal/spec/test/CI churn, ≤4000 chars). After the
+build ships, anchor it: `npm run release:notes -- --tag <version>-<buildNumber>`.

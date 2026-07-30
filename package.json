@@ -10,7 +10,8 @@
     "test": "npm run test:server && npm run test:shared && npm run test:mobile",
     "test:server": "npm --prefix server test",
     "test:shared": "npm --prefix shared/crypto test && npm --prefix shared/calendar test && npm --prefix shared/weather test",
-    "test:mobile": "npm --prefix mobile test"
+    "test:mobile": "npm --prefix mobile test",
+    "release:notes": "node scripts/release-notes.mjs"
   },
   "devDependencies": {
     "@types/react": "~19.2.14",
