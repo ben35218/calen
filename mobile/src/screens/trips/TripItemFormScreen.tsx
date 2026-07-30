@@ -24,7 +24,7 @@ import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_TYPES, tripTypeMeta } from '../../lib/tripTypes';
-import { startKeepingDuration } from '../../lib/datetime';
+import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { zonedWallclockToUtc, zonedParts } from '../../lib/tz';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
@@ -171,6 +171,35 @@ export default function TripItemFormScreen() {
         (patch as any)[sk.date] = shifted.date;
         if ((form as any)[sk.time]) (patch as any)[sk.time] = shifted.time;
         if (part === 'date') (patch as any)[ek.date] = v;
+      }
+    }
+    set(patch);
+  };
+
+  // The mirror of setEnd: editing a start (date/time) to at/after the end pushes
+  // the end forward so the booking keeps its length — the end is never left
+  // before the start. Only runs when an end is set; otherwise the start moves
+  // freely. Serves both the Starts/Ends and the journey Departs/Arrives pair.
+  const setStart = (
+    sk: { date: 'startDate' | 'depDate'; time: 'startTime' | 'depTime' },
+    ek: { date: 'endDate' | 'arrDate'; time: 'endTime' | 'arrTime' },
+    part: 'date' | 'time',
+    v: string
+  ) => {
+    const patch: Partial<typeof form> = { [sk[part]]: v } as Partial<typeof form>;
+    const startDate = (form as any)[sk.date] as string;
+    const endDate = (form as any)[ek.date] as string;
+    if (startDate && endDate) {
+      const startTime = ((form as any)[sk.time] as string) || '00:00';
+      const endTime = ((form as any)[ek.time] as string) || '00:00';
+      const newStart = {
+        date: part === 'date' ? v : startDate,
+        time: part === 'time' ? v : startTime,
+      };
+      const shifted = endKeepingDuration({ date: startDate, time: startTime }, { date: endDate, time: endTime }, newStart);
+      if (shifted) {
+        (patch as any)[ek.date] = shifted.date;
+        if ((form as any)[ek.time]) (patch as any)[ek.time] = shifted.time;
       }
     }
     set(patch);
@@ -534,7 +563,7 @@ export default function TripItemFormScreen() {
               <View style={fs.dtFields}>
                 <DateField
                   value={form.depDate}
-                  onChange={(v) => set({ depDate: v })}
+                  onChange={(v) => setStart({ date: 'depDate', time: 'depTime' }, { date: 'arrDate', time: 'arrTime' }, 'date', v)}
                   highlight={assist.changed.has('depDate')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -543,7 +572,7 @@ export default function TripItemFormScreen() {
                 />
                 <TimeField
                   value={form.depTime}
-                  onChange={(v) => set({ depTime: v })}
+                  onChange={(v) => setStart({ date: 'depDate', time: 'depTime' }, { date: 'arrDate', time: 'arrTime' }, 'time', v)}
                   highlight={assist.changed.has('depTime')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -672,7 +701,7 @@ export default function TripItemFormScreen() {
               <View style={fs.dtFields}>
                 <DateField
                   value={form.startDate}
-                  onChange={(v) => set({ startDate: v })}
+                  onChange={(v) => setStart({ date: 'startDate', time: 'startTime' }, { date: 'endDate', time: 'endTime' }, 'date', v)}
                   highlight={assist.changed.has('startDate')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -682,7 +711,7 @@ export default function TripItemFormScreen() {
                 <TimeField
                   clearable
                   value={form.startTime}
-                  onChange={(v) => set({ startTime: v })}
+                  onChange={(v) => setStart({ date: 'startDate', time: 'startTime' }, { date: 'endDate', time: 'endTime' }, 'time', v)}
                   highlight={assist.changed.has('startTime')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}

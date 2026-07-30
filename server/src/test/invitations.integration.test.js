@@ -379,6 +379,43 @@ test('D3 lookup: resolves an invited email → keys for an enrolled account, wit
   assert.equal(same.body.identityPublicKey, null);
 });
 
+test('device-composed outreach: an invite sends NO email (account holders get push + inbox), and lookup resolves a phone (existence only)', async () => {
+  const { sender, eventId, snapshot } = await setupSenderWithEvent();
+  const recipient = await registerUser({ firstName: 'Cam' });
+
+  const res = await request().post('/api/invitations')
+    .set('Authorization', sender.auth)
+    .send({ eventId, email: recipient.user.email, event: snapshot });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.userExists, true);
+
+  // The server records the invitation but sends no invite email — outreach is
+  // device-composed like the other sharing flows (the `event_invitation` mail
+  // was retired 2026-07-29; households-sharing.md). Nothing in this whole
+  // suite should have enqueued one.
+  const EmailLog = require('../models/EmailLog');
+  assert.equal(await EmailLog.countDocuments({ kind: 'event_invitation' }), 0);
+
+  // Phone lookup (the trip/calendar flows' pre-outreach check): existence
+  // only, never a key — sealed invites are email-to-account.
+  const User = require('../models/User');
+  await User.updateOne({ _id: recipient.user._id }, { $set: { phone: '+16045550000' } });
+  const hit = await request().get('/api/invitations/lookup')
+    .query({ phone: '+1 (604) 555-0000' }).set('Authorization', sender.auth);
+  assert.equal(hit.status, 200);
+  assert.equal(hit.body.userExists, true);
+  assert.equal(hit.body.identityPublicKey, null);
+
+  const miss = await request().get('/api/invitations/lookup')
+    .query({ phone: '+19998887777' }).set('Authorization', sender.auth);
+  assert.equal(miss.body.userExists, false);
+
+  // Neither email nor phone → 400.
+  const bad = await request().get('/api/invitations/lookup')
+    .query({}).set('Authorization', sender.auth);
+  assert.equal(bad.status, 400);
+});
+
 test('D3 sealed invite: a known account stores the sealed blob and NO plaintext; the .ics degrades to 404', async () => {
   const { sender, eventId } = await setupSenderWithEvent();
   const recipient = await registerUser();

@@ -140,6 +140,14 @@ test('preview renders an implemented template and 404s a planned one', async () 
 
   const planned = await request().get('/api/admin/email/catalog/deletion_scheduled/preview').set('Authorization', admin.auth);
   assert.equal(planned.status, 404);
+
+  // event_invitation was RETIRED 2026-07-29 (event invites are device-composed
+  // now) — the entry stays in the catalog so historical EmailLog rows resolve,
+  // but it's implemented:false and no longer previewable.
+  const retired = await request().get('/api/admin/email/catalog/event_invitation/preview').set('Authorization', admin.auth);
+  assert.equal(retired.status, 404);
+  const cat = await request().get('/api/admin/email/catalog').set('Authorization', admin.auth);
+  assert.equal(cat.body.templates.find((t) => t.key === 'event_invitation').implemented, false);
 });
 
 test('email surfaces are requireAdmin-gated', async () => {

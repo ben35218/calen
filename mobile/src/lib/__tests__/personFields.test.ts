@@ -1,6 +1,6 @@
 import {
   inverseRelatedLabel, reciprocalUpdates, RelatedName,
-  splitName, composeName, normalizePerson, denormalizeForSave, NormalizedPerson,
+  splitName, composeName, normalizePerson, denormalizeForSave, canonicalizePhones, NormalizedPerson,
 } from '../personFields';
 import type { Person } from '../../api';
 
@@ -58,6 +58,34 @@ describe('denormalizeForSave structured names', () => {
     const out = denormalizeForSave(base);
     expect(out.firstName).toBeUndefined();
     expect(out.lastName).toBeUndefined();
+  });
+
+  it('stores phones in canonical E.164 (same format as the account phone)', () => {
+    // Device country is US under jest, so a national number gains +1 — matching
+    // what the account PhoneField persists.
+    const out = denormalizeForSave({
+      ...base,
+      phones: [
+        { label: 'mobile', value: '(604) 555-1212' },
+        { label: 'work', value: '+1 604-555-3434' },
+      ],
+    });
+    expect(out.phones).toEqual([
+      { label: 'mobile', value: '+16045551212' },
+      { label: 'work', value: '+16045553434' },
+    ]);
+  });
+});
+
+describe('canonicalizePhones', () => {
+  it('canonicalizes plausible numbers and leaves junk untouched', () => {
+    expect(canonicalizePhones([
+      { label: 'mobile', value: '604-555-1212' },
+      { label: 'other', value: 'ext. 12' },
+    ])).toEqual([
+      { label: 'mobile', value: '+16045551212' },
+      { label: 'other', value: 'ext. 12' },
+    ]);
   });
 });
 

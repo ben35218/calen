@@ -319,6 +319,10 @@ function LocationCard({ location, onOpen, onUnavailable }: { location: string; o
 // is clipped to its first day (the mini card shows a single day).
 const TIME_CARD_HOUR = 44; // px per hour
 const TIME_CARD_PAD = 10; // vertical breathing room around the hour lines
+// The mini card is a compact, fixed-size window (this many hours, incl. the
+// hour of lead-in) so it never grows into a wall of hours. A longer event
+// overflows the window and its block is clipped at the bottom edge instead.
+const TIME_CARD_MAX_HOURS = 3;
 function EventTimeCard({ event, accent }: { event: CalendarEvent; accent: string }) {
   const start = new Date(event.startDate);
   const end = event.endDate ? new Date(event.endDate) : new Date(start.getTime() + 3600_000);
@@ -336,14 +340,24 @@ function EventTimeCard({ event, accent }: { event: CalendarEvent; accent: string
   const showLocation = durationHours > 1 && !!event.location;
 
   const winStart = Math.max(0, Math.floor(startDec) - 1);
-  const winEnd = Math.min(24, Math.max(Math.ceil(endDec), Math.floor(startDec) + 2));
+  // Grow the window to the event's end, but cap it at TIME_CARD_MAX_HOURS past
+  // winStart (Apple-style). A longer event overflows this window — its block is
+  // clipped at the bottom edge rather than stretching the card indefinitely.
+  const fullWinEnd = Math.min(24, Math.max(Math.ceil(endDec), Math.floor(startDec) + 2));
+  const winEnd = Math.min(fullWinEnd, winStart + TIME_CARD_MAX_HOURS);
+  const clipped = endDec > winEnd;
   const hours: number[] = [];
   for (let h = winStart; h <= winEnd; h++) hours.push(h);
 
   const y = (dec: number) => TIME_CARD_PAD + (dec - winStart) * TIME_CARD_HOUR;
-  const blockTop = y(startDec);
-  const blockH = Math.max(TIME_CARD_HOUR * 0.6, y(endDec) - blockTop);
   const canvasH = TIME_CARD_PAD * 2 + (winEnd - winStart) * TIME_CARD_HOUR;
+  const blockTop = y(startDec);
+  // A clipped block bleeds all the way to the card's bottom edge — down through
+  // the card's own bottom padding (`spacing.md`) past the timeline canvas — so
+  // it's clear the event runs past the visible window rather than ending here.
+  // An unclipped block ends at its real end time.
+  const blockBottom = clipped ? canvasH + spacing.md : y(endDec);
+  const blockH = Math.max(TIME_CARD_HOUR * 0.6, blockBottom - blockTop);
 
   const hourLabel = (h: number) => {
     if (h === 12) return 'Noon';

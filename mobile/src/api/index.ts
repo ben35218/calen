@@ -975,6 +975,17 @@ export interface RotationPayload {
   envelopes: { userId: string; wrappedHDK: string }[];
 }
 
+// A one-off membership notice addressed to me (removed from a household, or
+// approved into one), shown in the Invitations inbox until dismissed.
+export interface HouseholdNotice {
+  _id: string;
+  kind: 'removed' | 'approved';
+  actorName?: string;
+  householdId?: string;
+  acknowledgedAt?: string;
+  createdAt: string;
+}
+
 export const householdApi = {
   get: () => api.get<Household>('/household'),
   // Callers seal the name into the settings blob first (C2 — see HouseholdScreen).
@@ -995,6 +1006,9 @@ export const householdApi = {
   joinRequests: () => api.get<JoinRequestForApprover[]>('/household/join-requests'),
   approveJoin: (id: string, envelope: HDKEnvelopePayload) => api.post(`/household/join-requests/${id}/approve`, envelope),
   rejectJoin: (id: string) => api.post(`/household/join-requests/${id}/reject`),
+  // Membership notices (e.g. "you were removed"), shown in the Invitations inbox.
+  notices: () => api.get<HouseholdNotice[]>('/household/notices'),
+  ackNotice: (id: string) => api.post(`/household/notices/${id}/ack`),
   getKey: () => api.get<HouseholdKeyState>('/household/key'),
   mintKey: (envelope: HDKEnvelopePayload) => api.post('/household/key', envelope),
   leave: () => api.post('/household/leave'),
@@ -1616,23 +1630,32 @@ export const invitationsApi = {
   // The organizer's invitee list for one of their events.
   sentForEvent: (eventId: string) =>
     api.get<EventInvitation[]>('/invitations/sent', { params: { eventId } }),
-  // Resolve an invited email so the organizer's device can decide whether to
-  // seal the snapshot (D3): a non-null identityPublicKey means "seal to this key".
-  lookup: (email: string) =>
-    api.get<{ userExists: boolean; identityPublicKey: string | null }>('/invitations/lookup', { params: { email } }),
+  // Resolve an invited email or phone so the organizer's device can decide
+  // whether to seal the snapshot (D3: a non-null identityPublicKey means "seal
+  // to this key") and whether to compose outreach at all (userExists means the
+  // recipient gets push + in-app inbox instead — no composer). Phone lookups
+  // return existence only.
+  lookup: (recipient: { email?: string; phone?: string }) =>
+    api.get<{ userExists: boolean; identityPublicKey: string | null }>('/invitations/lookup', { params: recipient }),
   // Address with either email or phone. Phone invites are recorded here but
   // texted from the sender's own device (see EventInviteesScreen). A known
   // account with keys gets `sealedEvent` (client-sealed) instead of `event`.
-  send: (data: { eventId: string; email?: string; phone?: string; event?: InvitationEventSnapshot; sealedEvent?: string }) =>
+  // `guestListVisible` is sealed event content the server can't read off the
+  // source, so the organizer's device snapshots it onto each invitation here
+  // (the guest-list gate reads it there); omitting it means visible.
+  send: (data: { eventId: string; email?: string; phone?: string; event?: InvitationEventSnapshot; sealedEvent?: string; guestListVisible?: boolean }) =>
     api.post<{ invitation: EventInvitation; userExists: boolean }>('/invitations', data),
   // Upgrade a claimed plaintext invite to a sealed one (D3): the recipient
   // re-seals the snapshot to its own key; the server drops the plaintext.
   seal: (id: string, sealedEvent: string) =>
     api.post<{ invitation: EventInvitation }>(`/invitations/${id}/seal`, { sealedEvent }),
-  // The recipient passes the (decrypted) snapshot so a sealed invite's copy can
-  // be built server-side; a plaintext invite ignores it.
-  accept: (id: string, event?: InvitationEventSnapshot) =>
-    api.post<{ invitation: EventInvitation; event: CalendarEvent }>(`/invitations/${id}/accept`, { event }),
+  // Signal-parity C3b: the server can't read the sealed source, so the recipient's
+  // device seals its OWN copy of the event (client-minted `_id` + `enc`, with
+  // `invitationId` folded inside the ciphertext) and posts the opaque blob. The
+  // server stores it as a Record it can't read, scoped to the recipient's
+  // household. See InvitationsScreen for how the copy is built and sealed.
+  accept: (id: string, copy: { _id: string; enc: unknown; keyVersion?: number }) =>
+    api.post<{ invitation: EventInvitation; event: CalendarEvent }>(`/invitations/${id}/accept`, copy),
   decline: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/decline`),
   // Recipient: leave an accepted event (deletes their copy).
   leave: (id: string) => api.post<{ invitation: EventInvitation }>(`/invitations/${id}/leave`),

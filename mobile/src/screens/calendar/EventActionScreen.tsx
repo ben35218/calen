@@ -12,7 +12,7 @@ import {
 import { form as formStyles } from '../../components/formStyles';
 import { DNC_BLOCK_MESSAGE, isCallBlockedBySuppression } from '../../lib/callBlock';
 import { ymd } from '../../lib/calendar';
-import { startTimeKeepingDuration } from '../../lib/datetime';
+import { startTimeKeepingDuration, endTimeKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
@@ -90,6 +90,17 @@ export default function EventActionScreen() {
         if (j !== i) return w;
         const from = startTimeKeepingDuration(w.from, w.to, v);
         return { ...w, to: v, ...(from ? { from } : {}) };
+      })
+    );
+
+  // The mirror: moving "from" to at/after "to" pushes "to" forward so the window
+  // keeps its width (same-day, clamped at 23:59) — "to" is never left before "from".
+  const setWindowFrom = (i: number, v: string) =>
+    setWindows((ws) =>
+      ws.map((w, j) => {
+        if (j !== i) return w;
+        const to = endTimeKeepingDuration(w.from, w.to, v);
+        return { ...w, from: v, ...(to ? { to } : {}) };
       })
     );
 
@@ -252,7 +263,7 @@ export default function EventActionScreen() {
                 <View style={formStyles.dtFields}>
                   <TimeField
                     value={w.from}
-                    onChange={(v) => setWindow(i, { from: v })}
+                    onChange={(v) => setWindowFrom(i, v)}
                     containerStyle={formStyles.dtFieldWrap}
                     fieldStyle={formStyles.dtField}
                     valueStyle={formStyles.dtValue}

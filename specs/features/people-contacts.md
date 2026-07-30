@@ -1,7 +1,7 @@
 ---
 title: People & contacts
 status: current
-last-verified: 55bfc65+ (2026-07-28); contacts hold Apple-style multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames) + jobTitle/company, migrated from the legacy single fields on read (2026-07-27); phone fields use shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); import handles iOS limited-contacts access + hide-imported filter (2026-07-27); import config moved to an options bottom sheet so the contact list is the hero (2026-07-27); out-of-credits forces Direct + Review each import (2026-07-27); import rows fully tappable, per-row Family/Friend switch removed (2026-07-27); contact address accepts a city via addressCity autocomplete (2026-07-27); labeled `dates[]` (anniversary/marriage/death/custom) now surface on the Occasions calendar alongside `birthday` (2026-07-28); `occasionsHidden` per-contact exclusion toggle by the Dates section (2026-07-28); linked related names auto-mirror onto the other contact with the inverse label, client-side add-only (2026-07-28); person-form phone rows use picker-free `PhoneTextField` (type local number, or leading +country-code for international; no country selector), still stored E.164 (2026-07-28); contacts gain Apple-style structured `firstName`/`lastName` (personal contacts edit two inputs; `name` is the composed source of truth; legacy names split on read; service/self keep a single name field; imports carry structured names) (2026-07-28); the contact add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29)
+last-verified: 55bfc65+ (2026-07-28); contacts hold Apple-style multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames) + jobTitle/company, migrated from the legacy single fields on read (2026-07-27); phone fields use shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); import handles iOS limited-contacts access + hide-imported filter (2026-07-27); import config moved to an options bottom sheet so the contact list is the hero (2026-07-27); out-of-credits forces Direct + Review each import (2026-07-27); import rows fully tappable, per-row Family/Friend switch removed (2026-07-27); contact address accepts a city via addressCity autocomplete (2026-07-27); labeled `dates[]` (anniversary/marriage/death/custom) now surface on the Occasions calendar alongside `birthday` (2026-07-28); `occasionsHidden` per-contact exclusion toggle by the Dates section (2026-07-28); linked related names auto-mirror onto the other contact with the inverse label, client-side add-only (2026-07-28); person-form phone rows use picker-free `PhoneTextField` (type local number, or leading +country-code for international; no country selector), still stored E.164 (2026-07-28); contacts gain Apple-style structured `firstName`/`lastName` (personal contacts edit two inputs; `name` is the composed source of truth; legacy names split on read; service/self keep a single name field; imports carry structured names) (2026-07-28); the contact add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); contact phones are canonicalized to E.164 at import + save (`lib/phone.canonicalizePhoneForStorage`, shared by `denormalizeForSave` and `ContactImportScreen`) so a saved contact number matches the account phone format and can resolve invites by exact match (2026-07-29)
 code:
   - mobile/src/screens/profile/PeopleScreen.tsx
   - mobile/src/screens/profile/PersonDetailScreen.tsx
@@ -9,12 +9,14 @@ code:
   - mobile/src/screens/profile/ContactImportScreen.tsx
   - mobile/src/components/MultiValueField.tsx
   - mobile/src/lib/personFields.ts
+  - mobile/src/lib/phone.ts
   - mobile/src/lib/encSubsets.ts
   - server/src/routes/people.js
   - server/src/models/Person.js
 tests:
   - server/src/test/people.integration.test.js
   - mobile/src/lib/__tests__/personFields.test.ts
+  - mobile/src/lib/__tests__/phone.test.ts
 ---
 
 # People & contacts
@@ -194,7 +196,17 @@ with AI assistance.
   (`ContactImportScreen`). All of a device contact's phone numbers and emails are
   carried through as labeled multi-value entries (the label comes from the device
   entry, e.g. mobile/home/work); the first of each stays the primary the AI
-  classifier sees. Each contact row is **fully tappable** to toggle selection (not
+  classifier sees. Imported phone numbers are **canonicalized to E.164 at import
+  time** (`lib/phone.canonicalizePhoneForStorage`, device-country calling code
+  applied to a national number), so a contact's number is stored in the **same
+  format as the account phone** — the AI classifier's/web-lookup's returned
+  primary is canonicalized the same way. This is what lets a saved contact number
+  resolve a household/trip/calendar invite by exact match; the loose form the
+  address book hands over (e.g. `(604) 555-1212`) would otherwise never match a
+  stored `+16045551212`. The single canonicalization rule is shared with the
+  person form's save path (`personFields.denormalizeForSave` →
+  `canonicalizePhones`); legacy contacts saved before this re-canonicalize on
+  their next edit, and the invite pickers canonicalize at read time as a backstop. Each contact row is **fully tappable** to toggle selection (not
   just the checkbox). The picker has **no per-row type switch** —
   the roster has three types (Family / Friends / Professionals), so a two-way
   Family/Friend toggle was misleading; a Direct import defaults to `friend` and

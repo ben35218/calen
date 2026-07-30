@@ -9,6 +9,7 @@
 // arrays while clearing the legacy scalars (`denormalizeForSave`). Records that
 // are never re-edited still render correctly via the read-time fold.
 import type { Person } from '../api';
+import { canonicalizePhoneForStorage } from './phone';
 
 export interface LabeledValue {
   label: string;
@@ -119,6 +120,15 @@ export function normalizePerson(p: Person): NormalizedPerson {
   };
 }
 
+// Canonicalize every phone in a labeled list to the E.164 storage form the
+// account phone uses, so a contact's number matches an account across formats
+// (household/trip/calendar invites resolve by an exact match on the saved
+// number). Implausible values pass through untouched. Exported so import paths
+// that bypass denormalizeForSave (bulk import) can share the one rule.
+export function canonicalizePhones(entries: LabeledValue[]): LabeledValue[] {
+  return entries.map((e) => ({ ...e, value: canonicalizePhoneForStorage(e.value) }));
+}
+
 // Build the persisted payload from the edited multi-value shape: emit trimmed
 // arrays (undefined when empty) and clear the legacy scalars so re-saving an old
 // record drops the duplicated single values from the sealed blob.
@@ -132,7 +142,8 @@ export function denormalizeForSave(n: NormalizedPerson): Record<string, unknown>
     // form knows whether it's a personal vs. single-field/service contact).
     firstName: n.firstName.trim() || undefined,
     lastName: n.lastName.trim() || undefined,
-    phones: list(n.phones, DEFAULT_PHONE_LABEL),
+    // Phones are stored canonical E.164 (same format as the account phone).
+    phones: list(canonicalizePhones(n.phones), DEFAULT_PHONE_LABEL),
     emails: list(n.emails, DEFAULT_EMAIL_LABEL),
     addresses: list(n.addresses, DEFAULT_ADDRESS_LABEL),
     dates: list(n.dates, DEFAULT_DATE_LABEL),

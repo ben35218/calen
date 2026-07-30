@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { householdApi, ecardsApi, HouseholdMember, CalendarAccess } from '../../api';
+import { householdApi, ecardsApi, invitationsApi, HouseholdMember, CalendarAccess } from '../../api';
 import { useAuth } from '../../store/auth';
 import {
   CALENDARS,
@@ -24,7 +24,8 @@ import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
-import { classifyRecipient, composeShareSms, composeShareEmail } from '../../lib/shareInvite';
+import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
+import { useEmailComposer } from '../../components/EmailAppSheet';
 
 function memberName(m: HouseholdMember): string {
   const full = [m.firstName, m.lastName].filter(Boolean).join(' ');
@@ -122,6 +123,8 @@ export default function AddCalendarScreen() {
   );
   const [emailDraft, setEmailDraft] = useState('');
   const [emailError, setEmailError] = useState('');
+  const [emailNote, setEmailNote] = useState('');
+  const { composeEmail, emailSheet } = useEmailComposer();
   // Editing state loads async from AsyncStorage; seed the form once it arrives.
   const [seeded, setSeeded] = useState(!calendarId);
   useEffect(() => {
@@ -275,20 +278,40 @@ export default function AddCalendarScreen() {
       if (member) return setEmailError(`${memberName(member)} is in your household — select them above.`);
     }
     setEmailError('');
+    setEmailNote('');
     setEmailDraft('');
     const key = outsideKey(recipient);
     if (outside.some((o) => outsideKey(o) === key)) return;
     setOutside((prev) => [...prev, { ...recipient, access: 'view' }]);
+    // A recipient already on Calen needs no outreach from this device: when
+    // the share saves, the server pushes their registered devices and the
+    // invite lands in their in-app inbox (households-sharing.md). The composer
+    // only opens for someone not on Calen yet; the row's Remind button
+    // re-opens it on demand. Lookup failures fail open (compose anyway).
+    let exists = false;
+    try {
+      exists = (await invitationsApi.lookup(recipient)).data.userExists;
+    } catch { /* fail open */ }
+    if (exists) {
+      setEmailNote('They’re on Calen — they’ll be notified in-app when you save.');
+      return;
+    }
+    await composeOutreach(recipient);
+  };
+
+  // Raw outreach — always opens the composer (Messages or the mail-app
+  // chooser). Used on add for non-account recipients and by the row Remind.
+  const composeOutreach = async (recipient: { email?: string; phone?: string }) => {
     const what = name.trim() ? `the “${name.trim()}” calendar` : 'a shared calendar';
-    if ('phone' in recipient) {
+    if (recipient.phone) {
       try {
         await composeShareSms(recipient.phone, what);
       } catch (e: any) {
         setEmailError(e?.message || 'Added, but the text couldn’t be started.');
       }
-    } else {
+    } else if (recipient.email) {
       try {
-        await composeShareEmail(recipient.email, what);
+        await composeEmail(recipient.email, what);
       } catch (e: any) {
         setEmailError(e?.message || 'Added, but the email couldn’t be started.');
       }
@@ -569,12 +592,24 @@ export default function AddCalendarScreen() {
                 onToggle={() => flipOutsideAccess(outsideKey(o))}
               />
               {!readOnly ? (
-                <TouchableOpacity
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  onPress={() => setOutside((prev) => prev.filter((e) => outsideKey(e) !== outsideKey(o)))}
-                >
-                  <Ionicons name="close-circle-outline" size={22} color={colors.textMuted} />
-                </TouchableOpacity>
+                <>
+                  {/* Remind — re-open the composer for this recipient (the
+                      escape hatch when an account holder's push wasn't
+                      noticed). */}
+                  <TouchableOpacity
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() => composeOutreach(o)}
+                    style={styles.remindBtn}
+                  >
+                    <Ionicons name="paper-plane-outline" size={20} color={color} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() => setOutside((prev) => prev.filter((e) => outsideKey(e) !== outsideKey(o)))}
+                  >
+                    <Ionicons name="close-circle-outline" size={22} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </>
               ) : null}
             </View>
           </React.Fragment>
@@ -605,6 +640,7 @@ export default function AddCalendarScreen() {
           </>
         ) : null}
         {emailError ? <Text style={styles.emailError}>{emailError}</Text> : null}
+        {emailNote ? <Text style={styles.emailNote}>{emailNote}</Text> : null}
       </GroupCard>
       <Text style={styles.hint}>Full Access lets someone add and edit this calendar’s events; View Only just shows them.</Text>
         </>
@@ -641,6 +677,7 @@ export default function AddCalendarScreen() {
           />
         </View>
       ) : null}
+      {emailSheet}
     </Screen>
   );
 }
@@ -658,6 +695,8 @@ const styles = StyleSheet.create({
   emailAddRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingRight: 14 },
   emailInput: { flex: 1, marginBottom: 0 },
   emailError: { fontSize: 13, color: colors.error, paddingBottom: 8, paddingHorizontal: 14 },
+  emailNote: { fontSize: 13, color: colors.success, paddingBottom: 8, paddingHorizontal: 14 },
+  remindBtn: { marginRight: spacing.sm },
   paletteCard: { padding: 14 },
   hint: { fontSize: 13, color: colors.textMuted, marginTop: -4, marginBottom: spacing.lg, paddingHorizontal: 2 },
   subscribeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 12, paddingHorizontal: 14, backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.lg },

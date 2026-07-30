@@ -1,7 +1,7 @@
 ---
 title: Email lifecycle, delivery tracking & reconciliation
 status: current
-last-verified: 55bfc65+ (2026-07-29); first cut — code-owned catalog + admin-editable overlay (enable/subject/note), EmailLog upgraded to a delivery ledger with a transient outbox, transient/permanent failure classification with backoff retry + suppression, welcome + account-deleted bookend emails, admin catalog/preview/retry/cancel/reconcile/suppression surfaces
+last-verified: 55bfc65+ (2026-07-29); first cut — code-owned catalog + admin-editable overlay (enable/subject/note), EmailLog upgraded to a delivery ledger with a transient outbox, transient/permanent; `event_invitation` retired (2026-07-29) — event invite outreach is now device-composed like every other invite (server sends a push to account holders instead; `sendEventInvitation`/`buildEventInvitation` deleted from the mailer, catalog entry kept as `implemented:false` so historical logs resolve, admin preview 404s) failure classification with backoff retry + suppression, welcome + account-deleted bookend emails, admin catalog/preview/retry/cancel/reconcile/suppression surfaces
 code:
   - server/src/services/emailCatalog.js
   - server/src/services/mailer.js
@@ -36,13 +36,17 @@ be a catalog key. Templates by stage:
 
 - **Onboarding** — `welcome` (on registration).
 - **Security** (`required`, always on) — `password_reset`, `security_alert`.
-- **Sharing & invites** — `event_invitation`, `recipe_share`. The ongoing-access
-  invites — household, **calendar**, **trip** — are **device-composed** (the
-  owner's own Mail/Messages app sends them; see
-  [households-sharing](households-sharing.md)), so they have **no** catalog
-  template; `other` covers their historical logs. `event_invitation` stays
-  server-sent because it carries an `.ics` attachment the OS share sheet can't
-  send, and `recipe_share` because it's fully rendered HTML content.
+- **Sharing & invites** — `recipe_share` (server-sent because it's fully
+  rendered HTML content). ALL invites — household, **calendar**, **trip**, and
+  (since 2026-07-29) **event** — are **device-composed** (the owner's own
+  mail/Messages app sends them; see
+  [households-sharing](households-sharing.md)), so they send no catalog mail;
+  `other` covers the ongoing-access invites' historical logs.
+  `event_invitation` remains in the catalog as `implemented: false` — retired,
+  kept so historical `EmailLog` rows keyed by it keep resolving (its old
+  rationale, the `.ics` attachment, is covered by the public `.ics` **link**
+  the composed email/text carries; an invitee with an account gets a push +
+  the in-app inbox instead of any email).
 - **Occasions** — `ecard` (scheduled; a deliberate plaintext exception, see
   [crypto-e2ee](../platform/crypto-e2ee.md)).
 - **Account** — `account_deleted` (sent just before purge); `deletion_scheduled`

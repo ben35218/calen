@@ -12,8 +12,9 @@ import {
 } from '../../lib/inviteeDraft';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import {
-  InviteeEntry, inviteeKey, normalizePhone, composeSmsInvite, sendInvitations,
+  InviteeEntry, inviteeKey, normalizePhone, composeSmsInvite, sendInvitations, eventInviteEmailContent,
 } from '../../lib/invitees';
+import { useEmailComposer } from '../../components/EmailAppSheet';
 import { normalizePerson, NormalizedPerson } from '../../lib/personFields';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { openRecord } from '../../lib/e2ee';
@@ -78,6 +79,9 @@ export default function EventInviteesScreen() {
   const [error, setError] = useState('');
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Mail composer for non-account email invitees (and the per-row Remind) —
+  // the mail-app chooser sheet renders at the bottom of this screen.
+  const { composeEmail, emailSheet } = useEmailComposer();
   // Entries added this visit, committed/sent only on ✓. A draft starts from
   // the queue so previously added entries can still be removed.
   const [staged, setStaged] = useState<InviteeEntry[]>(() => (isDraft ? getQueuedInvitees() : []));
@@ -209,7 +213,7 @@ export default function EventInviteesScreen() {
     }
     setBusy(true);
     try {
-      const failures = await sendInvitations(eventId!, entries, snapshot);
+      const failures = await sendInvitations(eventId!, entries, snapshot, guestListVisible, composeEmail);
       await qc.invalidateQueries({ queryKey: ['invitations', 'sent', eventId] });
       if (failures.length) {
         setStaged(failures.map((f) => f.entry));
@@ -305,6 +309,19 @@ export default function EventInviteesScreen() {
           onPress={() => composeSmsInvite(inv.toPhone!, inv, snapshot).catch((e) => setError(e.message))}
         >
           <Ionicons name="chatbubble-ellipses-outline" size={18} color={calColor} />
+        </TouchableOpacity>
+      ) : null}
+      {/* Remind — re-send a pending email invite from the organizer's own mail
+          app (the SMS twin of the resend-text button above). Works for account
+          holders too: it's the escape hatch when the push/inbox path wasn't
+          noticed (a sealed invite's email is notice-only — no .ics link). */}
+      {inv.toEmail && inv.status === 'pending' ? (
+        <TouchableOpacity
+          style={styles.remove}
+          hitSlop={HIT_SLOP}
+          onPress={() => composeEmail(inv.toEmail!, eventInviteEmailContent(snapshot, inv)).catch((e) => setError(e.message))}
+        >
+          <Ionicons name="paper-plane-outline" size={18} color={calColor} />
         </TouchableOpacity>
       ) : null}
       <TouchableOpacity style={styles.remove} hitSlop={HIT_SLOP} onPress={() => confirmRevoke(inv)}>
@@ -415,6 +432,7 @@ export default function EventInviteesScreen() {
       <Text style={styles.optionHint}>
         When off, invitees can’t see who else is invited — only you can.
       </Text>
+      {emailSheet}
     </Screen>
   );
 }

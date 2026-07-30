@@ -4,6 +4,7 @@ const Household = require('../models/Household');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
 const JoinRequest = require('../models/JoinRequest');
 const HouseholdInvitation = require('../models/HouseholdInvitation');
+const HouseholdNotice = require('../models/HouseholdNotice');
 const AuditLog = require('../models/AuditLog');
 const { requireAuth } = require('../middleware/auth');
 const { resolveShareTarget } = require('../services/phone');
@@ -13,7 +14,7 @@ const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
 const { computeReadiness, DROP_FIELDS, DROP_FIELDS_VERSION } = require('../services/dropReadiness');
 const { e2eeRequired, stripSealedContent, AUTHOR_HIDDEN } = require('../services/e2eePolicy');
-const { alertHousehold, securityAlert } = require('../services/securityAlerts');
+const { alertHousehold, alertUser, securityAlert } = require('../services/securityAlerts');
 const { dropPlaintext } = require('../scripts/dropPlaintext');
 const { CONTENT_MODELS } = require('../services/contentModels');
 const Record = require('../models/Record');
@@ -495,6 +496,22 @@ router.post('/members/:userId/remove', async (req, res) => {
     await AuditLog.create({
       userId: target._id, householdId: oldId, event: 'member_removed', meta: { removedBy: req.user._id },
     });
+    // A persisted in-app notice for the removed member: they've already been
+    // moved to a solo household (so the household push above no longer reaches
+    // them), and they need an explanation for why the shared data is gone. Shown
+    // in their Invitations inbox until dismissed. Best-effort — never fail the
+    // removal on a notice write.
+    await HouseholdNotice.create({
+      userId: target._id, kind: 'removed', actorName: req.user.firstName || '', householdId: oldId,
+    }).catch(() => {});
+    // Notify the removed member directly on their own devices — the household
+    // alert below can't reach them (they've been moved out of `oldId`), so
+    // without this they'd get no push about the removal.
+    securityAlert(alertUser(target._id, {
+      title: 'Removed from a household',
+      body: `${req.user.firstName} removed you from the household. Your own data has moved with you.`,
+      tag: `removed-${oldId}`,
+    }));
     securityAlert(alertHousehold(oldId, {
       title: 'Member removed',
       body: `${target.firstName} was removed from the household by ${req.user.firstName}. The encryption key will rotate.`,
@@ -757,6 +774,36 @@ router.post('/invitations/:id/decline', async (req, res) => {
   }
 });
 
+// ── Membership notices ──────────────────────────────────────────────────────
+
+// One-off notices addressed to me (today: "you were removed"), newest first, so
+// the Invitations inbox can surface them alongside invitations. Undismissed ones
+// are "New"; dismissed ones fall into the response history.
+router.get('/notices', async (req, res) => {
+  try {
+    const notices = await HouseholdNotice
+      .find({ userId: req.user._id }).sort('-createdAt').lean();
+    res.json(notices);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dismiss a notice (stamps acknowledgedAt; moves it out of the "New" tab).
+router.post('/notices/:id/ack', async (req, res) => {
+  try {
+    const notice = await HouseholdNotice.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id },
+      { $set: { acknowledgedAt: new Date() } },
+      { new: true },
+    );
+    if (!notice) return res.status(404).json({ error: 'Notice not found' });
+    res.json({ notice });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Approve-on-device join ──────────────────────────────────────────────────
 
 // The caller's own pending/most-recent join request (joiner polls this while
@@ -886,10 +933,25 @@ router.post('/join-requests/:id/approve', async (req, res) => {
       userId: requester._id, householdId: req.household._id, event: 'member_approved',
       meta: { approvedBy: req.user._id, keyVersion: version },
     });
+    // Durable in-app record of the acceptance for the joiner — the invitation row
+    // is deleted above, so this is what surfaces in their Invitations inbox
+    // (mirroring how the invite itself appeared). Best-effort.
+    await HouseholdNotice.create({
+      userId: requester._id, kind: 'approved', actorName: req.user.firstName || '', householdId: req.household._id,
+    }).catch(() => {});
+    // Tell the joiner directly that they're in (their own push, not the
+    // household-wide security alert below — which they're excluded from so they
+    // don't also get the "a new member was approved" notice about themselves).
+    securityAlert(alertUser(requester._id, {
+      title: 'You’re in!',
+      body: `${req.user.firstName} approved you — you now share the household.`,
+      tag: `household-approved-${req.household._id}`,
+    }));
     securityAlert(alertHousehold(req.household._id, {
       title: 'New household member',
       body: `${req.user.firstName} approved a new member — they can now read household data.`,
       tag: `member-${req.household._id}`,
+      excludeUserId: requester._id,
     }));
     res.json({ ok: true });
   } catch (err) {

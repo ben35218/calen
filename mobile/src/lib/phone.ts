@@ -165,6 +165,20 @@ export function toE164FromTyped(input: string): string {
   }
 }
 
+// Canonicalize a free-typed / imported phone to the E.164 storage form the
+// account phone and PhoneField persist — but ONLY when it's a plausible number
+// (7–15 digits, mirroring lib/invitees normalizePhone). Anything else (an
+// extension, a note, junk) passes through trimmed and untouched. Used to store
+// contact phones in the SAME format as the account phone so cross-matching
+// (e.g. resolving a household invite to a saved number) works regardless of how
+// the number was typed or where it was imported from.
+export function canonicalizePhoneForStorage(value: string | undefined | null): string {
+  const raw = String(value ?? '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return raw;
+  return toE164FromTyped(raw);
+}
+
 // Seed the picker-free editor from a stored value: national form for a local
 // number (no visible country code), international "+CC …" for a foreign one — the
 // same rule as formatDisplay, produced as an editable string.

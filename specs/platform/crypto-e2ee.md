@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29)
+last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -95,7 +95,10 @@ field-by-field boundary in [data-model.md](data-model.md); read/write API in
   envelopes are deleted (**retirement**), so a removed member's keys open nothing.
 - **Safety numbers** are device-local and reset on key change; members get
   **security alerts** (`services/securityAlerts.js`) on factor/membership/key/
-  device changes.
+  device changes. `alertHousehold` accepts an `excludeUserId` to skip one member
+  (used so a just-approved joiner gets their own welcome notification, not the
+  household-wide "new member" alert about themselves — see
+  [households-sharing](../features/households-sharing.md)).
 
 ## Server enforces vs. cryptography enforces
 

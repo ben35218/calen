@@ -6,10 +6,12 @@ import { invitationsApi, customCalendarsApi, tripsApi, householdApi, callsApi } 
 import { colors } from '../theme';
 
 // The invitations button in the bottom-right floating pill on the Calendar and
-// Events views (opens the Invitations modal). Shows a count badge while any
-// invitation — event, calendar, trip, or household — is awaiting a reply, or a
-// Calen phone-call outcome notice awaits dismissal in the "New" tab. Sized to
-// match the pill's other buttons.
+// Events views (opens the Invitations modal). Shows a count badge for everything
+// the inbox's "New" tab surfaces: an invitation — event, calendar, trip, or
+// household — awaiting a reply; a pending request to join THIS household awaiting
+// approval; an undismissed membership notice (removed / approved); or a Calen
+// phone-call outcome notice awaiting dismissal. Keep this in sync with the "New"
+// filter in InvitationsScreen. Sized to match the pill's other buttons.
 export default function InvitationsButton({ onPress }: { onPress: () => void }) {
   const invQ = useQuery({
     queryKey: ['invitations'],
@@ -31,6 +33,16 @@ export default function InvitationsButton({ onPress }: { onPress: () => void }) 
     queryFn: async () => (await householdApi.myInvitations()).data,
     staleTime: 60_000,
   });
+  const joinReqQ = useQuery({
+    queryKey: ['householdJoinRequests'],
+    queryFn: async () => (await householdApi.joinRequests()).data,
+    staleTime: 60_000,
+  });
+  const noticesQ = useQuery({
+    queryKey: ['householdNotices'],
+    queryFn: async () => (await householdApi.notices()).data,
+    staleTime: 60_000,
+  });
   const callsQ = useQuery({
     queryKey: ['calls'],
     queryFn: async () => (await callsApi.list()).data,
@@ -40,9 +52,14 @@ export default function InvitationsButton({ onPress }: { onPress: () => void }) 
   const callNotices = (callsQ.data ?? []).filter(
     (c) => (c.status === 'ended' || c.status === 'failed') && c.outcome && !c.acknowledged,
   ).length;
+  // Join requests are always actionable (the server returns pending only);
+  // membership notices count until dismissed.
+  const joinReqs = (joinReqQ.data ?? []).length;
+  const notices = (noticesQ.data ?? []).filter((n) => !n.acknowledgedAt).length;
   const pending =
     countPending(invQ.data) + countPending(calInvQ.data) +
-    countPending(tripInvQ.data) + countPending(hhInvQ.data) + callNotices;
+    countPending(tripInvQ.data) + countPending(hhInvQ.data) +
+    joinReqs + notices + callNotices;
 
   return (
     <TouchableOpacity style={styles.btn} onPress={onPress}>

@@ -1,7 +1,7 @@
 import { buildPrintHtml, PrintOptions } from '../printCalendar';
 
 const ACTIVITIES = { id: 'activities', name: 'Activities', color: '#388E3C' };
-const APPOINTMENTS = { id: 'appointments', name: 'Appointments', color: '#7B1FA2' };
+const APPOINTMENTS = { id: 'appointments', name: 'Appointments', color: '#1976D2' };
 const TRIPS = { id: 'trips', name: 'Trips', color: '#5E35B1' };
 
 // Timed events use local-time ISO strings (parsed in the device zone, like the

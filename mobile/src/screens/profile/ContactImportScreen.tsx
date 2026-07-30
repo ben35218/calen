@@ -8,6 +8,7 @@ import { useQueryClient } from '@tanstack/react-query';
 // functions (getContactsAsync/requestPermissionsAsync/Fields) live under /legacy.
 import * as Contacts from 'expo-contacts/legacy';
 import { peopleApi, ImportContact, Person } from '../../api';
+import { canonicalizePhoneForStorage } from '../../lib/phone';
 import { BottomSheet, Button, Input, SegmentedControl, SwitchRow } from '../../components/ui';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { useBilling } from '../../hooks/useBilling';
@@ -113,8 +114,11 @@ export default function ContactImportScreen() {
             ? `${bd.year}-${String(bd.month + 1).padStart(2, '0')}-${String(bd.day).padStart(2, '0')}`
             : undefined;
         const key = c.id ?? c.name!;
+        // Canonicalize to the E.164 storage form (same as the account phone) at
+        // import so a contact's number can later resolve an invite by exact
+        // match — the device address book hands us free-form national numbers.
         const phones = (c.phoneNumbers ?? [])
-          .map((p) => ({ label: (p.label || 'mobile').toLowerCase(), value: p.number || '' }))
+          .map((p) => ({ label: (p.label || 'mobile').toLowerCase(), value: canonicalizePhoneForStorage(p.number || '') }))
           .filter((p) => p.value);
         const emails = (c.emails ?? [])
           .map((e) => ({ label: (e.label || 'home').toLowerCase(), value: e.email || '' }))
@@ -255,7 +259,10 @@ export default function ContactImportScreen() {
         birthday: c?.birthday || r.birthday,
         address: c?.address,
         notes: c?.notes,
-        phone: c?.phone || r.phone,
+        // The classifier / web lookup may return a differently-formatted primary
+        // number — canonicalize it too (device phones in r.phones are already
+        // canonical from the mapping step above).
+        phone: c?.phone ? canonicalizePhoneForStorage(c.phone) : r.phone,
         email: c?.email || r.email,
         // Keep the full device multi-value lists; the classifier only ever
         // returns a single primary phone/email.

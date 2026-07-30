@@ -4,7 +4,7 @@ import { CalendarData, CalendarEvent, CalendarOccasion, Task, Chore } from '../a
 export const CALENDAR_COLORS: Record<string, string> = {
   maintenance: '#1976D2',
   activities: '#388E3C',
-  appointments: '#7B1FA2',
+  appointments: '#1976D2',
   chores: '#F57C00',
   recipes: '#00897B',
   trips: '#5E35B1',

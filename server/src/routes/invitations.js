@@ -11,17 +11,16 @@ const { requireAuth } = require('../middleware/auth');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { stampHousehold } = require('../services/e2eePolicy');
 const { buildEventICS }       = require('../services/ics');
-const { sendEventInvitation } = require('../services/mailer');
 const { pushToUser }          = require('../services/notify');
 const { normalizePhone }      = require('../services/phone');
 
 // Cross-household event invitations (models/EventInvitation.js). The sender
-// invites by EMAIL or by PHONE. Email: if the address belongs to an account the
-// invite also shows up in that user's in-app Invitations screen, otherwise it's
-// email-only, and the email always carries an .ics attachment for Apple/Google/
-// Outlook import. Phone: the server only records the invitation — the
-// organizer's device sends the actual text (prefilled Messages composer) with
-// the public .ics link below standing in for the email attachment.
+// invites by EMAIL or by PHONE. Outreach is device-composed, matching the other
+// sharing flows (households-sharing.md): the server records the invitation and
+// sends NO email or text. An email that belongs to an account gets a push +
+// the in-app Invitations inbox instead; a non-account email is composed from
+// the organizer's own mail app (with the public .ics link below); a phone is
+// texted from the organizer's device (prefilled Messages composer).
 
 const router = express.Router();
 
@@ -60,23 +59,31 @@ function addressedToMe(user) {
   return { $or: [{ toUserId: user._id }, { toEmail: user.email }] };
 }
 
-// Resolve an invited email so the organizer's device can decide whether to seal
-// the snapshot (D3): a match with an enrolled identity key gets a sealed box;
-// anyone else gets the plaintext lane. The public key is safe to hand out — it's
-// the same fingerprint used for out-of-band safety-number checks, and `POST /`
-// already reveals account existence. Not exposed for the caller's own household
-// (they see the event directly — this is the cross-household invite surface).
+// Resolve an invited email (or phone) so the organizer's device can decide two
+// things before reaching out: whether to seal the snapshot (D3 — a match with an
+// enrolled identity key gets a sealed box; anyone else gets the plaintext lane),
+// and whether to open a composer at all (an existing account gets push + the
+// in-app inbox instead of device-composed outreach — see households-sharing.md).
+// The public key is safe to hand out — it's the same fingerprint used for
+// out-of-band safety-number checks, and `POST /` already reveals account
+// existence (as do the other invite endpoints, for phone too). Not exposed for
+// the caller's own household (they see the event directly — this is the
+// cross-household invite surface). Phone lookups return existence only — sealed
+// invites are email-to-account, so the key never applies.
 router.get('/lookup', async (req, res) => {
   try {
     const email = String(req.query.email || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ error: 'A valid email address is required' });
+    const phone = normalizePhone(String(req.query.phone || ''));
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !phone) {
+      return res.status(400).json({ error: 'A valid email address or phone number is required' });
     }
-    const u = await User.findOne({ email }).select('_id identityPublicKey householdId').lean();
+    const u = email
+      ? await User.findOne({ email }).select('_id identityPublicKey householdId').lean()
+      : await User.findOne({ phone }).select('_id householdId').lean();
     const sameHousehold = u && req.user.householdId && String(u.householdId) === String(req.user.householdId);
     res.json({
       userExists: !!u,
-      identityPublicKey: u && !sameHousehold ? (u.identityPublicKey || null) : null,
+      identityPublicKey: email && u && !sameHousehold ? (u.identityPublicKey || null) : null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -187,18 +194,27 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Phone invites are texted from the organizer's device — nothing to send
-    // here; the response carries the shareToken the client's SMS link needs.
-    // A sealed invite has no plaintext, so its email is notice-only (no .ics):
-    // the recipient opens the decrypted card in the app.
-    if (toEmail) {
-      await sendEventInvitation({
-        toEmail,
-        fromName: invitation.fromName,
-        event: sealedEvent ? null : snapshot,
-        hasAccount: !!recipient,
-        ics: sealedEvent ? null : buildEventICS({ uid: invitation._id, event: snapshot }),
-      });
+    // Outreach is device-composed — the server sends no invite email or text
+    // (the response carries the shareToken the client's email/SMS .ics link
+    // needs). An existing account gets a push nudge instead — the one channel
+    // the server sends, since it needs the recipient's device tokens. The
+    // sealed lane keeps the plaintext title out of the push: the invite is
+    // named in-app, where the recipient can decrypt it. Fire-and-forget,
+    // best-effort (no token / permission denied just means inbox-only).
+    if (recipient) {
+      const senderName = invitation.fromName || req.user.email;
+      (async () => {
+        const account = await User.findById(recipient._id).select('pushSubscriptions');
+        if (!account) return;
+        await pushToUser(account, {
+          title: 'Event invitation',
+          body: snapshot?.title
+            ? `${senderName} invited you to “${snapshot.title}”`
+            : `${senderName} invited you to an event`,
+          data: { type: 'event_invitation', invitationId: String(invitation._id) },
+          tag: `event-invite-${invitation._id}`,
+        });
+      })().catch(() => {});
     }
 
     res.status(201).json({ invitation, userExists: !!recipient });

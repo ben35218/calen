@@ -4,8 +4,31 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 
 // Importing the module at all guards against module-scope evaluation errors
 // (calendarPrefs computes ALL_HOLIDAY_IDS from lib/holidays at load time).
-import { migrateLegacyEnabledList, holidayCalendarId, holidayEnabledIds } from '../calendarPrefs';
+import {
+  migrateLegacyEnabledList,
+  holidayCalendarId,
+  holidayEnabledIds,
+  CALENDARS,
+  DEFAULT_CALENDAR_COLORS,
+  COLOR_PRESETS,
+} from '../calendarPrefs';
+import { CALENDAR_COLORS } from '../calendar';
 import { getAllHolidayIds } from '../holidays';
+
+describe('built-in default colours', () => {
+  it('appointments defaults to blue (was purple pre-2026-07-29)', () => {
+    expect(DEFAULT_CALENDAR_COLORS.appointments).toBe('#1976D2');
+  });
+
+  it('every default is a COLOR_PRESETS swatch, and the two defaults maps agree', () => {
+    for (const c of CALENDARS) {
+      expect(COLOR_PRESETS).toContain(c.color);
+      // lib/calendar's map covers the event-bearing built-ins under other ids
+      // (birthdays/weather live only in CALENDARS), so compare where both exist.
+      if (CALENDAR_COLORS[c.id]) expect(CALENDAR_COLORS[c.id]).toBe(c.color);
+    }
+  });
+});
 
 describe('migrateLegacyEnabledList', () => {
   it('returns null when there is no legacy data', () => {

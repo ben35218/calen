@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  TouchableOpacity,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { RouteProp } from '@react-navigation/native';
@@ -14,7 +15,7 @@ import { useRoute } from '@react-navigation/native';
 import type { PurchasesPackage } from 'react-native-purchases';
 import { Badge, Button, Card, IconAvatar, SectionHeader } from '../../components/ui';
 import { isPurchasesConfigured } from '../../lib/purchases';
-import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useCalendarColors, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
   ADDON_CALENDAR_IDS,
   PAID_ADDON_CALENDAR_IDS,
@@ -47,6 +48,7 @@ export default function AddOnsScreen() {
   const focus = route.params?.focus;
   const { billing, activation, packagesByAddon, busyId, buy, restore } = useAddonPurchase();
   const { colors: calColors } = useCalendarColors();
+  const { deletedIds, restoreDefault } = useDeletedDefaultCalendars();
   const [claimBusy, setClaimBusy] = useState<string | null>(null);
 
   const owned = new Set(billing.data?.addons ?? []);
@@ -78,6 +80,10 @@ export default function AddOnsScreen() {
     const pkg = packagesByAddon[key] ?? null;
     const accent = calColors[key] ?? colors.primary;
     const isOwned = owned.has(key);
+    // Owned but locally deleted from the Calendars view: the check mark would
+    // read "all set" while the calendar is hidden — offer the same one-tap
+    // restore as the Add Calendar chooser's Deleted Calendars rows instead.
+    const isDeleted = isOwned && deletedIds.includes(key);
     return (
       <Card key={key} style={[styles.addonCard, focus === key && { borderColor: accent }]}>
         <View style={styles.addonRow}>
@@ -86,7 +92,15 @@ export default function AddOnsScreen() {
             <Text style={styles.addonLabel}>{item?.label ?? key}</Text>
             {item?.description ? <Text style={styles.addonDesc}>{item.description}</Text> : null}
           </View>
-          {isOwned ? (
+          {isDeleted ? (
+            <TouchableOpacity
+              onPress={() => restoreDefault(key)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Add back to your calendar"
+            >
+              <Ionicons name="add-circle-outline" size={24} color={accent} />
+            </TouchableOpacity>
+          ) : isOwned ? (
             <Ionicons
               name="checkmark-circle"
               size={24}

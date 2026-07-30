@@ -407,93 +407,11 @@ function sendRecipeShare({ toEmail, ...rest }) {
 }
 
 // ── Event invitations ────────────────────────────────────────────────────────
-
-// When/where line for the invite email body.
-function fmtEventWhen(event) {
-  if (event.allDay) {
-    const start = fmtDate(event.startDate);
-    if (!event.endDate || fmtDate(event.endDate) === start) return start;
-    return `${start} – ${fmtDate(event.endDate)}`;
-  }
-  const opts = { year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' };
-  const start = new Date(event.startDate).toLocaleString('en-US', opts);
-  if (!event.endDate) return start;
-  return `${start} – ${new Date(event.endDate).toLocaleString('en-US', opts)}`;
-}
-
-// Invite a recipient to a calendar event. `ics` is the iCalendar text attached
-// so the event imports into Apple/Google/Outlook straight from the email.
-// `hasAccount` switches the call-to-action: open the app vs. join the app.
-function buildEventInvitation({ fromName, event, hasAccount, ics }) {
-  const inviter = fromName || 'Someone';
-  // D3 sealed invite: no plaintext event (it's sealed to the recipient's keys),
-  // so the email is a notice only — no title/when, no .ics.
-  if (!event) {
-    const get = downloadLinks();
-    const lines = [
-      `${inviter} invited you to an event.`,
-      '',
-      'Open the Calen app to see the details and accept or decline — the invitation is end-to-end encrypted, so only you can read it.',
-      '',
-      get.text,
-    ];
-    return {
-      subject: `${inviter} invited you to an event`,
-      text: lines.join('\n') + '\n',
-      html: htmlLayout(
-        `<p style="margin:0 0 16px;"><strong>${esc(inviter)}</strong> invited you to an event.</p>
-<p style="margin:0 0 20px;">Open the <strong>Calen</strong> app to see the details and accept or decline — the invitation is end-to-end encrypted, so only you can read it.</p>
-<div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
-      ),
-    };
-  }
-  const when = fmtEventWhen(event);
-  const get = downloadLinks();
-  const lines = [
-    `${inviter} invited you to an event:`,
-    '',
-    `  ${event.title}`,
-    `  When: ${when}`,
-    ...(event.location ? [`  Where: ${event.location}`] : []),
-    ...(event.description ? ['', event.description] : []),
-    '',
-    'The attached invite.ics adds this event to Apple, Google, or Outlook Calendar.',
-    '',
-    hasAccount
-      ? 'You can also accept or decline this invitation from the Invitations screen in the Calen app — accepting adds the event to your calendar there.'
-      : 'Join Calen to keep events like this on a shared family calendar.',
-    '',
-    get.text,
-  ];
-  const detailRow = (label, value) =>
-    `<tr><td style="padding:2px 12px 2px 0;color:#6b7280;font-size:13px;white-space:nowrap;vertical-align:top;">${label}</td><td style="padding:2px 0;color:#1f2937;font-size:14px;">${esc(value)}</td></tr>`;
-  return {
-    subject: `${inviter} invited you: ${event.title}`,
-    text: lines.join('\n') + '\n',
-    html: htmlLayout(
-      `<p style="margin:0 0 16px;"><strong>${esc(inviter)}</strong> invited you to an event:</p>
-<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin:0 0 20px;">
-  <div style="font-size:18px;font-weight:700;color:#111827;margin-bottom:8px;">${esc(event.title)}</div>
-  <table role="presentation" cellpadding="0" cellspacing="0">
-    ${detailRow('When', when)}
-    ${event.location ? detailRow('Where', event.location) : ''}
-  </table>
-  ${event.description ? `<p style="margin:10px 0 0;color:#374151;font-size:14px;">${esc(event.description)}</p>` : ''}
-</div>
-<p style="margin:0 0 16px;">The attached <strong>invite.ics</strong> adds this event to Apple, Google, or Outlook Calendar.</p>
-<p style="margin:0 0 20px;">${
-        hasAccount
-          ? 'You can also accept or decline this invitation from the <strong>Invitations</strong> screen in the Calen app — accepting adds the event to your calendar there.'
-          : 'Join Calen to keep events like this on a shared family calendar.'
-      }</p>
-<div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
-    ),
-    attachments: ics ? [{ filename: 'invite.ics', content: ics, contentType: 'text/calendar; method=PUBLISH' }] : undefined,
-  };
-}
-function sendEventInvitation({ toEmail, ...rest }) {
-  return sendMail({ to: toEmail, kind: 'event_invitation', ...buildEventInvitation(rest) });
-}
+// RETIRED 2026-07-29: event invite outreach is device-composed like every other
+// sharing flow (households-sharing.md) — an account holder gets a push + the
+// in-app inbox; a non-account email is composed from the organizer's own mail
+// app with the public .ics link. The `event_invitation` catalog entry remains
+// (implemented: false) so historical EmailLog rows keep resolving.
 
 // ── Account deletion confirmation ────────────────────────────────────────────
 // Sent just BEFORE the purge (while the address is still valid), confirming the
@@ -557,7 +475,6 @@ function renderPreview(key) {
     case 'welcome':              return buildWelcome(s.user);
     case 'password_reset':       return buildPasswordResetCode(s.user, s.code);
     case 'security_alert':       return buildNewDeviceAlert(s.user, s.device, s.opts || {});
-    case 'event_invitation':     return buildEventInvitation(s);
     case 'recipe_share':         return buildRecipeShare(s);
     case 'account_deleted':      return buildAccountDeletedConfirmation(s);
     case 'ecard': {
@@ -574,7 +491,6 @@ module.exports = {
   sendWelcome,
   sendPasswordResetCode,
   sendNewDeviceAlert,
-  sendEventInvitation,
   sendRecipeShare,
   sendAccountDeletedConfirmation,
   sendECard,

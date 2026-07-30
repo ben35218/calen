@@ -86,7 +86,7 @@ export interface CalendarDef {
 // Mirrors CalendarsView.vue (superset of the events-list calendars).
 export const CALENDARS: CalendarDef[] = [
   { id: 'activities', name: 'Activities', color: '#388E3C', group: 'basic' },
-  { id: 'appointments', name: 'Appointments', color: '#7B1FA2', group: 'basic' },
+  { id: 'appointments', name: 'Appointments', color: '#1976D2', group: 'basic' },
   { id: 'birthdays', name: 'Occasions', color: '#E91E63', group: 'basic' },
   { id: 'weather', name: 'Weather', color: '#0288D1', group: 'basic' },
   { id: 'chores', name: 'Chores', color: '#F57C00', group: 'advanced' },

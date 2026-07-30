@@ -116,3 +116,97 @@ test('an email-only invite is claimed when the recipient registers later', async
   const again = await request().get('/api/household/invitations/mine').set('Authorization', late.auth);
   assert.equal(String(again.body[0].toUserId), String(late.user._id));
 });
+
+test('removing a member files a dismissible notice in their inbox', async () => {
+  const owner = await ownerWithKey();
+  const member = await registerUser({ firstName: 'Nora' });
+  await enrollKeys(member.auth);
+  await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
+
+  // No 'removed' notice before removal (joining did file an 'approved' one).
+  const before = await request().get('/api/household/notices').set('Authorization', member.auth);
+  assert.equal(before.body.filter((n) => n.kind === 'removed').length, 0);
+
+  const removed = await request().post(`/api/household/members/${member.user._id}/remove`)
+    .set('Authorization', owner.auth);
+  assert.equal(removed.status, 200);
+
+  // The removed member now sees a 'removed' notice naming the remover (never the
+  // sealed household name), and it's undismissed → belongs in the "New" tab.
+  const notices = await request().get('/api/household/notices').set('Authorization', member.auth);
+  const notice = notices.body.find((n) => n.kind === 'removed');
+  assert.ok(notice, 'removed notice exists');
+  assert.equal(notice.actorName, 'Olive');
+  assert.ok(!notice.acknowledgedAt);
+
+  // Dismissing stamps acknowledgedAt so the client can move it to history.
+  const ack = await request().post(`/api/household/notices/${notice._id}/ack`)
+    .set('Authorization', member.auth);
+  assert.equal(ack.status, 200);
+  assert.ok(ack.body.notice.acknowledgedAt);
+});
+
+test('leaving a household files no removal notice (self-initiated)', async () => {
+  const owner = await ownerWithKey();
+  const member = await registerUser({ firstName: 'Wes' });
+  await enrollKeys(member.auth);
+  await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
+
+  await request().post('/api/household/leave').set('Authorization', member.auth);
+
+  // Leaving files no 'removed' notice (only being removed by an owner does). The
+  // joiner does carry an 'approved' notice from when they joined — leave adds
+  // nothing.
+  const notices = await request().get('/api/household/notices').set('Authorization', member.auth);
+  assert.equal(notices.body.filter((n) => n.kind === 'removed').length, 0);
+});
+
+test('rejecting a join request retires (revokes) the sent invitation', async () => {
+  const owner = await ownerWithKey();
+  const joiner = await registerUser({ firstName: 'Rex' });
+  await enrollKeys(joiner.auth);
+
+  const sent = await request().post('/api/household/invitations')
+    .set('Authorization', owner.auth).send({ email: joiner.user.email });
+  const inviteId = sent.body.invitation._id;
+
+  // Joiner accepts → invitation flips to 'accepted', a pending request opens.
+  const inbox = await request().get('/api/household/invitations/mine').set('Authorization', joiner.auth);
+  const invite = inbox.body.find((i) => i.status === 'pending');
+  await request().post(`/api/household/invitations/${invite._id}/accept`)
+    .set('Authorization', joiner.auth).send({});
+
+  const pending = await request().get('/api/household/join-requests').set('Authorization', owner.auth);
+  assert.equal(pending.body.length, 1);
+
+  // Owner rejects the request.
+  const rejected = await request().post(`/api/household/join-requests/${pending.body[0]._id}/reject`)
+    .set('Authorization', owner.auth);
+  assert.equal(rejected.status, 200);
+
+  // The request is rejected and the invitation is retired to 'declined', so the
+  // member's card (which hides declined invites) no longer shows it.
+  assert.equal((await JoinRequest.findById(pending.body[0]._id).lean()).status, 'rejected');
+  const ownerSent = await request().get('/api/household/invitations').set('Authorization', owner.auth);
+  const row = ownerSent.body.find((i) => String(i._id) === String(inviteId));
+  assert.equal(row.status, 'declined');
+});
+
+test('approving a request files an "approved" notice in the joiner’s inbox', async () => {
+  const owner = await ownerWithKey();
+  const joiner = await registerUser({ firstName: 'Ada' });
+  await enrollKeys(joiner.auth);
+
+  // No membership notice before approval.
+  const before = await request().get('/api/household/notices').set('Authorization', joiner.auth);
+  assert.equal(before.body.length, 0);
+
+  await joinHousehold({ joiner, approver: owner, keyVersion: 1 });
+
+  // The joiner now sees an undismissed 'approved' notice naming the approver.
+  const notices = await request().get('/api/household/notices').set('Authorization', joiner.auth);
+  const approved = notices.body.find((n) => n.kind === 'approved');
+  assert.ok(approved, 'approved notice exists');
+  assert.equal(approved.actorName, 'Olive');
+  assert.ok(!approved.acknowledgedAt);
+});

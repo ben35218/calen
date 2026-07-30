@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tripsApi, placesApi, TripStatus, Trip, TripItem, FormAssistField } from '../../api';
+import { tripsApi, placesApi, invitationsApi, TripStatus, Trip, TripItem, FormAssistField } from '../../api';
 import { sealNew, sealUpdate, openRecord, getHDK, loadResourceKeys, currentResourceKeyVersion, sealForResource } from '../../lib/e2ee';
 
 // Encrypted trip content (dates/color stay plaintext).
@@ -16,10 +16,11 @@ import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { TRIP_PURPLE } from '../../lib/tripTypes';
-import { startKeepingDuration } from '../../lib/datetime';
+import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
-import { classifyRecipient, composeShareSms, composeShareEmail } from '../../lib/shareInvite';
+import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
+import { useEmailComposer } from '../../components/EmailAppSheet';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<TripsStackParamList, 'TripForm'>;
@@ -68,8 +69,10 @@ export default function TripFormScreen() {
   const [error, setError] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteError, setInviteError] = useState('');
+  const [inviteNote, setInviteNote] = useState('');
   // Invites entered while creating a new trip (no id yet); applied on save.
   const [pendingEmails, setPendingEmails] = useState<ShareRecipient[]>([]);
+  const { composeEmail, emailSheet } = useEmailComposer();
   // A new trip is ready immediately; an edit waits for the trip to load and
   // populate below before the discard guard snapshots its clean baseline.
   const [seeded, setSeeded] = useState(!isEdit);
@@ -264,15 +267,32 @@ export default function TripFormScreen() {
   };
   const emailInvite = async (email: string) => {
     try {
-      await composeShareEmail(email, inviteWhat());
+      await composeEmail(email, inviteWhat());
     } catch (e: any) {
       setInviteError(e?.message || 'Saved, but the email couldn’t be started.');
     }
   };
+  // Raw outreach — always opens the composer. Used by the Remind row action.
   const composeInvite = (recipient: ShareRecipient) => {
     if (recipient.phone) return textPhoneInvite(recipient.phone);
     if (recipient.email) return emailInvite(recipient.email);
     return Promise.resolve();
+  };
+  // Outreach on ADD: a recipient who's already on Calen needs none from this
+  // device — the server pushes their registered devices and the invite lands in
+  // their in-app inbox (households-sharing.md). The composer only opens for
+  // someone not on Calen yet. Lookup failures fail open (compose anyway): a
+  // pointless email beats a silently unreachable invitee.
+  const inviteOutreach = async (recipient: ShareRecipient) => {
+    let exists = false;
+    try {
+      exists = (await invitationsApi.lookup(recipient)).data.userExists;
+    } catch { /* fail open */ }
+    if (exists) {
+      setInviteNote('They’re on Calen — the invite is in their Invitations inbox and their devices were notified.');
+      return;
+    }
+    await composeInvite(recipient);
   };
 
   const addRecipient = async () => {
@@ -283,15 +303,16 @@ export default function TripFormScreen() {
       return;
     }
     setInviteError('');
+    setInviteNote('');
     setInviteEmail('');
     if (isEdit) {
       await setEmails.mutateAsync([...serverRecipients, recipient]);
-      await composeInvite(recipient);
+      await inviteOutreach(recipient);
     } else {
       setPendingEmails((es) => [...es, recipient]);
       // Pending invites are created on save; reach out now (the invite is a
       // generic app nudge, so it's valid regardless of when the invite lands).
-      await composeInvite(recipient);
+      await inviteOutreach(recipient);
     }
   };
 
@@ -399,7 +420,20 @@ export default function TripFormScreen() {
               clearable
               placeholder="None"
               value={form.startDate}
-              onChange={(v) => set({ startDate: v })}
+              onChange={(v) => {
+                // A trip is date-only; treat both ends as midnight. Moving the
+                // start past the end pushes the end forward to keep the trip's
+                // length, so the end is never left before the start.
+                if (form.startDate && form.endDate) {
+                  const shifted = endKeepingDuration(
+                    { date: form.startDate, time: '00:00' },
+                    { date: form.endDate, time: '00:00' },
+                    { date: v, time: '00:00' }
+                  );
+                  if (shifted) { set({ startDate: v, endDate: shifted.date }); return; }
+                }
+                set({ startDate: v });
+              }}
               highlight={assist.changed.has('startDate')}
               containerStyle={fs.dtFieldWrap}
               fieldStyle={fs.dtField}
@@ -484,6 +518,7 @@ export default function TripFormScreen() {
               )}
             </View>
             {inviteError ? <Text style={styles.inviteErr}>{inviteError}</Text> : null}
+            {inviteNote ? <Text style={styles.inviteNote}>{inviteNote}</Text> : null}
             {shareRecipients.length > 0 ? (
               <View style={styles.shareList}>
                 {shareRecipients.map((r) => {
@@ -498,6 +533,14 @@ export default function TripFormScreen() {
                         <Text style={styles.shareRowName} numberOfLines={1}>{who}</Text>
                         <Text style={styles.shareRowStatus}>{collab ? 'Joined' : 'Invited'}</Text>
                       </View>
+                      {/* Remind — re-open the composer for a not-yet-joined
+                          invitee (works for account holders too; it's the
+                          escape hatch when the push wasn't noticed). */}
+                      {!collab ? (
+                        <TouchableOpacity onPress={() => composeInvite(r)} hitSlop={8} style={styles.shareRemindBtn}>
+                          <Ionicons name="paper-plane-outline" size={20} color={accent} />
+                        </TouchableOpacity>
+                      ) : null}
                       <TouchableOpacity onPress={() => removeEmail(r)} hitSlop={8}>
                         <Ionicons name="close-circle-outline" size={22} color={colors.error} />
                       </TouchableOpacity>
@@ -541,6 +584,7 @@ export default function TripFormScreen() {
           )}
         </View>
       ) : null}
+      {emailSheet}
     </Screen>
   );
 }
@@ -553,6 +597,8 @@ const styles = StyleSheet.create({
   emailInputField: { paddingRight: 46 },
   emailAddIcon: { position: 'absolute', right: 10, alignItems: 'center', justifyContent: 'center' },
   inviteErr: { color: colors.error, fontSize: 13, marginTop: 4 },
+  inviteNote: { color: colors.success, fontSize: 13, marginTop: 4 },
+  shareRemindBtn: { marginRight: 2 },
   shareList: { marginTop: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   shareRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: spacing.sm },
   shareRowInfo: { flex: 1 },

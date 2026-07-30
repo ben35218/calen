@@ -4,13 +4,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { householdApi, peopleApi, Person, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
 import { Button, Card, Input, Screen, SectionTitle, useRevealOnOpen } from '../../components/ui';
-import { ensureHouseholdKey, activateBornEncryptedHousehold, getHDK, wrapHDKForJoiner, publicKeyFingerprint, openRecord, sealUpdate } from '../../lib/e2ee';
+import { ensureHouseholdKey, activateBornEncryptedHousehold, getHDK, wrapHDKForJoiner, publicKeyFingerprint, myIdentityPublicKey, openRecord, sealUpdate } from '../../lib/e2ee';
 import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { loadSafetyNumbers, markVerified, MemberSafety } from '../../lib/safetyNumbers';
 import { maintainKeyHygiene } from '../../lib/dropMigration';
 import { useAuth } from '../../store/auth';
-import { classifyRecipient, composeShareSms, composeShareEmail, Recipient } from '../../lib/shareInvite';
+import { classifyRecipient, composeShareSms, Recipient } from '../../lib/shareInvite';
+import { useEmailComposer } from '../../components/EmailAppSheet';
+import { SecurityCode } from '../../components/SecurityCode';
 import { normalizePhone } from '../../lib/invitees';
+import { canonicalizePhoneForStorage } from '../../lib/phone';
 import { normalizePerson } from '../../lib/personFields';
 import { colors, spacing } from '../../theme';
 
@@ -65,11 +68,25 @@ export default function HouseholdScreen() {
   const [inviteNote, setInviteNote] = useState('');
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const { composeEmail, emailSheet } = useEmailComposer();
 
   const { data: sentInvites, refetch: refetchInvites } = useQuery({
     queryKey: ['householdInvitations', 'sent'],
     queryFn: async () => (await householdApi.sentInvitations()).data,
   });
+
+  // Invitations addressed to ME — surfaced here too (not just the Invitations
+  // inbox) so an outstanding invite to join someone else's household is visible
+  // from the place you manage household membership.
+  const { data: myInvites, refetch: refetchMyInvites } = useQuery({
+    queryKey: ['householdInvitations', 'mine'],
+    queryFn: async () => (await householdApi.myInvitations()).data,
+  });
+  const pendingInvites = useMemo(
+    () => (myInvites ?? []).filter((i) => i.status === 'pending'),
+    [myInvites],
+  );
+  const [respondingInvite, setRespondingInvite] = useState<string | null>(null);
 
   // The in-app contacts roster (decrypted on-device) backs the invite field's
   // autocomplete — invite someone you already have on file by name, without
@@ -105,7 +122,12 @@ export default function HouseholdScreen() {
     const qDigits = q.replace(/\D/g, '');
     const recipientFor = (n: ReturnType<typeof normalizePerson>): Recipient | null => {
       const email = n.emails[0]?.value.trim().toLowerCase();
-      const phone = n.phones[0]?.value ? normalizePhone(n.phones[0].value) : null;
+      // Canonical E.164 (same format the account phone stores) so the invite
+      // resolves to the recipient's account — robust to legacy contacts saved in
+      // a looser format before import-time canonicalization. `normalizePhone`
+      // still gates plausibility so a junk value isn't offered as a recipient.
+      const raw = n.phones[0]?.value;
+      const phone = raw && normalizePhone(raw) ? canonicalizePhoneForStorage(raw) : null;
       if (email && EMAIL_RE.test(email) && !taken.has(email)) return { email };
       if (phone && !taken.has(phone.toLowerCase())) return { phone };
       return null;
@@ -132,10 +154,21 @@ export default function HouseholdScreen() {
   const [approveError, setApproveError] = useState('');
   const [keyVersion, setKeyVersion] = useState(0);
   const [hdkReady, setHdkReady] = useState(false);
+  // My own safety code (fingerprint of my identity key) — read out to the member
+  // approving me so they can confirm it matches what they see before approving.
+  const [myCode, setMyCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (household) setName(household.name);
   }, [household]);
+
+  useEffect(() => {
+    if (myRequest?.status !== 'pending') return;
+    (async () => {
+      const pub = await myIdentityPublicKey();
+      setMyCode(pub ? await publicKeyFingerprint(pub) : null);
+    })();
+  }, [myRequest?.status]);
 
   const loadPending = useCallback(async () => {
     try {
@@ -245,38 +278,54 @@ export default function HouseholdScreen() {
       const { data } = await householdApi.invite(recipient);
       setInviteEmail('');
       const what = `the ${household?.name || 'family'} household`;
-      if ('phone' in recipient) {
+      // A recipient who's already on Calen needs no outreach from this device:
+      // the server pushed their registered devices and the invite is in their
+      // in-app Invitations inbox — the composer only opens when the person
+      // isn't on Calen yet (they can't be reached any other way). The Remind
+      // button on the pending row re-opens the composer on demand (the escape
+      // hatch for an account holder who never sees the push).
+      if (data.userExists) {
+        setInviteNote('Invitation sent — it’s in their Invitations inbox and their devices were notified.');
+      } else if ('phone' in recipient) {
         // The server sends no text — compose it from this device.
         try {
           await composeShareSms(recipient.phone, what);
         } catch (e: any) {
           setInviteError(e?.message || 'Saved, but the text couldn’t be started.');
         }
-        setInviteNote(
-          data.userExists
-            ? 'Invitation sent — it’s in their Invitations inbox.'
-            : 'Invitation saved. Send the text so they can join once they get the app.',
-        );
+        setInviteNote('Invitation saved. Send the text so they can join once they get the app.');
       } else {
         // The server sends no email either — compose it from this device, so it
         // comes from the inviter's own account and the server never handles the
-        // address. (Existing accounts also get a push + in-app invite.)
+        // address. Routed through the mail-app chooser so non-Apple-Mail users
+        // land in their own client.
         try {
-          await composeShareEmail(recipient.email, what);
+          await composeEmail(recipient.email, what);
         } catch (e: any) {
           setInviteError(e?.message || 'Saved, but the email couldn’t be started.');
         }
-        setInviteNote(
-          data.userExists
-            ? 'Invitation sent — it’s now in their Invitations inbox.'
-            : 'Invitation saved. Send the email so they can join once they get the app.',
-        );
+        setInviteNote('Invitation saved. Send the email so they can join once they get the app.');
       }
       await refetchInvites();
     } catch (e: any) {
       setInviteError(e?.response?.data?.error || 'Could not send the invitation');
     } finally {
       setInviting(false);
+    }
+  }
+
+  // Re-send the outreach for a pending invite from this device (email via the
+  // mail-app chooser, phone via Messages) — regardless of whether the recipient
+  // has an account, since Remind exists precisely for when the push/inbox path
+  // wasn't noticed.
+  async function remindInvite(inv: HouseholdInvitation) {
+    const what = `the ${household?.name || 'family'} household`;
+    setInviteError('');
+    try {
+      if (inv.toEmail) await composeEmail(inv.toEmail, what);
+      else if (inv.toPhone) await composeShareSms(inv.toPhone, what);
+    } catch (e: any) {
+      setInviteError(e?.message || 'The reminder couldn’t be started.');
     }
   }
 
@@ -308,6 +357,24 @@ export default function HouseholdScreen() {
     }
   }
 
+  // Respond to an invitation to join another household, from this screen (the
+  // same accept/decline the Invitations inbox offers). Accepting opens a join
+  // request; loadMine then surfaces the "Waiting for approval" card below.
+  async function respondInvite(inv: HouseholdInvitation, action: 'accept' | 'decline') {
+    setRespondingInvite(inv._id);
+    try {
+      if (action === 'accept') await householdApi.acceptInvitation(inv._id);
+      else await householdApi.declineInvitation(inv._id);
+      await refetchMyInvites();
+      await loadMine();
+      qc.invalidateQueries({ queryKey: ['household'] });
+    } catch (e: any) {
+      Alert.alert('Could not respond', e?.response?.data?.error || 'Please try again.');
+    } finally {
+      setRespondingInvite(null);
+    }
+  }
+
   async function approve(r: JoinRequestForApprover) {
     setApproveError('');
     setActing(r._id);
@@ -336,6 +403,11 @@ export default function HouseholdScreen() {
           try {
             await householdApi.rejectJoin(r._id);
             setPending((cur) => cur.filter((x) => x._id !== r._id));
+            // Rejecting retires the invitation this request answered (server
+            // marks it declined). Refresh the sent list so the invite drops off
+            // the member's card immediately instead of lingering as "Accepted —
+            // approve them below".
+            await refetchInvites();
           } finally {
             setActing(null);
           }
@@ -434,13 +506,40 @@ export default function HouseholdScreen() {
         <Text style={styles.caption}>Shared with everyone in your household.</Text>
       </Card>
 
+      {/* Invitations to join ANOTHER household addressed to me — accept/decline
+          right here (mirrors the Invitations inbox) so an outstanding invite is
+          visible from where you manage membership. */}
+      {pendingInvites.map((inv) => {
+        const who = inv.fromName || inv.fromEmail || 'Someone';
+        const where = inv.householdName ? `“${inv.householdName}”` : 'their household';
+        const busy = respondingInvite === inv._id;
+        return (
+          <Card key={inv._id} style={styles.card}>
+            <SectionTitle>You’ve been invited</SectionTitle>
+            <Text style={styles.caption}>
+              {who} invited you to join {where}. Accepting shares the family calendar, tasks, trips,
+              and more — a member then confirms you on their device.
+            </Text>
+            <View style={styles.requestActions}>
+              <View style={styles.actionBtn}>
+                <Button title="Accept" onPress={() => respondInvite(inv, 'accept')} loading={busy} />
+              </View>
+              <View style={styles.actionBtn}>
+                <Button title="Decline" variant="ghost" color={colors.error} onPress={() => respondInvite(inv, 'decline')} disabled={busy} />
+              </View>
+            </View>
+          </Card>
+        );
+      })}
+
       {/* Requests to join THIS household — an existing member approves. */}
       {pending.length > 0 ? (
         <Card style={styles.card}>
           <SectionTitle>Requests to join</SectionTitle>
           <Text style={styles.caption}>
-            Before approving, confirm the security code below matches what the person sees on their
-            device — this proves you're granting access to the right person.
+            Before approving, confirm the security code below matches the one the person sees on
+            their own Household screen while they wait — this proves you're granting access to the
+            right person.
           </Text>
           {!hdkReady ? (
             <Text style={styles.warn}>Your device is still unlocking the household key — reopen this screen if this persists.</Text>
@@ -451,7 +550,11 @@ export default function HouseholdScreen() {
               <View key={r._id} style={styles.requestRow}>
                 <Text style={styles.memberName}>{display}</Text>
                 {r.email ? <Text style={styles.memberEmail}>{r.email}</Text> : null}
-                <Text style={styles.fingerprint}>{fingerprints[r._id] || '…'}</Text>
+                {fingerprints[r._id] ? (
+                  <SecurityCode code={fingerprints[r._id]} copyable={false} />
+                ) : (
+                  <Text style={styles.fingerprint}>…</Text>
+                )}
                 <View style={styles.requestActions}>
                   <View style={styles.actionBtn}>
                     <Button title="Approve" onPress={() => approve(r)} loading={acting === r._id} disabled={!hdkReady} />
@@ -587,6 +690,15 @@ export default function HouseholdScreen() {
                     {inv.status === 'accepted' ? 'Accepted — approve them below' : 'Invited'}
                   </Text>
                 </View>
+                {/* Remind — re-open the composer for a still-pending invite. The
+                    escape hatch for the no-composer path above: an account
+                    holder whose push never landed (denied/stale) can still be
+                    nudged from the inviter's own mail/Messages app. */}
+                {inv.status !== 'accepted' ? (
+                  <TouchableOpacity onPress={() => remindInvite(inv)} style={styles.removeBtn} activeOpacity={0.7}>
+                    <Ionicons name="paper-plane-outline" size={19} color={colors.primary} />
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity onPress={() => revokeInvite(inv)} style={styles.removeBtn} activeOpacity={0.7}>
                   <Ionicons name="close-circle-outline" size={20} color={colors.error} />
                 </TouchableOpacity>
@@ -606,7 +718,18 @@ export default function HouseholdScreen() {
             A family member{myRequest.name ? ` in “${myRequest.name}”` : ''} needs to approve you on
             their device. This stays pending until they're online.
           </Text>
-          <Button title="Cancel request" variant="ghost" onPress={cancelRequest} loading={canceling} />
+          <Text style={[styles.caption, styles.codeLabel]}>
+            Read this security code to the member approving you — it must match the one on their
+            screen before they approve, proving it's really you:
+          </Text>
+          {myCode ? (
+            <SecurityCode code={myCode} />
+          ) : (
+            <Text style={[styles.caption, styles.codeLabel]}>Generating your security code…</Text>
+          )}
+          <View style={styles.cancelRow}>
+            <Button title="Cancel request" variant="ghost" onPress={cancelRequest} loading={canceling} />
+          </View>
         </Card>
       ) : null}
 
@@ -649,6 +772,7 @@ export default function HouseholdScreen() {
           </Text>
         ) : null}
       </View>
+      {emailSheet}
     </Screen>
   );
 }
@@ -656,6 +780,7 @@ export default function HouseholdScreen() {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   card: { marginBottom: spacing.md },
+  cancelRow: { marginTop: spacing.sm },
   caption: { fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 17 },
   footer: { alignItems: 'center', marginTop: spacing.lg, gap: 6 },
   encBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
@@ -688,6 +813,7 @@ const styles = StyleSheet.create({
   requestActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   actionBtn: { flex: 1 },
   fingerprint: { fontSize: 13, letterSpacing: 1, color: colors.primary, marginTop: 4, fontVariant: ['tabular-nums'] },
+  codeLabel: { marginTop: spacing.sm },
   safetyIcon: { marginRight: spacing.sm },
   safetyChanged: { fontSize: 12, color: colors.error, marginBottom: spacing.sm, lineHeight: 17 },
   waitingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: 4 },

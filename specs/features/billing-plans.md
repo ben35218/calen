@@ -1,7 +1,7 @@
 ---
 title: Billing — app unlock, AI credits & add-ons
 status: current
-last-verified: 55bfc65+ (2026-07-28); admin monetization lists now expose household add-on ownership (2026-07-28); pack-store value badges → full-width tile ribbons (2026-07-28)
+last-verified: 0d94240+ (2026-07-29); Add-ons cards offer one-tap restore for an owned but locally-deleted calendar (2026-07-29)
 code:
   - mobile/src/screens/plan/
   - mobile/src/lib/purchases.ts
@@ -26,6 +26,7 @@ tests:
   - mobile/src/lib/__tests__/unlock.test.ts
   - mobile/src/screens/plan/__tests__/shared.test.ts
   - mobile/src/screens/plan/__tests__/packStore.test.ts
+  - mobile/src/screens/plan/__tests__/AddOnsScreen.test.tsx
 ---
 
 # Billing — app unlock, AI credits & add-ons
@@ -176,6 +177,13 @@ same diff for review before saving. The portal itself is specced in
   screen MUST be titled "Add-ons" — never "App Store" (App Review 5.2.5) — and
   MUST show Restore Purchases and the Terms/Privacy links near the purchase
   CTAs.
+- An **owned add-on whose calendar this device has locally deleted** (built-in
+  delete is a device pref, not a server state) MUST NOT show the green
+  "Added/Purchased" check — that reads "all set" while the calendar is hidden.
+  Its card instead shows an accent-tinted `+` restore affordance that runs the
+  **same device-local restore** as the Add Calendar chooser's Deleted
+  Calendars rows (`restoreDefault`: un-delete + events visible again; no
+  server call), after which the card returns to the check state.
 - An add-on unlocks **household-wide**: paid purchases resolve the purchasing
   user (`app_user_id` = user id) to their household; free claims land on the
   claimer's household. Ownership lives in `Household.addons` (calendar-id

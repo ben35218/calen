@@ -7,9 +7,12 @@ const { pushToUser } = require('./notify');
 // that adds a factor is visible to the victim. Alerts are best-effort and must
 // never fail the request that triggered them.
 
-async function alertHousehold(householdId, { title, body, tag }) {
+async function alertHousehold(householdId, { title, body, tag, excludeUserId } = {}) {
   if (!householdId) return;
-  const users = await User.find({ householdId }, 'pushSubscriptions');
+  // excludeUserId: skip one member (e.g. the just-approved joiner, who gets their
+  // own dedicated notification instead of the household-wide one about them).
+  const filter = excludeUserId ? { householdId, _id: { $ne: excludeUserId } } : { householdId };
+  const users = await User.find(filter, 'pushSubscriptions');
   for (const u of users) {
     await pushToUser(u, { title, body, tag: tag || 'security', url: '/profile' }).catch(() => {});
   }

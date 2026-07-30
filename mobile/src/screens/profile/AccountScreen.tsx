@@ -17,8 +17,12 @@ import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { resolveCurrentAddress } from '../../lib/currentLocation';
 import {
   Input, DateField, Screen, useHeaderCheckButton, Card, Button,
-  SectionTitle, SectionHeader, PhoneField,
+  SectionTitle, SectionHeader, PhoneField, InfoCard, ListRow,
 } from '../../components/ui';
+import { MailAppPickerSheet } from '../../components/EmailAppSheet';
+import {
+  MailApp, MailAppId, MAIL_APPS, detectMailApps, getPreferredMailApp, setPreferredMailApp,
+} from '../../lib/shareInvite';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
@@ -32,7 +36,9 @@ import { colors, spacing } from '../../theme';
 // fallback). Reminders live on
 // their own screen (RemindersScreen); password management, encryption, recovery
 // methods, devices, and data controls all live on the dedicated Privacy & security
-// screen (PrivacyDataScreen) — Account stays focused on "who you are".
+// screen (PrivacyDataScreen) — Account stays focused on "who you are", plus the
+// device-local invite mail-app preference (surfaced here because the chooser
+// sheet remembers a pick silently and points users here to change it).
 export default function AccountScreen() {
   const qc = useQueryClient();
   const navigation = useNavigation();
@@ -56,6 +62,28 @@ export default function AccountScreen() {
   // settings query (and, for E2EE households, an async home-address decrypt), so
   // we only snapshot the clean baseline once that seeding has settled.
   const [seeded, setSeeded] = useState(false);
+
+  // ── Invite mail-app preference ──────────────────────────────────────────────
+  // The chooser sheet (components/EmailAppSheet) silently remembers the first
+  // pick; this row is where the user sees and changes it. Only rendered when
+  // there's actually a choice (2+ known mail apps installed) — with one or none
+  // the invite flow never asks. Persists instantly (device-local pref), so it
+  // deliberately stays outside the form's dirty/save cycle.
+  const [mailApps, setMailApps] = useState<MailApp[]>([]);
+  const [mailPref, setMailPref] = useState<MailAppId | null>(null);
+  const [mailPickerOpen, setMailPickerOpen] = useState(false);
+  useEffect(() => {
+    (async () => {
+      setMailApps(await detectMailApps());
+      setMailPref(await getPreferredMailApp());
+    })();
+  }, []);
+  const mailPrefLabel = MAIL_APPS.find((a) => a.id === mailPref)?.label ?? 'Ask each time';
+  const pickMailApp = async (id: MailAppId | null) => {
+    setMailPickerOpen(false);
+    setMailPref(id);
+    await setPreferredMailApp(id);
+  };
   // The decrypted household blob (name + homeAddress — C2): spread under the
   // update at seal time so re-sealing the address never drops the sealed name.
   const decryptedHH = useRef<Record<string, unknown>>({});
@@ -389,6 +417,30 @@ export default function AccountScreen() {
           hideIcon
         />
       </GroupCard>
+
+      {/* ── Invites (only when there's a mail app to choose between) ── */}
+      {mailApps.length >= 2 ? (
+        <>
+          <SectionHeader>Invites</SectionHeader>
+          <InfoCard style={styles.sectionCard}>
+            <ListRow
+              icon="mail-outline"
+              title="Email app"
+              subtitle={`Invites open in: ${mailPrefLabel}`}
+              onPress={() => setMailPickerOpen(true)}
+            />
+          </InfoCard>
+          <MailAppPickerSheet
+            visible={mailPickerOpen}
+            onClose={() => setMailPickerOpen(false)}
+            title="Send invites with"
+            apps={mailApps}
+            onPick={(a) => pickMailApp(a.id)}
+          >
+            <ListRow icon="help-circle-outline" title="Ask each time" onPress={() => pickMailApp(null)} />
+          </MailAppPickerSheet>
+        </>
+      ) : null}
 
       {/* ── Delete account (always visible, Apple 5.1.1(v)) ── */}
       <Card style={[styles.sectionCard, styles.dangerCard]}>

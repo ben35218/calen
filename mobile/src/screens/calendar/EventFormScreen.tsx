@@ -22,7 +22,7 @@ import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
-import { startKeepingDuration } from '../../lib/datetime';
+import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
   sealNew, sealUpdate, openRecord, getHDK, newObjectId, ensureHouseholdKey,
@@ -38,6 +38,7 @@ import {
   getDraftGuestListVisible, setDraftGuestListVisible,
 } from '../../lib/inviteeDraft';
 import { inviteeKey, sendInvitations } from '../../lib/invitees';
+import { useEmailComposer } from '../../components/EmailAppSheet';
 import { useTravelDraft, clearTravelDraft } from '../../lib/travelDraft';
 import { RepeatRule, WeekdayKind, isCustomRule, repeatSummary } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
@@ -81,19 +82,6 @@ function addMinutesToTime(time: string, minutes: number): string {
   const [h, m] = time.split(':').map(Number);
   const total = h * 60 + m + minutes;
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-}
-
-// Minutes since midnight for an "HH:MM" string.
-function timeToMinutes(time: string): number {
-  const [h, m] = time.split(':').map(Number);
-  return h * 60 + m;
-}
-
-// One day after a "YYYY-MM-DD" string.
-function nextDay(date: string): string {
-  const d = new Date(`${date}T00:00:00`);
-  d.setDate(d.getDate() + 1);
-  return ymd(d);
 }
 
 // Custom-alert unit: a string key so it drives the SegmentedControl directly.
@@ -252,6 +240,11 @@ export default function EventFormScreen() {
   // Built-in event calendars plus the user's own (Calendars → Add Calendar).
   const { calendars: customCalendars } = useCustomCalendars();
   const { deletedIds: deletedDefaults } = useDeletedDefaultCalendars();
+  // Mail composer for a draft's queued email invitees (sent on save): each
+  // invitee without an account gets an email composed from the organizer's own
+  // mail app — the sheet must live on THIS screen since the Invitees screen is
+  // already closed by then.
+  const { composeEmail, emailSheet } = useEmailComposer();
 
   const [form, setForm] = useState({
     title: '',
@@ -330,26 +323,34 @@ export default function EventFormScreen() {
     assist.clear(Object.keys(patch));
   };
 
-  // Moving the start past the end drags the end along, preserving the original
-  // duration (10–11 → start 2pm becomes 2–3pm). Same-day timed events only; if
-  // the shifted end crosses midnight, roll the end date to the next day.
-  const setStartTime = (v: string) => {
-    const patch: Partial<typeof form> = { startTime: v };
-    const sameDay = !form.endDate || form.endDate === form.date;
-    if (sameDay && form.startTime && form.endTime) {
-      const startMin = timeToMinutes(form.startTime);
-      const endMin = timeToMinutes(form.endTime);
-      const newStartMin = timeToMinutes(v);
-      if (endMin >= startMin && newStartMin > endMin) {
-        const total = newStartMin + (endMin - startMin);
-        patch.endTime = `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-        if (total >= 1440) patch.endDate = nextDay(form.date);
-      }
+  // Moving the start (time or date) to at/after the end drags the end forward by
+  // the same amount so the event keeps its length and the end is never left
+  // before the start (10–11 → start 2pm becomes 2–3pm). Mirror of setEndTime/
+  // setEndDate via the shared lib/datetime rule; cross-midnight aware, so a
+  // pushed end may roll onto a later day (and folds back to a blank endDate when
+  // it lands on the start's own day).
+  const setStart = (patch: { date?: string; time?: string }) => {
+    const nextDate = patch.date ?? form.date;
+    const nextTime = patch.time ?? form.startTime;
+    const out: Partial<typeof form> = {};
+    if (patch.date !== undefined) out.date = patch.date;
+    if (patch.time !== undefined) out.startTime = patch.time;
+    const startTime = form.allDay ? '00:00' : form.startTime || '00:00';
+    const endTime = form.allDay ? '00:00' : form.endTime || '00:00';
+    const newStartTime = form.allDay ? '00:00' : nextTime || '00:00';
+    const shifted = endKeepingDuration(
+      { date: form.date, time: startTime },
+      { date: form.endDate || form.date, time: endTime },
+      { date: nextDate, time: newStartTime }
+    );
+    if (shifted) {
+      if (!form.allDay) out.endTime = shifted.time;
+      out.endDate = shifted.date === nextDate ? '' : shifted.date;
     }
-    set(patch);
+    set(out);
   };
 
-  // The mirror of setStartTime: dragging the end to at/before the start pulls the
+  // The mirror of setStart: dragging the end to at/before the start pulls the
   // start back so the event keeps its length (8–9 → end 4am makes start 3am). If
   // the shifted start crosses back over midnight, its date rolls to the previous
   // day and the (previously same-day) end date is pinned to the original day.
@@ -503,6 +504,20 @@ export default function EventFormScreen() {
     travelDefaulted.current = true;
     setForm((f) => ({ ...f, travelEnabled: true, fromAddress: f.fromAddress || origin }));
   }, [currentLocQ.data, hasDestination, isEdit]);
+
+  // Travel time is anchored to the destination: clearing the location removes
+  // that anchor, so switch travel time off (and drop the stale drive time). Runs
+  // in both add and edit — only ever turns it off, so it can't fight the user.
+  useEffect(() => {
+    if (hasDestination || !form.travelEnabled) return;
+    setForm((f) => ({
+      ...f,
+      travelEnabled: false,
+      travelManual: false,
+      travelMinutes: null,
+      travelDistanceKm: null,
+    }));
+  }, [hasDestination, form.travelEnabled]);
 
   // Compute traffic-aware drive time from the origin to the event location.
   const fetchTravelTime = async () => {
@@ -861,7 +876,7 @@ export default function EventFormScreen() {
       if (!isEdit) {
         const queued = getQueuedInvitees();
         if (queued.length) {
-          await sendInvitations(res.data._id, queued, buildSnapshot());
+          await sendInvitations(res.data._id, queued, buildSnapshot(), getDraftGuestListVisible(), composeEmail);
           clearQueuedInvitees();
         }
         // Attachments picked on the draft form upload now that the event exists.
@@ -1241,7 +1256,7 @@ export default function EventFormScreen() {
           <View style={formStyles.dtFields}>
             <DateField
               value={form.date}
-              onChange={(v) => set(form.endDate && form.endDate < v ? { date: v, endDate: v } : { date: v })}
+              onChange={(v) => setStart({ date: v })}
               highlight={assist.changed.has('date')}
               containerStyle={formStyles.dtFieldWrap}
               fieldStyle={formStyles.dtField}
@@ -1251,7 +1266,7 @@ export default function EventFormScreen() {
             {!form.allDay ? (
               <TimeField
                 value={form.startTime}
-                onChange={setStartTime}
+                onChange={(v) => setStart({ time: v })}
                 highlight={assist.changed.has('startTime')}
                 containerStyle={formStyles.dtFieldWrap}
                 fieldStyle={formStyles.dtField}
@@ -1543,6 +1558,7 @@ export default function EventFormScreen() {
           />
         </View>
       ) : null}
+      {emailSheet}
     </Screen>
   );
 }

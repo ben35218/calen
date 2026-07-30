@@ -3,6 +3,7 @@ import {
   formatAsTyped,
   toE164,
   toE164FromTyped,
+  canonicalizePhoneForStorage,
   seedTyped,
   parseStored,
   formatDisplay,
@@ -94,6 +95,18 @@ describe('toE164FromTyped (picker-free entry)', () => {
   it('returns empty for empty/whitespace input', () => {
     expect(toE164FromTyped('')).toBe('');
     expect(toE164FromTyped('   ')).toBe('');
+  });
+});
+
+describe('canonicalizePhoneForStorage', () => {
+  it('canonicalizes a plausible number to E.164 (device country supplies +1)', () => {
+    expect(canonicalizePhoneForStorage('(604) 555-1212')).toBe('+16045551212');
+    expect(canonicalizePhoneForStorage('+44 20 7946 0018')).toBe('+442079460018');
+  });
+
+  it('leaves an implausible value (too few digits / junk) untouched', () => {
+    expect(canonicalizePhoneForStorage('ext 12')).toBe('ext 12');
+    expect(canonicalizePhoneForStorage('  ')).toBe('');
   });
 });
 

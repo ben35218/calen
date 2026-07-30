@@ -1,7 +1,7 @@
 ---
 title: Trips
 status: current
-last-verified: 55bfc65+ (2026-07-27); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29); the trip and trip-item add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29)
+last-verified: 55bfc65+ (2026-07-27); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29); the trip and trip-item add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); trip-share email invites now compose via the shared mail-app chooser (`useEmailComposer`/EmailAppSheet — behavior specced in households-sharing.md) instead of a bare `mailto:` (2026-07-29); the Starts/Ends duration-keeping rule is now symmetric — editing the **start** (date/time) to at/after the end pushes the **end** forward via the shared `lib/datetime.endKeepingDuration`, mirroring the existing end→start drag, on the trip date range, the booking start/end, and the journey Departs/Arrives, so the end is never left before the start (2026-07-29); trip-share outreach is now composer-only-for-non-accounts — an account-holder recipient gets the server push + in-app inbox with no composer (lookup-gated via `GET /invitations/lookup`, fail-open, "they're on Calen" note), and not-yet-joined recipient rows gained a paper-plane Remind that composes on demand (households-sharing.md policy) (2026-07-29)
 code:
   - mobile/src/screens/trips/
   - server/src/routes/trips.js
@@ -48,10 +48,12 @@ participating households, and share a trip with people outside your household.
 - A `Trip` has name, destination (+ placeId/timezone), status, date range (or
   `candidateRanges` while planning), notes, color, `budget`, `baseCurrency`, and
   a `tripKeyVersion` (its own resource key, see Sharing).
-- Editing the **end** of any Starts/Ends pair (a trip's date range, a booking's
-  start/end, or a journey's Departs/Arrives) to at/before the start drags the
-  **start** back so the span is preserved — the shared `lib/datetime.ts`
-  (`startKeepingDuration`) rule described in calendar.md.
+- Every Starts/Ends pair (a trip's date range, a booking's start/end, or a
+  journey's Departs/Arrives) keeps the end from ever preceding the start, via the
+  shared `lib/datetime.ts` rule described in calendar.md: editing the **end** to
+  at/before the start drags the **start** back (`startKeepingDuration`), and
+  editing the **start** to at/after the end pushes the **end** forward
+  (`endKeepingDuration`) — either way the span the user chose is preserved.
 - `TripItem`s are itinerary/booking entries (title, start/end, location, address,
   confirmation, cost/currency, url/`phone` (entered via the shared `PhoneField`,
   stored E.164), notes, free-form `details`, and
@@ -79,12 +81,20 @@ participating households, and share a trip with people outside your household.
     **plaintext** and mints a share code. Steady-state writes then **strip
     ciphertext while shared** so an edit can't reintroduce data the collaborator
     can't read. Un-sharing (`DELETE /:id/share`) re-encrypts on next edit.
-- **Invite outreach is device-composed.** `PUT /trips/:id/share` only creates the
-  `TripInvitation` discovery record and returns the sharing list; the owner's own
-  Mail/Messages app sends the nudge (`mailto:`/`sms:` via mobile `lib/shareInvite`)
-  — the server sends no invite email or text. An invited **existing account** also
-  gets a push (`notify.pushToUser`, best-effort) plus the in-app inbox entry. Same
-  pattern as [households-sharing](households-sharing.md) and [calendars](calendar.md).
+- **Invite outreach is device-composed, and only for non-account recipients.**
+  `PUT /trips/:id/share` only creates the `TripInvitation` discovery record and
+  returns the sharing list — the server sends no invite email or text. An
+  invited **existing account** gets a push (`notify.pushToUser`, best-effort)
+  plus the in-app inbox entry, and NO composer opens on the owner's device
+  (the trip form checks `GET /invitations/lookup` before composing, failing
+  open, and shows a "they're on Calen" note instead). Only a recipient
+  **without an account** gets the composed nudge — the owner's chosen mail app
+  via the shared mail-app chooser, `sms:` for phones (mobile `lib/shareInvite`
+  + `components/EmailAppSheet`). Not-yet-joined recipient rows carry a Remind
+  action that re-opens the composer on demand regardless of account status.
+  Policy + chooser behavior specced in
+  [households-sharing](households-sharing.md); same pattern as
+  [calendars](calendar.md).
 - `TripInvitation` handles invite accept/decline (`GET /trips/invitations`,
   `.../accept`|`decline`). Collaborator management:
   `POST /:id/leave-share`, `DELETE /:id/collaborators/:userId`.

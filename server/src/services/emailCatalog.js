@@ -68,15 +68,15 @@ const CATALOG = [
     key: 'event_invitation',
     stage: 'sharing',
     title: 'Event invitation',
-    trigger: 'A cross-household event invite is sent (POST /invitations).',
+    trigger: 'Retired 2026-07-29 — no longer sent. Was: a cross-household event invite (POST /invitations).',
     audience: 'The invited email (member or outsider).',
     required: false,
-    implemented: true,
-    description: 'Event details + an invite.ics attachment (sealed invites are notice-only).',
-    sample: {
-      toEmail: 'sam@example.com', fromName: 'Alex', hasAccount: true,
-      event: { title: 'Soccer practice', startDate: '2026-08-15T22:00:00.000Z', location: 'North Field', allDay: false },
-    },
+    implemented: false,
+    description:
+      'RETIRED: event invite outreach is device-composed like the other sharing flows ' +
+      '(account holders get a push + the in-app inbox; non-account emails are composed ' +
+      'from the organizer’s own mail app with the public .ics link). Entry kept so ' +
+      'historical EmailLog rows keep resolving.',
   },
   {
     key: 'recipe_share',
