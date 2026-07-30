@@ -133,9 +133,16 @@ const userSchema = new mongoose.Schema({
   unlockProductId:   { type: String },
   // Prepaid AI-credit balance in integer MILLICREDITS (1 credit = $0.01 retail =
   // 1000 Mc). Grants go through CreditLedger.grant (ledgered, idempotent); usage
-  // debits are fire-and-forget $inc's (services/credits.debitUsageMc). May go
-  // NEGATIVE after a refund — enforcement blocks at <= 0, UI floors display at 0.
+  // debits are fire-and-forget but ALSO ledgered (CreditLedger.debit via
+  // services/credits.debitUsageMc — kind 'usage' + action). May go NEGATIVE
+  // after a refund — enforcement blocks at <= 0, UI floors display at 0.
   creditBalanceMc:   { type: Number, default: 0 },
+  // The optional monthly "Calen AI" plan (auto-renewable subscription, RC
+  // entitlement `calen_ai`). Active while a paid period is current; each
+  // period's credits are granted by the webhook (CreditLedger kind 'plan').
+  // Granted credits are ordinary balance — they survive plan expiry.
+  aiPlanActive:      { type: Boolean, default: false },
+  aiPlanExpiresAt:   { type: Date },
   householdId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Household' }, // family the user belongs to
   personId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },    // optional link to the People roster
   firstName:         { type: String, required: true, trim: true },

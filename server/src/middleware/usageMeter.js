@@ -7,13 +7,15 @@
 //   1. If the caller's prepaid credit balance (User.creditBalanceMc) is at/below
 //      zero → 402 CREDITS_EXHAUSTED with a buy-a-pack payload.
 //   2. Otherwise let the request proceed; on a 2xx response, atomically $inc the
-//      per-action analytics counters, and record the call's token cost as a
-//      credit debit once the Claude call returns (recordTokens).
+//      per-action analytics counters and DEBIT the flat published price for the
+//      action (credits.actionCosts). Token usage is recorded separately
+//      (recordTokens) as the provider-cost estimate reconciliation compares
+//      debits against.
 //
-// A call's cost is only known AFTER it runs, so this is a pre-check on the
-// balance: the last call may overdraw slightly (balance can dip negative), and
-// the NEXT call is blocked. Exempt admins (adminUnlimited) skip the pre-check
-// but are still tracked and debited.
+// The debit is a flat price, but it lands only after the action completes, so
+// this is still a pre-check on the balance: the last action may overdraw
+// slightly (balance can dip negative), and the NEXT one is blocked. Exempt
+// admins (adminUnlimited) skip the pre-check but are still tracked and debited.
 //
 // Config is cached in-process for a short TTL so admin-app edits take effect
 // quickly without a DB read on every request.
@@ -81,6 +83,18 @@ function currentPeriodKey(d = new Date()) {
   return anchor.toISOString().slice(0, 10);
 }
 
+// UTC instants bounding a weekly analytics window, from its period key (the
+// ISO date of the Wednesday that opened it): [Wed 5PM ET, next Wed 5PM ET).
+// Used by margin reconciliation to window ledger queries onto the same weeks
+// as the usage counters.
+function periodWindow(periodKey) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(periodKey || ''));
+  if (!m) return null;
+  const start = zoneWallToInstant(Number(m[1]), Number(m[2]), Number(m[3]), RESET_HOUR);
+  const end = zoneWallToInstant(Number(m[1]), Number(m[2]), Number(m[3]) + 7, RESET_HOUR);
+  return { start, end };
+}
+
 // The next reset instant (first Wednesday 5PM ET strictly at/after `d`).
 function nextPeriodResetAt(d = new Date()) {
   const p = zoneParts(d);
@@ -141,24 +155,32 @@ function totalTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
-// Bump the weekly token counter by explicit id and debit the user's credit
-// balance for the call's cost (tokens × model rate × margin). Per-USER only —
-// AI usage, calls, and credits are individual concerns; household-level
-// counters were retired with the per-user billing restructure (fleet analytics
-// sum the user counters). `action` gets a per-action token split for
-// analytics; `model` picks the credit rate. Fire-and-forget; returns the
-// token count.
+// Bump the weekly token counters by explicit id, including the estimated raw
+// PROVIDER cost of the call (tokens × model rate, margin-free Mc) — the
+// reconciliation side that debited flat prices are compared against. The
+// DEBIT itself is the flat per-action price, charged once per completed
+// action by meter()'s finish handler, NOT here (a single action may make
+// several model calls). Per-USER only — AI usage, calls, and credits are
+// individual concerns; household-level counters were retired with the
+// per-user billing restructure (fleet analytics sum the user counters).
+// `action` gets per-action token/cost splits for analytics; `model` picks the
+// cost rate. Fire-and-forget; returns the token count.
 function bumpTokenCounters({ userId, tokens, action = null, model = null }) {
   if (!tokens) return 0;
   const period = currentPeriodKey();
   if (userId) {
-    const inc = { [`usageTokens.${period}.tokens`]: tokens };
-    if (action) inc[`usageTokens.${period}.byAction.${action}`] = tokens;
-    User.updateOne({ _id: userId }, { $inc: inc })
-      .catch((err) => console.error('[recordTokens] user inc failed:', err.message));
     getConfig()
-      .then((config) => credits.debitUsageMc(userId, credits.tokenDebitMc(tokens, model, config)))
-      .catch((err) => console.error('[recordTokens] credit debit failed:', err.message));
+      .then((config) => {
+        const costMc = credits.tokenCostMc(tokens, model, config);
+        const inc = { [`usageTokens.${period}.tokens`]: tokens };
+        if (costMc > 0) inc[`usageTokens.${period}.costMc`] = costMc;
+        if (action) {
+          inc[`usageTokens.${period}.byAction.${action}`] = tokens;
+          if (costMc > 0) inc[`usageTokens.${period}.byActionCostMc.${action}`] = costMc;
+        }
+        return User.updateOne({ _id: userId }, { $inc: inc });
+      })
+      .catch((err) => console.error('[recordTokens] user inc failed:', err.message));
   }
   return tokens;
 }
@@ -180,19 +202,25 @@ async function recordTokens(req, usage, action = null, model = null) {
 // LLM tokens are a rounding error), so connected seconds are priced into credits
 // at the call rate rather than the token rate.
 
-// Record connected call seconds on the per-user counter and debit the user's
-// credit balance for the call's cost. Keyed by explicit id — phone calls
-// settle during a lazy refresh with no `req` in scope. Fire-and-forget;
-// returns the seconds recorded.
+// Record connected call seconds on the per-user counter (plus the estimated
+// raw Vapi cost for reconciliation) and debit the flat per-minute price,
+// prorated per second. Keyed by explicit id — phone calls settle during a
+// lazy refresh with no `req` in scope. Fire-and-forget; returns the seconds
+// recorded.
 function recordCallSecondsById({ userId }, seconds) {
   const s = Math.round(Number(seconds) || 0);
   if (s <= 0) return 0;
   const period = currentPeriodKey();
   if (userId) {
-    User.updateOne({ _id: userId }, { $inc: { [`usageCallSeconds.${period}.seconds`]: s } })
-      .catch((err) => console.error('[recordCallSeconds] user inc failed:', err.message));
     getConfig()
-      .then((config) => credits.debitUsageMc(userId, credits.callDebitMc(s, config)))
+      .then((config) => {
+        const costMc = credits.callCostMc(s, config);
+        const inc = { [`usageCallSeconds.${period}.seconds`]: s };
+        if (costMc > 0) inc[`usageCallSeconds.${period}.costMc`] = costMc;
+        User.updateOne({ _id: userId }, { $inc: inc })
+          .catch((err) => console.error('[recordCallSeconds] user inc failed:', err.message));
+        credits.debitUsageMc(userId, credits.callDebitMc(s, config), 'call');
+      })
       .catch((err) => console.error('[recordCallSeconds] credit debit failed:', err.message));
   }
   return s;
@@ -239,9 +267,12 @@ function meter(action, surface = null) {
         return res.status(402).json(exhaustedPayload(action, status, config));
       }
 
-      // Increment the per-action COUNT on success (analytics only). Credit cost
-      // is debited separately by recordTokens() once the Claude call returns,
-      // since token cost is known only after it runs.
+      // On success: increment the per-action COUNT (analytics) and DEBIT the
+      // flat published price for the action (credits.actionCosts — one debit
+      // per completed action, however many model calls it made; ledgered with
+      // the action). Exempt admins skip the pre-check block only — they are
+      // still debited. Token counts/cost estimates are recorded separately by
+      // recordTokens() for reconciliation.
       res.on('finish', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) return;
         // Per-user counter: drives the Credits screen's "By feature" display
@@ -254,6 +285,7 @@ function meter(action, surface = null) {
           if (surface) inc[`usage.${period}.breakdown.${action}.${surface}`] = 1;
           User.updateOne({ _id: user._id }, { $inc: inc })
             .catch((err) => console.error('[usageMeter] user increment failed:', err.message));
+          credits.debitUsageMc(user._id, credits.actionDebitMc(action, config), action);
         }
       });
 
@@ -347,7 +379,7 @@ const mapsSweep = setInterval(() => {
 if (typeof mapsSweep.unref === 'function') mapsSweep.unref();
 
 module.exports = {
-  meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt,
+  meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt, periodWindow,
   adminUnlimited, creditStatus, periodUsage,
   // Token recording
   recordTokens, totalTokens, bumpTokenCounters,

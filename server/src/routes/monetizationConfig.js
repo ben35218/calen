@@ -7,6 +7,7 @@
 //   GET  /api/monetization-config/users      → per-user unlock state + credit balance
 //   POST /api/monetization-config/unlock     → manually grant/revoke a user's app unlock
 //   POST /api/monetization-config/credits    → manually adjust a user's credit balance
+//   GET  /api/monetization-config/reconciliation → debited revenue vs estimated provider cost
 
 const express = require('express');
 const MonetizationConfig = require('../models/MonetizationConfig');
@@ -15,13 +16,13 @@ const User = require('../models/User');
 const CreditLedger = require('../models/CreditLedger');
 const credits = require('../services/credits');
 const AuditLog = require('../models/AuditLog');
-const { invalidateConfigCache } = require('../middleware/usageMeter');
+const { invalidateConfigCache, currentPeriodKey, periodWindow } = require('../middleware/usageMeter');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
 
-const EDITABLE = ['credits', 'unlock', 'costs', 'models', 'guards', 'admin', 'addons'];
+const EDITABLE = ['credits', 'unlock', 'aiPlan', 'costs', 'models', 'guards', 'admin', 'addons'];
 
 // The config is the live economy — refuse obviously broken numbers server-side
 // too (the admin UI validates first; this is the backstop).
@@ -40,9 +41,19 @@ function validateConfig(body) {
       if (!num(pack?.price) || pack.price < 0) errors.push(`credits.packs.${pid}.price must be ≥ 0`);
       if (!Number.isInteger(pack?.credits) || pack.credits <= 0) errors.push(`credits.packs.${pid}.credits must be an integer > 0`);
     }
+    for (const [action, price] of Object.entries(c.actionCosts || {})) {
+      if (!Number.isInteger(price) || price < 0) errors.push(`credits.actionCosts.${action} must be an integer ≥ 0`);
+    }
   }
   if (body.unlock?.price !== undefined && (!num(body.unlock.price) || body.unlock.price < 0)) {
     errors.push('unlock.price must be ≥ 0');
+  }
+  const p = body.aiPlan;
+  if (p) {
+    if (p.price !== undefined && (!num(p.price) || p.price < 0)) errors.push('aiPlan.price must be ≥ 0');
+    if (p.monthlyCredits !== undefined && (!Number.isInteger(p.monthlyCredits) || p.monthlyCredits < 0)) {
+      errors.push('aiPlan.monthlyCredits must be an integer ≥ 0');
+    }
   }
   for (const [k, v] of Object.entries(body.costs || {})) {
     if (!num(v) || v < 0) errors.push(`costs.${k} must be ≥ 0`);
@@ -236,6 +247,74 @@ router.post('/credits', async (req, res) => {
     res.json({
       _id: user._id,
       creditBalance: result.balanceMc != null ? Math.floor(result.balanceMc / credits.MC_PER_CREDIT) : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Margin reconciliation for a weekly analytics window: the credits actually
+// DEBITED (flat per-action prices, summed from the usage ledger) against the
+// estimated raw PROVIDER cost (the token/call cost counters recordTokens /
+// recordCallSecondsById maintain from `tokenRatesPer1M`/`callRatePerMinute`).
+// This is the check that keeps `credits.actionCosts` honest once real spend
+// exists: marginMultiple ≈ 2.0 means the flat prices hold the target margin.
+// All Mc figures are millicredits (Mc / 100000 = $ at the 1-credit-=-$0.01
+// unit); `?period=YYYY-MM-DD` targets a past window (default: current).
+router.get('/reconciliation', async (req, res) => {
+  try {
+    if (req.query.period !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(req.query.period)) {
+      return res.status(400).json({ error: 'Invalid period (expected YYYY-MM-DD)' });
+    }
+    const period = req.query.period || currentPeriodKey();
+    const window = periodWindow(period);
+    if (!window) return res.status(400).json({ error: 'Invalid period' });
+
+    // Revenue side: every usage debit in the window, grouped by action.
+    const debits = await CreditLedger.aggregate([
+      { $match: { kind: 'usage', createdAt: { $gte: window.start, $lt: window.end } } },
+      { $group: { _id: '$action', mc: { $sum: { $subtract: [0, '$deltaMc'] } }, count: { $sum: 1 } } },
+    ]);
+    const revenueByAction = {};
+    let revenueMc = 0;
+    for (const d of debits) {
+      revenueByAction[d._id || 'unknown'] = { mc: d.mc, count: d.count };
+      revenueMc += d.mc;
+    }
+
+    // Cost side: the margin-free provider-cost counters, summed across users.
+    // Small fleet — project the period subdocs and sum in JS (the keys are
+    // dynamic period dates, which Mongo aggregation handles awkwardly).
+    const users = await User.find(
+      { $or: [{ [`usageTokens.${period}`]: { $exists: true } }, { [`usageCallSeconds.${period}`]: { $exists: true } }] },
+      { [`usageTokens.${period}`]: 1, [`usageCallSeconds.${period}`]: 1 }
+    ).lean();
+    let tokenCostMc = 0;
+    let callCostMc = 0;
+    let tokens = 0;
+    let callSeconds = 0;
+    const costByAction = {};
+    for (const u of users) {
+      const t = u.usageTokens?.[period] || {};
+      tokenCostMc += t.costMc || 0;
+      tokens += t.tokens || 0;
+      for (const [action, mc] of Object.entries(t.byActionCostMc || {})) {
+        costByAction[action] = (costByAction[action] || 0) + mc;
+      }
+      const c = u.usageCallSeconds?.[period] || {};
+      callCostMc += c.costMc || 0;
+      callSeconds += c.seconds || 0;
+    }
+    if (callCostMc > 0) costByAction.call = (costByAction.call || 0) + callCostMc;
+    const costMc = tokenCostMc + callCostMc;
+
+    res.json({
+      period,
+      windowStart: window.start.toISOString(),
+      windowEnd: window.end.toISOString(),
+      revenue: { mc: revenueMc, dollars: revenueMc / 100000, byAction: revenueByAction },
+      cost: { mc: costMc, dollars: costMc / 100000, tokens, callSeconds, byAction: costByAction },
+      marginMultiple: costMc > 0 ? Number((revenueMc / costMc).toFixed(2)) : null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

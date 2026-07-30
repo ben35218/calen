@@ -8,6 +8,7 @@ jest.mock('../../../hooks/useBilling', () => ({
   useUnlockActivation: jest.fn(),
   useCreditsActivation: jest.fn(),
   useAddonActivation: jest.fn(),
+  useAiPlanActivation: jest.fn(),
 }));
 jest.mock('../../../lib/purchases', () => ({
   isPurchasesConfigured: () => false,
@@ -19,7 +20,7 @@ jest.mock('../../../lib/purchases', () => ({
   restorePurchases: jest.fn(),
 }));
 
-import { addonForPackage, packForRcPackage, unlockPackage } from '../shared';
+import { addonForPackage, aiPlanPackage, packForRcPackage, unlockPackage } from '../shared';
 import type { CreditPack } from '../../../api';
 
 function pkg(productId: string, packageId = productId, packageType = 'LIFETIME') {
@@ -46,9 +47,10 @@ describe('addonForPackage', () => {
     expect(addonForPackage(pkg('app.householdcalendar.addon_birthdays'))).toBeNull();
   });
 
-  it('never claims the app unlock or credit-pack products', () => {
+  it('never claims the app unlock, credit-pack, or AI-plan products', () => {
     expect(addonForPackage(pkg('app.householdcalendar.app_unlock_499'))).toBeNull();
     expect(addonForPackage(pkg('app.householdcalendar.credits_500'))).toBeNull();
+    expect(addonForPackage(pkg('app.householdcalendar.calen_ai_monthly_499'))).toBeNull();
   });
 });
 
@@ -58,9 +60,10 @@ describe('packForRcPackage', () => {
     expect(packForRcPackage(pkg('app.householdcalendar.credits_499'), PACKS)?.productId).toBe('credits_499');
   });
 
-  it('never cross-claims add-on or unlock products', () => {
+  it('never cross-claims add-on, unlock, or AI-plan products', () => {
     expect(packForRcPackage(pkg('app.householdcalendar.addon_meals'), PACKS)).toBeNull();
     expect(packForRcPackage(pkg('app.householdcalendar.app_unlock_499'), PACKS)).toBeNull();
+    expect(packForRcPackage(pkg('app.householdcalendar.calen_ai_monthly_499'), PACKS)).toBeNull();
     expect(packForRcPackage(pkg('app.householdcalendar.something_else'), PACKS)).toBeNull();
   });
 });
@@ -73,5 +76,37 @@ describe('unlockPackage', () => {
     expect(unlockPackage([custom])).toBe(custom);
     expect(unlockPackage([pkg('app.householdcalendar.credits_499', 'c', 'CUSTOM')])).toBeNull();
     expect(unlockPackage([])).toBeNull();
+  });
+});
+
+describe('aiPlanPackage', () => {
+  const PLAN_ID = 'calen_ai_monthly_499';
+
+  it('matches the catalog product id in the ai_plan offering', () => {
+    const plan = pkg('app.householdcalendar.calen_ai_monthly_499', 'monthly', 'MONTHLY');
+    expect(aiPlanPackage([plan], PLAN_ID)).toBe(plan);
+  });
+
+  it('falls back to the monthly package when the product id is mis-set', () => {
+    const monthly = pkg('app.householdcalendar.some_other_sub', 'monthly', 'MONTHLY');
+    expect(aiPlanPackage([monthly], PLAN_ID)).toBe(monthly);
+  });
+
+  it('never cross-claims credit-pack, unlock, or add-on products', () => {
+    // Even as MONTHLY-typed packages (a misconfigured offering), the other
+    // product classes stay unclaimable — the plan CTA can't sell a pack.
+    const strays = [
+      pkg('app.householdcalendar.credits_499', 'c', 'MONTHLY'),
+      pkg('app.householdcalendar.app_unlock_499', 'u', 'MONTHLY'),
+      pkg('app.householdcalendar.addon_meals', 'a', 'MONTHLY'),
+    ];
+    expect(aiPlanPackage(strays, PLAN_ID)).toBeNull();
+    expect(aiPlanPackage([], PLAN_ID)).toBeNull();
+  });
+
+  it('prefers the product-id match over an incidental monthly package', () => {
+    const monthly = pkg('app.householdcalendar.some_other_sub', 'monthly', 'MONTHLY');
+    const plan = pkg('app.householdcalendar.calen_ai_monthly_499', 'plan', 'CUSTOM');
+    expect(aiPlanPackage([monthly, plan], PLAN_ID)).toBe(plan);
   });
 });

@@ -25,13 +25,27 @@
             <v-text-field v-model.number="config.credits.lowBalanceThreshold" label="Low-balance threshold" type="number" density="compact" variant="outlined" style="max-width: 190px" hide-details />
           </div>
 
-          <div class="text-subtitle-2 mb-2">Token raw cost ($ / 1M tokens, blended, by model family)</div>
+          <div class="text-subtitle-2 mb-2">Action prices (credits per action — what usage debits)</div>
+          <div class="d-flex flex-wrap mb-2" style="gap: 12px">
+            <v-text-field
+              v-for="(_, action) in config.credits.actionCosts" :key="action"
+              v-model.number="config.credits.actionCosts[action]"
+              :label="action" type="number" density="compact" variant="outlined"
+              style="max-width: 150px" hide-details />
+          </div>
+          <p class="text-caption text-medium-emphasis mb-4">
+            Flat published prices, one debit per completed action (<code>callPerMinute</code> is
+            prorated per connected second). Set them so price ≈ raw cost × the target margin;
+            check the fit on the reconciliation numbers below once real usage exists.
+          </p>
+
+          <div class="text-subtitle-2 mb-2">Raw provider cost reference (reconciliation only — never debited)</div>
           <div class="d-flex flex-wrap mb-4" style="gap: 12px">
             <v-text-field
               v-for="(_, fam) in config.credits.tokenRatesPer1M" :key="fam"
               v-model.number="config.credits.tokenRatesPer1M[fam]"
-              :label="fam" type="number" step="0.5" density="compact" variant="outlined"
-              style="max-width: 150px" hide-details />
+              :label="`${fam} ($/1M tokens)`" type="number" step="0.5" density="compact" variant="outlined"
+              style="max-width: 190px" hide-details />
           </div>
 
           <div class="text-subtitle-2 mb-2">Credit packs (consumable IAPs)</div>
@@ -45,10 +59,10 @@
             </template>
           </div>
           <p class="text-caption text-medium-emphasis mt-2">
-            1 credit = $0.01 retail. Usage debits at raw cost × margin (2.0 = a 100% markup), so a
-            pack's raw-cost coverage is <em>credits ÷ (100 × margin)</em> dollars. Pack prices here
-            are display fallbacks — the store's localized price is authoritative; the credited
-            amount is what the webhook grants. Product ids must match App Store Connect.
+            1 credit = $0.01 retail. Usage debits the flat action prices above (margin is the
+            TARGET they're set to hold, not a live multiplier). Pack prices here are display
+            fallbacks — the store's localized price is authoritative; the credited amount is what
+            the webhook grants. Product ids must match App Store Connect.
           </p>
         </v-card-text>
       </v-card>
@@ -63,6 +77,20 @@
             <p class="text-caption text-medium-emphasis mt-1">
               The one-time per-user purchase that opens the app (non-consumable, RevenueCat
               entitlement <code>app_unlock</code>).
+            </p>
+          </v-card-text>
+        </v-card>
+
+        <v-card class="flex-1-1" rounded="lg" variant="outlined" style="min-width: 320px">
+          <v-card-title class="text-subtitle-1 font-weight-bold">Calen AI plan (monthly)</v-card-title>
+          <v-card-text>
+            <v-text-field v-model="config.aiPlan.productId" label="Store product id" density="compact" variant="outlined" class="mb-1" hide-details />
+            <v-text-field v-model.number="config.aiPlan.price" label="Price ($/month, display fallback)" type="number" step="0.01" density="compact" variant="outlined" class="mb-1" hide-details />
+            <v-text-field v-model.number="config.aiPlan.monthlyCredits" label="Credits granted per period" type="number" density="compact" variant="outlined" hide-details />
+            <p class="text-caption text-medium-emphasis mt-1">
+              Optional auto-renewable subscription (RevenueCat entitlement <code>calen_ai</code>).
+              Each paid period grants the credits; keep it the best per-credit rate or the plan
+              has no reason to exist. Granted credits are ordinary balance and never expire.
             </p>
           </v-card-text>
         </v-card>
@@ -165,6 +193,12 @@ async function load() {
   try {
     const { data } = await monetizationApi.get();
     if (!data.admin) data.admin = { unlimitedAi: true }; // predates the admin-policy section
+    // Predates the flat-price / AI-plan restructure (the server backfills on
+    // its next singleton load; render sensible defaults meanwhile).
+    if (!data.credits.actionCosts) {
+      data.credits.actionCosts = { chat: 2, scan: 3, generation: 3, manualParse: 1, aiHelper: 1, callPerMinute: 20 };
+    }
+    if (!data.aiPlan) data.aiPlan = { productId: 'calen_ai_monthly_499', price: 4.99, monthlyCredits: 600, entitlement: 'calen_ai' };
     config.value = data;
     baseline = JSON.parse(JSON.stringify(editable(data)));
   } catch (e) {
@@ -176,8 +210,8 @@ async function load() {
 }
 
 function editable(c) {
-  const { credits, unlock, costs, models, guards, admin, addons } = c;
-  return { credits, unlock, costs, models, guards, admin, addons };
+  const { credits, unlock, aiPlan, costs, models, guards, admin, addons } = c;
+  return { credits, unlock, aiPlan, costs, models, guards, admin, addons };
 }
 
 // Leaf-level diff against the baseline, shown in the review dialog and used
@@ -218,7 +252,12 @@ function validate(c) {
     if (!num(pack.price) || pack.price < 0) errors.push(`Pack "${pid}" price must be ≥ 0`);
     if (!Number.isInteger(pack.credits) || pack.credits <= 0) errors.push(`Pack "${pid}" credits must be a whole number > 0`);
   }
+  for (const [action, price] of Object.entries(c.credits.actionCosts || {})) {
+    if (!Number.isInteger(price) || price < 0) errors.push(`Action price "${action}" must be a whole number of credits ≥ 0`);
+  }
   if (!num(c.unlock.price) || c.unlock.price < 0) errors.push('Unlock price must be ≥ 0');
+  if (!num(c.aiPlan.price) || c.aiPlan.price < 0) errors.push('AI plan price must be ≥ 0');
+  if (!Number.isInteger(c.aiPlan.monthlyCredits) || c.aiPlan.monthlyCredits < 0) errors.push('AI plan monthly credits must be a whole number ≥ 0');
   for (const [k, v] of Object.entries(c.costs || {})) {
     if (!num(v) || v < 0) errors.push(`Cost "${k}" must be ≥ 0`);
   }

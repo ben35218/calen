@@ -62,6 +62,11 @@ function useActivationPoll(done: (data: BillingStatus) => boolean) {
         cacheUnlocked(Boolean(data.unlocked));
         if (doneRef.current(data)) {
           setState('active');
+          // The change has landed server-side, which means any new credit-ledger
+          // row (a pack grant, a plan period) now exists too — refresh History so
+          // the buyer sees the transaction immediately, not after the 60s
+          // staleTime elapses.
+          qc.invalidateQueries({ queryKey: ['billing', 'ledger'] });
           return;
         }
       } catch {
@@ -101,6 +106,13 @@ export function useCreditsActivation() {
       begin();
     },
   };
+}
+
+// Post-purchase poll for the monthly Calen AI plan subscription: done once the
+// server reports the plan active (the webhook also lands the period's credits).
+export function useAiPlanActivation() {
+  const { state, begin } = useActivationPoll((data) => data.aiPlan?.active === true);
+  return { state, start: () => begin() };
 }
 
 // Post-purchase poll for one-time feature-calendar add-ons: done once the owned

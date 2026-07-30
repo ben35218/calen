@@ -2,9 +2,15 @@
 //
 // 1 credit = $0.01 of RETAIL value; balances live on User.creditBalanceMc in
 // integer MILLICREDITS (1 credit = 1000 Mc) so tiny per-call debits never need
-// float $inc's. Usage debits charge raw cost × config.credits.margin (2.0 =
-// 100% margin), always rounded UP at the millicredit — worst-case overcharge
-// is 0.001 credit per call.
+// float $inc's.
+//
+// Usage debits are FLAT published prices per action (config
+// credits.actionCosts, whole credits; calls prorate `callPerMinute` per
+// connected second) — users can predict spend and a new model id can never
+// misprice a debit. The token/call rates (`tokenRatesPer1M`,
+// `callRatePerMinute`) are the raw PROVIDER-COST reference: they feed the
+// cost-estimate counters that margin reconciliation compares against debited
+// revenue, and never drive a debit.
 //
 // All math helpers take the config object (usageMeter's cached
 // MonetizationConfig) as an argument; this module requires only models, so
@@ -17,8 +23,8 @@ const MC_PER_CREDIT = 1000;
 const CREDITS_PER_DOLLAR = 100;
 
 // Blended raw $/1M-token rate for a model id, matched by family substring
-// ('haiku'/'sonnet'), else the default rate. Missing config → 0 (no debit —
-// fail open on cost, never on features).
+// ('haiku'/'sonnet'), else the default rate. Missing config → 0 (no cost
+// recorded — fail open on cost, never on features).
 function rateForModel(model, config) {
   const rates = config?.credits?.tokenRatesPer1M || {};
   const id = String(model || '').toLowerCase();
@@ -34,24 +40,40 @@ function ceilMc(x) {
   return Math.max(0, Math.ceil(x - 1e-9));
 }
 
-// Millicredits to debit for an AI call's token usage. The $→credits→Mc chain
-// reduces to Mc = tokens × ratePer1M × margin / 10, which stays exact for the
-// integer-ish configs we actually use.
-function tokenDebitMc(tokens, model, config) {
-  const t = Number(tokens) || 0;
-  if (t <= 0) return 0;
-  const margin = Number(config?.credits?.margin) || 2.0;
-  return ceilMc((t * rateForModel(model, config) * margin) / 10);
+// Millicredits to DEBIT for one completed action — the flat published price
+// (credits.actionCosts[action] × 1000 Mc). Unknown action → 0 (fail open on
+// cost, never on features).
+function actionDebitMc(action, config) {
+  const price = Number(config?.credits?.actionCosts?.[action]) || 0;
+  return price > 0 ? Math.round(price * MC_PER_CREDIT) : 0;
 }
 
-// Millicredits to debit for `seconds` of connected assistant phone-call time.
-// Reduced the same way: Mc = seconds × $/min × margin × 100000 / 60.
+// Millicredits to DEBIT for `seconds` of connected assistant phone-call time:
+// the flat `actionCosts.callPerMinute` price prorated per second, ceiled at
+// the millicredit.
 function callDebitMc(seconds, config) {
   const s = Number(seconds) || 0;
   if (s <= 0) return 0;
-  const margin = Number(config?.credits?.margin) || 2.0;
+  const perMinute = Number(config?.credits?.actionCosts?.callPerMinute) || 0;
+  return ceilMc((s * perMinute * MC_PER_CREDIT) / 60);
+}
+
+// Estimated raw PROVIDER cost of an AI call's tokens, in margin-free
+// millicredit units (Mc/100000 = $): tokens × ratePer1M / 10. Recorded on the
+// weekly cost counters for margin reconciliation only — never debited.
+function tokenCostMc(tokens, model, config) {
+  const t = Number(tokens) || 0;
+  if (t <= 0) return 0;
+  return ceilMc((t * rateForModel(model, config)) / 10);
+}
+
+// Estimated raw provider cost of `seconds` of connected call time (Vapi
+// STT + TTS + telephony), same margin-free Mc units as tokenCostMc.
+function callCostMc(seconds, config) {
+  const s = Number(seconds) || 0;
+  if (s <= 0) return 0;
   const perMinute = Number(config?.credits?.callRatePerMinute) || 0;
-  return ceilMc((s * perMinute * margin * (CREDITS_PER_DOLLAR * MC_PER_CREDIT)) / 60);
+  return ceilMc((s * perMinute * (CREDITS_PER_DOLLAR * MC_PER_CREDIT)) / 60);
 }
 
 // The pack a store product id sells, or null if the product isn't a pack.
@@ -69,12 +91,19 @@ function packsHint(config) {
   }));
 }
 
-// Fire-and-forget usage debit against a user's materialized balance. Never
-// ledgered (high volume); may drive the balance negative on the last call.
-function debitUsageMc(userId, mc) {
+// Fire-and-forget usage debit against a user's materialized balance, LEDGERED
+// (kind 'usage' + the action) so "where did my credits go?" has a per-row
+// answer and reconciliation can sum debited revenue per action. May drive the
+// balance negative on the last call. A ledger failure falls back to the bare
+// $inc — the balance must never drift from what was actually spent.
+function debitUsageMc(userId, mc, action = null) {
   if (!userId || !mc || mc <= 0) return;
-  User.updateOne({ _id: userId }, { $inc: { creditBalanceMc: -mc } })
-    .catch((err) => console.error('[credits] usage debit failed:', err.message));
+  CreditLedger.debit({ userId, mc, action })
+    .catch((err) => {
+      console.error('[credits] usage debit ledger failed:', err.message);
+      User.updateOne({ _id: userId }, { $inc: { creditBalanceMc: -mc } })
+        .catch((e) => console.error('[credits] usage debit failed:', e.message));
+    });
 }
 
 // One-time starter grant for a new user, so the AI can be tried before the
@@ -93,7 +122,7 @@ async function grantStarterCredits(userId, config) {
 
 module.exports = {
   MC_PER_CREDIT,
-  rateForModel, tokenDebitMc, callDebitMc,
+  rateForModel, actionDebitMc, callDebitMc, tokenCostMc, callCostMc,
   packForProduct, packsHint,
   debitUsageMc, grantStarterCredits,
 };

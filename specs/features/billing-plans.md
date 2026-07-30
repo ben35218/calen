@@ -1,7 +1,7 @@
 ---
 title: Billing — app unlock, AI credits & add-ons
 status: current
-last-verified: 0d94240+ (2026-07-29); Add-ons cards offer one-tap restore for an owned but locally-deleted calendar (2026-07-29)
+last-verified: 71f3baf+ (2026-07-30); flat per-action credit prices, ledgered usage debits + margin reconciliation, the optional monthly Calen AI plan, and post-purchase History refresh (2026-07-30)
 code:
   - mobile/src/screens/plan/
   - mobile/src/lib/purchases.ts
@@ -33,15 +33,19 @@ tests:
 
 ## Purpose
 
-There are no subscriptions. Monetization is three one-shot mechanisms, all via
-RevenueCat / native in-app purchase:
+Monetization is three one-shot mechanisms plus ONE optional subscription, all
+via RevenueCat / native in-app purchase:
 
 1. **The app unlock** — a $4.99 one-time non-consumable, **per user**, behind a
    hard paywall.
 2. **Prepaid AI credits** — consumable packs funding a **per-user balance**
-   that both AI usage and assistant phone calls draw down, sold at a 100%
-   margin over raw cost.
-3. **Feature-calendar add-ons** — one-time **household-wide** purchases (plus
+   that both AI usage and assistant phone calls draw down at **flat published
+   per-action prices** (margin built into the prices, not computed per call).
+3. **The Calen AI plan** — an optional $4.99/month auto-renewable subscription
+   that grants a monthly credit allowance at a better per-credit rate than any
+   pack. Never required: packs remain the top-up and the non-subscriber path,
+   and every AI feature works identically either way (credits are credits).
+4. **Feature-calendar add-ons** — one-time **household-wide** purchases (plus
    free opt-in claims), unchanged in spirit from the pre-credits era.
 
 The admin app configures the whole economy centrally (`MonetizationConfig`).
@@ -63,11 +67,14 @@ same diff for review before saving. The portal itself is specced in
 - `POST /api/billing/webhook` (public, verified by `REVENUECAT_WEBHOOK_SECRET`)
   resolves the event's `app_user_id` to a **User** (by `revenueCatId`, falling
   back to `_id`) and partitions each event into exactly one path:
-  1. **Credits** — matched by *product id* against the pack catalog
+  1. **The Calen AI plan** — matched FIRST (entitlement `calen_ai` /
+     `aiPlan.productId`) so its subscription lifecycle can't leak into the
+     one-time paths.
+  2. **Credits** — matched by *product id* against the pack catalog
      (consumables carry no entitlement); never falls through.
-  2. **Unlock** — matched by the `app_unlock` entitlement (product-id
+  3. **Unlock** — matched by the `app_unlock` entitlement (product-id
      fallback).
-  3. **Add-ons** — matched by `addon_*` entitlements; applied to the user's
+  4. **Add-ons** — matched by `addon_*` entitlements; applied to the user's
      household.
   Anything left over — including legacy subscription-era `premium`/`unlimited`
   events and their lifecycle tails — is **acked as ignored** so RC never
@@ -108,15 +115,35 @@ same diff for review before saving. The portal itself is specced in
   `User.creditBalanceMc` in integer **millicredits** (1 credit = 1000 Mc) so
   tiny per-call debits never need float `$inc`s. UI shows whole credits
   (floored), and floors display at 0.
-- **Debit math (100% margin):** usage debits raw cost × `credits.margin`
-  (default 2.0), always **ceiled at the millicredit** (float-noise guarded):
-  - tokens: `ceil(tokens × tokenRatesPer1M[family] × margin / 10)` Mc, model
-    family matched by substring (`haiku`/`sonnet`, else `default`); recorded by
-    `recordTokens` (the patched Anthropic client / `chatStream`), which now
-    threads the **model id** through.
-  - calls: `ceil(seconds × callRatePerMinute × margin × 100000 / 60)` Mc,
-    debited once when Vapi reports the finished call
-    (`recordCallSecondsById`; `PhoneCall.metered` guards re-charging).
+- **Debit math (flat published prices):** usage debits the FLAT per-action
+  price from `credits.actionCosts` (whole credits: `chat: 2`, `scan: 3`,
+  `generation: 3`, `manualParse: 1`, `aiHelper: 1`; `callPerMinute: 20`
+  prorated per connected second, ceiled at the millicredit) — **one debit per
+  completed action**, charged by `meter()`'s finish handler on a 2xx, however
+  many model calls the action made. Flat prices exist so users can predict
+  spend, a new model id can never misprice a debit, and pricing is a knob
+  decoupled from provider cost. An unknown action debits 0 (fail open on
+  cost, never on features). The target margin (`credits.margin`, default 2.0)
+  is built into the prices when they're set, not computed per call.
+- **Usage debits are ledgered** (`CreditLedger.debit` — kind `usage` +
+  `action`, negative `deltaMc`, no idempotency key): every balance movement
+  has a row, so "where did my credits go?" is answerable from the app and
+  reconciliation can sum debited revenue per action. A ledger failure falls
+  back to the bare balance `$inc` — the balance must never drift from actual
+  spend.
+- **Provider-cost recording (reconciliation only):** `tokenRatesPer1M`
+  (blended raw $/1M, matched by model-family substring) and
+  `callRatePerMinute` (raw Vapi $/min) are the COST reference — they never
+  drive a debit. `recordTokens` accumulates
+  `usageTokens[period].costMc/byActionCostMc` (margin-free Mc; Mc/100000 = $)
+  per model call; `recordCallSecondsById` does the same on
+  `usageCallSeconds[period].costMc` and debits the flat call price
+  (`PhoneCall.metered` guards re-charging).
+- **Margin reconciliation:** `GET /api/monetization-config/reconciliation`
+  `?period=YYYY-MM-DD` (admin) sums debited revenue (usage-ledger rows in the
+  weekly window, by action) against the estimated raw provider cost (the cost
+  counters) → `marginMultiple` (≈ 2.0 = flat prices hold the target margin).
+  This is how `actionCosts` gets tuned against real spend.
 - **Enforcement** (`middleware/usageMeter.js`): `meter(action)` pre-checks
   `creditBalanceMc > 0` → **402 `CREDITS_EXHAUSTED`** (payload: `action`,
   `balance`, `packs` hint) when spent. A call's cost is known only after it
@@ -136,7 +163,7 @@ same diff for review before saving. The portal itself is specced in
   `credits_1999` ($19.99 → 2200) — volume bonus on bigger packs; catalog in
   `MonetizationConfig.credits.packs` (prices are display fallbacks).
 - **Grants are ledgered and idempotent** (`CreditLedger`): kinds `purchase` /
-  `starter` / `refund` / `admin`; the unique sparse `transactionId` index is
+  `starter` / `plan` / `refund` / `admin`; the unique sparse `transactionId` index is
   THE webhook idempotency gate (insert the row first, then `$inc` the
   balance; `grant()` awaits index readiness). Purchases key on the store
   `transaction_id` (falling back to the RC event id); a refund debits the same
@@ -152,6 +179,30 @@ same diff for review before saving. The portal itself is specced in
 - Admin override: `POST /api/monetization-config/credits`
   `{userId, credits, note}` — ledgered (kind `admin`, deliberately not
   deduped) and audited (`credits_adjusted`).
+
+### The Calen AI plan (optional monthly subscription)
+
+- **Product** `calen_ai_monthly_499` ($4.99/month display fallback), an
+  auto-renewable subscription with RC entitlement **`calen_ai`**, configured in
+  `MonetizationConfig.aiPlan` (`productId`, `price`, `monthlyCredits`,
+  `entitlement`). Sold from its own RC **`ai_plan` offering** (never in
+  `current` or `credits`).
+- **Each paid period grants `monthlyCredits`** (default 600 — a better
+  per-credit rate than any pack, the subscriber advantage):
+  `INITIAL_PURCHASE` and every `RENEWAL` grant via `CreditLedger.grant` (kind
+  `plan`), idempotent on the store transaction id (every renewal carries a
+  fresh one; re-deliveries dedupe). Granted credits are ORDINARY balance —
+  they never expire and survive plan expiry; there is no separate plan bucket
+  and no feature gated on the plan itself.
+- **Lifecycle** (`planUpdateForEvent`, pure/exported): a refund
+  (`CANCELLATION` + `CUSTOMER_SUPPORT`) claws the period's grant back
+  (`<txn>:refund`) and deactivates; `EXPIRATION` deactivates without touching
+  credits; `UNCANCELLATION` reactivates; auto-renew toggles and billing-grace
+  noise are acked with no change until expiry. State lives on
+  `User.aiPlanActive` / `aiPlanExpiresAt`, set by the webhook.
+- `GET /billing/status` reports `aiPlan { active, productId, price,
+  monthlyCredits, expiresAt }`; the CreditsScreen renders the plan card from
+  it (subscribe CTA when inactive; active state shows the renewal grant).
 
 ### Feature-calendar add-ons
 
@@ -255,11 +306,17 @@ same diff for review before saving. The portal itself is specced in
   package; `busyId`/activation drive its spinner.
 - **CreditsScreen** shows: the balance hero ("Unlimited" for exempt admins;
   display floored at 0 with an arrears note when the raw balance is
-  negative), low/out badges, the **pack store** (hidden for unlimited
-  admins), the **"By feature this week"** analytics card (per-user counts +
-  the weekly-window caption), the **History** card
-  (`GET /billing/credits/ledger` — grants only; usage isn't itemized), and
-  the Terms/Privacy links. The AI on/off and
+  negative), low/out badges, the **Calen AI plan card** (from
+  `status.aiPlan`: subscribe CTA + monthly-credits value framing when
+  inactive; "Active — renews with N credits" when subscribed; hidden for
+  unlimited admins), the **pack store** (hidden for unlimited admins), the
+  **"What things cost"** card (the flat per-action prices from
+  `status.actionCosts`, plain labels — "Chat message · 2 credits", "Phone
+  call · 20 credits/min" — so spend is predictable before it happens), the
+  **"By feature this week"** analytics card (per-user counts + the
+  weekly-window caption), the **History** card
+  (`GET /billing/credits/ledger` — every balance movement: grants AND usage
+  debits, each usage row labeled by its action), and the Terms/Privacy links. The AI on/off and
   personal/contact-info toggles are **not** here — they're privacy choices, so
   they live on `PrivacyDataScreen` (Profile → Privacy & data); see
   [ai-assistant.md](ai-assistant.md).
@@ -272,19 +329,32 @@ same diff for review before saving. The portal itself is specced in
   credits" → `BuyCredits { reason: 'out' }`.
 - **ProfileHome** shows an "AI credits" card — balance + low/out badge —
   drilling into `Credits`. The old mini-gauges/subscription cards are gone.
+- **Pre-call cost transparency:** every surface that places an assistant
+  phone call shows the flat call price BEFORE the call is placed ("~20
+  credits/min", from `status.actionCosts.callPerMinute`) — the call is the
+  most expensive action, and cost surprise there is where credit systems lose
+  trust.
 - Purchase hooks (`screens/plan/shared.ts`): `useUnlockPurchase`,
-  `useCreditsPurchase`, `useAddonPurchase` — RC identity, offering load,
-  catalog↔package pairing (`unlockPackage`, `packForRcPackage`,
-  `addonForPackage` — none may cross-claim another product class), buy →
-  activation poll (`useUnlockActivation` / `useCreditsActivation` /
-  `useAddonActivation`), restore.
+  `useCreditsPurchase`, `useAddonPurchase`, `useAiPlanPurchase` — RC
+  identity, offering load, catalog↔package pairing (`unlockPackage`,
+  `packForRcPackage`, `addonForPackage`, `aiPlanPackage` — none may
+  cross-claim another product class), buy → activation poll
+  (`useUnlockActivation` / `useCreditsActivation` / `useAddonActivation` /
+  `useAiPlanActivation`), restore. When an activation poll reaches `active` (the
+  webhook has landed, so any new `CreditLedger` row exists too) it invalidates
+  the `['billing', 'ledger']` query, so the **History** card shows the new grant
+  immediately rather than waiting out its 60s `staleTime`.
 
 ### Monetization config & admin app
 
-- `MonetizationConfig` (a single doc) holds `credits` (margin,
-  `tokenRatesPer1M`, `callRatePerMinute`, `starterCredits`,
-  `lowBalanceThreshold`, `packs`), `unlock` (price, productId), `costs`
-  (reference only), `models`, `addons`, `guards` (`mapsPerDay`), `admin`.
+- `MonetizationConfig` (a single doc) holds `credits` (margin — the target
+  the flat prices bake in, `tokenRatesPer1M` + `callRatePerMinute` — the
+  provider-cost reference for reconciliation, `actionCosts` — the flat
+  published debit prices, `starterCredits`, `lowBalanceThreshold`, `packs`),
+  `unlock` (price, productId), `aiPlan` (productId, price, monthlyCredits,
+  entitlement), `costs` (reference only), `models`, `addons`, `guards`
+  (`mapsPerDay`), `admin`. `getSingleton` backfills `credits.actionCosts` and
+  `aiPlan` on docs predating them.
   The subscription-era `tiers`/`activity`/`fees` sections are stripped by
   `getSingleton` (which also backfills new sections and force-syncs catalog
   items DEFAULTS declares free, so a stale paid price can't block a claim).
@@ -301,16 +371,19 @@ same diff for review before saving. The portal itself is specced in
 ## Data & API surface
 
 - **Models:** `User` — `revenueCatId`, `appUnlocked(+At)`, `unlockProductId`,
-  `creditBalanceMc`, usage analytics counters. `CreditLedger` — grants only,
-  unique sparse `transactionId`. `Household` — `addons` + fleet analytics
-  counters (all `plan*`/baseline fields deleted). `MonetizationConfig` as
-  above.
+  `creditBalanceMc`, `aiPlanActive` / `aiPlanExpiresAt`, usage analytics
+  counters (incl. the `costMc`/`byActionCostMc` provider-cost estimates).
+  `CreditLedger` — every balance movement (kinds `purchase`/`starter`/`plan`/
+  `refund`/`admin`/`usage` + `action`), unique sparse `transactionId`.
+  `Household` — `addons` + fleet analytics counters (all `plan*`/baseline
+  fields deleted). `MonetizationConfig` as above.
 - **Endpoints:** `billing.js` — `POST /webhook`, `GET /status`
   (`{ unlocked, unlockPrice, creditBalance(+Mc), lowBalance, unlimited, packs,
-  usage, usageScope:'user', resetsAt, hasHousehold, models, addons,
-  addonCatalog }`), `GET /credits/ledger`, `POST /addons/claim`,
-  `POST /addons` (admin). `monetizationConfig.js` — config CRUD,
-  `GET /households`, `GET /users`, `POST /unlock`, `POST /credits`.
+  actionCosts, aiPlan, usage, usageScope:'user', resetsAt, hasHousehold,
+  models, addons, addonCatalog }`), `GET /credits/ledger` (entries carry
+  `kind` + `action`), `POST /addons/claim`, `POST /addons` (admin).
+  `monetizationConfig.js` — config CRUD, `GET /households`, `GET /users`,
+  `POST /unlock`, `POST /credits`, `GET /reconciliation`.
   `/api/admin/analytics` (per-user rows now carry `creditBalance`, no tier
   limits; overview totals `unlockedUsers`).
 - **Client:** `screens/plan/*`, `lib/purchases.ts` (user-id identity),
@@ -329,12 +402,17 @@ necessity (counts and money only, never prompt content). See
 - Webhook: secret verification; unlock grant/refund-revoke; pack credit +
   **same-transaction-id dedupe**; refund → negative balance + independent
   refund dedupe; TRANSFER moving the unlock; legacy tier events acked;
-  unknown-user ack; status payload (unlock/balance/low/packs); ledger
-  endpoint; starter-grant idempotency — `billingWebhook.integration.test.js`.
+  unknown-user ack; status payload (unlock/balance/low/packs/actionCosts/
+  aiPlan); ledger endpoint incl. usage rows; starter-grant idempotency; plan
+  purchase/renewal grants + dedupe + EXPIRATION-keeps-credits;
+  `CreditLedger.debit` row + balance — `billingWebhook.integration.test.js`.
 - Pure event mapping (`unlockUpdateForEvent` / `creditUpdateForEvent` /
-  `addonUpdateForEvent` — no cross-claims) — `routes/billing.test.js`.
-- Credit math (family rates, ceil-at-millicredit incl. float-noise guard, pack
-  lookup, packsHint) — `services/credits.test.js`.
+  `addonUpdateForEvent` / `planUpdateForEvent` — no cross-claims) —
+  `routes/billing.test.js`.
+- Credit math (flat action prices incl. unknown-action fail-open, prorated
+  call price, margin-free cost estimates, family rates, ceil-at-millicredit
+  incl. float-noise guard, pack lookup, packsHint) —
+  `services/credits.test.js`.
 - Meter helpers (`creditStatus` thresholds/negative/admin-exempt,
   `periodUsage`, `totalTokens`, `adminUnlimited`) —
   `middleware/usageMeter.tokens.test.js`.
@@ -351,9 +429,14 @@ necessity (counts and money only, never prompt content). See
 
 ## Open questions
 
-- Tune `tokenRatesPer1M` / `callRatePerMinute` against real Anthropic/Vapi
-  spend once metering has run for a few weeks — the formula is fixed, the
-  rates are the knob.
+- Tune `credits.actionCosts` once `GET /monetization-config/reconciliation`
+  has a few weeks of real spend: `marginMultiple` drifting below ~2.0 means a
+  flat price is underwater; also true-up `tokenRatesPer1M` /
+  `callRatePerMinute` against actual Anthropic/Vapi invoices so the cost side
+  of the comparison stays honest.
+- `aiPlan.monthlyCredits` (600) is a launch guess — revisit against pack
+  purchase patterns once the plan is live (it must stay the best per-credit
+  rate or the plan has no reason to exist).
 - Restore on a shared Apple ID transfers the unlock between accounts (RC
   transfer behavior). Accepted v1; revisit if support tickets appear.
 - Add-ons belong to the household: a user who moves households loses them

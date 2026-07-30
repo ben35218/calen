@@ -228,3 +228,44 @@ test('user search finds by email fragment and paginates', async () => {
   assert.ok(res.body.items.some((u) => u.email === plain.user.email));
   assert.ok(res.body.total >= 1);
 });
+
+test('config save validates flat action prices and the AI plan; reconciliation answers', async () => {
+  const { body: cfg } = await request().get('/api/monetization-config').set('Authorization', admin.auth);
+
+  // Fractional/negative flat prices and a broken plan are rejected.
+  const badAction = await request().put('/api/monetization-config')
+    .set('Authorization', admin.auth)
+    .send({ credits: { ...cfg.credits, actionCosts: { ...cfg.credits.actionCosts, chat: 1.5 } } });
+  assert.equal(badAction.status, 400);
+  assert.match(badAction.body.error, /actionCosts\.chat/);
+
+  const badPlan = await request().put('/api/monetization-config')
+    .set('Authorization', admin.auth)
+    .send({ aiPlan: { ...cfg.aiPlan, monthlyCredits: -1 } });
+  assert.equal(badPlan.status, 400);
+  assert.match(badPlan.body.error, /monthlyCredits/);
+
+  // Valid edits to both new sections round-trip.
+  const saved = await request().put('/api/monetization-config')
+    .set('Authorization', admin.auth)
+    .send({
+      credits: { ...cfg.credits, actionCosts: { ...cfg.credits.actionCosts, chat: 3 } },
+      aiPlan: { ...cfg.aiPlan, monthlyCredits: 700 },
+    });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.credits.actionCosts.chat, 3);
+  assert.equal(saved.body.aiPlan.monthlyCredits, 700);
+
+  // Reconciliation: admin-only, answers with the revenue/cost/margin shape.
+  const rec = await request().get('/api/monetization-config/reconciliation').set('Authorization', admin.auth);
+  assert.equal(rec.status, 200);
+  assert.ok(rec.body.period);
+  assert.ok(rec.body.revenue && typeof rec.body.revenue.mc === 'number');
+  assert.ok(rec.body.cost && typeof rec.body.cost.mc === 'number');
+  assert.ok('marginMultiple' in rec.body);
+  const denied = await request().get('/api/monetization-config/reconciliation').set('Authorization', plain.auth);
+  assert.equal(denied.status, 403);
+
+  const badPeriod = await request().get('/api/monetization-config/reconciliation?period=nope').set('Authorization', admin.auth);
+  assert.equal(badPeriod.status, 400);
+});

@@ -1683,11 +1683,27 @@ export interface CreditPack {
 }
 
 export interface CreditLedgerEntry {
-  kind: 'purchase' | 'starter' | 'refund' | 'admin';
-  credits: number; // signed (refunds/adjustments can be negative)
+  kind: 'purchase' | 'starter' | 'plan' | 'refund' | 'admin' | 'usage';
+  // Signed, and may be fractional: usage debits are negative (a prorated call
+  // can land between whole credits); refunds/adjustments can be negative too.
+  credits: number;
   productId: string | null;
+  // For `usage` rows: which action spent the credits ('chat', 'call', 'scan',
+  // 'generation', 'manualParse', 'aiHelper'). Null on grants.
+  action?: string | null;
   note: string | null;
   createdAt: string;
+}
+
+// The optional $4.99/month Calen AI plan (auto-renewable subscription). `price`
+// is a USD display fallback — the store's localized price is authoritative.
+// Granted credits are ordinary balance: they never expire and survive expiry.
+export interface AiPlanStatus {
+  active: boolean;
+  productId: string;
+  price: number;
+  monthlyCredits: number;
+  expiresAt: string | null;
 }
 
 export interface BillingStatus {
@@ -1702,6 +1718,13 @@ export interface BillingStatus {
   lowBalance: boolean;
   unlimited: boolean;
   packs: CreditPack[];
+  // Flat published credit prices per action (whole credits; `callPerMinute` is
+  // per connected minute, prorated per second server-side). What the debits
+  // actually charge — drives the "What things cost" card and pre-call hints.
+  actionCosts?: Record<string, number>;
+  // The optional monthly Calen AI plan (subscribe CTA / active state on the
+  // Credits screen).
+  aiPlan?: AiPlanStatus;
   // Per-action counts, always this user's own (analytics — the "By feature"
   // card; enforcement is the credit balance).
   usage: Record<string, number>;

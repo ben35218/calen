@@ -8,7 +8,7 @@ import type { PurchasesPackage } from 'react-native-purchases';
 import type { CreditPack } from '../../api';
 import { useAuth } from '../../store/auth';
 import {
-  useBilling, useUnlockActivation, useCreditsActivation, useAddonActivation,
+  useBilling, useUnlockActivation, useCreditsActivation, useAddonActivation, useAiPlanActivation,
 } from '../../hooks/useBilling';
 import type { AddonId } from '../../lib/addons';
 import {
@@ -225,6 +225,87 @@ export function useCreditsPurchase() {
   }
 
   return { billing, activation, rows, busyId, buy };
+}
+
+// ── The monthly Calen AI plan (CreditsScreen plan card) ─────────────────────
+
+// The plan's package in the dedicated `ai_plan` offering: match the catalog
+// product id, falling back to the monthly package so a mis-set product id
+// still sells. Never claims credit-pack, unlock, or add-on products — those
+// belong to their own offerings/mappings.
+export function aiPlanPackage(
+  packages: PurchasesPackage[],
+  productId: string
+): PurchasesPackage | null {
+  const eligible = packages.filter((p) => {
+    const id = `${p.product.identifier} ${p.identifier}`.toLowerCase();
+    return !id.includes('addon_') && !id.includes('app_unlock') && !id.includes('credits_');
+  });
+  return (
+    eligible.find((p) =>
+      `${p.product.identifier} ${p.identifier}`.toLowerCase().includes(productId.toLowerCase())
+    ) ??
+    eligible.find((p) => p.packageType === 'MONTHLY') ??
+    null
+  );
+}
+
+// Owns the Calen AI plan purchase flow: RC identity, the `ai_plan` offering
+// load, buy() (store sheet → plan activation poll), restore(). The plan is the
+// only subscription — everything else stays one-shot.
+export function useAiPlanPurchase() {
+  const { user } = useAuth();
+  const billing = useBilling();
+  const activation = useAiPlanActivation();
+  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useRcIdentity(user?._id);
+  useEffect(() => {
+    if (!isPurchasesConfigured() || !user?._id) return;
+    getOfferingById('ai_plan')
+      .then((offering) => setPackages(offering?.availablePackages ?? []))
+      .catch(() => setPackages([]));
+  }, [user?._id]);
+
+  const productId = billing.data?.aiPlan?.productId ?? 'calen_ai_monthly_499';
+  const pkg = useMemo(() => aiPlanPackage(packages, productId), [packages, productId]);
+
+  async function buy() {
+    if (!pkg) return;
+    setBusy(true);
+    try {
+      await purchasePackage(pkg);
+      // The plan flips server-side via the RevenueCat webhook (which also
+      // grants the period's credits) — poll until it lands.
+      activation.start();
+    } catch (e: any) {
+      if (!e?.userCancelled) Alert.alert('Purchase failed', e?.message || 'Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Restore reports what actually came back instead of claiming success
+  // blindly (same doctrine as the unlock's restore).
+  async function restore() {
+    try {
+      const info = await restorePurchases();
+      const active = Object.keys(info?.entitlements?.active ?? {});
+      if (!active.includes('calen_ai')) {
+        Alert.alert('Nothing to restore', 'No active Calen AI plan was found for this account.');
+        return;
+      }
+      const { data } = await billing.refetch();
+      // Store shows the entitlement but the server hasn't flipped yet — the
+      // webhook is in flight; poll like a fresh purchase.
+      if (!data?.aiPlan?.active) activation.start();
+    } catch {
+      Alert.alert('Restore failed', 'Could not restore purchases.');
+    }
+  }
+
+  return { billing, activation, pkg, busy, buy, restore };
 }
 
 // ── Feature-calendar add-ons (the "Add-ons" store screen) ────────────────────

@@ -11,6 +11,8 @@ import {
 } from '../../components/ui';
 import { form as formStyles } from '../../components/formStyles';
 import { DNC_BLOCK_MESSAGE, isCallBlockedBySuppression } from '../../lib/callBlock';
+import { callCostCaption } from '../../lib/callCost';
+import { useBilling } from '../../hooks/useBilling';
 import { ymd } from '../../lib/calendar';
 import { startTimeKeepingDuration, endTimeKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
@@ -131,6 +133,13 @@ export default function EventActionScreen() {
     enabled: Boolean(event.phone),
   });
   const callBlocked = isCallBlockedBySuppression(suppressedQ.data);
+
+  // Pre-call cost transparency (billing-plans.md): the flat published call
+  // price from the server ("~N credits/min", prorated per second) is shown
+  // before the user confirms — calls are the most expensive action, and cost
+  // surprise there is where credit systems lose trust. Never hard-coded.
+  const billing = useBilling();
+  const callCost = billing.data?.actionCosts?.callPerMinute;
 
   const place = useMutation({
     mutationFn: () =>
@@ -321,6 +330,9 @@ export default function EventActionScreen() {
       <FormError>{error}</FormError>
 
       <View style={formStyles.footer}>
+        {callCostCaption(callCost) ? (
+          <Text style={styles.costHint}>{callCostCaption(callCost)}</Text>
+        ) : null}
         <Button
           title={action === 'cancel' ? 'Call to Cancel' : 'Call to Reschedule'}
           color={accent}
@@ -342,4 +354,6 @@ const styles = StyleSheet.create({
   addRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
   addIcon: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   addLabel: { flex: 1, fontSize: 16 },
+  // Pre-call cost caption, quiet and centred just above the CTA.
+  costHint: { fontSize: 12, color: colors.textMuted, textAlign: 'center', marginBottom: spacing.sm },
 });

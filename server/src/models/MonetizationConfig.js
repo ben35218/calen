@@ -64,6 +64,20 @@ const DEFAULTS = {
     tokenRatesPer1M: { default: 6, haiku: 3, sonnet: 10 },
     // Raw Vapi cost per connected minute (STT + TTS + telephony; measured ~$0.082).
     callRatePerMinute: 0.10,
+    // FLAT published credit prices per completed action — what usage actually
+    // debits (whole credits; `callPerMinute` is prorated per connected second).
+    // Set from metered token averages with `margin` built in; the token/call
+    // rates above are the raw PROVIDER-COST reference used only to estimate
+    // spend for margin reconciliation, never to debit. Flat prices mean users
+    // can predict spend and a new model id can never misprice a debit.
+    actionCosts: {
+      chat: 2,
+      scan: 3,
+      generation: 3,
+      manualParse: 1,
+      aiHelper: 1,
+      callPerMinute: 20,
+    },
     // One-time grant per new user (in credits), so the AI can be tried before
     // the first pack purchase. Idempotent via the CreditLedger.
     starterCredits: 100,
@@ -81,6 +95,12 @@ const DEFAULTS = {
   // The $4.99 one-time PER-USER app unlock (non-consumable IAP, RevenueCat
   // entitlement `app_unlock`). `price` is a USD display fallback.
   unlock: { price: 4.99, productId: 'app_unlock_499' },
+  // The optional monthly "Calen AI" plan (auto-renewable subscription, RC
+  // entitlement `calen_ai`): each paid period grants `monthlyCredits` at a
+  // better per-credit rate than any pack (600 vs the $4.99 pack's 500). Packs
+  // remain the top-up and the non-subscriber path — the plan is never
+  // required. `price` is a USD display fallback.
+  aiPlan: { productId: 'calen_ai_monthly_499', price: 4.99, monthlyCredits: 600, entitlement: 'calen_ai' },
   // $ per call — reference numbers for the admin page; not used for billing.
   costs: {
     sonnetChat:  0.03,
@@ -125,6 +145,7 @@ const monetizationConfigSchema = new mongoose.Schema(
     singleton: { type: String, default: 'config', unique: true, index: true },
     credits:  { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.credits },
     unlock:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.unlock },
+    aiPlan:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.aiPlan },
     costs:    { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.costs },
     models:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.models },
     addons:   { type: mongoose.Schema.Types.Mixed, default: () => DEFAULTS.addons },
@@ -148,10 +169,21 @@ monetizationConfigSchema.statics.getSingleton = async function getSingleton() {
     doc.credits = JSON.parse(JSON.stringify(DEFAULTS.credits));
     doc.markModified('credits');
     dirty = true;
+  } else if (!doc.credits.actionCosts) {
+    // Backfill the flat per-action prices for docs predating them (the raw
+    // token-pass-through debit era).
+    doc.credits.actionCosts = { ...DEFAULTS.credits.actionCosts };
+    doc.markModified('credits');
+    dirty = true;
   }
   if (!doc.unlock) {
     doc.unlock = { ...DEFAULTS.unlock };
     doc.markModified('unlock');
+    dirty = true;
+  }
+  if (!doc.aiPlan) {
+    doc.aiPlan = { ...DEFAULTS.aiPlan };
+    doc.markModified('aiPlan');
     dirty = true;
   }
   if (!doc.admin) {

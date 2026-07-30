@@ -357,3 +357,106 @@ test('admin add-on override validates keys and requires admin', async () => {
   assert.equal(ok.status, 200);
   assert.deepEqual(await addonsOf(user.householdId), ['recipes', 'trips']);
 });
+
+// --- Calen AI plan (monthly subscription → per-period credit grants) ---
+
+test('plan purchase activates and grants the monthly credits; renewals grant again', async () => {
+  const { user } = await registerUser();
+  const uid = String(user._id);
+  const before = await balanceOf(user._id);
+
+  const buy = await post({
+    type: 'INITIAL_PURCHASE', app_user_id: uid,
+    entitlement_ids: ['calen_ai'], product_id: 'calen_ai_monthly_499',
+    transaction_id: 'plan_txn_1', expiration_at_ms: Date.now() + 30 * 24 * 3600 * 1000,
+  });
+  assert.equal(buy.status, 200);
+  assert.equal(buy.body.plan, true);
+  assert.equal(buy.body.credited, 600);
+  let doc = await userDoc(user._id);
+  assert.equal(doc.aiPlanActive, true);
+  assert.ok(doc.aiPlanExpiresAt);
+  assert.equal(await balanceOf(user._id), before + 600);
+
+  // A re-delivered event dedupes on the transaction id.
+  const dupe = await post({
+    type: 'INITIAL_PURCHASE', app_user_id: uid,
+    entitlement_ids: ['calen_ai'], product_id: 'calen_ai_monthly_499',
+    transaction_id: 'plan_txn_1',
+  });
+  assert.equal(dupe.body.duplicate, true);
+  assert.equal(await balanceOf(user._id), before + 600);
+
+  // Next month's RENEWAL (fresh transaction id) grants another period.
+  const renew = await post({
+    type: 'RENEWAL', app_user_id: uid,
+    entitlement_ids: ['calen_ai'], product_id: 'calen_ai_monthly_499',
+    transaction_id: 'plan_txn_2',
+  });
+  assert.equal(renew.body.credited, 600);
+  assert.equal(await balanceOf(user._id), before + 1200);
+
+  // Ledger rows carry kind 'plan'.
+  const rows = await CreditLedger.find({ userId: user._id, kind: 'plan' }).lean();
+  assert.equal(rows.length, 2);
+});
+
+test('plan EXPIRATION deactivates but granted credits survive', async () => {
+  const { user } = await registerUser();
+  const uid = String(user._id);
+  await post({
+    type: 'INITIAL_PURCHASE', app_user_id: uid,
+    entitlement_ids: ['calen_ai'], product_id: 'calen_ai_monthly_499',
+    transaction_id: `plan_${uid}`,
+  });
+  const funded = await balanceOf(user._id);
+
+  const expire = await post({ type: 'EXPIRATION', app_user_id: uid, entitlement_ids: ['calen_ai'] });
+  assert.equal(expire.status, 200);
+  const doc = await userDoc(user._id);
+  assert.equal(doc.aiPlanActive, false);
+  assert.equal(await balanceOf(user._id), funded);
+});
+
+test('billing status reports the plan state and the flat action prices', async () => {
+  const { user, token } = await registerUser();
+  const uid = String(user._id);
+
+  let res = await request().get('/api/billing/status').set('Authorization', `Bearer ${token}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.aiPlan.active, false);
+  assert.equal(res.body.aiPlan.productId, 'calen_ai_monthly_499');
+  assert.equal(res.body.aiPlan.monthlyCredits, 600);
+  assert.equal(res.body.actionCosts.chat, 2);
+  assert.equal(res.body.actionCosts.callPerMinute, 20);
+
+  await post({
+    type: 'INITIAL_PURCHASE', app_user_id: uid,
+    entitlement_ids: ['calen_ai'], product_id: 'calen_ai_monthly_499',
+    transaction_id: `plan_status_${uid}`,
+  });
+  res = await request().get('/api/billing/status').set('Authorization', `Bearer ${token}`);
+  assert.equal(res.body.aiPlan.active, true);
+});
+
+// --- Usage debits are ledgered (flat per-action prices) ---
+
+test('a usage debit writes a ledger row and the ledger endpoint surfaces it', async () => {
+  const { user, token } = await registerUser();
+  const before = await balanceOf(user._id);
+
+  const CreditLedgerModel = require('../models/CreditLedger');
+  await CreditLedgerModel.debit({ userId: user._id, mc: 2000, action: 'chat' });
+  assert.equal(await balanceOf(user._id), before - 2);
+
+  const rows = await CreditLedgerModel.find({ userId: user._id, kind: 'usage' }).lean();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].deltaMc, -2000);
+  assert.equal(rows[0].action, 'chat');
+
+  const res = await request().get('/api/billing/credits/ledger').set('Authorization', `Bearer ${token}`);
+  const usageRow = res.body.entries.find((e) => e.kind === 'usage');
+  assert.ok(usageRow, 'usage debit visible in history');
+  assert.equal(usageRow.credits, -2);
+  assert.equal(usageRow.action, 'chat');
+});

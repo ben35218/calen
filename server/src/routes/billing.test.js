@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { unlockUpdateForEvent, creditUpdateForEvent, addonUpdateForEvent } = require('./billing');
+const { unlockUpdateForEvent, creditUpdateForEvent, addonUpdateForEvent, planUpdateForEvent } = require('./billing');
 
 // Minimal config for the pure helpers (matches MonetizationConfig DEFAULTS shape).
 const CONFIG = {
@@ -173,4 +173,70 @@ test('legacy tier and unknown entitlements produce no add-on change', () => {
     assert.deepEqual(add, []);
     assert.deepEqual(remove, []);
   }
+});
+
+// --- Calen AI plan (planUpdateForEvent) ---
+
+const PLAN_CONFIG = {
+  ...CONFIG,
+  aiPlan: { productId: 'calen_ai_monthly_499', price: 4.99, monthlyCredits: 600, entitlement: 'calen_ai' },
+};
+
+test('a plan purchase and every renewal grant the monthly credits', () => {
+  for (const type of ['INITIAL_PURCHASE', 'RENEWAL']) {
+    const plan = planUpdateForEvent(
+      { type, entitlement_ids: ['calen_ai'], product_id: 'calen_ai_monthly_499', transaction_id: `txn_${type}`, expiration_at_ms: 1780000000000 },
+      PLAN_CONFIG
+    );
+    assert.deepEqual(plan.grant, {
+      deltaMc: 600_000, kind: 'plan', productId: 'calen_ai_monthly_499', transactionId: `txn_${type}`,
+    }, type);
+    assert.equal(plan.active, true, type);
+    assert.equal(plan.expiresAt.getTime(), 1780000000000, type);
+  }
+});
+
+test('the plan is matched by product id even without the entitlement', () => {
+  const plan = planUpdateForEvent(
+    { type: 'RENEWAL', entitlement_ids: [], product_id: 'calen_ai_monthly_499', transaction_id: 't1' },
+    PLAN_CONFIG
+  );
+  assert.equal(plan.active, true);
+  assert.equal(plan.grant.deltaMc, 600_000);
+});
+
+test('a plan refund claws the period grant back and deactivates', () => {
+  const plan = planUpdateForEvent(
+    { type: 'CANCELLATION', cancel_reason: 'CUSTOMER_SUPPORT', entitlement_ids: ['calen_ai'], transaction_id: 't2' },
+    PLAN_CONFIG
+  );
+  assert.deepEqual(plan.grant, {
+    deltaMc: -600_000, kind: 'refund', productId: 'calen_ai_monthly_499', transactionId: 't2:refund',
+  });
+  assert.equal(plan.active, false);
+});
+
+test('plan EXPIRATION deactivates without touching credits; UNCANCELLATION reactivates', () => {
+  const expired = planUpdateForEvent({ type: 'EXPIRATION', entitlement_ids: ['calen_ai'] }, PLAN_CONFIG);
+  assert.equal(expired.grant, null);
+  assert.equal(expired.active, false);
+  const resumed = planUpdateForEvent({ type: 'UNCANCELLATION', entitlement_ids: ['calen_ai'] }, PLAN_CONFIG);
+  assert.equal(resumed.grant, null);
+  assert.equal(resumed.active, true);
+});
+
+test('plan lifecycle noise (auto-renew off, billing grace) changes nothing', () => {
+  for (const event of [
+    { type: 'CANCELLATION', cancel_reason: 'UNSUBSCRIBE', entitlement_ids: ['calen_ai'] },
+    { type: 'BILLING_ISSUE', entitlement_ids: ['calen_ai'] },
+  ]) {
+    const plan = planUpdateForEvent(event, PLAN_CONFIG);
+    assert.equal(plan.grant, null, event.type);
+    assert.equal(plan.active, null, event.type);
+  }
+});
+
+test('non-plan events are not claimed by the plan mapper', () => {
+  assert.equal(planUpdateForEvent({ type: 'INITIAL_PURCHASE', entitlement_ids: ['app_unlock'], product_id: 'app_unlock_499' }, PLAN_CONFIG), null);
+  assert.equal(planUpdateForEvent({ type: 'INITIAL_PURCHASE', entitlement_ids: [], product_id: 'credits_499' }, PLAN_CONFIG), null);
 });

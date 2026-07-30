@@ -1,7 +1,7 @@
 ---
 title: Data model
 status: current
-last-verified: f8e4627+ (2026-07-29); added plaintext `Feedback` model (in-app questions/bugs/ideas + captured device diagnostics; support content, not sealed) and the `feedback_status_changed` audit event — see [feedback](../features/feedback.md) (2026-07-29); phone fields stored E.164 via shared PhoneField (2026-07-27); added plaintext `ECard` model (scheduled occasion e-cards) + occasion derivation from `Person.dates[]` (2026-07-28); ECard gains font + framing-line overrides + plaintext photo rows (2026-07-28); `Person` gains structured `firstName`/`lastName` (sealed content; `name` stays the composed source of truth) (2026-07-28); `EmailLog` upgraded to a delivery ledger + transient retry outbox, added `EmailLifecycleConfig` + `EmailSuppression` operational models (email-lifecycle.md) (2026-07-29); documented client record-sync cursor safety (never advance past an unreconciled row; reset the cursor whenever the replica is wiped) after a sign-out/sign-in content-loss bug (2026-07-29); activation straggler gate now counts author-hidden content from the `Record` store (not legacy tables) so an orphaned/un-migrated legacy plaintext row can't deadlock born-encrypted activation (2026-07-29); added personal `User.dayAlertTime` (`HH:mm`, null=9am) — the configurable day-based alert default (2026-07-29); record-sync now re-pulls + refetches the replica-backed views when the HDK first lands (`subscribeKeysReady` → auth-store subscriber), fixing first-login calendar/people showing only weather+holidays until a manual mutation (2026-07-29); added `PhoneCall.dncCaptured` (set when the recipient asked, on that call, not to be called again) so the call outcome view can surface an explicit do-not-call notice (2026-07-29); added plaintext `HouseholdNotice` model (per-user membership notice, `kind` removed|approved, `householdId` + actor first name) surfaced in the Invitations inbox (2026-07-29)
+last-verified: 71f3baf+ (2026-07-30); `User` gains `aiPlanActive`/`aiPlanExpiresAt` (monthly Calen AI plan) + provider-cost estimate counters, `CreditLedger` now records per-action usage debits (kinds + `action`), `MonetizationConfig` gains `credits.actionCosts` (flat per-action prices) + `aiPlan` (2026-07-30); added plaintext `Feedback` model (in-app questions/bugs/ideas + captured device diagnostics; support content, not sealed) and the `feedback_status_changed` audit event — see [feedback](../features/feedback.md) (2026-07-29); phone fields stored E.164 via shared PhoneField (2026-07-27); added plaintext `ECard` model (scheduled occasion e-cards) + occasion derivation from `Person.dates[]` (2026-07-28); ECard gains font + framing-line overrides + plaintext photo rows (2026-07-28); `Person` gains structured `firstName`/`lastName` (sealed content; `name` stays the composed source of truth) (2026-07-28); `EmailLog` upgraded to a delivery ledger + transient retry outbox, added `EmailLifecycleConfig` + `EmailSuppression` operational models (email-lifecycle.md) (2026-07-29); documented client record-sync cursor safety (never advance past an unreconciled row; reset the cursor whenever the replica is wiped) after a sign-out/sign-in content-loss bug (2026-07-29); activation straggler gate now counts author-hidden content from the `Record` store (not legacy tables) so an orphaned/un-migrated legacy plaintext row can't deadlock born-encrypted activation (2026-07-29); added personal `User.dayAlertTime` (`HH:mm`, null=9am) — the configurable day-based alert default (2026-07-29); record-sync now re-pulls + refetches the replica-backed views when the HDK first lands (`subscribeKeysReady` → auth-store subscriber), fixing first-login calendar/people showing only weather+holidays until a manual mutation (2026-07-29); added `PhoneCall.dncCaptured` (set when the recipient asked, on that call, not to be called again) so the call outcome view can surface an explicit do-not-call notice (2026-07-29); added plaintext `HouseholdNotice` model (per-user membership notice, `kind` removed|approved, `householdId` + actor first name) surfaced in the Invitations inbox (2026-07-29)
 code:
   - server/src/models/Record.js        # the live opaque content store
   - server/src/models/encFields.js
@@ -135,7 +135,9 @@ versioned (`DROP_FIELDS_VERSION`); notable additions over time: `nextDueDate`,
   [features/auth-identity.md](../features/auth-identity.md); monetization
   state — `revenueCatId` (RC app_user_id = user id), `appUnlocked(+At)` /
   `unlockProductId` (the per-user $4.99 unlock), `creditBalanceMc` (prepaid
-  AI-credit balance in millicredits) and per-user usage analytics counters —
+  AI-credit balance in millicredits), `aiPlanActive` / `aiPlanExpiresAt` (the
+  optional monthly Calen AI plan) and per-user usage analytics counters (incl.
+  the margin-free `costMc` provider-cost estimates reconciliation reads) —
   see [features/billing-plans.md](../features/billing-plans.md)),
   `HouseholdKeyEnvelope` (HDK sealed per member × version), `ResourceKeyEnvelope`
   (calendar/trip keys for cross-household sharing), `DeviceLink`.
@@ -186,8 +188,9 @@ bodies otherwise never stored; see [email-lifecycle](../features/email-lifecycle
 per-template enable/subject/note + retry policy + suppression toggle),
 `EmailSuppression` (address-level do-not-mail list — plaintext so the send path
 can query it; hard-bounce auto-adds, admins add/release), `MonetizationConfig`,
-`CreditLedger` (append-only AI-credit grants/refunds/adjustments; unique
-`transactionId` = webhook idempotency gate — usage debits are not ledgered),
+`CreditLedger` (append-only record of every AI-credit movement — grants,
+plan periods, refunds, adjustments AND per-action usage debits; unique sparse
+`transactionId` = webhook idempotency gate),
 `PhoneCall`
 (AI call outcome summary; `dncCaptured` flags a call on which the recipient
 asked not to be called again, so the outcome view can say so explicitly),
