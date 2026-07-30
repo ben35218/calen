@@ -78,7 +78,7 @@ export function getPrivacyPrefs(): PrivacyPrefs {
 }
 
 // Convenience hook for the common case: gate any AI entry point (assistant
-// buttons, photo/receipt scans, recipe import) on the master switch so nothing
+// buttons, photo scans, recipe import) on the master switch so nothing
 // AI-powered is shown while "Use AI features" is off.
 export function useAiEnabled(): boolean {
   return usePrivacyPrefs().prefs.aiEnabled;

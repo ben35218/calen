@@ -12,6 +12,7 @@ const Record = require('../models/Record');
 const TaskCompletion = require('../models/TaskCompletion');
 const Item = require('../models/Item');
 const MaintenanceTask = require('../models/MaintenanceTask');
+const User = require('../models/User');
 
 before(startDb);
 after(stopDb);
@@ -151,4 +152,24 @@ test('template catalogs serve the shared seed with category filtering', async ()
   const chores = await request().get('/api/chore-templates').set('Authorization', u.auth);
   assert.equal(chores.status, 200);
   assert.ok(chores.body.length > 0, 'the chore-template catalog is non-empty');
+});
+
+// Storing a manual is not a cost-bearing AI action (billing-plans.md: only
+// auto-lookup and extract-tasks spend model tokens), so the upload route must
+// not be credit-metered. Regression: upload/from-url previously carried
+// meter('manualParse') — an out-of-credits user got a 402 and a paying one a
+// 40-credit debit for a plain file save.
+test('manual upload is free and unmetered: works at zero balance, debits nothing', async () => {
+  const u = await registerUser({ firstName: 'Uploader' });
+  await User.updateOne({ _id: u.user._id }, { $set: { creditBalanceMc: 0 } });
+  const fridge = await Item.create({ userId: u.user._id, name: 'Fridge', type: 'appliance' });
+
+  const res = await request().post(`/api/manuals/items/${fridge._id}/upload`)
+    .set('Authorization', u.auth)
+    .field('title', 'Fridge manual')
+    .attach('file', Buffer.from('%PDF-1.4 fake'), { filename: 'fridge.pdf', contentType: 'application/pdf' });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+
+  const after = await User.findById(u.user._id).lean();
+  assert.equal(after.creditBalanceMc, 0, 'no debit for a non-AI file save');
 });

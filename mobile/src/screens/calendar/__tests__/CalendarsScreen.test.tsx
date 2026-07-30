@@ -238,11 +238,17 @@ describe('CalendarsScreen add-ons storefront', () => {
     expect(view.getByText('Meals, Maintenance, Trips, Occasions & Chores')).toBeTruthy();
   });
 
-  it('owned add-on calendars render as normal rows and the storefront row disappears', async () => {
+  it('all add-ons owned: rows render normally and the storefront row persists as the manage entry', async () => {
     mockOwned.ids = new Set(['recipes', 'maintenance', 'trips', 'birthdays', 'chores']);
     const view = await render(<CalendarsScreen />);
     expect(view.getByLabelText('Open Meals')).toBeTruthy();
     expect(view.getByLabelText('Open Occasions')).toBeTruthy();
-    expect(view.queryByLabelText('Add-ons')).toBeNull();
+    // The row is permanent — the entry point keeps its learned location and
+    // future add-ons surface here — but its subtitle flips to a status line
+    // instead of re-selling the owned catalog.
+    expect(view.getByText('All add-ons added')).toBeTruthy();
+    expect(view.queryByText('Meals, Maintenance, Trips, Occasions & Chores')).toBeNull();
+    await fireEvent.press(view.getByLabelText('Add-ons'));
+    expect(mockNavigate).toHaveBeenCalledWith('AddOns');
   });
 });

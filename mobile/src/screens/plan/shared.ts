@@ -2,24 +2,31 @@
 // paywall, Credits, BuyCredits, Add-ons): formatting helpers, the RevenueCat
 // package↔product mappings, and the purchase hooks that own the buy flows.
 
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Platform } from 'react-native';
-import type { PurchasesPackage } from 'react-native-purchases';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Alert, Linking, Platform } from 'react-native';
+import type { CustomerInfo, PurchasesPackage } from 'react-native-purchases';
 import type { CreditPack } from '../../api';
 import { useAuth } from '../../store/auth';
 import {
   useBilling, useUnlockActivation, useCreditsActivation, useAddonActivation, useAiPlanActivation,
 } from '../../hooks/useBilling';
 import type { AddonId } from '../../lib/addons';
+import { AI_PLAN_ENTITLEMENT } from '../../lib/planState';
 import {
   isPurchasesConfigured,
   configurePurchases,
   logInPurchases,
   getCurrentOffering,
   getOfferingById,
+  getCustomerInfo,
+  showManageSubscriptions,
   purchasePackage,
   restorePurchases,
 } from '../../lib/purchases';
+
+// The Apple manage-subscriptions deep link — the last-resort fallback when the
+// native sheet is unavailable and CustomerInfo carries no managementURL.
+const APPLE_SUBSCRIPTIONS_URL = 'https://apps.apple.com/account/subscriptions';
 
 export const STORE_NAME = Platform.OS === 'ios' ? 'App Store' : 'Google Play';
 
@@ -258,6 +265,7 @@ export function useAiPlanPurchase() {
   const billing = useBilling();
   const activation = useAiPlanActivation();
   const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [busy, setBusy] = useState(false);
 
   useRcIdentity(user?._id);
@@ -268,8 +276,58 @@ export function useAiPlanPurchase() {
       .catch(() => setPackages([]));
   }, [user?._id]);
 
+  const { refetch } = billing;
+  // Pull the RC CustomerInfo — the client-only source of will-renew intent (the
+  // server can't distinguish "will renew" from "cancelled but still active").
+  const refreshCustomerInfo = useCallback(async () => {
+    if (!isPurchasesConfigured()) return;
+    try {
+      setCustomerInfo(await getCustomerInfo());
+    } catch {
+      // Keep the last snapshot; a transient read failure shouldn't blank the card.
+    }
+  }, []);
+
+  // Load once when the RC identity is ready.
+  useEffect(() => {
+    if (!user?._id) return;
+    void refreshCustomerInfo();
+  }, [user?._id, refreshCustomerInfo]);
+
+  // Refetch both sources — used on screen focus / app foreground so a
+  // cancellation or reactivation done in the Apple sheet is reflected without
+  // an app restart.
+  const refresh = useCallback(async () => {
+    await Promise.all([refreshCustomerInfo(), refetch()]);
+  }, [refreshCustomerInfo, refetch]);
+
   const productId = billing.data?.aiPlan?.productId ?? 'calen_ai_monthly_499';
   const pkg = useMemo(() => aiPlanPackage(packages, productId), [packages, productId]);
+
+  // Open the native manage-subscriptions sheet (cancel / re-subscribe happen
+  // inside it), then refresh on return. Fallback chain when the sheet is
+  // unavailable: CustomerInfo.managementURL → the Apple subscriptions deep link.
+  const manage = useCallback(async () => {
+    const openFallback = async () => {
+      const url = customerInfo?.managementURL ?? APPLE_SUBSCRIPTIONS_URL;
+      try {
+        await Linking.openURL(url);
+      } catch {
+        // Nothing more we can do; the card copy already points to the App Store.
+      }
+    };
+    try {
+      if (isPurchasesConfigured()) {
+        await showManageSubscriptions();
+      } else {
+        await openFallback();
+      }
+    } catch {
+      await openFallback();
+    } finally {
+      void refresh();
+    }
+  }, [customerInfo, refresh]);
 
   async function buy() {
     if (!pkg) return;
@@ -305,7 +363,11 @@ export function useAiPlanPurchase() {
     }
   }
 
-  return { billing, activation, pkg, busy, buy, restore };
+  // The RC entitlement for the plan, when the SDK has it — the will-renew source
+  // deriveAiPlanState folds together with the server's aiPlan base.
+  const entitlement = customerInfo?.entitlements.active[AI_PLAN_ENTITLEMENT] ?? null;
+
+  return { billing, activation, pkg, busy, buy, restore, entitlement, refresh, manage };
 }
 
 // ── Feature-calendar add-ons (the "Add-ons" store screen) ────────────────────

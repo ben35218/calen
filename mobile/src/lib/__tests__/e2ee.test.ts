@@ -27,6 +27,9 @@ const mockServer = {
   currentKeyVersion: 0,
   hdkEnvelopes: [] as { keyVersion: number; wrappedHDK: string }[],
   keyRotationPending: false,
+  // null keeps born-encrypted activation parked (recovery not confirmed); a date
+  // marks a durable recovery factor confirmed. Drives the re-surface path below.
+  recoverySetupAt: null as string | null,
   calendarKeys: new Map<string, { currentKeyVersion: number; household: unknown[]; member: unknown[] }>(),
 };
 
@@ -38,7 +41,7 @@ jest.mock('../../api', () => ({
             enrolled: true,
             identityPublicKey: mockServer.enrollment.identityPublicKey,
             wrappedPrivateKey: mockServer.enrollment.factors,
-            recoverySetupAt: null, // keeps born-encrypted activation parked (recovery not set up)
+            recoverySetupAt: mockServer.recoverySetupAt,
           }
         : { enrolled: false },
     }),
@@ -90,7 +93,7 @@ jest.mock('../../api', () => ({
 import { loadHouseholdCrypto } from '@household/crypto/adapters/web';
 import {
   ensureEnrolledOnLogin, ensureHouseholdKey, isUnlocked, lock,
-  unlockWithPassword, unlockWithRecoveryCode, getPendingRecoveryCode,
+  unlockWithPassword, unlockWithRecoveryCode, getPendingRecoveryCode, clearRecoveryCode,
   sealNew, openRecord, openOpaqueRecord, decryptRecord,
   mintResourceKey, wrapResourceKeyForCollaborator, sealForResource, decryptResourceRecord,
   publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady,
@@ -239,5 +242,49 @@ describe('reauthWithBiometric', () => {
     mockDeviceEnabled = true;
     mockDeviceKey = 'cached';
     expect(await reauthWithBiometric()).toBe(true);
+  });
+});
+
+// Force-quitting the recovery-code modal before saving the code loses the display
+// (the one-time code is memory-only, never stored server-side). Rather than
+// stranding the user, the next unlock re-surfaces the modal with a FRESH code, at
+// most once per session — but only while recovery is still unconfirmed. Spec:
+// platform/crypto-e2ee.md → "Recovery-code confirmation gate".
+describe('recovery-code re-surface on next unlock', () => {
+  // Activation/re-surface runs fire-and-forget off ensureHouseholdKey (`void
+  // maybeActivateBornEncrypted()`), so the modal appears a tick later — as in
+  // production. Flush the queue before asserting on the surfaced code.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  test('an unconfirmed account gets a fresh code minted and surfaced on unlock', async () => {
+    mockServer.recoverySetupAt = null; // never confirmed (force-quit before saving)
+    lock();
+    clearRecoveryCode(); // the in-memory code is gone, as after an app restart
+    expect(getPendingRecoveryCode()).toBeNull();
+
+    expect(await unlockWithPassword(PASSWORD)).toBe(true);
+    expect(await ensureHouseholdKey()).toBe('ready');
+    await flush();
+
+    const resurfaced = getPendingRecoveryCode();
+    expect(resurfaced).toMatch(/^[0-9A-Z]{5}(-[0-9A-Z]{1,5})+$/);
+    expect(resurfaced).not.toBe(recoveryCode); // a fresh code — the unsaved one is invalidated
+
+    // Once per session: a second ensureHouseholdKey doesn't churn another code.
+    clearRecoveryCode();
+    expect(await ensureHouseholdKey()).toBe('ready');
+    await flush();
+    expect(getPendingRecoveryCode()).toBeNull();
+  });
+
+  test('a confirmed account is not re-prompted (born-encrypted drop proceeds)', async () => {
+    mockServer.recoverySetupAt = '2026-07-30T00:00:00.000Z'; // recovery confirmed
+    lock();
+    clearRecoveryCode();
+
+    expect(await unlockWithPassword(PASSWORD)).toBe(true);
+    expect(await ensureHouseholdKey()).toBe('ready');
+    await flush();
+    expect(getPendingRecoveryCode()).toBeNull(); // no modal — recovery is durable
   });
 });

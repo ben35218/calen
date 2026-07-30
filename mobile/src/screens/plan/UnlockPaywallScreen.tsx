@@ -17,7 +17,7 @@ import { useUnlockPurchase } from './shared';
 
 const FEATURES: { icon: keyof typeof Ionicons.glyphMap; text: string }[] = [
   { icon: 'calendar', text: 'The shared family calendar — events, chores, groceries and more in one place' },
-  { icon: 'sparkles', text: `${ASSISTANT_NAME}, your AI assistant — plans meals, schedules, scans receipts, even makes phone calls` },
+  { icon: 'sparkles', text: `${ASSISTANT_NAME}, your AI assistant — plans meals, schedules, scans photos, even makes phone calls` },
   { icon: 'people', text: 'Your whole household, together — everyone sees the same calendar' },
   { icon: 'lock-closed', text: 'End-to-end encrypted — your family’s life stays yours' },
 ];

@@ -1,10 +1,11 @@
 ---
 title: Billing — app unlock, AI credits & add-ons
 status: current
-last-verified: 71f3baf+ (2026-07-30); flat per-action credit prices, ledgered usage debits + margin reconciliation, the optional monthly Calen AI plan, and post-purchase History refresh (2026-07-30)
+last-verified: bb130ef+ (2026-07-30); `manualParse` now meters ONLY the manuals AI routes (auto-lookup + extract-tasks) — the plain manual upload and save-from-URL routes were incorrectly debiting the flat 40-credit price for zero-AI file storage (meter() removed from both), and the action's labels renamed "Import(s) & parsing" → "Owner's manual parsing" (2026-07-30); action labels renamed to match what's actually metered — `scan` is "Photo scan(s)" (items-from-photo + recipes-from-photo; receipts are plain E2EE attachments, never AI-scanned) and `generation` is "Recipe generation" (generate-from-description + suggest-recipes; nothing generates plans) across the price/usage/ledger labels, and the paywall + onboarding "scans receipts" bullets now say "scans photos" (2026-07-30); the "What things cost" card is now a rate card — rows sort by the server's live price ascending (ties alphabetical by label) with the per-minute call row pinned last, replacing the hard-coded display order (2026-07-30); Calen AI plan manage-subscription flow — client-derived three-state plan card (renewing / cancelled-but-active / inactive), native manage sheet + managementURL/App-Store fallback, refresh on focus & foreground (2026-07-30); the inactive plan card's value framing now asserts the advantage without a computed percentage — "N credits every month — more credits per dollar than any pack" (the catalog still drives whether the plan beats the packs) (2026-07-30)
 code:
   - mobile/src/screens/plan/
   - mobile/src/lib/purchases.ts
+  - mobile/src/lib/planState.ts
   - mobile/src/lib/addons.ts
   - mobile/src/lib/unlock.ts
   - mobile/src/hooks/useBilling.ts
@@ -24,6 +25,8 @@ tests:
   - server/src/middleware/usageMeter.tokens.test.js
   - mobile/src/lib/__tests__/addons.test.ts
   - mobile/src/lib/__tests__/unlock.test.ts
+  - mobile/src/lib/__tests__/planState.test.ts
+  - mobile/src/screens/plan/__tests__/CreditsScreen.test.tsx
   - mobile/src/screens/plan/__tests__/shared.test.ts
   - mobile/src/screens/plan/__tests__/packStore.test.ts
   - mobile/src/screens/plan/__tests__/AddOnsScreen.test.tsx
@@ -116,9 +119,14 @@ same diff for review before saving. The portal itself is specced in
   tiny per-call debits never need float `$inc`s. UI shows whole credits
   (floored), and floors display at 0.
 - **Debit math (flat published prices):** usage debits the FLAT per-action
-  price from `credits.actionCosts` (whole credits: `chat: 2`, `scan: 3`,
-  `generation: 3`, `manualParse: 1`, `aiHelper: 1`; `callPerMinute: 20`
-  prorated per connected second, ceiled at the millicredit) — **one debit per
+  price from `credits.actionCosts` (whole credits: `chat: 5`, `scan: 3`,
+  `generation: 3`, `manualParse: 40` — manual parsing runs on **Sonnet** over
+  long documents and is priced rare-but-heavy, and it meters ONLY the AI
+  routes (`auto-lookup`, `extract-tasks`); a plain manual **upload** or
+  **save-from-URL** spends no model tokens and MUST NOT be metered or debited,
+  `aiHelper: 1`;
+  `callPerMinute: 20` prorated per connected second, ceiled at the
+  millicredit) — **one debit per
   completed action**, charged by `meter()`'s finish handler on a 2xx, however
   many model calls the action made. Flat prices exist so users can predict
   spend, a new model id can never misprice a debit, and pricing is a knob
@@ -203,6 +211,29 @@ same diff for review before saving. The portal itself is specced in
 - `GET /billing/status` reports `aiPlan { active, productId, price,
   monthlyCredits, expiresAt }`; the CreditsScreen renders the plan card from
   it (subscribe CTA when inactive; active state shows the renewal grant).
+- **Managing / cancelling (client-side).** An auto-renew-off cancellation is a
+  no-op server-side until expiry (see Lifecycle), so `aiPlan.active` alone
+  cannot distinguish "will renew" from "cancelled but still active". The **only**
+  source of that intent is the RC SDK's CustomerInfo
+  (`entitlements.active['calen_ai'].willRenew` / `expirationDate`). The client
+  folds the server base with that snapshot in a pure `deriveAiPlanState`
+  (`lib/planState.ts`) into **three display states**, degrading to the server
+  base whenever RC is unavailable (dev builds, offline, missing entitlement) so
+  a false "cancelled" is never shown:
+  - **renewing** — active + `willRenew` true (or no readable entitlement): the
+    "renews with N credits on ⟨date⟩" card, today's behavior.
+  - **cancelled** — active + `willRenew` false: a distinct "Cancelled — plan
+    benefits until ⟨date⟩. Your credits are yours forever." card.
+  - **inactive** — server reports not active: the subscribe CTA.
+  Both active states carry a **Manage subscription** affordance (iOS-only — no
+  Play Store product exists) that opens the native Apple manage-subscriptions
+  sheet (`Purchases.showManageSubscriptions()`; wrapped in `lib/purchases.ts`
+  with the same not-configured guard as the other calls), where cancel AND
+  re-subscribe both happen. Fallback chain when the sheet is unavailable:
+  `customerInfo.managementURL` → `Linking.openURL(<Apple subscriptions URL>)`.
+  Returning from the sheet refetches RC CustomerInfo **and** billing status (on
+  screen focus and app foreground) so a cancellation or reactivation shows
+  without an app restart. The server is untouched by this flow.
 
 ### Feature-calendar add-ons
 
@@ -306,13 +337,28 @@ same diff for review before saving. The portal itself is specced in
   package; `busyId`/activation drive its spinner.
 - **CreditsScreen** shows: the balance hero ("Unlimited" for exempt admins;
   display floored at 0 with an arrears note when the raw balance is
-  negative), low/out badges, the **Calen AI plan card** (from
-  `status.aiPlan`: subscribe CTA + monthly-credits value framing when
-  inactive; "Active — renews with N credits" when subscribed; hidden for
-  unlimited admins), the **pack store** (hidden for unlimited admins), the
+  negative), low/out badges, the **Calen AI plan card** (from `status.aiPlan`
+  folded with the RC will-renew snapshot via `deriveAiPlanState` — subscribe
+  CTA + monthly-credits value framing when inactive; "Active · renews with N
+  credits on ⟨date⟩" + **Manage subscription** when renewing; "Cancelled —
+  benefits until ⟨date⟩, credits yours forever" + **Manage subscription**
+  (re-subscribe) when auto-renew is off; hidden for unlimited admins), the
+  **pack store** (hidden for unlimited admins), the
   **"What things cost"** card (the flat per-action prices from
-  `status.actionCosts`, plain labels — "Chat message · 2 credits", "Phone
-  call · 20 credits/min" — so spend is predictable before it happens), the
+  `status.actionCosts`, plain labels — "Chat message · 5 credits", "Phone
+  call · 20 credits/min" — so spend is predictable before it happens; labels
+  MUST describe what the action actually meters: `scan` is "Photo scan"
+  (item + recipe photo imports — receipts are plain E2EE attachments, never
+  AI-scanned), `generation` is "Recipe generation" (from-description +
+  suggestions — no plan generation exists), and `manualParse` is "Owner's
+  manual parsing" (the Maintenance manuals AI: auto-lookup + extract-tasks —
+  the row label stays short; "parsing" names the feature family); it's a
+  **rate card**, so rows sort by price **ascending from the live server
+  values** — never a hard-coded order, which would go stale when
+  `actionCosts` is re-tuned — with ties broken alphabetically by label and
+  the **per-minute call row pinned last** regardless of price: its unit
+  differs from the per-action rows and the per-second billing note under the
+  list is its footnote), the
   **"By feature this week"** analytics card (per-user counts + the
   weekly-window caption), the **History** card
   (`GET /billing/credits/ledger` — every balance movement: grants AND usage
@@ -344,6 +390,11 @@ same diff for review before saving. The portal itself is specced in
   webhook has landed, so any new `CreditLedger` row exists too) it invalidates
   the `['billing', 'ledger']` query, so the **History** card shows the new grant
   immediately rather than waiting out its 60s `staleTime`.
+  `useAiPlanPurchase` additionally exposes the RC `entitlement` snapshot (the
+  will-renew source for `deriveAiPlanState`), `manage()` (native
+  manage-subscriptions sheet + managementURL/App-Store fallback, then refresh),
+  and `refresh()` (refetch CustomerInfo + billing, wired to screen focus / app
+  foreground).
 
 ### Monetization config & admin app
 
@@ -423,7 +474,11 @@ necessity (counts and money only, never prompt content). See
   `lib/__tests__/addons.test.ts`; unlock cache (locked-when-unknown,
   round-trip, sign-out clear) — `lib/__tests__/unlock.test.ts`; RC product
   mapping (`addonForPackage`/`packForRcPackage`/`unlockPackage`, no
-  cross-claims) — `screens/plan/__tests__/shared.test.ts`.
+  cross-claims) — `screens/plan/__tests__/shared.test.ts`. Calen AI plan state
+  derivation (`deriveAiPlanState`: willRenew true/false, missing entitlement,
+  RC-not-configured → server-base fallback, expiry preference) —
+  `lib/__tests__/planState.test.ts`; the three plan-card states + Manage button
+  wiring — `screens/plan/__tests__/CreditsScreen.test.tsx`.
 - The store purchase path (`react-native-purchases`) is exercised on-device
   only (sandbox).
 

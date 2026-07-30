@@ -1,7 +1,7 @@
 ---
 title: Maintenance (items, tasks, chores)
 status: current
-last-verified: 55bfc65 (2026-07-28); chore/task Alert + Second alert must be distinct — second picker excludes the first's value (`excludeUsedAlert`) (2026-07-28); the item/task/chore add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (the Item form guards its final details step, not the add wizard) (2026-07-29)
+last-verified: bb130ef+ (2026-07-30); manual upload + save-from-URL are no longer credit-metered — meter('manualParse') removed from both (they spend no model tokens; only auto-lookup + extract-tasks are billed), regression-tested at zero balance (2026-07-30); chore/task Alert + Second alert must be distinct — second picker excludes the first's value (`excludeUsedAlert`) (2026-07-28); the item/task/chore add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (the Item form guards its final details step, not the add wizard) (2026-07-29)
 code:
   - mobile/src/screens/maintenance/
   - server/src/routes/{items,tasks,chores,taskTemplates,choreTemplates,odometer,manuals}.js
@@ -54,6 +54,11 @@ odometer tracking for mileage-based service.
 - Manuals are files attached to an item (`Manual` model, `manuals` router):
   uploaded PDFs or fetched-from-URL, **encrypted per-file** (`Manual.encrypted`,
   `wrappedFileKey`, `keyVersion`). `items` router is AI-only (`POST /items/from-photo`).
+  Only the manuals routes that spend model tokens are credit-metered
+  (`meter('manualParse')`): **auto-lookup** and **extract-tasks**. A plain
+  manual **upload** or **save-from-URL** is free — storing a user-provided
+  file is not an AI action and MUST NOT be metered or debited (pricing rule
+  in [billing-plans.md](billing-plans.md)).
 
 ### Tasks & chores
 

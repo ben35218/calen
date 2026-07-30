@@ -1,10 +1,14 @@
-import React from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Linking } from 'react-native';
+import React, { useCallback } from 'react';
+import {
+  View, Text, ScrollView, StyleSheet, ActivityIndicator, AppState, Linking, Platform,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { billingApi, type CreditLedgerEntry } from '../../api';
 import { Badge, Button, Card, Hint, SectionTitle } from '../../components/ui';
 import { isPurchasesConfigured } from '../../lib/purchases';
+import { deriveAiPlanState } from '../../lib/planState';
 import { TERMS_URL, PRIVACY_URL } from '../../config';
 import { colors, spacing, radius } from '../../theme';
 import {
@@ -27,9 +31,9 @@ import PackStore from './PackStore';
 const ACTION_LABEL: Record<string, string> = {
   chat: 'Chat & assistants',
   call: 'Assistant calls',
-  scan: 'Receipt & photo scans',
-  generation: 'Recipe & plan generation',
-  manualParse: 'Imports & parsing',
+  scan: 'Photo scans',
+  generation: 'Recipe generation',
+  manualParse: 'Owner’s manual parsing',
   aiHelper: 'Form assist',
 };
 
@@ -47,23 +51,28 @@ const USAGE_LABEL: Record<string, string> = {
   chat: 'Chat',
   call: 'Phone call',
   scan: 'Photo scan',
-  generation: 'Generation',
-  manualParse: 'Import parsing',
+  generation: 'Recipe generation',
+  manualParse: 'Owner’s manual parsing',
   aiHelper: 'Form assist',
 };
 
 // The "What things cost" price list: the flat published per-action prices from
 // `status.actionCosts`, singular labels kept consistent with the "By feature
 // this week" card's naming. `callPerMinute` renders per-minute.
+// "Photo scan" covers items-from-photo and recipes-from-photo (receipts are
+// plain E2EE attachments, never AI-scanned); "Recipe generation" covers
+// generate-from-description and suggest-recipes — nothing generates plans.
+// 'Owner’s manual parsing' is the Maintenance manuals AI (find a
+// manual online, extract its maintenance tasks) — plain manual uploads are
+// free and unmetered.
 const COST_LABEL: Record<string, string> = {
   chat: 'Chat message',
-  scan: 'Receipt & photo scan',
-  generation: 'Recipe & plan generation',
-  manualParse: 'Import & parsing',
+  scan: 'Photo scan',
+  generation: 'Recipe generation',
+  manualParse: 'Owner’s manual parsing',
   aiHelper: 'Form assist',
   callPerMinute: 'Phone call',
 };
-const COST_ORDER = ['chat', 'scan', 'generation', 'manualParse', 'aiHelper', 'callPerMinute'];
 
 function costValue(key: string, credits: number): string {
   if (key === 'callPerMinute') return `${credits} credits/min`;
@@ -85,6 +94,18 @@ export default function CreditsScreen() {
     staleTime: 60_000,
   });
 
+  // Returning from the native manage-subscriptions sheet must reflect a
+  // cancellation or reactivation without an app restart — refetch RC
+  // CustomerInfo + billing status on focus and on app foreground.
+  const refresh = plan.refresh;
+  useFocusEffect(useCallback(() => { void refresh(); }, [refresh]));
+  React.useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') void refresh();
+    });
+    return () => sub.remove();
+  }, [refresh]);
+
   const data = billing.data;
   if (!data) {
     return (
@@ -103,19 +124,28 @@ export default function CreditsScreen() {
   // Localized store price when RC has loaded; USD catalog fallback otherwise.
   const planPrice = plan.pkg ? plan.pkg.product.priceString : `$${(aiPlan?.price ?? 4.99).toFixed(2)}`;
   // Value framing vs the packs, computed from the catalog (never hard-coded):
-  // the plan's credits-per-dollar over the best pack's, as a whole-% bonus.
+  // whether the plan's credits-per-dollar actually beats the best pack's — used
+  // to pick the framing copy (we assert the advantage, not a specific %).
   const bestPackRate = Math.max(0, ...(data.packs ?? []).map((p) => (p.price > 0 ? p.credits / p.price : 0)));
   const planRate = aiPlan && aiPlan.price > 0 ? aiPlan.monthlyCredits / aiPlan.price : 0;
   const planBonus = bestPackRate > 0 ? Math.round((planRate / bestPackRate - 1) * 100) : 0;
-  const renewDate = shortDate(aiPlan?.expiresAt);
+  // Fold the server's active/inactive base with the RC entitlement's will-renew
+  // intent into one of three display states (renewing / cancelled / inactive).
+  const planView = deriveAiPlanState(aiPlan, plan.entitlement);
+  const planDate = shortDate(planView.expiresAt);
+  // iOS-only: no Play Store product exists yet, and Apple owns the manage sheet.
+  const canManage = Platform.OS === 'ios';
 
-  // Flat per-action prices in a stable display order (known actions first).
+  // The rate card: price ascending from the live server values (a hard-coded
+  // order would go stale when actionCosts is re-tuned), ties alphabetical by
+  // label. The per-minute call row pins last regardless of price — its unit
+  // differs from the per-action rows, and the per-second billing note under
+  // the list is its footnote.
   const costs = Object.entries(data.actionCosts ?? {})
     .filter(([, credits]) => Number(credits) > 0)
-    .sort(([a], [b]) => {
-      const ia = COST_ORDER.indexOf(a);
-      const ib = COST_ORDER.indexOf(b);
-      return (ia < 0 ? COST_ORDER.length : ia) - (ib < 0 ? COST_ORDER.length : ib);
+    .sort(([a, av], [b, bv]) => {
+      if ((a === 'callPerMinute') !== (b === 'callPerMinute')) return a === 'callPerMinute' ? 1 : -1;
+      return Number(av) - Number(bv) || (COST_LABEL[a] ?? a).localeCompare(COST_LABEL[b] ?? b);
     });
 
   return (
@@ -198,21 +228,39 @@ export default function CreditsScreen() {
         <Card style={styles.card}>
           <View style={styles.planHeader}>
             <Text style={styles.planLabel}>Calen AI plan</Text>
-            {aiPlan.active ? (
+            {planView.state === 'renewing' ? (
               <Badge label="Active" color={colors.success} />
+            ) : planView.state === 'cancelled' ? (
+              <Badge label="Cancelled" color={colors.warning} />
             ) : (
               <Badge label="Best rate" color={colors.primary} />
             )}
           </View>
-          {aiPlan.active ? (
+          {planView.state === 'renewing' ? (
             <>
               <Text style={styles.planDesc}>
                 Renews with {humanCredits(aiPlan.monthlyCredits)} credits
-                {renewDate ? ` on ${renewDate}` : ' each month'}.
+                {planDate ? ` on ${planDate}` : ' each month'}.
               </Text>
               <Text style={styles.planNote}>
                 Plan credits go straight to your balance and never expire — even if you
-                cancel. Manage or cancel anytime in Settings.
+                cancel.
+              </Text>
+              {canManage ? (
+                <Button title="Manage subscription" variant="ghost" onPress={plan.manage} />
+              ) : null}
+            </>
+          ) : planView.state === 'cancelled' ? (
+            <>
+              <Text style={styles.planDesc}>
+                Cancelled — plan benefits{planDate ? ` until ${planDate}` : ' until the period ends'}.
+                Your credits are yours forever.
+              </Text>
+              {canManage ? (
+                <Button title="Manage subscription" variant="ghost" onPress={plan.manage} />
+              ) : null}
+              <Text style={styles.planNote}>
+                Changed your mind? Re-subscribe from the same App Store sheet.
               </Text>
             </>
           ) : (
@@ -220,7 +268,7 @@ export default function CreditsScreen() {
               <Text style={styles.planDesc}>
                 {humanCredits(aiPlan.monthlyCredits)} credits every month
                 {planBonus > 0
-                  ? ` — ${planBonus}% more credits per dollar than any pack.`
+                  ? ' — more credits per dollar than any pack.'
                   : ' — the best per-credit rate.'}
               </Text>
               <Button

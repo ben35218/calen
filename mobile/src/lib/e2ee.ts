@@ -24,6 +24,11 @@ let hdkHouseholdId: string | null = null; // the household the HDK belongs to (b
 // Born-encrypted activation is attempted once per unlocked session (see
 // maybeActivateBornEncrypted). Reset on lock so the next session re-checks.
 let bornEncryptedActivated = false;
+// The recovery-code modal is re-surfaced at most once per unlocked session for an
+// account that still hasn't confirmed a durable recovery factor — the soft
+// recovery from force-quitting before saving the code (see maybeResurfaceRecovery).
+// Reset on lock so the next session re-checks.
+let recoveryResurfaced = false;
 
 // Fired when a household flips to e2eeActive (born-encrypted activation lands).
 // Activation runs in the background from several paths (register→recovery,
@@ -154,6 +159,7 @@ export function lock() {
   hdkVersion = 0;
   hdkHouseholdId = null;
   bornEncryptedActivated = false;
+  recoveryResurfaced = false;
   clearCalendarKeys();
 }
 
@@ -520,7 +526,13 @@ async function maybeActivateBornEncrypted(): Promise<void> {
   // dual-stored until then; re-checked on every unlock, so the drop lands as soon
   // as recovery is set up (and immediately when the recovery modal completes).
   try {
-    if (await recoveryNeedsSetup()) return; // no durable factor yet — keep plaintext
+    if (await recoveryNeedsSetup()) {
+      // No durable factor yet — keep the plaintext fallback, and re-prompt the
+      // user to save a recovery code instead of silently leaving them stranded on
+      // the "you set one up but never confirmed it" cliff (see below).
+      await maybeResurfaceRecovery();
+      return;
+    }
   } catch {
     return; // couldn't confirm recovery state — err toward keeping the fallback
   }
@@ -529,6 +541,26 @@ async function maybeActivateBornEncrypted(): Promise<void> {
     await activateBornEncryptedHousehold();
   } catch {
     bornEncryptedActivated = false; // transient — retry on the next unlock
+  }
+}
+
+// Soft recovery from force-quitting the recovery-code modal before saving the
+// code. The one-time code lives only in memory (`pendingRecoveryCode`) and is
+// never stored server-side, so closing the app before confirming loses the
+// *display* — though the account itself is unharmed (still dual-stored with a
+// plaintext fallback until recovery is confirmed; see maybeActivateBornEncrypted).
+// Rather than make the user hunt through Privacy & data to mint a new one, we
+// re-surface the one-time modal on the next unlock with a FRESH code (the unsaved
+// one is invalidated). At most once per session; skipped when a code is already
+// pending (the first-enrollment modal is up) or deliberately held (the
+// register-with-passkey flow surfaces it after the passkey step).
+async function maybeResurfaceRecovery(): Promise<void> {
+  if (recoveryResurfaced || recoveryHeld || pendingRecoveryCode || !keyPair) return;
+  recoveryResurfaced = true;
+  try {
+    await regenerateRecoveryCode(); // mints, persists the new factor, surfaces the modal
+  } catch {
+    recoveryResurfaced = false; // transient (e.g. offline) — retry on the next unlock
   }
 }
 

@@ -17,7 +17,7 @@ const FEATURES: { icon: keyof typeof Ionicons.glyphMap; title: string; text: str
   { icon: 'construct', title: 'Home & chores', text: 'Track upkeep, repairs, and who does what around the house.' },
   { icon: 'airplane', title: 'Trips', text: 'Keep itineraries together and split expenses with everyone coming along.' },
   { icon: 'people', title: 'Contacts', text: 'Family, friends, and the pros you call — with the dates that matter.' },
-  { icon: 'sparkles', title: `${ASSISTANT_NAME}, your assistant`, text: 'Plans, schedules, scans receipts — even makes calls for you.' },
+  { icon: 'sparkles', title: `${ASSISTANT_NAME}, your assistant`, text: 'Plans, schedules, scans photos — even makes calls for you.' },
 ];
 
 export default function OnboardingScreen({ onGetStarted }: { onGetStarted: () => void }) {

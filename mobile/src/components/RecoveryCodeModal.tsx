@@ -166,24 +166,29 @@ const styles = StyleSheet.create({
     flexGrow: 1, alignItems: 'center', justifyContent: 'center',
     paddingHorizontal: spacing.lg,
   },
+  // A single `gap` spaces every child; children below deliberately carry no
+  // extra top/vertical margins so the card stays compact enough to fit a small
+  // screen (e.g. iPhone SE) without the user having to scroll to reach Continue.
+  // Font sizes / line-heights are deliberately trimmed for the same reason.
   card: {
     width: '100%', maxWidth: 420, backgroundColor: colors.surface,
-    borderRadius: radius.lg, padding: spacing.lg, gap: spacing.sm,
-    borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.lg, paddingVertical: spacing.md, paddingHorizontal: spacing.lg,
+    gap: spacing.sm, borderWidth: 1, borderColor: colors.border,
   },
-  title: { color: colors.text, fontSize: 20, fontWeight: '700', marginBottom: spacing.xs },
-  body: { color: colors.textMuted, fontSize: 14, lineHeight: 20 },
+  title: { color: colors.text, fontSize: 19, fontWeight: '700' },
+  body: { color: colors.textMuted, fontSize: 13, lineHeight: 18 },
   bold: { color: colors.text, fontWeight: '700' },
   codeBox: {
-    backgroundColor: colors.background, borderRadius: radius.md, padding: spacing.md,
-    alignItems: 'center', marginTop: spacing.sm, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.background, borderRadius: radius.md,
+    paddingVertical: spacing.xs, paddingHorizontal: spacing.md,
+    alignItems: 'center', borderWidth: 1, borderColor: colors.border,
   },
-  code: { color: colors.text, fontSize: 20, letterSpacing: 3, fontVariant: ['tabular-nums'] },
+  code: { color: colors.text, fontSize: 18, letterSpacing: 2, fontVariant: ['tabular-nums'] },
   copyBtn: { alignSelf: 'flex-start', paddingVertical: spacing.xs },
   copyText: { color: colors.primary, fontWeight: '600' },
-  note: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: spacing.xs },
-  confirmLabel: { color: colors.text, fontSize: 14, marginTop: spacing.sm },
-  confirmRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginVertical: spacing.sm },
+  note: { color: colors.textMuted, fontSize: 12, lineHeight: 16 },
+  confirmLabel: { color: colors.text, fontSize: 13 },
+  confirmRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   confirmInput: {
     backgroundColor: colors.background, borderRadius: radius.md, borderWidth: 1,
     borderColor: colors.border, color: colors.text, fontSize: 16, letterSpacing: 2,

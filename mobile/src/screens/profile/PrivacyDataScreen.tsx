@@ -750,7 +750,7 @@ export default function PrivacyDataScreen() {
           onValueChange={(v) => setPref('aiEnabled', v)}
         />
         <Text style={styles.switchHint}>
-          Powers the assistants, recipe and receipt scanning, and smart suggestions. Turning it off blocks
+          Powers the assistants, photo scanning, and smart suggestions. Turning it off blocks
           every AI feature — nothing leaves your device for AI processing.
         </Text>
         <View style={prefs.aiEnabled ? undefined : styles.disabled} pointerEvents={prefs.aiEnabled ? 'auto' : 'none'}>

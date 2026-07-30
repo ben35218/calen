@@ -1,11 +1,16 @@
 import React from 'react';
-import { render, cleanup } from '@testing-library/react-native';
+import { render, cleanup, fireEvent } from '@testing-library/react-native';
 
 // The Credits screen contract (billing-plans.md → Billing surfaces): the
-// optional Calen AI plan card (subscribe CTA with price + renewal wording when
-// inactive, "renews with N credits" when active, hidden for unlimited admins),
-// the "What things cost" flat price list from `status.actionCosts`, and a
-// History that itemizes usage debits by action alongside the grants.
+// optional Calen AI plan card in its three states — subscribe CTA with price +
+// renewal wording when inactive; "renews with N credits" + Manage subscription
+// when active & renewing; "Cancelled — benefits until ⟨date⟩" + Manage when
+// auto-renew is off — hidden for unlimited admins; the "What things cost" flat
+// price list from `status.actionCosts`; and a History that itemizes usage debits
+// by action alongside the grants.
+
+// useFocusEffect fires outside a navigator in this bare render — no-op it.
+jest.mock('@react-navigation/native', () => ({ useFocusEffect: () => {} }));
 
 // Ionicons render as labelled text (same stub as AddOnsScreen.test.tsx).
 jest.mock('@expo/vector-icons', () => {
@@ -51,6 +56,10 @@ jest.mock('@tanstack/react-query', () => ({
 // Parameterized billing status + plan-purchase state per test.
 const mockStatus = { data: {} as any };
 const mockPlanBuy = jest.fn();
+const mockPlanManage = jest.fn();
+// The RC will-renew snapshot the real deriveAiPlanState folds with the server
+// base — null (RC not loaded) by default, set per active-state test.
+const mockPlan = { entitlement: null as { willRenew: boolean; expirationDate: string | null } | null };
 jest.mock('../shared', () => ({
   useCreditsPurchase: () => ({
     billing: { data: mockStatus.data, refetch: jest.fn() },
@@ -66,6 +75,9 @@ jest.mock('../shared', () => ({
     busy: false,
     buy: mockPlanBuy,
     restore: jest.fn(),
+    entitlement: mockPlan.entitlement,
+    refresh: jest.fn().mockResolvedValue(undefined),
+    manage: mockPlanManage,
   }),
   describeReset: () => null,
   humanCredits: (n: number) => Math.max(0, Math.floor(n ?? 0)).toLocaleString(),
@@ -85,7 +97,7 @@ function baseStatus(overrides: any = {}) {
       { productId: 'credits_499', label: 'Starter', price: 4.99, credits: 500 },
       { productId: 'credits_1999', label: 'Max', price: 19.99, credits: 2200 },
     ],
-    actionCosts: { chat: 2, scan: 3, generation: 3, manualParse: 1, aiHelper: 1, callPerMinute: 20 },
+    actionCosts: { chat: 5, scan: 3, generation: 3, manualParse: 40, aiHelper: 1, callPerMinute: 20 },
     aiPlan: {
       active: false,
       productId: 'calen_ai_monthly_499',
@@ -104,15 +116,17 @@ describe('CreditsScreen', () => {
   beforeEach(() => {
     mockStatus.data = baseStatus();
     mockLedger.entries = [];
+    mockPlan.entitlement = null;
+    mockPlanManage.mockClear();
   });
   afterEach(cleanup);
 
   it('inactive plan: value framing, subscribe CTA with price + renewal wording, never-expire copy', async () => {
     const view = await render(<CreditsScreen />);
     expect(view.getByText('Calen AI plan')).toBeTruthy();
-    // 600cr/$4.99 beats the best pack's 2200cr/$19.99 by ~9% — computed from
-    // the catalog, not hard-coded.
-    expect(view.getByText('600 credits every month — 9% more credits per dollar than any pack.')).toBeTruthy();
+    // 600cr/$4.99 beats the best pack's 2200cr/$19.99, so the plan asserts the
+    // advantage (no specific %) — the branch is still catalog-driven.
+    expect(view.getByText('600 credits every month — more credits per dollar than any pack.')).toBeTruthy();
     // App Review: an auto-renewable CTA carries price + renewal period wording.
     expect(view.getByText('Subscribe for $4.99/month')).toBeTruthy();
     expect(
@@ -121,7 +135,7 @@ describe('CreditsScreen', () => {
     expect(view.getByText(/Credits\s+you receive never expire/)).toBeTruthy();
   });
 
-  it('active plan: Active state with the renewal grant and date, no subscribe CTA', async () => {
+  it('active & renewing: Active badge, renewal grant + date, Manage subscription, no subscribe CTA', async () => {
     mockStatus.data = baseStatus({
       aiPlan: {
         active: true,
@@ -131,12 +145,45 @@ describe('CreditsScreen', () => {
         expiresAt: '2026-08-15T00:00:00.000Z',
       },
     });
+    // RC reports the subscription will auto-renew (the happy path).
+    mockPlan.entitlement = { willRenew: true, expirationDate: '2026-08-15T00:00:00.000Z' };
     const view = await render(<CreditsScreen />);
     expect(view.getByText('Active')).toBeTruthy();
     expect(view.getByText('Renews with 600 credits on August 15.')).toBeTruthy();
     expect(view.queryByText('Subscribe for $4.99/month')).toBeNull();
     // Plan credits are ordinary balance — the copy says so.
     expect(view.getByText(/never expire — even if you\s+cancel/)).toBeTruthy();
+    // The Manage affordance makes the "manage anytime" promise real.
+    const manage = view.getByText('Manage subscription');
+    expect(manage).toBeTruthy();
+    fireEvent.press(manage);
+    expect(mockPlanManage).toHaveBeenCalledTimes(1);
+  });
+
+  it('active & cancelled (auto-renew off): distinct copy, credits-forever, Manage doubles as re-subscribe', async () => {
+    mockStatus.data = baseStatus({
+      aiPlan: {
+        active: true,
+        productId: 'calen_ai_monthly_499',
+        price: 4.99,
+        monthlyCredits: 600,
+        expiresAt: '2026-08-15T00:00:00.000Z',
+      },
+    });
+    // Server still reports active (cancellation is a no-op until expiry); RC is
+    // the only source that knows auto-renew is off.
+    mockPlan.entitlement = { willRenew: false, expirationDate: '2026-08-15T00:00:00.000Z' };
+    const view = await render(<CreditsScreen />);
+    expect(view.getByText('Cancelled')).toBeTruthy();
+    expect(
+      view.getByText(/Cancelled — plan benefits until August 15\.\s*Your credits are yours forever\./)
+    ).toBeTruthy();
+    // Not the renewing copy, and not the subscribe CTA.
+    expect(view.queryByText('Renews with 600 credits on August 15.')).toBeNull();
+    expect(view.queryByText('Subscribe for $4.99/month')).toBeNull();
+    const manage = view.getByText('Manage subscription');
+    fireEvent.press(manage);
+    expect(mockPlanManage).toHaveBeenCalledTimes(1);
   });
 
   it('unlimited admins see neither the plan card nor the store', async () => {
@@ -147,14 +194,25 @@ describe('CreditsScreen', () => {
     expect(view.queryByText('Buy credits')).toBeNull();
   });
 
-  it('renders the flat per-action prices, with the call price per minute', async () => {
+  it('renders the flat per-action prices as a rate card: price ascending, call pinned last', async () => {
     const view = await render(<CreditsScreen />);
     expect(view.getByText('What things cost')).toBeTruthy();
-    expect(view.getByText('Chat message')).toBeTruthy();
-    expect(view.getByText('2 credits')).toBeTruthy();
-    expect(view.getByText('Receipt & photo scan')).toBeTruthy();
-    expect(view.getByText('Phone call')).toBeTruthy();
+    expect(view.getByText('5 credits')).toBeTruthy();
     expect(view.getByText('20 credits/min')).toBeTruthy();
+    // Cheapest → priciest from the live server values (ties alphabetical by
+    // label), with the per-minute call row last — its unit differs and the
+    // per-second billing note under the list is its footnote.
+    const labels = [
+      'Form assist', // 1
+      'Photo scan', // 3
+      'Recipe generation', // 3 — tie broken alphabetically
+      'Chat message', // 5
+      'Owner’s manual parsing', // 40
+      'Phone call', // 20/min, pinned last
+    ].map((t) => view.getByText(t));
+    const json = JSON.stringify(view.toJSON());
+    const positions = labels.map((n) => json.indexOf(JSON.stringify(n.props.children)));
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
   it('history itemizes usage debits by action and plan grants, keeping grant styling', async () => {

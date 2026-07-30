@@ -1,7 +1,7 @@
 ---
 title: First-run onboarding
 status: current
-last-verified: 55bfc65+ (2026-07-29); first-run orientation screen added between sign-in and the app (before the unlock paywall), gated by a per-install AsyncStorage flag; names the feature calendars + Calen assistant, points at the Calendars entry point, and states the E2EE guarantee
+last-verified: bb130ef+ (2026-07-30); the assistant feature bullet now says "scans photos" (was "scans receipts" — receipts are never AI-scanned; copy-only, matches billing-plans.md action-label truthfulness) (2026-07-30); first-run orientation screen added between sign-in and the app (before the unlock paywall), gated by a per-install AsyncStorage flag; names the feature calendars + Calen assistant, points at the Calendars entry point, and states the E2EE guarantee
 code:
   - mobile/src/screens/onboarding/OnboardingScreen.tsx
   - mobile/src/lib/onboarding.ts

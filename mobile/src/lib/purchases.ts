@@ -76,3 +76,21 @@ export async function restorePurchases(): Promise<CustomerInfo | null> {
   if (!configured) return null;
   return Purchases.restorePurchases();
 }
+
+// The current CustomerInfo straight from the SDK — the client's source of truth
+// for subscription *intent* (will-renew vs cancelled-but-active), which the
+// server can't distinguish because an auto-renew-off cancellation is a no-op
+// until expiry. Null when RC isn't configured (dev builds) so callers fall back
+// to server state.
+export async function getCustomerInfo(): Promise<CustomerInfo | null> {
+  if (!configured) return null;
+  return Purchases.getCustomerInfo();
+}
+
+// Open the native Apple manage-subscriptions sheet (cancel / re-subscribe live
+// inside it). No-op when RC isn't configured — callers pair this with the
+// managementURL / App Store fallback for that case.
+export async function showManageSubscriptions(): Promise<void> {
+  if (!configured) return;
+  await Purchases.showManageSubscriptions();
+}

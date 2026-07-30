@@ -53,7 +53,8 @@ function listNames(names: string[]): string {
 // trailing control — an accent "Open" pill for feature-backed calendars, an
 // info button (edit form / holidays editor) for the rest. Built-ins delete
 // from Edit Calendar; Add Calendar (the header +) restores them. Locked
-// add-on calendars collapse into one storefront row after HOUSEHOLD.
+// add-on calendars collapse into the permanent storefront row closing
+// HOUSEHOLD (it stays once everything is owned — stable entry point).
 export default function CalendarsScreen() {
   const nav = useNavigation<NativeStackNavigationProp<CalendarStackParamList>>();
   const { visibility, setVisible } = useCalendarVisibility();
@@ -108,7 +109,8 @@ export default function CalendarsScreen() {
   ];
 
   // The storefront row names every add-on calendar (the full catalog, in store
-  // order) with no price — the store screen does the selling.
+  // order) with no price — the store screen does the selling. Once everything
+  // is owned the subtitle flips to the "All add-ons added" status line.
   const allAddonNames = ADDON_CALENDAR_IDS
     .map((id) => CALENDARS.find((c) => c.id === id)?.name)
     .filter((n): n is string => !!n);
@@ -221,20 +223,22 @@ export default function CalendarsScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {groups
-        // HOUSEHOLD stays visible while any add-on is locked — its storefront
-        // row must render even if every household calendar is deleted/locked.
-        .filter((g) => g.defaults.length + g.custom.length > 0 || (g.label === 'HOUSEHOLD' && lockedAddons.length > 0))
+        // HOUSEHOLD always renders — it hosts the permanent storefront row,
+        // even if every household calendar is deleted/locked.
+        .filter((g) => g.defaults.length + g.custom.length > 0 || g.label === 'HOUSEHOLD')
         .map((group) => (
           <View key={group.label} style={styles.group}>
             <Text style={styles.groupLabel}>{group.label}</Text>
             {group.defaults.map(renderDefault)}
             {group.custom.map(renderCustom)}
 
-            {/* Feature calendars this household hasn't unlocked: the group's
-                closing row, where those calendars would otherwise sit. Full
-                saturation — purchasable, not disabled; the store screen does
-                the selling. */}
-            {group.label === 'HOUSEHOLD' && lockedAddons.length > 0 ? (
+            {/* The permanent Add-ons entry: the group's closing row, where
+                locked calendars would otherwise sit. Full saturation —
+                purchasable, not disabled; the store screen does the selling.
+                It stays once everything is owned (subtitle flips to status)
+                so the entry point keeps its learned location and future
+                add-ons surface here without a new affordance. */}
+            {group.label === 'HOUSEHOLD' ? (
               <TouchableOpacity
                 style={styles.storeRow}
                 activeOpacity={0.7}
@@ -247,7 +251,7 @@ export default function CalendarsScreen() {
                 <View style={styles.nameWrap}>
                   <Text style={styles.storeTitle}>Add-ons</Text>
                   <Text style={styles.nameSub}>
-                    {listNames(allAddonNames)}
+                    {lockedAddons.length === 0 ? 'All add-ons added' : listNames(allAddonNames)}
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />

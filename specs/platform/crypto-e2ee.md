@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29)
+last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29); documented the recovery-code confirmation gate (dual-stored until `recoverySetupAt`) and the soft re-surface of a freshly minted one-time code on the next unlock when recovery is still unconfirmed — the recovery from force-quitting the modal before saving the code (71f3baf, 2026-07-30)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -41,6 +41,28 @@ client-held means: another household member re-seals the HDK to a fresh identity
 key, or — if the user opted in beforehand — a nominated guardian assists a
 dual-control recovery ([features/guardian-recovery.md](../features/guardian-recovery.md)).
 Absent those, the data is unrecoverable, by design.
+
+### Recovery-code confirmation gate
+
+Because loss of every factor is unrecoverable, a new household is **not dropped to
+encrypted-only immediately**. It stays **dual-stored** (ciphertext plus the
+server's plaintext fallback) until the account confirms a durable non-password
+recovery factor — the recovery code saved (re-entry confirmed) or a passkey
+enrolled, recorded as `recoverySetupAt`. Born-encrypted activation
+(`maybeActivateBornEncrypted`) re-checks this on **every unlock** and only drops
+the plaintext once recovery is confirmed. So a user who force-quits the
+recovery-code modal before saving the code is never stranded: nothing was dropped,
+their password still unlocks, and the plaintext fallback remains until they
+confirm.
+
+The one-time recovery code lives only in memory (`pendingRecoveryCode`) and is
+never stored server-side, so it can never be re-displayed. If the account unlocks
+still needing recovery setup, the app **re-surfaces the one-time modal with a
+freshly minted code** (`maybeResurfaceRecovery` — invalidating the unsaved prior
+code), at most once per session. This is the soft recovery from a force-quit: the
+user simply sees the modal again next launch instead of hunting through Privacy &
+data to mint one. No plaintext recovery code is ever written to disk to enable
+this.
 
 ## Key hierarchy (one paragraph)
 

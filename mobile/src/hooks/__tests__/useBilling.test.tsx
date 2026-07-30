@@ -41,18 +41,18 @@ async function renderHarness(qc: QueryClient) {
 }
 
 describe('useCreditsActivation', () => {
+  // mockReset (not clearAllMocks) so a queued once-resolution never leaks into
+  // the next test; cleanup() unmounts, cancelling any pending 3s poll timer.
   afterEach(() => {
-    jest.clearAllMocks();
+    mockStatus.mockReset();
     cleanup();
   });
 
   it('invalidates the ledger query once the balance rises above the pre-purchase snapshot', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const invalidate = jest.spyOn(qc, 'invalidateQueries');
-    // First poll still shows the old balance; the second reflects the webhook grant.
-    mockStatus
-      .mockResolvedValueOnce({ data: { creditBalanceMc: 250_000 } })
-      .mockResolvedValueOnce({ data: { creditBalanceMc: 750_000 } });
+    // The webhook has landed: the poll's first read already shows the grant.
+    mockStatus.mockResolvedValue({ data: { creditBalanceMc: 750_000 } });
 
     const view = await renderHarness(qc);
     fireEvent.press(view.getByText('buy'));

@@ -44,7 +44,9 @@ const memUpload = multer({
   fileFilter: (req, file, cb) => cb(null, file.mimetype === 'application/pdf'),
 });
 
-router.post('/items/:itemId/upload', meter('manualParse'), upload.single('file'), async (req, res) => {
+// No meter(): storing a user-provided file is not a cost-bearing AI action —
+// only auto-lookup and extract-tasks below spend model tokens.
+router.post('/items/:itemId/upload', upload.single('file'), async (req, res) => {
   try {
     const item = await Item.findOne({ _id: req.params.itemId, ...req.scopeFilter });
     if (!item) return res.status(404).json({ error: 'Item not found' });
@@ -76,7 +78,8 @@ router.post('/items/:itemId/upload', meter('manualParse'), upload.single('file')
   }
 });
 
-router.post('/items/:itemId/from-url', meter('manualParse'), async (req, res) => {
+// No meter(): fetching a URL the user pasted is not an AI action either.
+router.post('/items/:itemId/from-url', async (req, res) => {
   try {
     const item = await Item.findOne({ _id: req.params.itemId, ...req.scopeFilter });
     if (!item) return res.status(404).json({ error: 'Item not found' });
