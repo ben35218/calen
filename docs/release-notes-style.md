@@ -14,54 +14,51 @@ from the output of `npm run release:notes` (see [scripts/release-notes.mjs](../s
 
 ## Rules
 
+- **PLAIN TEXT ONLY — no emoji, no markdown.** App Store Connect's "What to Test"
+  field rejected the old emoji/markdown format with a page-level validation error
+  (2026-07-30, build 24). Never use emoji, `**bold**`, `>` blockquotes, or any
+  other markup. Area headers are ALL-CAPS lines; bullets are plain hyphens.
+  Straight quotes, em dashes, and $ signs are fine (accepted in build 24).
 - **Audience: beta testers, not developers.** Describe what they can *see and try*,
   never internal mechanics (models, schemas, refactors, spec/test/CI changes).
 - **Drop internal churn.** Anything under `specs/`, `scripts/`, `.github/`, tests,
   or pure refactors does not appear. The script separates these out for you.
-- **Group by user-facing area** with an emoji + bold header (Calendar, Plans &
-  billing, Add-ons, People, Assistant, etc.). Only include areas that changed.
+- **Group by user-facing area** with an ALL-CAPS header (CREDITS, CALENDAR,
+  ADD-ONS, CONTACTS, ASSISTANT, etc.). Only include areas that changed.
 - **Imperative, invite-to-try voice:** "Try the new…", "Check that…", "Poke at…".
 - **Lead with the biggest user-visible change.** New features before fixes.
-- **A short "🐛 Fixed" section** at the end for notable bug fixes testers had hit.
+- **A short "FIXED" section** at the end for notable bug fixes testers had hit.
 - **Warm bookends:** a one-line thanks at the top, a "report via Help & feedback"
-  nudge at the bottom.
+  nudge at the bottom (plain text — no emoji).
 - **≤ 4000 characters** (App Store Connect `whatsNew` hard limit). Tighten if over.
 - Keep bullets short; one idea each.
 
-## Canonical example (2026-07-29 build)
+## Canonical example (2026-07-30, build 24 — accepted by App Store Connect)
 
-> **What to Test — this build**
->
-> Thanks for testing Calen! This build is a big one. Please poke at:
->
-> **💳 Plans & billing (new model)**
-> - Billing changed from subscription tiers to a **one-time app unlock** plus
->   **prepaid AI credits**. Try the unlock paywall, buying a credit pack, and watch
->   the credits banner update as you use the assistant.
->
-> **🧩 Add-ons store**
-> - New store with paid add-ons (**Meals, Maintenance, Trips**) and free opt-in
->   ones (**Birthdays, Chores**). Try enabling/disabling and confirm they
->   appear/disappear correctly.
->
-> **📅 Calendar**
-> - Calendar now **loads instantly from cache** then refreshes — check it feels
->   fast and stays correct after edits.
-> - **New Apple-style Day view** (single day / multi-day / list). Try switching modes.
-> - **Recurring events:** "Delete This Event Only" vs "Delete All Future," and
->   cancel/reschedule on a single occurrence.
-> - Event detail: recurrence summary, travel-time row, mini timeline.
->
-> **🎉 Occasions & onboarding**
-> - New occasions + e-cards flow, and a first-run onboarding flow for new accounts.
->
-> **📝 Editing & feedback**
-> - Editing any form and backing out now shows a **"Discard Changes?"** prompt —
->   confirm it appears only when you actually changed something.
-> - New **Help & feedback** screen under Profile (question / bug / idea).
->
-> **🐛 Fixed**
-> - Fixed the misleading **"update to the latest app version"** error some invitees
->   hit when toggling guest-list visibility or cancelling an event on shared calendars.
->
-> Please report issues via the in-app Help & feedback screen. 🙏
+```
+What to Test — this build
+
+Thanks for testing Calen! This build is all about AI credits and the new Calen AI plan.
+
+CREDITS & THE NEW CALEN AI PLAN
+- New optional Calen AI monthly plan: 600 credits every month for $4.99. Try subscribing from the Credits screen.
+- Manage or cancel right from the app: tap Manage subscription, cancel in the Apple sheet, and check the card changes to "Cancelled — plan benefits until your renewal date. Your credits are yours forever." Then try re-subscribing.
+- Credit prices are now flat per action. Check the "What things cost" card: cheapest first, phone calls (per-minute) pinned last.
+- History now shows every credit movement, usage as well as purchases.
+- Placing an assistant phone call now shows an estimated credits-per-minute price above the call button. Confirm it appears before you dial.
+
+OWNER'S MANUALS
+- Uploading a manual (file or from a URL) is now free. Credits are only spent when the AI looks one up or extracts maintenance tasks from it. Parsing also got smarter on long documents.
+
+ADD-ONS
+- The Add-ons row on the Calendars screen now stays put once you own everything (it reads "All add-ons added"). It is the permanent store entry point.
+
+RECOVERY CODE
+- If you close the app before saving your recovery code, a fresh code now appears on your next unlock. Try force-quitting the recovery modal and reopening.
+
+FIXED
+- Manual uploads no longer charge credits for plain file storage.
+- Cost labels now say exactly what's metered: "Photo scan", "Recipe generation", "Owner's manual parsing" (receipts are never AI-scanned).
+
+Please report issues via the in-app Help & feedback screen. Thank you!
+```
