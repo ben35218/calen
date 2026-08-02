@@ -32,7 +32,7 @@ const ecardSchema = new mongoose.Schema({
   kind:        { type: String, enum: ['birthday', 'anniversary', 'marriage', 'death', 'custom'], default: 'custom' },
   // Display noun / custom label carried into the email copy (author-written).
   occasionLabel: { type: String, trim: true },
-  // Annual recurrence anchor — the occasion's month/day (send repeats yearly).
+  // The occasion's month/day — the card sends ONCE on its next occurrence.
   month:       { type: Number, required: true, min: 1, max: 12 },
   day:         { type: Number, required: true, min: 1, max: 31 },
   // Wall-clock send time in the author's timezone, `HH:mm`.
@@ -54,10 +54,11 @@ const ecardSchema = new mongoose.Schema({
   photos:      { type: [photoSchema], default: [] },
   // Plaintext recipient emails (deliberate exception).
   recipients:  { type: [recipientSchema], default: [] },
+  // A card sends ONCE, on its next occurrence. `active` is cleared and `sentAt`
+  // stamped after a successful send, so it never fires again (no annual
+  // recurrence); the hourly scheduler only queries `active: true` cards.
   active:      { type: Boolean, default: true },
-  // Guards against duplicate sends: set to the local year after a successful
-  // send so the hourly scheduler fires each occasion at most once per year.
-  lastSentYear: { type: Number, default: null },
+  sentAt:      { type: Date, default: null },
 }, { timestamps: true });
 
 ecardSchema.index({ active: 1, month: 1, day: 1 });

@@ -32,7 +32,7 @@ beforeEach(async () => {
   await request().put('/api/admin/email/catalog').set('Authorization', admin.auth).send({
     templates: {
       welcome: { enabled: true, subjectOverride: '', note: '' },
-      recipe_share: { enabled: true, subjectOverride: '', note: '' },
+      ecard: { enabled: true, subjectOverride: '', note: '' },
     },
   });
   await EmailSuppression.deleteMany({});
@@ -40,9 +40,20 @@ beforeEach(async () => {
 
 const latest = (filter) => EmailLog.findOne(filter).sort({ at: -1 }).lean();
 
+// Registration fires the welcome email off without awaiting it (auth.js), so the
+// response can beat the EmailLog write. Poll rather than assert on the first read.
+const latestEventually = async (filter, tries = 50) => {
+  for (let i = 0; i < tries; i++) {
+    const row = await latest(filter);
+    if (row) return row;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return null;
+};
+
 test('registration sends a welcome email (dry-logged)', async () => {
   const u = await registerUser({ firstName: 'Wendy' });
-  const row = await latest({ to: u.user.email, kind: 'welcome' });
+  const row = await latestEventually({ to: u.user.email, kind: 'welcome' });
   assert.ok(row, 'a welcome EmailLog row exists');
   assert.equal(row.status, 'dry');
   assert.match(row.subject, /Welcome to Calen/);
@@ -56,25 +67,37 @@ test('account-deleted confirmation renders and logs (dry)', async () => {
   assert.match(row.subject, /deleted/i);
 });
 
+test('account-deleted email carries the keeps-billing reminder only when the plan was active', () => {
+  // Deleting the account can't cancel the Apple-billed Calen AI plan
+  // (billing-plans.md "Account deletion × billing") — this email is the last
+  // place the cancel-it-in-Apple-settings pointer can live.
+  const withPlan = mailer.buildAccountDeletedConfirmation({ firstName: 'Gwen', hadActiveAiPlan: true });
+  assert.match(withPlan.text, /NOT cancelled by deleting your account/);
+  assert.match(withPlan.text, /apps\.apple\.com\/account\/subscriptions/);
+  assert.match(withPlan.html, /apps\.apple\.com\/account\/subscriptions/);
+
+  const without = mailer.buildAccountDeletedConfirmation({ firstName: 'Gwen' });
+  assert.doesNotMatch(without.text, /subscription/i);
+  assert.doesNotMatch(without.html, /subscription/i);
+});
+
 test('config gate: a disabled optional template is canceled, not sent', async () => {
   await request().put('/api/admin/email/catalog').set('Authorization', admin.auth)
-    .send({ templates: { recipe_share: { enabled: false } } });
+    .send({ templates: { ecard: { enabled: false } } });
 
-  await mailer.sendRecipeShare({
-    toEmail: 'foodie@example.com', fromName: 'Ada',
-    recipe: { title: 'Soup', ingredients: [], instructions: [] },
+  await mailer.sendECard({
+    toEmail: 'foodie@example.com', fromName: 'Ada', kind: 'birthday', occasionLabel: 'Birthday', message: 'Hi',
   });
-  const row = await latest({ to: 'foodie@example.com', kind: 'recipe_share' });
+  const row = await latest({ to: 'foodie@example.com', kind: 'ecard' });
   assert.equal(row.status, 'canceled');
 
   // Re-enable → it sends (dry) again.
   await request().put('/api/admin/email/catalog').set('Authorization', admin.auth)
-    .send({ templates: { recipe_share: { enabled: true } } });
-  await mailer.sendRecipeShare({
-    toEmail: 'foodie2@example.com', fromName: 'Ada',
-    recipe: { title: 'Soup', ingredients: [], instructions: [] },
+    .send({ templates: { ecard: { enabled: true } } });
+  await mailer.sendECard({
+    toEmail: 'foodie2@example.com', fromName: 'Ada', kind: 'birthday', occasionLabel: 'Birthday', message: 'Hi',
   });
-  assert.equal((await latest({ to: 'foodie2@example.com', kind: 'recipe_share' })).status, 'dry');
+  assert.equal((await latest({ to: 'foodie2@example.com', kind: 'ecard' })).status, 'dry');
 });
 
 test('a required template cannot be disabled (server-validated)', async () => {
@@ -148,6 +171,13 @@ test('preview renders an implemented template and 404s a planned one', async () 
   assert.equal(retired.status, 404);
   const cat = await request().get('/api/admin/email/catalog').set('Authorization', admin.auth);
   assert.equal(cat.body.templates.find((t) => t.key === 'event_invitation').implemented, false);
+
+  // recipe_share was RETIRED 2026-08-01 (recipe sharing is device-composed now,
+  // via the OS share sheet) — same treatment: entry kept, implemented:false,
+  // no longer previewable.
+  const recipeRetired = await request().get('/api/admin/email/catalog/recipe_share/preview').set('Authorization', admin.auth);
+  assert.equal(recipeRetired.status, 404);
+  assert.equal(cat.body.templates.find((t) => t.key === 'recipe_share').implemented, false);
 });
 
 test('email surfaces are requireAdmin-gated', async () => {

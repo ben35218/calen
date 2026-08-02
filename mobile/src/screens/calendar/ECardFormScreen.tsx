@@ -64,6 +64,16 @@ const DEFAULT_MESSAGE: Record<OccasionKind, string> = {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
+// The year the card will send: this year if the occasion's month/day hasn't
+// passed yet (today counts), otherwise next year. Cards are one-time — they
+// send on the NEXT occurrence and don't recur.
+function nextOccurrenceYear(month: number, day: number): number {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const candidate = new Date(now.getFullYear(), month - 1, day);
+  return candidate < today ? now.getFullYear() + 1 : now.getFullYear();
+}
+
 // 'HH:mm' → '9:00 AM'
 function to12h(hhmm: string): string {
   const [h, m] = String(hhmm || '09:00').split(':').map(Number);
@@ -214,6 +224,15 @@ export default function ECardFormScreen() {
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [editingFor, setEditingFor] = useState<string | null>(null);
   const [draftEmail, setDraftEmail] = useState('');
+  // The greeting is the first editable card line; the "Tap to edit" badge focuses
+  // it with the cursor at the very start (transient controlled selection, then
+  // released so the user can move the caret freely).
+  const greetingRef = useRef<TextInput>(null);
+  const [greetSel, setGreetSel] = useState<{ start: number; end: number } | undefined>(undefined);
+  const focusGreeting = () => {
+    setGreetSel({ start: 0, end: 0 });
+    greetingRef.current?.focus();
+  };
 
   const { data: people, isLoading } = useQuery({
     queryKey: ['people'],
@@ -490,14 +509,28 @@ export default function ECardFormScreen() {
             </BobbingPiece>
             <Text style={[styles.previewHeading, { color: tpl.heroText }, cardFont ? { fontFamily: cardFont } : null, tpl.serif && !font && styles.serifSpacing]}>{heading}</Text>
           </View>
-          {/* Every card line is directly editable; placeholders are the send-time defaults. */}
+          {/* Every card line is directly editable; placeholders are the send-time
+              defaults. A pencil badge + dashed underlines make that tappability
+              obvious (the lines otherwise read as finished card text). */}
           <View style={styles.previewBody}>
+            <TouchableOpacity
+              style={styles.editBadge}
+              onPress={focusGreeting}
+              accessibilityRole="button"
+              accessibilityLabel="Edit card text"
+            >
+              <Ionicons name="pencil" size={11} color={CARD_MUTED} />
+              <Text style={styles.editBadgeText}>Tap to edit</Text>
+            </TouchableOpacity>
             <TextInput
+              ref={greetingRef}
               value={greeting}
               onChangeText={setGreeting}
+              selection={greetSel}
+              onSelectionChange={() => { if (greetSel) setGreetSel(undefined); }}
               placeholder={`Dear ${previewRecipient},`}
               placeholderTextColor={CARD_MUTED}
-              style={[styles.previewGreeting, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null, greetItalic && styles.italic]}
+              style={[styles.previewGreeting, styles.editableLine, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null, greetItalic && styles.italic]}
             />
             <TextInput
               value={message}
@@ -505,7 +538,7 @@ export default function ECardFormScreen() {
               placeholder="Write a personal note…"
               placeholderTextColor={CARD_MUTED}
               multiline
-              style={[styles.previewMessage, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null]}
+              style={[styles.previewMessage, styles.editableLine, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null]}
             />
             {photoEntries.map((p) => (
               <Image key={p.key} source={p.source} style={styles.previewPhoto} resizeMode="cover" />
@@ -515,14 +548,14 @@ export default function ECardFormScreen() {
               onChangeText={setSignoff}
               placeholder={tpl.signoff}
               placeholderTextColor={CARD_MUTED}
-              style={[styles.previewSignoff, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null, effFontKey !== 'script' && styles.italic]}
+              style={[styles.previewSignoff, styles.editableLine, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null, effFontKey !== 'script' && styles.italic]}
             />
             <TextInput
               value={signature}
               onChangeText={setSignature}
               placeholder={senderName}
               placeholderTextColor={CARD_MUTED}
-              style={[styles.previewSign, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null]}
+              style={[styles.previewSign, styles.editableLine, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null]}
             />
           </View>
           <Text style={styles.previewFooter}>Sent with ♥ through Calen</Text>
@@ -572,7 +605,7 @@ export default function ECardFormScreen() {
           chevronIcon="chevron-expand"
         />
       </GroupCard>
-      <Hint>Sends on {MONTHS[month - 1]} {day} at {to12h(sendTime)}, and every year on that date — nothing goes out until then.</Hint>
+      <Hint>Sends once on {MONTHS[month - 1]} {day}, {nextOccurrenceYear(month, day)} at {to12h(sendTime)} — nothing goes out until then.</Hint>
 
       <SectionHeader>Recipients</SectionHeader>
       {candidates.length === 0 ? (
@@ -650,6 +683,20 @@ export default function ECardFormScreen() {
               />
             );
           })}
+          {/* Add another recipient by linking a related contact — managed in the
+              contact itself. Opens the occasion contact scrolled to Related
+              names; anyone linked there becomes a candidate here on return (the
+              recipient list = the occasion contact + their related names). */}
+          {personId ? (
+            <ListRow
+              title="Add a related contact"
+              subtitle="Opens this contact to link someone related"
+              onPress={() => nav.navigate('PersonForm', { id: personId, focus: 'related' })}
+              iconColor={accent}
+              icon="person-add-outline"
+              right={<Ionicons name="chevron-forward" size={18} color={colors.textMuted} />}
+            />
+          ) : null}
         </InfoCard>
       )}
 
@@ -682,7 +729,12 @@ export default function ECardFormScreen() {
         );
       })() : null}
 
-      <Hint>Heads up: to deliver this card on the day, the message, photos, and recipient emails are sent to Calen&apos;s servers — this occasion card leaves your device&apos;s encryption, like an email invite.</Hint>
+      {/* E2EE plaintext-exception disclosure — shown at CREATE time only (a
+          deliberate privacy notice; see crypto-e2ee.md). The edit view drops it
+          once the card already exists. */}
+      {!existing ? (
+        <Hint>To deliver this card on the day, the message, photos, and recipient emails are sent to Calen&apos;s servers — this occasion card leaves your device&apos;s encryption, like an email invite.</Hint>
+      ) : null}
 
       {existing ? (
         <View style={styles.cancelWrap}>
@@ -723,6 +775,15 @@ const styles = StyleSheet.create({
   serifSpacing: { letterSpacing: 0.5 },
   italic: { fontStyle: 'italic' },
   previewBody: { paddingVertical: spacing.lg, paddingHorizontal: spacing.md },
+  // "Tap to edit" affordance pinned to the card body's top-right corner.
+  editBadge: {
+    position: 'absolute', top: 6, right: spacing.md, zIndex: 1,
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#F1F2F4', borderRadius: radius.sm, paddingHorizontal: 6, paddingVertical: 2,
+  },
+  editBadgeText: { fontSize: 10, fontWeight: '600', color: CARD_MUTED },
+  // A faint dashed underline signalling each card line is a tappable field.
+  editableLine: { borderBottomWidth: 1, borderBottomColor: '#E5E7EB', borderStyle: 'dashed', paddingBottom: 3 },
   // The card lines are bare TextInputs styled as card text (padding zeroed so
   // they sit exactly where static text would).
   previewGreeting: { color: CARD_TEXT, marginBottom: 8, padding: 0 },

@@ -265,12 +265,14 @@ async function fanOutEventReminder(event) {
   console.log(`[Scheduler] Event alert: ${event._id}`);
 }
 
-// ── Occasion e-cards — hourly, annual per-card ──────────────────────────────
+// ── Occasion e-cards — hourly, one-time per-card ────────────────────────────
 // Sends each active ECard on its occasion's month/day, at the author's local
-// send-time hour. UNLIKE the daily/event checks, this runs for E2EE households
-// too: an ECard is a deliberate plaintext exception (models/ECard.js), so the
-// recipient emails + message are server-readable by design. A per-year
-// `lastSentYear` guard makes the hourly re-run idempotent within the same day.
+// send-time hour, then DEACTIVATES it: a card fires once, on its next
+// occurrence, and does not recur annually. UNLIKE the daily/event checks, this
+// runs for E2EE households too: an ECard is a deliberate plaintext exception
+// (models/ECard.js), so the recipient emails + message are server-readable by
+// design. Clearing `active` after the send makes the hourly re-run idempotent
+// (a sent card is no longer queried).
 async function runECardCheck() {
   const cards = await ECard.find({ active: true }).lean();
   if (!cards.length) return;
@@ -280,7 +282,7 @@ async function runECardCheck() {
   const hhCache = new Map();
   const getUser = async (id) => {
     const key = String(id);
-    if (!userCache.has(key)) userCache.set(key, await User.findById(id).select('firstName timezone householdId').lean());
+    if (!userCache.has(key)) userCache.set(key, await User.findById(id).select('firstName email timezone householdId').lean());
     return userCache.get(key);
   };
   const getHhTz = async (id) => {
@@ -299,22 +301,21 @@ async function runECardCheck() {
       if (!author) continue;
       const tz = author.timezone || (await getHhTz(author.householdId)) || 'America/Toronto';
       const todayStr = localDateStr(tz);           // YYYY-MM-DD in the author's zone
-      const [yStr, moStr, dStr] = todayStr.split('-');
+      const [, moStr, dStr] = todayStr.split('-');
       if (Number(moStr) !== card.month || Number(dStr) !== card.day) continue;
       const sendHour = parseInt(String(card.sendTime || '09:00').split(':')[0], 10) || 9;
       // Send at the first hourly tick AT OR AFTER the send hour on the occasion
       // day — so a card scheduled same-day past its hour, or one whose exact tick
-      // was missed (deploy/downtime), still goes out that day. lastSentYear keeps
-      // it to once per year.
+      // was missed (deploy/downtime), still goes out that day. Deactivating the
+      // card after the send (below) keeps it to a single, one-time delivery.
       if (localHour(tz) < sendHour) continue;
-      const year = Number(yStr);
-      if (card.lastSentYear === year) continue;     // already sent this year
 
       for (const r of card.recipients || []) {
         await mailer.sendECard({
           toEmail: r.email,
           toName: r.name,
           fromName: author.firstName,
+          ccEmail: author.email,   // author keeps a copy of each card they scheduled
           kind: card.kind,
           occasionLabel: card.occasionLabel,
           message: card.message,
@@ -326,7 +327,7 @@ async function runECardCheck() {
           photos: card.photos,
         });
       }
-      await ECard.updateOne({ _id: card._id }, { $set: { lastSentYear: year } });
+      await ECard.updateOne({ _id: card._id }, { $set: { active: false, sentAt: new Date() } });
       console.log(`[Scheduler] E-card sent: ${card._id} → ${(card.recipients || []).length} recipient(s)`); // ids/counts only (C5)
     } catch (err) {
       console.error(`[Scheduler] E-card send failed for ${card._id}:`, err.message);

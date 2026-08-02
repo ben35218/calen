@@ -15,14 +15,20 @@ from the theme.
   scroll + padding). `<Screen scroll={false}>` for a non-scrolling screen.
 - **Inline dropdown under an input** (autocomplete / suggestions) → the
   keyboard-aware scroll only keeps the *input* above the keyboard, so a
-  dropdown rendered below it opens exactly behind the keyboard. Attach
-  `useRevealOnOpen(open, itemCount)`'s ref (with `collapsable={false}`) to the
-  view wrapping the input + dropdown; `<Screen>` scrolls the pair clear when
-  the dropdown opens. See `PlacesAutocomplete` / `EventInviteesScreen`.
+  dropdown rendered below it opens exactly behind the keyboard. Wrap the
+  input + dropdown pair in `<RevealWrap open count>` (components/ui); `<Screen>`
+  scrolls the pair clear when the dropdown opens. Do NOT call `useRevealOnOpen`
+  from the screen component itself — it renders `<Screen>`, so the hook reads a
+  null scroll context and silently no-ops; the hook is only for components
+  already rendered inside a Screen (e.g. `PlacesAutocomplete`).
   Picking a suggestion in a **single-value** field completes the entry —
   `Keyboard.dismiss()` so the field blurs and shows the value from its start.
   A **multi-add** field (invitees: type, pick, type the next) keeps the
   keyboard open, like a mail To: field.
+- **Contact autocomplete on a share/invite field** (household invite, calendar
+  outside-share) → `useRosterSuggestions(query, takenSet)` — the decrypted
+  contacts roster matched by name/email/phone, resolved to primary email else
+  E.164 phone. Don't re-roll the matching per screen.
 - **Lists** → `FlatList` / `SectionList` (not a `ScrollView.map`). Every
   top-level, query-backed list gets pull-to-refresh:
   `refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} />}`.

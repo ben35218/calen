@@ -115,8 +115,10 @@ router.patch('/:id', async (req, res) => {
     const { value, error } = parseBody({ ...card.toObject(), ...b });
     if (error) return res.status(400).json({ error });
     Object.assign(card, value);
-    // A meaningful edit re-arms this year's send.
-    card.lastSentYear = null;
+    // A meaningful edit re-arms the card for its next occurrence (a one-time
+    // card that already sent is reactivated so the edit reschedules it).
+    card.active = true;
+    card.sentAt = null;
   }
   if ('active' in b) card.active = Boolean(b.active);
   await card.save();

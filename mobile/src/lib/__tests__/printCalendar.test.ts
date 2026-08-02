@@ -26,6 +26,7 @@ const agendaOpts = (over: Partial<PrintOptions> = {}): PrintOptions => ({
   months: [],
   calendars: [ACTIVITIES, APPOINTMENTS],
   useColor: true,
+  use24h: false,
   ...over,
 });
 
@@ -92,6 +93,7 @@ describe('buildPrintHtml (month grid)', () => {
     months: [{ year: 2026, month: 6 }],
     calendars: [ACTIVITIES, APPOINTMENTS],
     useColor: true,
+    use24h: false,
     ...over,
   });
 
@@ -128,5 +130,38 @@ describe('buildPrintHtml (black & white)', () => {
     const html = buildPrintHtml(agendaOpts(), data, []);
     expect(html).toContain('class="dot"');
     expect(html).toContain(ACTIVITIES.color);
+  });
+});
+
+describe('buildPrintHtml (time formatting)', () => {
+  it('renders compact 12-hour times by default (drops :00 and the space)', () => {
+    const html = buildPrintHtml(agendaOpts(), data, []);
+    expect(html).toContain('9AM'); // 09:00 morning run
+    expect(html).toContain('1PM'); // 13:00 soccer practice
+    expect(html).not.toContain('1:00 PM');
+  });
+
+  it('renders a 24-hour clock when use24h is set', () => {
+    const html = buildPrintHtml(agendaOpts({ use24h: true }), data, []);
+    expect(html).toContain('13:00'); // soccer practice
+    expect(html).toContain('09:00'); // morning run
+    expect(html).not.toContain('1PM');
+  });
+});
+
+describe('buildPrintHtml (month grid title wrapping)', () => {
+  it('clamps cell event titles to two lines instead of a one-line ellipsis', () => {
+    const html = buildPrintHtml(
+      {
+        layout: 'month', from: '2026-06-28', to: '2026-08-08',
+        months: [{ year: 2026, month: 6 }], calendars: [ACTIVITIES, APPOINTMENTS],
+        useColor: true, use24h: false,
+      },
+      data,
+      []
+    );
+    expect(html).toContain('-webkit-line-clamp: 2');
+    // The old single-line clip is gone from the .item rule.
+    expect(html).not.toContain('white-space: nowrap; overflow: hidden; text-overflow: ellipsis');
   });
 });

@@ -94,6 +94,31 @@ async function canWriteCalendarType(CustomCalendar, { userId, scopeIds }, calend
   return effectiveCalendarAccess(cal, userId, scopeIds) === 'full';
 }
 
+// Invitations addressed to a user: to their account, or (before claiming) to
+// their email or saved phone. Shared by the invitations routes and the billing
+// status viewer counts, so a freshly registered invitee matches by address
+// before the lazy toUserId claim.
+function addressedToUser(user) {
+  const or = [{ toUserId: user._id }];
+  if (user.email) or.push({ toEmail: user.email.toLowerCase() });
+  if (user.phone) or.push({ toPhone: user.phone });
+  return or;
+}
+
+// Free viewer mode's eligibility signal (GET /billing/status → `viewer`): how
+// many shared calendars this user is seated on, and how many pending calendar
+// invitations are addressed to them. The collaborator $or arms mirror
+// accessFilter's (subdoc shape + legacy plain-id rows).
+async function viewerContentCounts({ CustomCalendar, CalendarInvitation }, user) {
+  const [calendarCollaborations, pendingCalendarInvitations] = await Promise.all([
+    CustomCalendar.countDocuments({
+      $or: [{ 'collaborators.userId': user._id }, { collaborators: user._id }],
+    }),
+    CalendarInvitation.countDocuments({ status: 'pending', $or: addressedToUser(user) }),
+  ]);
+  return { calendarCollaborations, pendingCalendarInvitations };
+}
+
 module.exports = {
   OUTSIDE_SHARED_MATCH,
   isCalendarOutsideShared,
@@ -104,4 +129,6 @@ module.exports = {
   normalizeCollaboratorEntry,
   effectiveCalendarAccess,
   canWriteCalendarType,
+  addressedToUser,
+  viewerContentCounts,
 };

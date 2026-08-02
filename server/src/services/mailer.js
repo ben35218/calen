@@ -129,9 +129,9 @@ async function logSend({ to, subject, kind, status, error, attempts, responseCod
 // Raw single delivery attempt — the shared primitive used by sendMail's first
 // attempt and jobs/emailReconcile.js's retries. Resolves to {ok:true} or
 // {ok:false, err}. Never throws.
-async function attemptSend({ from, to, subject, text, html, attachments }) {
+async function attemptSend({ from, to, cc, subject, text, html, attachments }) {
   try {
-    await transport.sendMail({ from: from || MAIL_FROM, to, subject, text, html, attachments });
+    await transport.sendMail({ from: from || MAIL_FROM, to, cc, subject, text, html, attachments });
     return { ok: true };
   } catch (err) {
     return { ok: false, err };
@@ -142,8 +142,10 @@ async function attemptSend({ from, to, subject, text, html, attachments }) {
 // subject override → deliver → classify. No-ops (with a log) when SMTP is
 // unconfigured, so callers never need to branch. Never throws — a failed
 // notification must not break the flow it accompanies. `kind` is a catalog key
-// (services/emailCatalog.js) and tags the EmailLog row.
-async function sendMail({ to, subject, text, html, attachments, kind }) {
+// (services/emailCatalog.js) and tags the EmailLog row. `cc` (optional) carries
+// a copy to the initiating user — e-cards CC their author so the sender keeps a
+// record of what each recipient received; suppression/logging still key on `to`.
+async function sendMail({ to, cc, subject, text, html, attachments, kind }) {
   if (!to) return { sent: false };
   const entry = catalogByKey(kind);
   const required = !!(entry && entry.required);
@@ -180,7 +182,7 @@ async function sendMail({ to, subject, text, html, attachments, kind }) {
   }
 
   // 5. Deliver + classify.
-  const { ok, err } = await attemptSend({ to, subject: finalSubject, text, html, attachments });
+  const { ok, err } = await attemptSend({ to, cc, subject: finalSubject, text, html, attachments });
   if (ok) {
     await logSend({ to, subject: finalSubject, kind, status: 'sent' });
     return { sent: true };
@@ -203,7 +205,7 @@ async function sendMail({ to, subject, text, html, attachments, kind }) {
   await logSend({
     to, subject: finalSubject, kind, status: 'queued', error: err.message, lastError: err.message,
     failureKind, responseCode, attempts: 1, nextAttemptAt,
-    payload: { from: MAIL_FROM, text, html, attachments },
+    payload: { from: MAIL_FROM, cc, text, html, attachments },
   });
   return { sent: false, error: err.message, queued: true };
 }
@@ -347,64 +349,14 @@ function sendNewDeviceAlert(user, device, opts = {}) {
   return sendMail({ to: user.email, kind: 'security_alert', ...buildNewDeviceAlert(user, device, opts) });
 }
 
-// ── Recipe shares ────────────────────────────────────────────────────────────
-// Server-sent because a recipe is fully rendered content (ingredient table +
-// instructions) — richer than the plain-text the OS share sheet can carry. The
-// ongoing-access *invites* (household / calendar / trip) are device-composed
-// instead (mobile lib/shareInvite); only styled content stays here.
-
-// Email a full recipe — self-contained, the recipient needs nothing installed.
-function buildRecipeShare({ fromName, recipe }) {
-  const inviter = fromName || 'Someone';
-  const mins = (recipe.prepTimeMins || 0) + (recipe.cookTimeMins || 0);
-  const meta = [mins ? `${mins} min` : '', recipe.servings ? `${recipe.servings} servings` : '']
-    .filter(Boolean)
-    .join(' · ');
-  const ingredients = (recipe.ingredients || []).map(
-    (ing) => [ing.amount, ing.unit, ing.name].filter(Boolean).join(' '),
-  );
-  const instructions = recipe.instructions || [];
-  const get = downloadLinks();
-  const lines = [
-    `${inviter} shared a recipe with you:`,
-    '',
-    `  ${recipe.title}`,
-    ...(meta ? [`  ${meta}`] : []),
-    ...(recipe.description ? ['', recipe.description] : []),
-    '',
-    'Ingredients:',
-    ...ingredients.map((i) => `• ${i}`),
-    '',
-    'Instructions:',
-    ...instructions.map((step, i) => `${i + 1}. ${step}`),
-    '',
-    get.text,
-  ];
-  return {
-    subject: `${inviter} shared a recipe: ${recipe.title}`,
-    text: lines.join('\n') + '\n',
-    html: htmlLayout(
-      `<p style="margin:0 0 16px;"><strong>${esc(inviter)}</strong> shared a recipe with you:</p>
-<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin:0 0 20px;">
-  <div style="font-size:18px;font-weight:700;color:#111827;">${esc(recipe.title)}</div>
-  ${meta ? `<div style="color:#6b7280;font-size:13px;margin-top:4px;">${esc(meta)}</div>` : ''}
-  ${recipe.description ? `<p style="margin:10px 0 0;color:#374151;font-size:14px;">${esc(recipe.description)}</p>` : ''}
-</div>
-<div style="font-size:15px;font-weight:700;color:#111827;margin:0 0 8px;">Ingredients</div>
-<ul style="margin:0 0 20px;padding-left:20px;color:#374151;font-size:14px;line-height:1.8;">
-  ${ingredients.map((i) => `<li>${esc(i)}</li>`).join('\n  ')}
-</ul>
-<div style="font-size:15px;font-weight:700;color:#111827;margin:0 0 8px;">Instructions</div>
-<ol style="margin:0 0 20px;padding-left:20px;color:#374151;font-size:14px;line-height:1.8;">
-  ${instructions.map((s) => `<li>${esc(s)}</li>`).join('\n  ')}
-</ol>
-<div style="text-align:center;margin:0 0 4px;">${get.html}</div>`
-    ),
-  };
-}
-function sendRecipeShare({ toEmail, ...rest }) {
-  return sendMail({ to: toEmail, kind: 'recipe_share', ...buildRecipeShare(rest) });
-}
+// ── Recipe shares — RETIRED 2026-08-01 ───────────────────────────────────────
+// Recipe sharing is now device-composed like household/calendar/trip invites:
+// the sender hands the full recipe (already decrypted on-device) to the OS share
+// sheet from RecipeDetailScreen. The server no longer receives the recipient's
+// address or the decrypted recipe, so the styled-email path (buildRecipeShare/
+// sendRecipeShare) and the POST /recipes/:id/share-email route were removed. The
+// `recipe_share` catalog entry stays (implemented: false) so historical EmailLog
+// rows keep resolving.
 
 // ── Event invitations ────────────────────────────────────────────────────────
 // RETIRED 2026-07-29: event invite outreach is device-composed like every other
@@ -416,7 +368,19 @@ function sendRecipeShare({ toEmail, ...rest }) {
 // ── Account deletion confirmation ────────────────────────────────────────────
 // Sent just BEFORE the purge (while the address is still valid), confirming the
 // account and its cloud data were removed (Apple 5.1.1(v)).
-function buildAccountDeletedConfirmation({ firstName }) {
+function buildAccountDeletedConfirmation({ firstName, hadActiveAiPlan }) {
+  // The subscription reminder (billing-plans.md "Account deletion x billing"):
+  // deleting the account cannot cancel the Apple-billed Calen AI plan, and the
+  // app is gone, so this email is the last place the pointer can live.
+  const planText = hadActiveAiPlan
+    ? `One important note: your Calen AI plan subscription is billed by Apple and was NOT ` +
+      `cancelled by deleting your account. To stop future charges, cancel it on your ` +
+      `iPhone under Settings > your name > Subscriptions, or at ` +
+      `https://apps.apple.com/account/subscriptions.\n\n`
+    : '';
+  const planHtml = hadActiveAiPlan
+    ? `<p style="margin:0 0 16px;"><strong>One important note:</strong> your Calen AI plan subscription is billed by Apple and was <strong>not</strong> cancelled by deleting your account. To stop future charges, cancel it on your iPhone under Settings &gt; your name &gt; Subscriptions, or at <a href="https://apps.apple.com/account/subscriptions">apps.apple.com/account/subscriptions</a>.</p>\n`
+    : '';
   return {
     subject: 'Your Calen account has been deleted',
     text:
@@ -424,18 +388,19 @@ function buildAccountDeletedConfirmation({ firstName }) {
       `This confirms that your Calen account and its cloud data have been permanently ` +
       `deleted at your request. Nothing is retained beyond a content-free record that ` +
       `the deletion happened.\n\n` +
+      planText +
       `If you didn't request this, contact us right away at support@householdcalendar.com.\n\n` +
       `Thanks for having used Calen.\n`,
     html: htmlLayout(
       `<p style="margin:0 0 16px;">Hi ${esc(firstName || 'there')},</p>
 <p style="margin:0 0 16px;">This confirms that your Calen account and its cloud data have been <strong>permanently deleted</strong> at your request. Nothing is retained beyond a content-free record that the deletion happened.</p>
-<p style="margin:0 0 16px;">If you didn't request this, contact us right away at <a href="mailto:support@householdcalendar.com">support@householdcalendar.com</a>.</p>
+${planHtml}<p style="margin:0 0 16px;">If you didn't request this, contact us right away at <a href="mailto:support@householdcalendar.com">support@householdcalendar.com</a>.</p>
 <p style="margin:0;color:#6b7280;">Thanks for having used Calen.</p>`
     ),
   };
 }
-function sendAccountDeletedConfirmation({ email, firstName }) {
-  return sendMail({ to: email, kind: 'account_deleted', ...buildAccountDeletedConfirmation({ firstName }) });
+function sendAccountDeletedConfirmation({ email, firstName, hadActiveAiPlan }) {
+  return sendMail({ to: email, kind: 'account_deleted', ...buildAccountDeletedConfirmation({ firstName, hadActiveAiPlan }) });
 }
 
 // ── Occasion e-cards ─────────────────────────────────────────────────────────
@@ -448,7 +413,12 @@ function sendAccountDeletedConfirmation({ email, firstName }) {
 const ECARD_UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads');
 const PHOTO_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp' };
 
-function sendECard({ toEmail, toName, fromName, kind, occasionLabel, message, template, font, greeting, signoff, signature, photos }) {
+// `ccEmail` (optional) is the author's own address: an e-card is server-sent on
+// a future date while the app is closed, so — unlike device-composed shares —
+// the sender has no Sent-folder copy. CC'ing the author gives them a record of
+// what each recipient received. It's their own address (no new data exposure)
+// and stays within the existing plaintext-exception boundary for e-cards.
+function sendECard({ toEmail, toName, fromName, ccEmail, kind, occasionLabel, message, template, font, greeting, signoff, signature, photos }) {
   const files = (photos || []).filter((p) => p.storageKey && fs.existsSync(path.join(ECARD_UPLOAD_DIR, p.storageKey)));
   const photoCids = files.map((_, i) => `ecard-photo-${i}@calen`);
   const { subject, html, text } = renderECard({
@@ -460,7 +430,7 @@ function sendECard({ toEmail, toName, fromName, kind, occasionLabel, message, te
     cid: photoCids[i],
     contentType: p.contentType || 'image/jpeg',
   }));
-  return sendMail({ to: toEmail, subject, kind: 'ecard', text, html, attachments: attachments.length ? attachments : undefined });
+  return sendMail({ to: toEmail, cc: ccEmail || undefined, subject, kind: 'ecard', text, html, attachments: attachments.length ? attachments : undefined });
 }
 
 // ── Admin preview ────────────────────────────────────────────────────────────
@@ -475,7 +445,6 @@ function renderPreview(key) {
     case 'welcome':              return buildWelcome(s.user);
     case 'password_reset':       return buildPasswordResetCode(s.user, s.code);
     case 'security_alert':       return buildNewDeviceAlert(s.user, s.device, s.opts || {});
-    case 'recipe_share':         return buildRecipeShare(s);
     case 'account_deleted':      return buildAccountDeletedConfirmation(s);
     case 'ecard': {
       const { subject, html, text } = renderECard({ ...s, photoCids: [] });
@@ -491,8 +460,8 @@ module.exports = {
   sendWelcome,
   sendPasswordResetCode,
   sendNewDeviceAlert,
-  sendRecipeShare,
   sendAccountDeletedConfirmation,
+  buildAccountDeletedConfirmation,
   sendECard,
   // Delivery internals shared with jobs/emailReconcile.js + admin routes.
   attemptSend,

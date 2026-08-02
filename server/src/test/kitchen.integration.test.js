@@ -32,6 +32,32 @@ beforeEach(() => {
 
 const oid = () => crypto.randomBytes(12).toString('hex');
 
+// Grocery weeks, mirroring the server's bucketing (routes/recipeSchedule.js):
+// local midnight, wound back to the household's shopping day (default Saturday).
+const SHOPPING_DAY = 6;
+const weekStartFor = (date) => {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() - SHOPPING_DAY + 7) % 7));
+  return d.toISOString().slice(0, 10);
+};
+// The first shopping day at least a week out, so every meal below — and both
+// grocery weeks they fall in — stays comfortably in the future whenever this
+// suite runs.
+const weekA = new Date();
+weekA.setHours(0, 0, 0, 0);
+weekA.setDate(weekA.getDate() + 7);
+weekA.setDate(weekA.getDate() + ((SHOPPING_DAY - weekA.getDay() + 7) % 7));
+const mealOn = (weekStart, dayOffset) => {
+  const d = new Date(weekStart);
+  d.setDate(d.getDate() + dayOffset);
+  d.setHours(19, 0, 0, 0);
+  return d;
+};
+const firstMeal = mealOn(weekA, 2);   // week A
+const secondMeal = mealOn(weekA, 9);  // week B (A + 7 days)
+const nudgedMeal = mealOn(weekA, 10); // still week B — a same-week edit
+
 const mkSchedule = (auth, body) =>
   request().post('/api/recipe-schedule').set('Authorization', auth).send({ enc: fakeEnc(), ...body });
 
@@ -63,6 +89,17 @@ test('planner CRUD: create, date-range list, for-recipe, delete', async () => {
   assert.equal(after1.body.length, 1);
 });
 
+test('the server-sent recipe email-share route is retired (sharing is device-composed)', async () => {
+  // Recipe sharing moved to the OS share sheet (mobile RecipeDetail) on
+  // 2026-08-01, so the decrypted recipe no longer round-trips through the
+  // server. The route must be gone — no plaintext recipe-share endpoint remains.
+  const u = await registerUser({ firstName: 'Sharer' });
+  const res = await request().post(`/api/recipes/${oid()}/share-email`)
+    .set('Authorization', u.auth)
+    .send({ email: 'friend@example.com', recipe: { title: 'Soup', ingredients: [], instructions: [] } });
+  assert.equal(res.status, 404, 'POST /recipes/:id/share-email is no longer routed');
+});
+
 test('create validates the ciphertext envelope shape', async () => {
   const u = await registerUser({ firstName: 'BadEnc' });
   const res = await request().post('/api/recipe-schedule').set('Authorization', u.auth)
@@ -73,12 +110,17 @@ test('create validates the ciphertext envelope shape', async () => {
 test('moving a meal across weeks reports weekChanged and invalidates both weeks\' organized lists', async () => {
   const u = await registerUser({ firstName: 'Mover' });
 
-  // Default shopping day is Saturday (6): Aug 5 sits in the week starting
-  // Sat Aug 1; Aug 12 in the week starting Sat Aug 8.
-  const sched = await mkSchedule(u.auth, { recipeId: oid(), scheduledDate: '2026-08-05T19:00:00.000Z' });
+  // Dates are derived from today, not hardcoded: the old week's list is only
+  // invalidated while its shopping day is still ahead, so a fixed date would
+  // silently flip this test's outcome once it passed.
+  const sched = await mkSchedule(u.auth, { recipeId: oid(), scheduledDate: firstMeal.toISOString() });
   assert.equal(sched.status, 201);
 
-  for (const weekStart of ['2026-08-01', '2026-08-08']) {
+  const oldWeekStart = weekStartFor(firstMeal);
+  const newWeekStart = weekStartFor(secondMeal);
+  assert.notEqual(oldWeekStart, newWeekStart, 'the two meals must sit in different grocery weeks');
+
+  for (const weekStart of [oldWeekStart, newWeekStart]) {
     const put = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
       .send({ weekStart, state: { organizedList: { categories: [] }, checked: { milk: true } } });
     assert.equal(put.status, 200);
@@ -86,15 +128,15 @@ test('moving a meal across weeks reports weekChanged and invalidates both weeks\
 
   const moved = await request().put(`/api/recipe-schedule/${sched.body._id}`)
     .set('Authorization', u.auth)
-    .send({ scheduledDate: '2026-08-12T19:00:00.000Z' });
+    .send({ scheduledDate: secondMeal.toISOString() });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.equal(moved.body.weekChanged, true);
-  assert.equal(moved.body.oldWeekStart, '2026-08-01');
-  assert.equal(moved.body.newWeekStart, '2026-08-08');
+  assert.equal(moved.body.oldWeekStart, oldWeekStart);
+  assert.equal(moved.body.newWeekStart, newWeekStart);
 
   // Both weeks are in the future, so both organized lists are invalidated —
   // but the rest of the session state (checked items) survives.
-  for (const weekStart of ['2026-08-01', '2026-08-08']) {
+  for (const weekStart of [oldWeekStart, newWeekStart]) {
     const state = await request().get(`/api/recipe-schedule/session?weekStart=${weekStart}`)
       .set('Authorization', u.auth);
     assert.equal(state.status, 200);
@@ -105,7 +147,7 @@ test('moving a meal across weeks reports weekChanged and invalidates both weeks\
   // A same-week edit does not invalidate.
   const nudged = await request().put(`/api/recipe-schedule/${sched.body._id}`)
     .set('Authorization', u.auth)
-    .send({ scheduledDate: '2026-08-13T19:00:00.000Z', servings: 2 });
+    .send({ scheduledDate: nudgedMeal.toISOString(), servings: 2 });
   assert.equal(nudged.body.weekChanged, false);
 });
 

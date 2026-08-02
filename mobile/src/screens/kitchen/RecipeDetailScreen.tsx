@@ -1,6 +1,5 @@
 import React, { useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Share, Alert, Modal } from 'react-native';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Share } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -8,7 +7,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi, RecipeSchedule } from '../../api';
 import { openRecord, sealNew } from '../../lib/e2ee';
 import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
-import { Button, Card, Screen, Divider, Badge, DateField, Input, CenteredLoader, ScreenTitle, HeaderIconButton } from '../../components/ui';
+import { Button, Card, Screen, Divider, Badge, DateField, CenteredLoader, ScreenTitle, HeaderIconButton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -34,9 +33,6 @@ export default function RecipeDetailScreen() {
   const accent = useCalendarColors().colors.recipes;
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [emailOpen, setEmailOpen] = useState(false);
-  const [shareEmailAddr, setShareEmailAddr] = useState('');
-  const [shareSent, setShareSent] = useState(false);
 
   const recipeQ = useQuery({ queryKey: ['recipes', id], queryFn: async () => openRecord('Recipe', (await recipesApi.get(id)).data) });
   const schedulesQ = useQuery({ queryKey: ['recipe-schedule', 'forRecipe', id], queryFn: async () => (await recipeScheduleApi.forRecipe(id)).data });
@@ -56,6 +52,10 @@ export default function RecipeDetailScreen() {
 
   // Share the recipe as self-contained text via the OS share sheet (mirrors the
   // trip share entry point) — recipes need no invite code, the content travels.
+  // This is the ONLY share path: like the household/calendar/trip invites, the
+  // sender composes from their own device, so the recipient's address and the
+  // decrypted recipe never touch the server (the server-sent styled email was
+  // retired 2026-08-01).
   const shareRecipe = () => {
     if (!recipe) return;
     const mins = (recipe.prepTimeMins || 0) + (recipe.cookTimeMins || 0);
@@ -80,22 +80,6 @@ export default function RecipeDetailScreen() {
     Share.share({ message: lines.join('\n') }, { subject: recipe.title });
   };
 
-  // Server-sent styled recipe email — the share sheet path above is plain text.
-  const emailShare = useMutation({
-    mutationFn: () => recipesApi.shareEmail(id, shareEmailAddr.trim().toLowerCase()),
-    onSuccess: () => {
-      setShareEmailAddr('');
-      setShareSent(true);
-    },
-  });
-
-  const onShare = () =>
-    Alert.alert('Share recipe', undefined, [
-      { text: 'Share…', onPress: shareRecipe },
-      { text: 'Email a styled copy', onPress: () => setEmailOpen(true) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-
   useLayoutEffect(() => {
     navigation.setOptions({
       title: 'Recipe',
@@ -107,7 +91,7 @@ export default function RecipeDetailScreen() {
           <View style={styles.titleSpacer} />
           <Text style={styles.headerTitleText} numberOfLines={1}>Recipe</Text>
           <View style={styles.titleActions}>
-            <TouchableOpacity onPress={onShare} hitSlop={8}>
+            <TouchableOpacity onPress={shareRecipe} hitSlop={8}>
               <MaterialCommunityIcons name="share" size={22} color="#fff" />
             </TouchableOpacity>
           </View>
@@ -196,42 +180,6 @@ export default function RecipeDetailScreen() {
           disabled={!recipe.instructions?.length}
         />
       </View>
-
-      <Modal visible={emailOpen} transparent animationType="fade" onRequestClose={() => setEmailOpen(false)}>
-        <KeyboardAvoidingView style={styles.flex} behavior="padding">
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setEmailOpen(false)}>
-          <TouchableOpacity style={styles.emailSheet} activeOpacity={1}>
-            <Text style={styles.emailTitle}>Email this recipe</Text>
-            <Text style={styles.emailSub}>They'll get a styled copy from Calen.</Text>
-            <Input
-              placeholder="Email address"
-              value={shareEmailAddr}
-              onChangeText={(v) => {
-                setShareEmailAddr(v);
-                setShareSent(false);
-                emailShare.reset();
-              }}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Button
-              title="Send"
-              color={accent}
-              loading={emailShare.isPending}
-              disabled={!shareEmailAddr.trim()}
-              onPress={() => emailShare.mutate()}
-            />
-            {shareSent ? <Text style={styles.emailSent}>Recipe sent.</Text> : null}
-            {emailShare.isError ? (
-              <Text style={styles.emailErr}>
-                {(emailShare.error as any)?.response?.data?.error || 'Could not send the email'}
-              </Text>
-            ) : null}
-          </TouchableOpacity>
-        </TouchableOpacity>
-        </KeyboardAvoidingView>
-      </Modal>
     </View>
   );
 }
@@ -266,11 +214,4 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     backgroundColor: colors.surface,
   },
-  flex: { flex: 1 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: spacing.lg },
-  emailSheet: { backgroundColor: colors.surface, borderRadius: 14, padding: spacing.lg },
-  emailTitle: { fontSize: 17, fontWeight: '700', color: colors.text, marginBottom: 4 },
-  emailSub: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md },
-  emailSent: { color: colors.success, fontSize: 13, textAlign: 'center', marginTop: spacing.sm },
-  emailErr: { color: colors.error, fontSize: 13, textAlign: 'center', marginTop: spacing.sm },
 });

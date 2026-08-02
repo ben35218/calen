@@ -591,6 +591,144 @@ function assembleCalendarData({
   };
 }
 
+// ── Availability (free/busy) derivation ──────────────────────────────────────
+//
+// Reduces assembled calendar data to a per-day free/busy view for the AI
+// assistant's PLANNING questions ("when am I free?", "suggest a day for X").
+// Only genuinely-committed time counts as busy; reminders/plans (maintenance
+// tasks, chores, meals, grocery days, occasions) never occupy time and are
+// simply not passed in.
+//
+//   • timed events (allDay:false)  → BUSY hour blocks
+//   • trip date ranges             → whole days "away"
+//   • all-day events               → a soft `allDayCommitments` note; the day's
+//                                     hours stay free (an all-day entry may be a
+//                                     real commitment or just a label, so it is
+//                                     surfaced for the model, not blocked)
+//
+// Free time is the gaps inside a waking window [dayStartMinutes, dayEndMinutes]
+// (household-local), minus the busy blocks. Times are computed in the given IANA
+// `timezone` so a UTC server reports the household's wall-clock hours, not UTC.
+
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+// Wall-clock parts of an instant in a given IANA timezone (null → server-local).
+// Intl.DateTimeFormat is available on Node, Hermes/RN, and browsers, so this
+// stays dependency-free and identical across the three runtimes.
+function zonedParts(instant, timezone) {
+  const d = instant instanceof Date ? instant : new Date(instant);
+  if (!timezone) {
+    return {
+      dayKey: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+      minutes: d.getHours() * 60 + d.getMinutes(),
+    };
+  }
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  const hour = get('hour') === '24' ? '00' : get('hour'); // Intl renders midnight as 24
+  return {
+    dayKey: `${get('year')}-${get('month')}-${get('day')}`,
+    minutes: Number(hour) * 60 + Number(get('minute')),
+  };
+}
+
+// Inclusive YYYY-MM-DD day-key walk (UTC-noon step avoids DST edges).
+function eachDayKey(fromKey, toKey) {
+  const keys = [];
+  const [fy, fm, fd] = fromKey.split('-').map(Number);
+  const [ty, tm, td] = toKey.split('-').map(Number);
+  let d = new Date(Date.UTC(fy, fm - 1, fd, 12));
+  const end = new Date(Date.UTC(ty, tm - 1, td, 12));
+  while (d <= end) {
+    keys.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return keys;
+}
+
+function weekdayOf(dayKey) {
+  const [y, m, d] = dayKey.split('-').map(Number);
+  return WEEKDAY_SHORT[new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay()];
+}
+
+// Free intervals = the waking window minus the (possibly overlapping) busy blocks.
+function subtractBusy(busy, dayStart, dayEnd) {
+  const merged = [...busy].sort((a, b) => a.start - b.start);
+  const free = [];
+  let cursor = dayStart;
+  for (const b of merged) {
+    const s = Math.max(b.start, dayStart);
+    const e = Math.min(b.end, dayEnd);
+    if (e <= dayStart || s >= dayEnd) continue;
+    if (s > cursor) free.push({ start: cursor, end: s });
+    cursor = Math.max(cursor, e);
+  }
+  if (cursor < dayEnd) free.push({ start: cursor, end: dayEnd });
+  return free;
+}
+
+function toHHMM(m) { return `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`; }
+
+// Derive per-day availability from ALREADY-EXPANDED events + trip overlays (the
+// `events` and `trips` fields of assembleCalendarData's output). Each returned
+// day is one of:
+//   { date, weekday, status:'free' }                                  nothing committed
+//   { date, weekday, status:'partial'|'busy', busy?, free, allDayCommitments? }
+//   { date, weekday, status:'away', note }                            on a trip
+function deriveAvailability({
+  events = [], trips = [], fromDate, toDate,
+  timezone = null, dayStartMinutes = 8 * 60, dayEndMinutes = 22 * 60,
+}) {
+  const fromKey = zonedParts(new Date(fromDate), timezone).dayKey;
+  const toKey = zonedParts(new Date(toDate), timezone).dayKey;
+
+  // Trip days → away (first trip named for a day wins the note).
+  const away = new Map();
+  for (const t of trips) {
+    for (const r of (t.ranges || [])) {
+      if (!r.start || !r.end) continue;
+      const s = zonedParts(new Date(r.start), timezone).dayKey;
+      const e = zonedParts(new Date(r.end), timezone).dayKey;
+      for (const k of eachDayKey(s, e)) if (!away.has(k)) away.set(k, t.name || 'Trip');
+    }
+  }
+
+  // Bucket events per local day: timed → busy block, all-day → soft note.
+  const byDay = new Map();
+  const slot = (k) => byDay.get(k) || byDay.set(k, { busy: [], allDay: [] }).get(k);
+  for (const e of events) {
+    if (!e.startDate) continue;
+    const start = zonedParts(new Date(e.startDate), timezone);
+    if (e.allDay) { slot(start.dayKey).allDay.push(e.title); continue; }
+    const endInstant = e.endDate ? new Date(e.endDate) : new Date(new Date(e.startDate).getTime() + 3600000);
+    const end = zonedParts(endInstant, timezone);
+    // Clamp a timed occurrence to its start day (multi-day timed events are rare
+    // here); a same-day end keeps its minutes, otherwise it runs to window close.
+    const endMin = end.dayKey === start.dayKey ? end.minutes : dayEndMinutes;
+    slot(start.dayKey).busy.push({ start: start.minutes, end: Math.max(endMin, start.minutes), title: e.title });
+  }
+
+  return eachDayKey(fromKey, toKey).map((date) => {
+    const weekday = weekdayOf(date);
+    if (away.has(date)) return { date, weekday, status: 'away', note: away.get(date) };
+    const b = byDay.get(date) || { busy: [], allDay: [] };
+    b.busy.sort((x, y) => x.start - y.start);
+    const free = subtractBusy(b.busy, dayStartMinutes, dayEndMinutes);
+    const fullyFree = b.busy.length === 0 && b.allDay.length === 0;
+    const status = fullyFree ? 'free' : (free.length ? 'partial' : 'busy');
+    const day = { date, weekday, status };
+    if (b.allDay.length) day.allDayCommitments = b.allDay;
+    if (b.busy.length) day.busy = b.busy.map((x) => ({ start: toHHMM(x.start), end: toHHMM(x.end), title: x.title }));
+    if (status !== 'free') day.free = free.map((f) => ({ start: toHHMM(f.start), end: toHHMM(f.end) }));
+    return day;
+  });
+}
+
 module.exports = {
   computeNextDueDate,
   anchorRecurrence,
@@ -604,4 +742,5 @@ module.exports = {
   occasionKindFromLabel,
   KNOWN_OCCASION_KINDS,
   assembleCalendarData,
+  deriveAvailability,
 };

@@ -31,6 +31,23 @@ function seriesStartDay(event: EventForDelete): string {
   return event.allDay ? new Date(event.startDate).toISOString().slice(0, 10) : ymd(new Date(event.startDate));
 }
 
+// Run the delete the calendar assistant staged (delete_event → confirm chip),
+// mapping the model's scope onto the same api calls the native prompt uses — so
+// a chat-driven "clear my calendar" behaves exactly like tapping Delete in the
+// form. A one-off event is a plain delete regardless of scope; a recurring one
+// removes just the tapped occurrence ('occurrence', the default — the natural
+// meaning of "clear this week") or the whole repeating event ('series').
+export function assistantDeletePerform(
+  event: EventForDelete,
+  occurrenceDate: string | undefined,
+  scope: 'occurrence' | 'series' = 'occurrence',
+): Promise<unknown> {
+  if (!event.recurrence?.freq || scope === 'series') {
+    return calendarApi.deleteEvent(event._id);
+  }
+  return calendarApi.excludeOccurrence(event._id, occurrenceDate || seriesStartDay(event));
+}
+
 export function eventDeletePrompt(
   event: EventForDelete,
   occurrenceDate: string | undefined,

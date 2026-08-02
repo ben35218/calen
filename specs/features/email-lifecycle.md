@@ -1,7 +1,7 @@
 ---
 title: Email lifecycle, delivery tracking & reconciliation
 status: current
-last-verified: 55bfc65+ (2026-07-29); first cut — code-owned catalog + admin-editable overlay (enable/subject/note), EmailLog upgraded to a delivery ledger with a transient outbox, transient/permanent; `event_invitation` retired (2026-07-29) — event invite outreach is now device-composed like every other invite (server sends a push to account holders instead; `sendEventInvitation`/`buildEventInvitation` deleted from the mailer, catalog entry kept as `implemented:false` so historical logs resolve, admin preview 404s) failure classification with backoff retry + suppression, welcome + account-deleted bookend emails, admin catalog/preview/retry/cancel/reconcile/suppression surfaces
+last-verified: df8c7f3+ (2026-08-01); `recipe_share` retired — recipe sharing is now device-composed via the OS share sheet (RecipeDetailScreen), so `POST /recipes/:id/share-email` + `sendRecipeShare`/`buildRecipeShare` were deleted, the catalog entry kept as `implemented:false` (preview 404s), the decrypted-recipe plaintext round-trip removed; occasion e-cards now CC the author (`sendMail`/`attemptSend`/outbox payload gained an optional `cc`, scheduler passes `ccEmail: author.email`) so the sender keeps a copy of a server-sent card (2026-08-01); `account_deleted` gains an active-subscription reminder — when the wiped account had `aiPlanActive`, the email states the Calen AI plan is Apple-billed, was NOT cancelled by the deletion, and points to Apple's subscription settings (`hadActiveAiPlan` flag from `services/accountDeletion.js`; the catalog sample previews the reminder variant) (2026-07-30); first cut — code-owned catalog + admin-editable overlay (enable/subject/note), EmailLog upgraded to a delivery ledger with a transient outbox, transient/permanent; `event_invitation` retired (2026-07-29) — event invite outreach is now device-composed like every other invite (server sends a push to account holders instead; `sendEventInvitation`/`buildEventInvitation` deleted from the mailer, catalog entry kept as `implemented:false` so historical logs resolve, admin preview 404s) failure classification with backoff retry + suppression, welcome + account-deleted bookend emails, admin catalog/preview/retry/cancel/reconcile/suppression surfaces
 code:
   - server/src/services/emailCatalog.js
   - server/src/services/mailer.js
@@ -36,20 +36,31 @@ be a catalog key. Templates by stage:
 
 - **Onboarding** — `welcome` (on registration).
 - **Security** (`required`, always on) — `password_reset`, `security_alert`.
-- **Sharing & invites** — `recipe_share` (server-sent because it's fully
-  rendered HTML content). ALL invites — household, **calendar**, **trip**, and
-  (since 2026-07-29) **event** — are **device-composed** (the owner's own
-  mail/Messages app sends them; see
-  [households-sharing](households-sharing.md)), so they send no catalog mail;
-  `other` covers the ongoing-access invites' historical logs.
-  `event_invitation` remains in the catalog as `implemented: false` — retired,
-  kept so historical `EmailLog` rows keyed by it keep resolving (its old
-  rationale, the `.ics` attachment, is covered by the public `.ics` **link**
-  the composed email/text carries; an invitee with an account gets a push +
-  the in-app inbox instead of any email).
+- **Sharing & invites** — nothing here is server-sent anymore. ALL sharing —
+  household, **calendar**, **trip**, **event** (since 2026-07-29), and
+  **recipe** (since 2026-08-01) — is **device-composed**: the sender's own
+  mail/Messages app (or the OS share sheet) sends it, so no catalog mail leaves
+  `no-reply@`; see [households-sharing](households-sharing.md) and
+  [kitchen](kitchen.md). `other` covers the ongoing-access invites' historical
+  logs. Both `event_invitation` and `recipe_share` remain in the catalog as
+  `implemented: false` — retired, kept so historical `EmailLog` rows keyed by
+  them keep resolving (admin preview 404s for both). `recipe_share` was
+  server-sent to render styled HTML; that was retired in favour of the OS share
+  sheet, which also removes the plaintext round-trip of the decrypted recipe
+  (the client used to POST the recipe body in the clear to `/:id/share-email`).
 - **Occasions** — `ecard` (scheduled; a deliberate plaintext exception, see
-  [crypto-e2ee](../platform/crypto-e2ee.md)).
-- **Account** — `account_deleted` (sent just before purge); `deletion_scheduled`
+  [crypto-e2ee](../platform/crypto-e2ee.md)). Because it is server-sent on a
+  future date (the app may be closed), the author has no Sent-folder copy the
+  way a device-composed share does — so each e-card **CCs the author's own
+  address** (`sendMail` accepts an optional `cc`, threaded to nodemailer and
+  persisted in the outbox payload so a retried send keeps it; the scheduler
+  passes `ccEmail: author.email`). It's the author's own address, so no new data
+  is exposed beyond the existing e-card plaintext exception.
+- **Account** — `account_deleted` (sent just before purge; when the account
+  had an active Calen AI plan it carries the Apple-keeps-billing reminder —
+  deletion can't cancel a store subscription, see
+  [billing-plans](billing-plans.md) "Account deletion × billing");
+  `deletion_scheduled`
   / `deletion_purged` are `implemented:false` placeholders for a future
   scheduled-purge lifecycle and are NOT sent today.
 

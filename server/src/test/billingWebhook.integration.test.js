@@ -146,6 +146,36 @@ test('TRANSFER moves the unlock between users (restore under a new account)', as
   assert.equal(unknown.status, 200);
 });
 
+test('TRANSFER whose losing id no longer resolves still grants the unlock (account deleted before Restore)', async () => {
+  // The deleted-account restore path: RC fires TRANSFER only when real store
+  // transactions moved, and the hard paywall means any Calen receipt contains
+  // the unlock — a returning customer must not be stranded behind the paywall
+  // just because their old user doc is gone.
+  const { user: dana } = await registerUser();
+  const ghost = '0123456789abcdef01234567'; // valid-shaped id, matches no user
+
+  const res = await post({
+    type: 'TRANSFER',
+    transferred_from: [ghost],
+    transferred_to: [String(dana._id)],
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.transferred, true);
+  assert.equal(res.body.fromDeleted, true);
+  assert.equal((await userDoc(dana._id)).appUnlocked, true);
+
+  // A known losing user WITHOUT the unlock still transfers nothing.
+  const { user: erin } = await registerUser();
+  const { user: fred } = await registerUser();
+  const none = await post({
+    type: 'TRANSFER',
+    transferred_from: [String(erin._id)],
+    transferred_to: [String(fred._id)],
+  });
+  assert.equal(none.body.transferred, false);
+  assert.equal((await userDoc(fred._id)).appUnlocked, false);
+});
+
 test('legacy subscription-era tier events are acked without effect', async () => {
   const { user } = await registerUser();
   const uid = String(user._id);
@@ -230,6 +260,20 @@ test('the credit ledger endpoint lists the caller’s grants newest-first', asyn
   assert.deepEqual(res.body.entries.map((e) => e.kind), ['purchase', 'starter']);
   assert.equal(res.body.entries[0].credits, 500);
   assert.equal(res.body.entries[0].productId, 'credits_499');
+});
+
+test('the ledger endpoint with ?grants=1 excludes usage debits (the History surfaces)', async () => {
+  const { user, auth } = await registerUser();
+  const CreditLedgerModel = require('../models/CreditLedger');
+  await CreditLedgerModel.debit({ userId: user._id, mc: 2000, action: 'chat' });
+
+  const full = await request().get('/api/billing/credits/ledger').set('Authorization', auth);
+  assert.ok(full.body.entries.some((e) => e.kind === 'usage'), 'default includes usage rows');
+
+  const grants = await request().get('/api/billing/credits/ledger?grants=1').set('Authorization', auth);
+  assert.equal(grants.status, 200);
+  assert.ok(grants.body.entries.length > 0, 'the starter grant survives the filter');
+  assert.ok(!grants.body.entries.some((e) => e.kind === 'usage'), 'usage debits are filtered out');
 });
 
 // --- Feature-calendar add-ons ---
@@ -459,4 +503,19 @@ test('a usage debit writes a ledger row and the ledger endpoint surfaces it', as
   assert.ok(usageRow, 'usage debit visible in history');
   assert.equal(usageRow.credits, -2);
   assert.equal(usageRow.action, 'chat');
+});
+
+test('billing status summarizes credits spent per feature this week', async () => {
+  const { user, token } = await registerUser();
+  const CreditLedgerModel = require('../models/CreditLedger');
+  // Two chat turns + one prorated call debit this period.
+  await CreditLedgerModel.debit({ userId: user._id, mc: 5000, action: 'chat' });
+  await CreditLedgerModel.debit({ userId: user._id, mc: 2000, action: 'chat' });
+  await CreditLedgerModel.debit({ userId: user._id, mc: 6700, action: 'call' });
+
+  const res = await request().get('/api/billing/status').set('Authorization', `Bearer ${token}`);
+  assert.equal(res.status, 200);
+  // Spend is keyed by action, summed to credits — chat folds the two turns.
+  assert.equal(res.body.spend.chat, 7);
+  assert.equal(res.body.spend.call, 6.7);
 });

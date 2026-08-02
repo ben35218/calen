@@ -227,6 +227,71 @@ test('includePersonalInfo:false withholds the roster from the model entirely', a
   assert.match(toolResult, /No household members are shared/, 'the tool explains the absence');
 });
 
+test('includePersonalInfo:false hides calendar records — availability is the only calendar lens', async () => {
+  const u = await registerUser({ firstName: 'FreeBusy' });
+
+  // With the toggle off, the device sends title-stripped free/busy (never the
+  // records) as `availability`; the server must serve that and withdraw the
+  // record/edit/call tools entirely.
+  const availability = [
+    {
+      date: '2026-07-25', weekday: 'Sat', status: 'partial',
+      busy: [{ start: '10:00', end: '11:00' }], free: [{ start: '11:00', end: '22:00' }],
+    },
+    { date: '2026-07-26', weekday: 'Sun', status: 'free' },
+  ];
+
+  scriptedTurns = [toolTurn('get_availability', { from: '2026-07-25', to: '2026-07-26' }), endTurn()];
+  const res = await chat(u.auth, {
+    messages: [{ role: 'user', content: 'When am I free this weekend?' }],
+    includePersonalInfo: false,
+    availability,
+  });
+  assert.equal(res.status, 200);
+
+  // The record/edit/call tools are not even offered to the model.
+  const toolNames = anthropicCalls[0].tools.map((t) => t.name);
+  for (const gone of [
+    'list_events', 'get_event_details', 'open_edit_event_form',
+    'delete_event', 'call_business', 'check_call_status',
+  ]) {
+    assert.ok(!toolNames.includes(gone), `${gone} must not be offered with the toggle off`);
+  }
+  assert.ok(toolNames.includes('get_availability'), 'the availability lens stays available');
+  assert.ok(toolNames.includes('open_create_event_form'), 'creating a brand-new event stays available');
+
+  // The reduced system prompt states the free/busy-only scope.
+  const systemText = JSON.stringify(anthropicCalls[0].system);
+  assert.match(systemText, /free\/busy availability only/i, 'the prompt explains the restricted mode');
+
+  // get_availability returns exactly the device-computed free/busy, flagged hidden.
+  const toolResult = JSON.stringify(anthropicCalls[1].messages.at(-1));
+  assert.match(toolResult, /2026-07-25/, 'the device availability flows back through the tool');
+  assert.match(toolResult, /detailsHidden/, 'the result is flagged as details-hidden');
+});
+
+test('includePersonalInfo:false refuses a record tool even if the model calls it anyway', async () => {
+  const u = await registerUser({ firstName: 'Bypass' });
+
+  // Defense-in-depth: the tool is withheld from the list, but a bypassed client
+  // could still script a call — executeTool must refuse, never returning records.
+  scriptedTurns = [toolTurn('list_events', { from: '2026-07-01', to: '2026-07-31' }), endTurn()];
+  const res = await chat(u.auth, {
+    messages: [{ role: 'user', content: 'What appointments do I have?' }],
+    includePersonalInfo: false,
+    calendarSources: {
+      events: [{ _id: 'ev1', title: 'Confidential meeting', calendarType: 'appointments', startDate: '2026-07-10T15:00:00.000Z', allDay: false }],
+      tasks: [], chores: [], people: [], trips: [], recipeSchedules: [],
+    },
+  });
+  assert.equal(res.status, 200);
+
+  const toolResult = JSON.stringify(anthropicCalls[1].messages.at(-1));
+  assert.match(toolResult, /Calendar details are hidden/, 'the record tool refuses');
+  const payloads = allModelPayloads();
+  assert.ok(!payloads.includes('Confidential meeting'), 'no event title reaches the model with the toggle off');
+});
+
 test('phone numbers are presence flags: focused event and list_events never leak the number', async () => {
   const u = await registerUser({ firstName: 'Presence' });
 

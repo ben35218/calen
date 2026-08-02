@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { getHolidays, getHolidayDefs, regionalHolidaysLabel, HolidayDef } from '../../lib/holidays';
 import { useHolidayCalendars, useCustomCalendars } from '../../lib/calendarPrefs';
-import { Card, Button, Hint } from '../../components/ui';
+import { Card, Hint } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
@@ -19,7 +19,7 @@ type Nav = NativeStackNavigationProp<CalendarStackParamList>;
 export default function HolidaysScreen() {
   const nav = useNavigation<Nav>();
   const { calendarId } = useRoute<RouteProp<CalendarStackParamList, 'Holidays'>>().params;
-  const { calendars, toggle, isEnabled, toggleRegion, isRegionSelected, removeCalendar } = useHolidayCalendars();
+  const { calendars, toggle, isEnabled, toggleRegion, isRegionSelected } = useHolidayCalendars();
   const { calendars: customCals } = useCustomCalendars();
   const cal = calendars.find((c) => c.id === calendarId);
   // Shared holiday calendars are the owner's to configure; a housemate reads.
@@ -83,24 +83,6 @@ export default function HolidaysScreen() {
       </View>
     );
   }
-
-  const confirmRemove = () => {
-    Alert.alert(
-      `Remove ${cal.name}?`,
-      'Its holidays will stop showing on your calendar. You can add the country back any time.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            removeCalendar(cal.id);
-            nav.goBack();
-          },
-        },
-      ]
-    );
-  };
 
   // A read-only holiday row: name on the left, date on the right.
   const infoRow = (def: HolidayDef) => (
@@ -190,12 +172,6 @@ export default function HolidaysScreen() {
           {religious.map((def) => toggleRow(def, true))}
         </Card>
       ) : null}
-
-      {!readOnly ? (
-        <View style={styles.removeBtn}>
-          <Button title={`Remove ${cal.name}`} variant="danger" onPress={confirmRemove} />
-        </View>
-      ) : null}
     </ScrollView>
   );
 }
@@ -213,7 +189,6 @@ const styles = StyleSheet.create({
   name: { flex: 1, fontSize: 14, color: colors.text },
   date: { fontSize: 13, color: colors.textMuted },
   approx: { fontSize: 11, color: colors.textMuted },
-  removeBtn: { marginTop: spacing.sm, marginBottom: spacing.xl },
   missing: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, backgroundColor: colors.background },
   missingText: { fontSize: 15, color: colors.textMuted, textAlign: 'center' },
 });

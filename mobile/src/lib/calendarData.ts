@@ -19,7 +19,7 @@ import { CalendarData, settingsApi, tripsApi } from '../api';
 import { currentUserId, openRecord } from './e2ee';
 import { applyAddonLocks, getOwnedAddonIds } from './addons';
 import { getAccessibleCustomCalendarIds } from './calendarPrefs';
-import { getFeedEvents } from './calendarFeeds';
+import { FeedSource, expandFeedSources, loadFeedSources } from './calendarFeeds';
 import { queryClient } from './queryClient';
 import * as replica from './replica';
 import { hasSyncedRecords, syncRecords } from './records';
@@ -123,7 +123,10 @@ export function revalidateCalendar(): Promise<void> {
 // Reused by the Calendar Assistant so list_events/call_business run without any
 // server plaintext (§9.1 P4c).
 export async function loadCalendarSources(
-  { from, to, sync = 'inline' }: { from: string; to: string; sync?: CalendarSyncMode },
+  // from/to are accepted for signature compatibility but unused: the replica
+  // holds everything, so the sources are range-independent (ranges only matter
+  // to expansion).
+  { sync = 'inline' }: { from?: string; to?: string; sync?: CalendarSyncMode } = {},
 ): Promise<CalendarSources> {
   const mode: CalendarSyncMode = sync === 'background' && (await hasSyncedRecords()) ? 'background' : 'inline';
 
@@ -187,10 +190,45 @@ async function loadTrips(): Promise<any[]> {
   return replica.getAll<any>('Trip').catch(() => []);
 }
 
-export async function loadCalendarData(
-  { from, to, sync }: { from: string; to: string; sync?: CalendarSyncMode },
-): Promise<CalendarData> {
-  const s = await loadCalendarSources({ from, to, sync });
+// The range-independent half of a calendar load: the replica sources plus the
+// two access inputs the expansion chokepoint filters on. The month grid loads
+// this ONCE per sync pass and then expands months out of it incrementally as
+// the user scrolls — the sources never depended on the requested range (the
+// replica holds everything), so splitting them out is what makes the grid's
+// unbounded window cheap: extending the window re-runs expansion only, never
+// the replica read.
+export interface CalendarWindowSources {
+  sources: CalendarSources;
+  accessibleCustomIds: Set<string>;
+  ownedAddonIds: Set<string>;
+  feedSources: FeedSource[];
+}
+
+export async function loadCalendarWindowSources(
+  { sync }: { sync?: CalendarSyncMode } = {},
+): Promise<CalendarWindowSources> {
+  const [sources, accessibleCustomIds, ownedAddonIds, feedSources] = await Promise.all([
+    loadCalendarSources({ sync }),
+    getAccessibleCustomCalendarIds(),
+    getOwnedAddonIds(),
+    loadFeedSources(),
+  ]);
+  return { sources, accessibleCustomIds, ownedAddonIds, feedSources };
+}
+
+// The range-dependent half: expand one span of already-loaded sources into
+// CalendarData — the shared engine plus the chokepoint filters every calendar
+// consumer must pass through together (custom-calendar access, add-on locks,
+// ICS feed injection). SYNCHRONOUS on purpose: expansion is derived data, so
+// the month grid computes it at render time (memoized per month) rather than
+// round-tripping through async query state — a data change then repaints in
+// one pass, with no intermediate frames.
+export function expandCalendarRange(
+  win: CalendarWindowSources,
+  from: string,
+  to: string,
+): CalendarData {
+  const s = win.sources;
   const data = assembleCalendarData({
     events: s.events,
     tasks: s.tasks,
@@ -210,26 +248,31 @@ export async function loadCalendarData(
   // calendars not shared with this user. Enforced here — the one chokepoint
   // every calendar view and the reminder scheduler load through — because the
   // server can't filter these post-§9.
-  const accessible = await getAccessibleCustomCalendarIds();
   data.events = (data.events ?? []).filter(
-    (e) => !e.calendarType?.startsWith('custom-') || accessible.has(e.calendarType)
+    (e) => !e.calendarType?.startsWith('custom-') || win.accessibleCustomIds.has(e.calendarType)
   );
 
   // Feature-calendar add-ons: locked features' items never render anywhere.
   // Enforced at this same chokepoint (client-side — the server can't see
   // record types) so every view, search, print, and the reminder scheduler
   // exclude them together. Data is retained; purchasing restores it.
-  applyAddonLocks(data, await getOwnedAddonIds());
+  applyAddonLocks(data, win.ownedAddonIds);
 
   // Subscribed ICS feeds: expanded client-side (the events never touch the
   // server — E2EE), injected here so every view and the reminder scheduler see
   // them. Access filtering is inherent: only calendars visible to this user
   // are in the subscription list.
-  const feedEvents = await getFeedEvents({ from, to });
+  const feedEvents = expandFeedSources(win.feedSources, { from, to });
   if (feedEvents.length) {
     data.events = [...data.events, ...feedEvents].sort(
       (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
     );
   }
   return data;
+}
+
+export async function loadCalendarData(
+  { from, to, sync }: { from: string; to: string; sync?: CalendarSyncMode },
+): Promise<CalendarData> {
+  return expandCalendarRange(await loadCalendarWindowSources({ sync }), from, to);
 }

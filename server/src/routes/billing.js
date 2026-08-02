@@ -20,7 +20,10 @@ const User = require('../models/User');
 const PhoneCall = require('../models/PhoneCall');
 const CreditLedger = require('../models/CreditLedger');
 const MonetizationConfig = require('../models/MonetizationConfig');
+const CustomCalendar = require('../models/CustomCalendar');
+const CalendarInvitation = require('../models/CalendarInvitation');
 const credits = require('../services/credits');
+const { viewerContentCounts } = require('../services/calendarSharing');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { getConfig, currentPeriodKey, nextPeriodResetAt, periodUsage, creditStatus } = require('../middleware/usageMeter');
 
@@ -196,8 +199,21 @@ router.post('/webhook', async (req, res) => {
           },
         });
         await User.updateOne({ _id: fromUser._id }, { $set: { appUnlocked: false } });
+        return res.json({ ok: true, transferred: true });
       }
-      return res.json({ ok: true, transferred: Boolean(fromUser?.appUnlocked) });
+      if (!fromUser) {
+        // The losing id resolves to no user — the account was deleted before
+        // the Restore. RC fires TRANSFER only when real store transactions
+        // moved to this id, and the hard paywall means any Calen receipt
+        // contains the unlock, so grant it rather than stranding a paying
+        // customer behind the paywall. Plan state is untouched: an active
+        // Calen AI plan re-attaches on its next RENEWAL under this id.
+        await User.updateOne({ _id: toUser._id }, {
+          $set: { appUnlocked: true, appUnlockedAt: new Date() },
+        });
+        return res.json({ ok: true, transferred: true, fromDeleted: true });
+      }
+      return res.json({ ok: true, transferred: false });
     }
 
     // Partition the event. The Calen AI plan is matched first (entitlement
@@ -308,10 +324,36 @@ router.get('/status', async (req, res) => {
     }).catch(() => 0);
     const usageWithCalls = callCount > 0 ? { ...usage, call: callCount } : usage;
 
+    // Credits SPENT per feature this period, summed from this user's usage-debit
+    // ledger rows in the window. This is what the Credits screen's "Where your
+    // credits go" card reports (actual spend answers "what am I spending on?" —
+    // the History card is kept to purchases/grants only). Values are credits and
+    // can be fractional (a prorated call lands between whole credits). Calls are
+    // ledgered with action `call`, so they fold in without special handling.
+    const spendRows = await CreditLedger.aggregate([
+      { $match: { userId: req.user._id, kind: 'usage', createdAt: { $gte: periodStart } } },
+      { $group: { _id: '$action', mc: { $sum: '$deltaMc' } } },
+    ]).catch(() => []);
+    const spend = {};
+    for (const r of spendRows) {
+      const c = -r.mc / credits.MC_PER_CREDIT; // deltaMc is negative for debits
+      if (c > 0) spend[r._id || 'usage'] = Math.round(c * 10) / 10;
+    }
+
+    // Free viewer mode's eligibility signal: a locked user with a shared
+    // calendar (or a pending share invite) gets the read-only viewer shell
+    // instead of the hard paywall (see billing-plans.md).
+    const viewer = await viewerContentCounts({ CustomCalendar, CalendarInvitation }, req.user)
+      .catch(() => ({ calendarCollaborations: 0, pendingCalendarInvitations: 0 }));
+
     res.json({
       // The per-user $4.99 app unlock (drives the hard paywall).
       unlocked: Boolean(req.user.appUnlocked),
       unlockPrice: config.unlock?.price ?? 4.99,
+      // Free viewer mode: counts of calendars shared with this user and pending
+      // calendar invitations addressed to them (either > 0 ⇒ a locked user is
+      // routed to the viewer shell instead of the paywall).
+      viewer,
       // Prepaid credit balance. `creditBalance` is whole credits and may be
       // NEGATIVE after a refund (clients floor display at 0); `unlimited` means
       // an exempt admin (render "Unlimited", ignore the balance).
@@ -337,6 +379,9 @@ router.get('/status', async (req, res) => {
       },
       // Per-action counts, always this user's own (analytics only).
       usage: usageWithCalls,
+      // Credits spent per action this period (drives the "Where your credits
+      // go" card). Actual debited spend, not counts; may be fractional.
+      spend,
       usageScope: 'user',
       resetsAt: nextPeriodResetAt().toISOString(),
       models: config.models || {},
@@ -372,9 +417,17 @@ router.get('/status', async (req, res) => {
 // is answerable from the app.
 router.get('/credits/ledger', async (req, res) => {
   try {
-    const rows = await CreditLedger.find({ userId: req.user._id })
+    // `?grants=1` (the mobile History surfaces) returns purchases & grants only
+    // — usage debits are summarized in the "Where your credits go" card, never
+    // itemized. Excluding them server-side, with a larger window, keeps a heavy
+    // AI user's grant history from being pushed out by usage-row volume. The
+    // unfiltered default (usage rows, tighter window) stays for reconciliation.
+    const grantsOnly = req.query.grants === '1' || req.query.grants === 'true';
+    const query = { userId: req.user._id };
+    if (grantsOnly) query.kind = { $ne: 'usage' };
+    const rows = await CreditLedger.find(query)
       .sort({ createdAt: -1 })
-      .limit(50);
+      .limit(grantsOnly ? 200 : 50);
     res.json({
       entries: rows.map((r) => ({
         kind: r.kind,

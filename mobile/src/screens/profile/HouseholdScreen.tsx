@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, Alert, ActivityIndicator, TouchableOpacity, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { householdApi, peopleApi, Person, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
-import { Button, Card, Input, Screen, SectionTitle, useRevealOnOpen } from '../../components/ui';
+import { householdApi, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
+import { Button, Card, Input, RevealWrap, Screen, SectionTitle, SetupCallout } from '../../components/ui';
 import { ensureHouseholdKey, activateBornEncryptedHousehold, getHDK, wrapHDKForJoiner, publicKeyFingerprint, myIdentityPublicKey, openRecord, sealUpdate } from '../../lib/e2ee';
 import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { loadSafetyNumbers, markVerified, MemberSafety } from '../../lib/safetyNumbers';
@@ -12,36 +13,8 @@ import { useAuth } from '../../store/auth';
 import { classifyRecipient, composeShareSms, Recipient } from '../../lib/shareInvite';
 import { useEmailComposer } from '../../components/EmailAppSheet';
 import { SecurityCode } from '../../components/SecurityCode';
-import { normalizePhone } from '../../lib/invitees';
-import { canonicalizePhoneForStorage } from '../../lib/phone';
-import { normalizePerson } from '../../lib/personFields';
+import { useRosterSuggestions } from '../../hooks/useRosterSuggestions';
 import { colors, spacing } from '../../theme';
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// Wraps the invite input + its suggestion dropdown so the keyboard-aware scroll
-// lifts the pair clear of the keyboard when suggestions open. `useRevealOnOpen`
-// reads Screen's scroll context, which only exists for components rendered
-// INSIDE <Screen> — so it must live in this child, not in HouseholdScreen (which
-// renders Screen and would read a null context, leaving the dropdown occluded).
-function RevealWrap({
-  open,
-  count,
-  style,
-  children,
-}: {
-  open: boolean;
-  count: number;
-  style?: object;
-  children: React.ReactNode;
-}) {
-  const ref = useRevealOnOpen(open, count);
-  return (
-    <View ref={ref} collapsable={false} style={style}>
-      {children}
-    </View>
-  );
-}
 
 // Household hub: rename, invite members by email, approve-on-device joins
 // (request → a member verifies a fingerprint and approves → membership + HDK
@@ -50,6 +23,9 @@ function RevealWrap({
 export default function HouseholdScreen() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  // A Calen "Set up your household" chip lands here when the user wanted to
+  // share/assign but has no one to share with yet.
+  const promptInvite = useRoute<RouteProp<{ Household: { promptInvite?: boolean } | undefined }, 'Household'>>().params?.promptInvite;
   const { data: household, isLoading, refetch } = useQuery({
     queryKey: ['household'],
     // Decrypt the sealed settings blob over the plaintext (C2): post-drop the
@@ -88,17 +64,6 @@ export default function HouseholdScreen() {
   );
   const [respondingInvite, setRespondingInvite] = useState<string | null>(null);
 
-  // The in-app contacts roster (decrypted on-device) backs the invite field's
-  // autocomplete — invite someone you already have on file by name, without
-  // retyping their email or number. Same source as the event-invitee picker.
-  const peopleQ = useQuery({
-    queryKey: ['people', 'decrypted'],
-    queryFn: async () => {
-      const rows = (await peopleApi.list()).data;
-      return Promise.all(rows.map((p) => openRecord('Person', p) as Promise<Person>));
-    },
-  });
-
   // Everyone already in the household, already invited, or yourself — hidden from
   // suggestions (the server rejects re-inviting these anyway).
   const taken = useMemo(() => {
@@ -113,38 +78,9 @@ export default function HouseholdScreen() {
     return set;
   }, [household?.members, sentInvites, user?.email]);
 
-  // Roster contacts matching what's typed (by name, email, or phone), each
-  // resolved to the recipient a tap would invite — their primary email, else a
-  // normalized phone. Contacts with neither, or already covered, are dropped.
-  const suggestions = useMemo(() => {
-    const q = inviteEmail.trim().toLowerCase();
-    if (!q) return [];
-    const qDigits = q.replace(/\D/g, '');
-    const recipientFor = (n: ReturnType<typeof normalizePerson>): Recipient | null => {
-      const email = n.emails[0]?.value.trim().toLowerCase();
-      // Canonical E.164 (same format the account phone stores) so the invite
-      // resolves to the recipient's account — robust to legacy contacts saved in
-      // a looser format before import-time canonicalization. `normalizePhone`
-      // still gates plausibility so a junk value isn't offered as a recipient.
-      const raw = n.phones[0]?.value;
-      const phone = raw && normalizePhone(raw) ? canonicalizePhoneForStorage(raw) : null;
-      if (email && EMAIL_RE.test(email) && !taken.has(email)) return { email };
-      if (phone && !taken.has(phone.toLowerCase())) return { phone };
-      return null;
-    };
-    return (peopleQ.data ?? [])
-      .map((p) => ({ p, n: normalizePerson(p), entry: null as Recipient | null }))
-      .map((row) => ({ ...row, entry: recipientFor(row.n) }))
-      .filter(({ p, n, entry }) => {
-        if (!entry) return false;
-        if ((p.name ?? '').toLowerCase().includes(q)) return true;
-        if (n.emails.some((e) => e.value.toLowerCase().includes(q))) return true;
-        if (qDigits && n.phones.some((ph) => ph.value.replace(/\D/g, '').includes(qDigits))) return true;
-        return false;
-      })
-      .slice(0, 5)
-      .map(({ p, entry }) => ({ p, entry: entry! }));
-  }, [peopleQ.data, inviteEmail, taken]);
+  // Roster contacts matching what's typed, resolved to the recipient a tap
+  // would invite — the shared autocomplete behind every share/invite field.
+  const suggestions = useRosterSuggestions(inviteEmail, taken);
 
   const [myRequest, setMyRequest] = useState<JoinRequestMine | null>(null);
   const [canceling, setCanceling] = useState(false);
@@ -420,7 +356,7 @@ export default function HouseholdScreen() {
     const who = [m.firstName, m.lastName].filter(Boolean).join(' ') || m.email || 'this member';
     Alert.alert(
       `Remove ${who}?`,
-      'They’ll move to their own household with their own data. Your household’s encryption key rotates so they can’t see anything you add afterward — but they keep access to what they could already see.',
+      'They’ll move to their own household with their own data. They won’t see anything you add afterward, but they keep access to what they could already see.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -494,6 +430,11 @@ export default function HouseholdScreen() {
 
   return (
     <Screen>
+      {/* Arrived from a Calen "Set up your household" setup chip with no one to
+          share with yet — say why, then let the invite section below do the work. */}
+      {promptInvite && (household?.members?.length ?? 0) <= 1 ? (
+        <SetupCallout icon="people">Invite someone to your household so Calen can help you share and assign to them.</SetupCallout>
+      ) : null}
       <Card style={styles.card}>
         <Input
           label="Household name"

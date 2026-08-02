@@ -67,3 +67,31 @@ export function occasionOccurrences(dateValue: Date | string, fromDate: Date, to
 export function occasionKindFromLabel(label: string | null | undefined): OccasionKind;
 export const KNOWN_OCCASION_KINDS: OccasionKind[];
 export function assembleCalendarData(input: AssembleInput): CalendarData;
+
+export interface AvailabilityInput {
+  /** Already-expanded events (the `events` field of assembleCalendarData). */
+  events?: AnyRecord[];
+  /** Trip overlays (the `trips` field of assembleCalendarData). */
+  trips?: AnyRecord[];
+  fromDate: Date | string | number;
+  toDate: Date | string | number;
+  timezone?: string | null;
+  dayStartMinutes?: number;
+  dayEndMinutes?: number;
+}
+
+export interface AvailabilityDay {
+  date: string;
+  weekday: string;
+  status: 'free' | 'partial' | 'busy' | 'away';
+  /** Busy blocks (HH:MM). `title` is present in the full lens, omitted when the
+   *  caller strips record detail for the privacy-off availability projection. */
+  busy?: { start: string; end: string; title?: string }[];
+  free?: { start: string; end: string }[];
+  /** Titles of all-day commitments on the day (soft note, does not block hours). */
+  allDayCommitments?: string[];
+  /** For an 'away' day, the trip name. */
+  note?: string;
+}
+
+export function deriveAvailability(input: AvailabilityInput): AvailabilityDay[];

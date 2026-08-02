@@ -21,6 +21,8 @@
 // years") expands the next turn's window to cover it. Recurring items are never
 // gated, so recurrence questions work at any range regardless of the window.
 
+import { assembleCalendarData, deriveAvailability } from '@household/calendar';
+
 const DAY = 24 * 60 * 60 * 1000;
 
 // Baseline span when the conversation gives no date hint: a little past + the
@@ -153,4 +155,59 @@ export function scopeCalendarSources<T extends Rec>(sources: T, window: AiWindow
   ) : sources.trips;
 
   return { ...sources, events, tasks, chores, trips };
+}
+
+// ── Availability-only projection (privacy toggle OFF) ────────────────────────
+//
+// When "Use personal & contact info in prompts" is off, the calendar RECORDS
+// never leave the device — only the user's free/busy availability does. This
+// reduces the raw sources over the window to the same free/busy shape the
+// server's get_availability returns, but with every record-identifying detail
+// stripped: busy blocks lose their event titles, all-day events collapse to a
+// bare count, and 'away' days drop the trip name. The result carries times and
+// statuses only, so the assistant can still plan around commitments it cannot
+// see. Uses the shared engine (the same code the server would run), so an
+// availability answer is identical whether computed here or server-side.
+
+export interface AvailabilitySlot { start: string; end: string; }
+export interface AvailabilityDay {
+  date: string;
+  weekday: string;
+  status: 'free' | 'partial' | 'busy' | 'away';
+  busy?: AvailabilitySlot[];
+  free?: AvailabilitySlot[];
+  allDayCommitments?: number;
+}
+
+export function availabilityForWindow(
+  sources: Rec,
+  window: AiWindow,
+  timezone: string | null = null,
+): AvailabilityDay[] {
+  if (!sources) return [];
+  const data = assembleCalendarData({
+    events: Array.isArray(sources.events) ? sources.events : [],
+    trips: Array.isArray(sources.trips) ? sources.trips : [],
+    fromDate: window.from,
+    toDate: window.to,
+    selfId: sources.selfId != null ? String(sources.selfId) : null,
+  });
+  const days = deriveAvailability({
+    events: data.events,
+    trips: data.trips,
+    fromDate: window.from,
+    toDate: window.to,
+    timezone,
+  }) as Rec[];
+
+  // Strip everything that identifies a record — titles, all-day event names, and
+  // the trip name behind an 'away' day — leaving free/busy time only.
+  return days.map((d): AvailabilityDay => {
+    if (d.status === 'away') return { date: d.date, weekday: d.weekday, status: 'away' };
+    const out: AvailabilityDay = { date: d.date, weekday: d.weekday, status: d.status };
+    if (Array.isArray(d.busy)) out.busy = d.busy.map((b: Rec) => ({ start: b.start, end: b.end }));
+    if (Array.isArray(d.free)) out.free = d.free.map((f: Rec) => ({ start: f.start, end: f.end }));
+    if (Array.isArray(d.allDayCommitments)) out.allDayCommitments = d.allDayCommitments.length;
+    return out;
+  });
 }

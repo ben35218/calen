@@ -25,28 +25,54 @@
             <v-text-field v-model.number="config.credits.lowBalanceThreshold" label="Low-balance threshold" type="number" density="compact" variant="outlined" style="max-width: 190px" hide-details />
           </div>
 
+          <div class="text-subtitle-2 mb-2">Chat pricing (token-based — grows with the conversation)</div>
+          <div class="d-flex flex-wrap mb-2" style="gap: 12px">
+            <v-text-field v-model.number="config.credits.appleFeePct" label="Apple fee (fraction, e.g. 0.15)" type="number" step="0.05" density="compact" variant="outlined" style="max-width: 220px" hide-details />
+            <v-text-field v-model.number="config.credits.chatMargin" label="Chat margin (×, 1.0–1.5)" type="number" step="0.05" density="compact" variant="outlined" style="max-width: 200px" hide-details />
+          </div>
+          <p class="text-caption text-medium-emphasis mb-4">
+            A chat turn debits whole credits sized to its token provider-cost (from the
+            token rates below) <em>after</em> Apple's cut, marked up by the chat margin and
+            rounded up: <code>ceil(margin × cost / (1 − appleFee))</code>. Apple fee 0.15 =
+            App Store Small Business; the margin is clamped 1.0–1.5 (1.0 leans on the round-up
+            for the profit). Web search inside a chat is not charged separately — its tokens
+            are already in this cost.
+          </p>
+
           <div class="text-subtitle-2 mb-2">Action prices (credits per action — what usage debits)</div>
           <div class="d-flex flex-wrap mb-2" style="gap: 12px">
             <v-text-field
-              v-for="(_, action) in config.credits.actionCosts" :key="action"
+              v-for="action in flatActionKeys" :key="action"
               v-model.number="config.credits.actionCosts[action]"
               :label="action" type="number" density="compact" variant="outlined"
               style="max-width: 150px" hide-details />
           </div>
           <p class="text-caption text-medium-emphasis mb-4">
             Flat published prices, one debit per completed action (<code>callPerMinute</code> is
-            prorated per connected second). Set them so price ≈ raw cost × the target margin;
-            check the fit on the reconciliation numbers below once real usage exists.
+            prorated per connected second). Chat is <em>not</em> here — it's token-priced above.
+            Set them so price ≈ raw cost × the target margin; check the fit on the reconciliation
+            numbers below once real usage exists.
           </p>
 
-          <div class="text-subtitle-2 mb-2">Raw provider cost reference (reconciliation only — never debited)</div>
-          <div class="d-flex flex-wrap mb-4" style="gap: 12px">
-            <v-text-field
-              v-for="(_, fam) in config.credits.tokenRatesPer1M" :key="fam"
-              v-model.number="config.credits.tokenRatesPer1M[fam]"
-              :label="`${fam} ($/1M tokens)`" type="number" step="0.5" density="compact" variant="outlined"
-              style="max-width: 190px" hide-details />
+          <div class="text-subtitle-2 mb-2">Raw provider token rates ($/1M, per token type — price chat and feed reconciliation)</div>
+          <div class="mb-2">
+            <div
+              v-for="(rate, fam) in config.credits.tokenRatesPer1M" :key="fam"
+              class="d-flex flex-wrap align-center mb-2" style="gap: 12px">
+              <span class="text-body-2" style="min-width: 70px">{{ fam }}</span>
+              <v-text-field
+                v-for="type in tokenRateTypes" :key="type"
+                v-model.number="config.credits.tokenRatesPer1M[fam][type]"
+                :label="`${type} ($/1M)`" type="number" step="0.05" density="compact" variant="outlined"
+                style="max-width: 160px" hide-details />
+            </div>
           </div>
+          <p class="text-caption text-medium-emphasis mb-4">
+            Anthropic's real per-type prices — cache reads are ~0.1× input, writes 1.25×. Chat
+            turns are cache-read heavy, so per-type pricing (not a blended rate) is what keeps
+            chat debits honest. Families match the model id by substring; <code>default</code>
+            covers unknown models.
+          </p>
 
           <div class="text-subtitle-2 mb-2">Credit packs (consumable IAPs)</div>
           <div class="pack-grid">
@@ -198,6 +224,18 @@ async function load() {
     if (!data.credits.actionCosts) {
       data.credits.actionCosts = { chat: 2, scan: 3, generation: 3, manualParse: 1, aiHelper: 1, callPerMinute: 20 };
     }
+    // Chat token-pricing knobs — predate token-priced chat (server backfills on
+    // its next singleton load; render sensible defaults meanwhile).
+    if (data.credits.appleFeePct == null) data.credits.appleFeePct = 0.15;
+    if (data.credits.chatMargin == null) data.credits.chatMargin = 1.0;
+    // Legacy blended token rates (bare number per family) — expand to the
+    // per-type shape so the editor always round-trips objects (the PUT rejects
+    // bare numbers; the server migrates the stored doc on its next load).
+    for (const [fam, rate] of Object.entries(data.credits.tokenRatesPer1M || {})) {
+      if (typeof rate === 'number') {
+        data.credits.tokenRatesPer1M[fam] = { input: rate, output: rate, cacheRead: rate, cacheWrite: rate };
+      }
+    }
     if (!data.aiPlan) data.aiPlan = { productId: 'calen_ai_monthly_499', price: 4.99, monthlyCredits: 600, entitlement: 'calen_ai' };
     config.value = data;
     baseline = JSON.parse(JSON.stringify(editable(data)));
@@ -236,16 +274,35 @@ const changes = computed(() => {
   return diffLeaves(baseline, editable(config.value));
 });
 
+// The per-type token rates a family row edits ($/1M for each way Anthropic
+// bills a token). Order = display order.
+const tokenRateTypes = ['input', 'output', 'cacheRead', 'cacheWrite'];
+
+// The flat action-price editor excludes `chat`: chat is token-priced (its
+// credits are computed per turn from the token rates + Apple fee + margin
+// above), so its `actionCosts` entry is a dead nominal anchor, not a debit.
+const flatActionKeys = computed(() =>
+  Object.keys(config.value?.credits?.actionCosts || {}).filter((k) => k !== 'chat')
+);
+
 // The config is the live economy — refuse to save obviously broken numbers.
 function validate(c) {
   const errors = [];
   const num = (v) => typeof v === 'number' && Number.isFinite(v);
   if (!num(c.credits.margin) || c.credits.margin <= 0) errors.push('Margin multiplier must be > 0');
+  if (c.credits.appleFeePct != null && (!num(c.credits.appleFeePct) || c.credits.appleFeePct < 0 || c.credits.appleFeePct >= 1)) errors.push('Apple fee must be ≥ 0 and < 1');
+  if (c.credits.chatMargin != null && (!num(c.credits.chatMargin) || c.credits.chatMargin < 1 || c.credits.chatMargin > 1.5)) errors.push('Chat margin must be between 1.0 and 1.5');
   if (!num(c.credits.callRatePerMinute) || c.credits.callRatePerMinute < 0) errors.push('Call rate must be ≥ 0');
   if (!Number.isInteger(c.credits.starterCredits) || c.credits.starterCredits < 0) errors.push('Starter credits must be a whole number ≥ 0');
   if (!num(c.credits.lowBalanceThreshold) || c.credits.lowBalanceThreshold < 0) errors.push('Low-balance threshold must be ≥ 0');
   for (const [fam, rate] of Object.entries(c.credits.tokenRatesPer1M || {})) {
-    if (!num(rate) || rate < 0) errors.push(`Token rate "${fam}" must be ≥ 0`);
+    if (!rate || typeof rate !== 'object') {
+      errors.push(`Token rates "${fam}" must be per-type (input/output/cacheRead/cacheWrite)`);
+      continue;
+    }
+    for (const type of tokenRateTypes) {
+      if (!num(rate[type]) || rate[type] < 0) errors.push(`Token rate "${fam}.${type}" must be ≥ 0`);
+    }
   }
   for (const [pid, pack] of Object.entries(c.credits.packs || {})) {
     if (!pack.label?.trim()) errors.push(`Pack "${pid}" needs a label`);

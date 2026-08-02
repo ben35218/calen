@@ -1,9 +1,11 @@
 const express = require('express');
 const Record = require('../models/Record');
 const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
+const CustomCalendar = require('../models/CustomCalendar');
 const { requireAuth } = require('../middleware/auth');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { stampHousehold, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
+const { canWriteCalendarType } = require('../services/calendarSharing');
 const { reapEventAttachments } = require('../services/eventAttachmentReaper');
 
 // Signal-parity C3 — the unified opaque-record API. Replaces the per-collection
@@ -42,6 +44,25 @@ function pickScope(body) {
   return {};
 }
 
+// Calendar-lane write authorization (D1 access levels): a 'view' collaborator
+// holds a member key envelope — recordScope grants them READS — but must not
+// create/replace/tombstone the calendar's records; nor may a non-collaborator
+// write records claiming someone else's calendar scope. Blocked only when the
+// calendar is known and the caller's access is short of 'full' (null = the
+// helper has no opinion — unknown/deleted key — and the recordScope match
+// remains the rule). Trips are exempt: trip collaborators are full-access by
+// design.
+async function calendarWriteBlocked(req, scope) {
+  if (!scope || scope.kind !== 'calendar') return false;
+  const can = await canWriteCalendarType(
+    CustomCalendar,
+    { userId: req.user._id, scopeIds: req.scopeIds },
+    scope.resource,
+  );
+  return can === false;
+}
+const VIEW_ONLY_MESSAGE = 'You have view-only access to this calendar';
+
 // GET /records/sync?since=<iso> — the unified LWW pull. Every record in scope
 // updated after `since`, tombstones included, so the client replica converges.
 router.get('/sync', async (req, res) => {
@@ -72,6 +93,9 @@ router.post('/', async (req, res) => {
       ...enc,
       ...pickScope(req.body),
     };
+    if (await calendarWriteBlocked(req, data.scope)) {
+      return res.status(403).json({ error: VIEW_ONLY_MESSAGE });
+    }
     stampHousehold(req.household, data); // C4: authoritative householdId
     // C4 author-hiding: on an e2eeActive household an HDK record (no resource
     // scope) attributes ONLY to householdId — the member-granular author is sealed
@@ -100,6 +124,14 @@ router.put('/:id', async (req, res) => {
     const scope = await recordScope(req);
     const updates = { ...enc, ...pickScope(req.body) };
     stampHousehold(req.household, updates);
+    // D1 write authorization: check the STORED scope as well as the incoming
+    // one — pickScope leaves the stored scope untouched when the body omits it,
+    // so a view collaborator can't shed the calendar lane by dropping the field.
+    const existing = await Record.findOne({ _id: req.params.id, ...scope }, 'scope').lean();
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    if (await calendarWriteBlocked(req, existing.scope) || await calendarWriteBlocked(req, updates.scope)) {
+      return res.status(403).json({ error: VIEW_ONLY_MESSAGE });
+    }
     const record = await Record.findOneAndUpdate(
       { _id: req.params.id, ...scope },
       updates,
@@ -117,6 +149,11 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const scope = await recordScope(req);
+    const existing = await Record.findOne({ _id: req.params.id, ...scope }, 'scope').lean();
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    if (await calendarWriteBlocked(req, existing.scope)) {
+      return res.status(403).json({ error: VIEW_ONLY_MESSAGE });
+    }
     const record = await Record.findOneAndUpdate(
       { _id: req.params.id, ...scope },
       { deleted: true },

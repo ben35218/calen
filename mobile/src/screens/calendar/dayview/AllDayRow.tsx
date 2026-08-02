@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { colors, spacing } from '../../../theme';
+import { mdiName } from '../../../lib/recurrence';
 import { DayNav, openAllDayItem } from './dayNav';
 import { AllDayItem, GUTTER } from './dayViewLayout';
 
@@ -37,7 +38,9 @@ export default function AllDayRow({ days }: { days: { date: string; items: AllDa
                   item.faded && styles.chipFaded,
                 ]}
               >
-                {item.muted ? (
+                {item.icon ? (
+                  <MaterialCommunityIcons name={mdiName(item.icon) as any} size={12} color={item.color} style={styles.chipIcon} />
+                ) : item.muted ? (
                   <Ionicons name="ellipse-outline" size={12} color={colors.textMuted} style={styles.chipIcon} />
                 ) : null}
                 <Text

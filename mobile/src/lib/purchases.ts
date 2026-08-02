@@ -11,6 +11,11 @@ import { REVENUECAT_IOS_KEY, REVENUECAT_ANDROID_KEY } from '../config';
 
 const apiKey = Platform.OS === 'ios' ? REVENUECAT_IOS_KEY : REVENUECAT_ANDROID_KEY;
 
+// The Apple manage-subscriptions deep link — the last-resort fallback when the
+// native sheet is unavailable (RC unconfigured, sheet call failed) and no
+// CustomerInfo managementURL is at hand.
+export const APPLE_SUBSCRIPTIONS_URL = 'https://apps.apple.com/account/subscriptions';
+
 export function isPurchasesConfigured(): boolean {
   return Boolean(apiKey);
 }

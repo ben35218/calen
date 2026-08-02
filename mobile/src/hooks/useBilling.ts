@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { billingApi, BillingStatus } from '../api';
 import { cacheOwnedAddons } from '../lib/addons';
 import { cacheUnlocked } from '../lib/unlock';
+import { cacheViewerContent, viewerContentFromStatus } from '../lib/viewerAccess';
 
 // Single source for the billing status query so every surface (unlock paywall,
 // credit banners, profile row) shares one cache entry and staleTime.
@@ -11,10 +12,12 @@ export function useBilling() {
     queryKey: ['billing', 'status'],
     queryFn: async () => {
       const { data } = await billingApi.status();
-      // Mirror the owned add-on set + unlock state into the device caches so
-      // feature gating and the hard paywall track the server truth offline.
+      // Mirror the owned add-on set + unlock state + viewer content into the
+      // device caches so feature gating, the hard paywall, and the free viewer
+      // shell track the server truth offline.
       cacheOwnedAddons(data.addons ?? []);
       cacheUnlocked(Boolean(data.unlocked));
+      cacheViewerContent(viewerContentFromStatus(data));
       return data;
     },
     staleTime: 60_000,
@@ -60,6 +63,7 @@ function useActivationPoll(done: (data: BillingStatus) => boolean) {
         // the paywall / feature gates.
         cacheOwnedAddons(data.addons ?? []);
         cacheUnlocked(Boolean(data.unlocked));
+        cacheViewerContent(viewerContentFromStatus(data));
         if (doneRef.current(data)) {
           setState('active');
           // The change has landed server-side, which means any new credit-ledger
@@ -109,10 +113,25 @@ export function useCreditsActivation() {
 }
 
 // Post-purchase poll for the monthly Calen AI plan subscription: done once the
-// server reports the plan active (the webhook also lands the period's credits).
+// server reports the plan active AND the period's credits have landed. The
+// webhook flips `aiPlanActive` in a separate write BEFORE it grants the credits,
+// so gating on `active` alone can complete on a poll that caught the balance
+// mid-grant — freezing a stale, pre-credit balance into the cache until the next
+// focus refetch. Requiring the balance to rise past the pre-purchase snapshot
+// (same doctrine as the credit-pack poll) keeps polling until the credits
+// actually appear, so the success copy and the balance are truthful together.
 export function useAiPlanActivation() {
-  const { state, begin } = useActivationPoll((data) => data.aiPlan?.active === true);
-  return { state, start: () => begin() };
+  const beforeMc = useRef<number>(0);
+  const { state, begin } = useActivationPoll(
+    (data) => data.aiPlan?.active === true && (data.creditBalanceMc ?? 0) > beforeMc.current
+  );
+  return {
+    state,
+    start: (previousBalanceMc: number) => {
+      beforeMc.current = previousBalanceMc;
+      begin();
+    },
+  };
 }
 
 // Post-purchase poll for one-time feature-calendar add-ons: done once the owned

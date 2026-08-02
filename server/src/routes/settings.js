@@ -18,7 +18,7 @@ router.use(requireAuth);
 // (9am unless they change it — see dayAlertTime) in their own local zone, so a
 // travelling or out-of-town member gets correct timing regardless of the
 // household's default zone.
-const SHARED   = ['homeAddress', 'groceryShoppingDay', 'groceryFrequency', 'groceryAnchor', 'grocerySections', 'reminderLeadDays'];
+const SHARED   = ['homeAddress', 'homeCity', 'groceryShoppingDay', 'groceryFrequency', 'groceryAnchor', 'grocerySections', 'reminderLeadDays'];
 // aiEnabled mirrors the device's AI consent toggle (middleware/aiConsent.js).
 // dayAlertTime is the personal `HH:mm` default day-based alerts fire at (see
 // User.dayAlertTime); validated + normalized below.
@@ -41,6 +41,9 @@ router.get('/', async (req, res) => {
     dayAlertTime: u.dayAlertTime ?? null,
     // shared (household)
     homeAddress: hh.homeAddress,
+    // Coarse home-area label (plaintext) the calendar assistant grounds local
+    // suggestions in — derived client-side from the address, or set by hand.
+    homeCity: hh.homeCity || '',
     groceryShoppingDay: hh.groceryShoppingDay, grocerySections: hh.grocerySections,
     groceryFrequency: hh.groceryFrequency ?? 'weekly', groceryAnchor: hh.groceryAnchor ?? null,
     reminderLeadDays: hh.reminderLeadDays,

@@ -15,11 +15,13 @@ import {
   nowBadgeLabel,
   TimedBlock,
   EventStatus,
+  EVENT_ICON,
   WEEK_WINDOW,
   MIN_BLOCK,
   DAY_MIN,
 } from '../dayViewLayout';
 import { DayItems } from '../../../../lib/calendar';
+import { occasionIcon } from '../../../../lib/occasions';
 
 const CAL_COLORS = {
   maintenance: '#1976D2',
@@ -69,6 +71,19 @@ describe('normalizeDay routing', () => {
     expect(timed).toHaveLength(1);
     expect(timed[0]).toMatchObject({ eventId: 'e1', startMin: 1020, endMin: 1080 });
     expect(allDay.map((a) => a.key)).toEqual(['e2']);
+    // All-day events are badged with the generic calendar glyph.
+    expect(allDay[0]).toMatchObject({ kind: 'event', icon: EVENT_ICON });
+  });
+
+  it('badges occasions with their kind icon in the birthdays colour', () => {
+    const day = emptyDay();
+    day.occasions = [
+      { id: 'o1', kind: 'birthday', name: 'Ada', label: 'Birthday', date: '2026-07-27', personId: 'p1' },
+    ] as any;
+    const { allDay } = normalizeDay(day, [], '2026-07-27', CAL_COLORS, NO_STATUS);
+    const occ = allDay.find((a) => a.kind === 'occasion');
+    expect(occ).toMatchObject({ kind: 'occasion', color: CAL_COLORS.birthdays, icon: occasionIcon('birthday') });
+    expect(occ?.muted).toBeFalsy();
   });
 
   it('clips a midnight-spanning event to each column day', () => {
@@ -97,15 +112,23 @@ describe('normalizeDay routing', () => {
     expect(timed[0].endMin - timed[0].startMin).toBe(MIN_BLOCK);
   });
 
-  it('renders date-only tasks and chores as muted all-day chips', () => {
+  it('renders date-only tasks as muted all-day chips', () => {
     const day = emptyDay();
     day.tasks = [{ _id: 't1', title: 'Furnace filter' }] as any;
-    day.chores = [{ _id: 'c1', title: 'Garbage + Blue Bin' }] as any;
     const { allDay, timed } = normalizeDay(day, [], '2026-07-28', CAL_COLORS, NO_STATUS);
     expect(timed).toHaveLength(0);
-    const kinds = allDay.map((a) => [a.kind, a.muted]);
-    expect(kinds).toContainEqual(['task', true]);
-    expect(kinds).toContainEqual(['chore', true]);
+    const task = allDay.find((a) => a.kind === 'task');
+    expect(task).toMatchObject({ kind: 'task', muted: true });
+  });
+
+  it('renders chores tinted in the Chores colour, badged with their own icon (not muted)', () => {
+    const day = emptyDay();
+    day.chores = [{ _id: 'c1', title: 'Garbage + Blue Bin', icon: 'mdi-trash-can' }] as any;
+    const { allDay, timed } = normalizeDay(day, [], '2026-07-28', CAL_COLORS, NO_STATUS);
+    expect(timed).toHaveLength(0);
+    const chore = allDay.find((a) => a.kind === 'chore');
+    expect(chore).toMatchObject({ kind: 'chore', color: CAL_COLORS.chores, icon: 'mdi-trash-can' });
+    expect(chore?.muted).toBeFalsy();
   });
 
   it('marks cancelled / reschedule-pending events faded and struck', () => {

@@ -1,20 +1,23 @@
 import React, { useCallback, useEffect, useLayoutEffect } from 'react';
-import { TouchableOpacity, Text, StyleSheet, Alert } from 'react-native';
+import { Alert } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
+import type { ChatMessage } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import ChatHeaderButtons from '../chat/ChatHeaderButtons';
 import CreditsBanner from '../../components/CreditsBanner';
 import { peopleApi, householdApi, calendarApi, callsApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import type { AssistantFocusEvent, RootStackParamList } from '../../navigation/types';
 import { loadCalendarSources } from '../../lib/calendarData';
+import { assistantDeletePerform } from '../../lib/eventDelete';
 import { loadPassiveForecast } from '../../lib/weatherSource';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { useAuth } from '../../store/auth';
 import { createAliasContext } from '../../lib/aiPayload';
-import { deriveAiWindow, scopeCalendarSources } from '../../lib/aiWindow';
+import { deriveAiWindow, scopeCalendarSources, availabilityForWindow } from '../../lib/aiWindow';
 import type { AssistantId } from '../chat/assistantTabs';
 
 // Turn the assistant's drafted event (open_create_event_form input) into the
@@ -40,6 +43,7 @@ function buildEventPayload(ev: Record<string, any>): Record<string, unknown> {
     startDate,
     endDate,
     description: ev.description || undefined,
+    location: ev.location || undefined,
     phone: ev.phone || undefined,
     reminderMinutes: typeof ev.reminderMinutes === 'number' ? ev.reminderMinutes : undefined,
     recurrence: ev.recurrFreq
@@ -69,8 +73,13 @@ function isCallChip(text: string): boolean {
 // show up. (Deep-link mapping of navigateTo is a deferred polish item.)
 export default function CalendarAssistantScreen({
   onSelectAssistant,
+  onResumeChat,
   focusEvent,
-}: { onSelectAssistant?: (id: AssistantId) => void; focusEvent?: AssistantFocusEvent } = {}) {
+}: {
+  onSelectAssistant?: (id: AssistantId) => void;
+  onResumeChat?: (surfaceKey: string, chatId: string) => void;
+  focusEvent?: AssistantFocusEvent;
+} = {}) {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -86,6 +95,10 @@ export default function CalendarAssistantScreen({
   const ephemeralRef = React.useRef<Record<string, unknown> | null>(null);
   const rawCalendarRef = React.useRef<Record<string, unknown> | null>(null);
   const weatherRef = React.useRef<unknown>(null);
+  // Household timezone (plaintext), captured for the on-device availability
+  // projection used when the privacy toggle is off — availability is computed in
+  // the household-local waking window, same as the server would.
+  const tzRef = React.useRef<string | null>(null);
 
   // G1 (AI payload minimization): everything leaving the device passes through
   // this context — record/foreign-key ids become per-conversation aliases, and
@@ -94,6 +107,7 @@ export default function CalendarAssistantScreen({
 
   const chat = useChat({
     endpoint: '/calendar/chat',
+    historyKey: 'calendar',
     // Pass the toggle to the context endpoint too, so the "what I can see" panel
     // doesn't claim access to household details the prompt won't actually get.
     contextEndpoint: `/calendar/chat/context?includePersonalInfo=${usePersonal}`,
@@ -111,6 +125,21 @@ export default function CalendarAssistantScreen({
     buildBody: (messages) => {
       const focusDate = focusEvent?.startDate ? new Date(focusEvent.startDate) : null;
       const window = deriveAiWindow(messages.map((m) => m.content), new Date(), focusDate);
+      // Privacy toggle OFF: the calendar RECORDS stay on the device. Reduce them to
+      // title-stripped free/busy availability here and send only that — no raw
+      // sources, no focused event, no roster. The server then exposes availability
+      // as the sole calendar lens (record/edit/call tools are withdrawn).
+      if (!usePersonal) {
+        const availability = rawCalendarRef.current
+          ? availabilityForWindow(rawCalendarRef.current, window, tzRef.current)
+          : [];
+        return {
+          messages,
+          includePersonalInfo: false,
+          availability,
+          ...(weatherRef.current ? { weather: weatherRef.current } : {}),
+        };
+      }
       const scoped = rawCalendarRef.current
         ? aliasCtx.sanitize(scopeCalendarSources(rawCalendarRef.current, window))
         : null;
@@ -137,12 +166,15 @@ export default function CalendarAssistantScreen({
       )).catch(() => { /* best-effort; retried on the next turn */ });
     },
     toolLabels: {
+      web_search: 'Searching the web…',
+      verify_place: "Checking if it's still open…",
       list_events: 'Checking your calendar…',
+      get_availability: 'Checking your availability…',
       get_event_details: 'Checking the event…',
       get_household_members: 'Checking household names…',
       open_create_event_form: 'Opening the event form…',
-      open_edit_event_form: 'Opening the event…',
-      open_delete_event_form: 'Opening the event…',
+      open_edit_event_form: 'Preparing the edit…',
+      delete_event: 'Preparing the deletion…',
       call_business: 'Placing the call…',
       check_call_status: 'Checking the call…',
       get_weather_forecast: 'Checking the weather…',
@@ -161,7 +193,11 @@ export default function CalendarAssistantScreen({
     (async () => {
       try {
         let e2eeActive = false;
-        try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
+        try {
+          const hh = (await householdApi.get()).data;
+          e2eeActive = !!hh.e2eeActive;
+          tzRef.current = (hh as any).timezone || (user as any)?.timezone || null;
+        } catch { /* solo/offline */ }
         if (!e2eeActive || !getHDK()) return;
         // Honor the privacy toggle: when contacts aren't allowed in prompts, don't
         // even decrypt/upload them — the server withholds them regardless.
@@ -225,25 +261,32 @@ export default function CalendarAssistantScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usePersonal]);
 
-  // After the assistant drafts an event it pins two chips: "Save this to my
-  // calendar" (create it directly) and "Edit in form" (open the pre-filled create
-  // form). Both consume the draft; any other chip falls through to a chat send.
+  // The action chips a turn pins read the staged record OFF THAT MESSAGE, so
+  // tapping a chip on an older turn acts on that turn's own draft/staging:
+  //   • drafted event (msg.pendingEvent): "Save this to my calendar" (direct
+  //     create) + "Edit in form" (open the pre-filled create form);
+  //   • staged deletes (msg.pendingDeletes): "Delete from my calendar" runs the
+  //     actual deletes — this is where the assistant's deletions really happen,
+  //     the server only STAGES them ("Cancel, keep events" falls through to a
+  //     plain send so the assistant acknowledges);
+  //   • staged edit (msg.pendingEdit): "Open the event to edit" opens the native
+  //     edit form on that event.
+  // One-shot actions (create, delete) are retired with `markActionUsed` so they
+  // can't run twice; form-openers stay tappable. Any other chip falls through.
   const handleFollowup = useCallback(
-    (text: string): boolean => {
-      const ev = chat.pendingEvent as Record<string, any> | null;
-      if (!ev) return false;
-      if (text === 'Edit in form') {
-        chat.resolvePending();
+    (text: string, msg: ChatMessage, index: number): boolean => {
+      const ev = (msg.pendingEvent ?? null) as Record<string, any> | null;
+      if (ev && text === 'Edit in form') {
         navigation.navigate('EventForm', { prefill: ev });
         return true;
       }
-      if (text === 'Save this to my calendar') {
+      if (ev && text === 'Save this to my calendar') {
         (async () => {
           try {
             // E2EE dual-write: seal ciphertext alongside plaintext (no-op without an HDK).
             await calendarApi.createEvent(await sealNew('CalendarEvent', buildEventPayload(ev)));
             qc.invalidateQueries({ queryKey: ['calendar'] });
-            chat.resolvePending();
+            chat.markActionUsed(index, text); // disable this Save chip (no re-create)
             Alert.alert('Added to your calendar', String(ev.title || 'Event'));
           } catch (e: any) {
             Alert.alert('Couldn’t save', e?.response?.data?.error || 'Please try again.');
@@ -251,21 +294,62 @@ export default function CalendarAssistantScreen({
         })();
         return true;
       }
+
+      // Confirmed deletion — the real mutation. Resolve each staged event against
+      // the decrypted sources (raw _ids match the resolved pendingDelete ids) so
+      // recurring events delete correctly (occurrence-exclude vs series-delete),
+      // mirroring the native form's Delete.
+      const pending = msg.pendingDeletes ?? null;
+      if (pending && pending.length && text === 'Delete from my calendar') {
+        (async () => {
+          const events = ((rawCalendarRef.current?.events as any[]) ?? []);
+          const results = await Promise.allSettled(
+            pending.map((pd) => {
+              const found = events.find((e) => String(e._id) === String(pd.eventId));
+              if (!found) return Promise.reject(new Error(pd.title || pd.eventId));
+              return assistantDeletePerform(
+                { _id: found._id, startDate: found.startDate, allDay: found.allDay, recurrence: found.recurrence },
+                pd.occurrenceDate,
+                pd.scope,
+              );
+            }),
+          );
+          qc.invalidateQueries({ queryKey: ['calendar'] });
+          chat.markActionUsed(index, text); // spent — can't re-delete
+          const ok = results.filter((r) => r.status === 'fulfilled').length;
+          const failed = results.length - ok;
+          if (failed === 0) {
+            Alert.alert('Removed from your calendar', ok === 1 ? 'Deleted 1 event.' : `Deleted ${ok} events.`);
+          } else {
+            Alert.alert(
+              ok ? 'Partly done' : 'Couldn’t delete',
+              `${ok ? `Deleted ${ok}. ` : ''}${failed} event${failed === 1 ? '' : 's'} couldn’t be removed — pull to refresh and try again.`,
+            );
+          }
+        })();
+        return true;
+      }
+
+      // Staged edit — open the native edit form on the event (user edits + saves).
+      const edit = msg.pendingEdit ?? null;
+      if (edit && text === 'Open the event to edit') {
+        navigation.navigate('EventForm', { eventId: edit.eventId, date: edit.occurrenceDate });
+        return true;
+      }
       return false;
     },
     [chat, navigation, qc]
   );
 
+  // History clock (opens the Recent-chats sheet) + compose (new chat). The
+  // closure captures `chat` from this render; the deps cover every field the
+  // buttons read, and the handlers themselves are stable callbacks.
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerRight: () =>
-        chat.messages.length > 0 ? (
-          <TouchableOpacity onPress={chat.clear} disabled={chat.loading}>
-            <Text style={styles.clear}>Clear</Text>
-          </TouchableOpacity>
-        ) : undefined,
+      headerRight: () => <ChatHeaderButtons chat={chat} />,
     });
-  }, [navigation, chat.messages.length, chat.loading, chat.clear]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, chat.messages.length, chat.recentChats.length, chat.loading, chat.clear, chat.openHistory]);
 
   return (
     <ChatScreen
@@ -273,6 +357,10 @@ export default function CalendarAssistantScreen({
       surface="calendar"
       activeAssistant="calendar"
       onSelectAssistant={onSelectAssistant}
+      onResumeExternal={onResumeChat}
+      // The focused event, so a "setup_event_phone" suggestion can deep-link to
+      // that event's location form to add the business number.
+      navContext={focusEvent ? { eventId: focusEvent._id } : undefined}
       banner={<CreditsBanner />}
       emptyHint={
         focusEvent
@@ -284,7 +372,7 @@ export default function CalendarAssistantScreen({
       followupKind={(text) =>
         text === 'Save this to my calendar'
           ? 'add'
-          : text === 'Edit in form'
+          : text === 'Edit in form' || text === 'Open the event to edit'
           ? 'review'
           : isCallChip(text)
           ? 'call'
@@ -293,7 +381,3 @@ export default function CalendarAssistantScreen({
     />
   );
 }
-
-const styles = StyleSheet.create({
-  clear: { color: '#fff', fontSize: 15, fontWeight: '500' },
-});

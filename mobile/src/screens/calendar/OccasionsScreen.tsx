@@ -1,16 +1,17 @@
-import React, { useLayoutEffect, useRef } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl, LayoutChangeEvent } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { occasionKindFromLabel } from '@household/calendar';
 import { useAuth } from '../../store/auth';
 import { peopleApi, ecardsApi, Person, OccasionKind, ECard } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { normalizePerson } from '../../lib/personFields';
-import { occasionIcon, occasionNoun, occasionFocusKey } from '../../lib/occasions';
+import {
+  occasionIcon, occasionNoun, occasionFocusKey,
+  collectOccasions, whenLabel, Occasion, COMING_UP_DAYS,
+} from '../../lib/occasions';
 import { CALENDAR_COLORS } from '../../lib/calendar';
 import { Card, CenteredLoader, EmptyState, Hint, IconAvatar, HeaderIconButton, SectionHeader } from '../../components/ui';
 import { useOwnedAddons } from '../../lib/addons';
@@ -25,56 +26,6 @@ const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
-
-interface Upcoming {
-  person: Person;
-  kind: OccasionKind;
-  label: string;   // 'Birthday' or the raw contact date label
-  month: number;   // 1-based
-  day: number;
-  daysUntil: number;
-  years: number | null; // origin year → age / years since
-  hidden: boolean; // the person is excluded from the Occasions calendar
-}
-
-// Parse a YYYY-MM-DD value; returns null when it isn't a real month/day.
-function parseYmd(value: string | undefined): { y: number; mo: number; d: number } | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value ?? ''));
-  if (!m) return null;
-  return { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]) };
-}
-
-// Every occasion on file (birthdays + labeled contact dates), sorted by next
-// occurrence from today. Mirrors the shared engine's derivation, computed here
-// for the upcoming list.
-function upcomingOccasions(people: Person[]): Upcoming[] {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const out: Upcoming[] = [];
-  const add = (person: Person, kind: OccasionKind, label: string, value: string | undefined) => {
-    const p = parseYmd(value);
-    if (!p) return;
-    let next = new Date(today.getFullYear(), p.mo - 1, p.d);
-    if (next < today) next = new Date(today.getFullYear() + 1, p.mo - 1, p.d);
-    const daysUntil = Math.round((next.getTime() - today.getTime()) / 86400000);
-    const years = p.y > 1900 && p.y <= today.getFullYear() ? next.getFullYear() - p.y : null;
-    out.push({ person, kind, label, month: p.mo, day: p.d, daysUntil, years, hidden: Boolean(person.occasionsHidden) });
-  };
-  for (const person of people) {
-    if (person.birthday) add(person, 'birthday', 'Birthday', String(person.birthday).slice(0, 10));
-    for (const entry of normalizePerson(person).dates) {
-      add(person, occasionKindFromLabel(entry.label), entry.label || 'Date', entry.value);
-    }
-  }
-  return out.sort((a, b) => a.daysUntil - b.daysUntil || a.person.name.localeCompare(b.person.name));
-}
-
-function whenLabel(daysUntil: number): string {
-  if (daysUntil === 0) return 'Today';
-  if (daysUntil === 1) return 'Tomorrow';
-  if (daysUntil < 30) return `in ${daysUntil} days`;
-  return '';
-}
 
 function yearsLabel(kind: OccasionKind, years: number | null): string {
   if (!years) return '';
@@ -105,6 +56,7 @@ function OccasionsHome() {
   const focusKey = focus ? occasionFocusKey(focus) : null;
   const scrollRef = useRef<ScrollView>(null);
   const scrolledToFocus = useRef(false);
+  const [showLater, setShowLater] = useState(false);
 
   useLayoutEffect(() => {
     nav.setOptions({
@@ -147,16 +99,33 @@ function OccasionsHome() {
     return <CenteredLoader color={ACCENT} />;
   }
 
-  // Match an occasion to a scheduled card by contact + kind + month/day.
+  // Match an occasion to a scheduled card by contact + kind + month/day. ACTIVE
+  // cards drive the upcoming "schedule/edit" envelope; a card that already sent
+  // (active:false, sentAt set) instead marks its recently-passed row as "Sent".
   const cardKey = (personId: string, kind: string, month: number, day: number) => `${personId}|${kind}|${month}|${day}`;
-  const cardByOccasion = new Map<string, ECard>();
+  const activeCard = new Map<string, ECard>();
+  const sentCard = new Map<string, ECard>();
   for (const c of ecards ?? []) {
-    if (c.personId) cardByOccasion.set(cardKey(String(c.personId), c.kind, c.month, c.day), c);
+    if (!c.personId) continue;
+    const k = cardKey(String(c.personId), c.kind, c.month, c.day);
+    if (c.active) activeCard.set(k, c);
+    else if (c.sentAt) sentCard.set(k, c);
   }
 
-  const upcoming = upcomingOccasions(people);
-  const visible = upcoming.filter((o) => !o.hidden);
-  const hiddenOccasions = upcoming.filter((o) => o.hidden);
+  // Contacts hidden from the Occasions calendar (occasionsHidden) are omitted
+  // entirely — they don't appear anywhere in this list.
+  const visible = collectOccasions(people).filter((o) => !o.hidden);
+  const recentlyPassed = visible.filter((o) => o.offset < 0);
+  const comingUp = visible.filter((o) => o.offset >= 0 && o.offset <= COMING_UP_DAYS);
+  const later = visible.filter((o) => o.offset > COMING_UP_DAYS);
+
+  const occKey = (o: Occasion) => occasionFocusKey({ personId: o.person._id, kind: o.kind, month: o.month, day: o.day, label: o.label });
+  // Auto-expand "Later this year" when the occasion tapped from the calendar lives there.
+  const focusInLater = Boolean(focusKey && later.some((o) => focusKey === occKey(o)));
+  const laterOpen = showLater || focusInLater;
+
+  const now = new Date();
+  const todayLabel = `${MONTHS[now.getMonth()]} ${now.getDate()}`;
 
   // Scroll the tapped occasion to the top of the list, once, after it lays out.
   const onFocusRowLayout = (e: LayoutChangeEvent) => {
@@ -166,14 +135,17 @@ function OccasionsHome() {
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.md), animated: true }));
   };
 
-  const renderRow = (o: Upcoming, i: number) => {
+  const renderRow = (o: Occasion, i: number, variant: 'past' | 'upcoming' | 'later') => {
     const isSelf = Boolean(o.person.accountId && String(o.person.accountId) === selfId);
-    const when = o.hidden ? '' : whenLabel(o.daysUntil);
-    const card = cardByOccasion.get(cardKey(o.person._id, o.kind, o.month, o.day));
-    const isFocused = Boolean(
-      focusKey &&
-      focusKey === occasionFocusKey({ personId: o.person._id, kind: o.kind, month: o.month, day: o.day, label: o.label })
-    );
+    const isPast = variant === 'past';
+    const isToday = o.offset === 0;
+    // "Later" rows drop the "in N days" cue and lean on the month/day; near-term
+    // rows carry the relative when-label.
+    const when = variant === 'later' ? '' : whenLabel(o.offset);
+    const key = cardKey(o.person._id, o.kind, o.month, o.day);
+    const active = activeCard.get(key);
+    const sent = sentCard.get(key);
+    const isFocused = Boolean(focusKey && focusKey === occKey(o));
     return (
       <TouchableOpacity
         key={`${o.person._id}-${o.kind}-${o.month}-${o.day}-${i}`}
@@ -181,8 +153,8 @@ function OccasionsHome() {
         onLayout={isFocused ? onFocusRowLayout : undefined}
         onPress={() => nav.navigate('PersonForm', { id: o.person._id, isSelf: isSelf || undefined, focus: 'dates' })}
       >
-        <Card style={[styles.row, !o.hidden && o.daysUntil === 0 && styles.todayRow, o.hidden && styles.hiddenRow, isFocused && styles.focusedRow]}>
-          <IconAvatar mdiIcon={o.hidden ? 'eye-off-outline' : occasionIcon(o.kind)} bg={o.hidden ? colors.textMuted : ACCENT} size={40} />
+        <Card style={[styles.row, isToday && styles.todayRow, isPast && styles.pastRow, isFocused && styles.focusedRow]}>
+          <IconAvatar mdiIcon={occasionIcon(o.kind)} bg={isPast ? `${ACCENT}99` : ACCENT} size={40} />
           <View style={styles.main}>
             <Text style={styles.name}>
               {o.person.name}
@@ -193,23 +165,34 @@ function OccasionsHome() {
               {yearsLabel(o.kind, o.years)}
             </Text>
           </View>
-          {when ? <Text style={[styles.when, o.daysUntil === 0 && styles.whenToday]}>{when}</Text> : null}
-          <TouchableOpacity
-            accessibilityLabel={card ? 'Edit scheduled e-card' : 'Schedule an e-card'}
-            hitSlop={8}
-            style={styles.cardBtn}
-            onPress={() => nav.navigate('ECardForm', {
-              personId: o.person._id,
-              personName: o.person.name,
-              kind: o.kind,
-              occasionLabel: o.label,
-              month: o.month,
-              day: o.day,
-              ecardId: card?._id,
-            })}
-          >
-            <MaterialCommunityIcons name={card ? 'email-check' : 'email-plus-outline'} size={22} color={ACCENT} />
-          </TouchableOpacity>
+          {when ? <Text style={[styles.when, isToday && styles.whenToday]}>{when}</Text> : null}
+          {isPast ? (
+            // Recently passed: no scheduling prompt (that would fire a year out).
+            // Show only whether the card that was set actually went out.
+            sent ? (
+              <View style={styles.sentPill}>
+                <MaterialCommunityIcons name="email-check" size={13} color={ACCENT} />
+                <Text style={styles.sentPillText}>Sent</Text>
+              </View>
+            ) : null
+          ) : (
+            <TouchableOpacity
+              accessibilityLabel={active ? 'Edit scheduled e-card' : 'Schedule an e-card'}
+              hitSlop={8}
+              style={styles.cardBtn}
+              onPress={() => nav.navigate('ECardForm', {
+                personId: o.person._id,
+                personName: o.person.name,
+                kind: o.kind,
+                occasionLabel: o.label,
+                month: o.month,
+                day: o.day,
+                ecardId: active?._id,
+              })}
+            >
+              <MaterialCommunityIcons name={active ? 'email-check' : 'email-plus-outline'} size={22} color={ACCENT} />
+            </TouchableOpacity>
+          )}
         </Card>
       </TouchableOpacity>
     );
@@ -222,26 +205,54 @@ function OccasionsHome() {
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
     >
-      <Hint>Occasions come from your People — birthdays plus anniversaries and other dates on a person&apos;s card. Tap one to edit its dates or hide it from the calendar.</Hint>
+      {visible.length > 0 ? (
+        <Hint>Occasions come from the dates on your contacts — birthdays, anniversaries, and anything else you add. Tap one to edit its dates.</Hint>
+      ) : null}
 
-      {visible.map((o, i) => renderRow(o, i))}
-
-      {hiddenOccasions.length ? (
+      {recentlyPassed.length > 0 ? (
         <>
-          <SectionHeader style={styles.hiddenHeader}>Hidden from calendar</SectionHeader>
-          {hiddenOccasions.map((o, i) => renderRow(o, i))}
+          <SectionHeader>Recently observed</SectionHeader>
+          {recentlyPassed.map((o, i) => renderRow(o, i, 'past'))}
         </>
       ) : null}
 
-      {upcoming.length === 0 ? (
+      {visible.length > 0 ? (
+        <View style={styles.todayMarker}>
+          <View style={styles.todayLine} />
+          <Text style={styles.todayMarkerText}>Today · {todayLabel}</Text>
+          <View style={styles.todayLine} />
+        </View>
+      ) : null}
+
+      {comingUp.length > 0 ? (
+        <>
+          <SectionHeader>Coming up</SectionHeader>
+          {comingUp.map((o, i) => renderRow(o, i, 'upcoming'))}
+        </>
+      ) : visible.length > 0 ? (
+        <Text style={styles.noneSoon}>Nothing in the next {COMING_UP_DAYS} days.</Text>
+      ) : null}
+
+      {later.length > 0 ? (
+        <>
+          <TouchableOpacity style={styles.laterToggle} activeOpacity={0.7} onPress={() => setShowLater((v) => !v)}>
+            <Text style={styles.laterToggleText}>Later this year ({later.length})</Text>
+            <Ionicons name={laterOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+          {laterOpen ? later.map((o, i) => renderRow(o, i, 'later')) : null}
+        </>
+      ) : null}
+
+      {visible.length === 0 ? (
         <EmptyState
           variant="inline"
           mdiIcon="calendar-heart"
           title="No occasions yet"
+          message="Dates you add to a contact — birthdays, anniversaries, and more — show up here. Open a contact and add a date to get started."
           accent={ACCENT}
         >
           <TouchableOpacity style={styles.emptyBtn} onPress={() => nav.navigate('People')}>
-            <Ionicons name="people-outline" size={16} color={colors.primary} />
+            <Ionicons name="calendar-outline" size={16} color={colors.primary} />
             <Text style={styles.emptyBtnText}>Add dates in Contacts</Text>
           </TouchableOpacity>
         </EmptyState>
@@ -255,16 +266,25 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.sm },
   todayRow: { borderWidth: 1, borderColor: ACCENT },
+  // Recently-passed occasions read as history: dimmed so the eye lands on what's next.
+  pastRow: { opacity: 0.6 },
   // The occasion tapped from the calendar: a bolder outline + faint accent wash.
   focusedRow: { borderWidth: 2, borderColor: ACCENT, backgroundColor: `${ACCENT}1A` },
-  hiddenRow: { opacity: 0.55 },
-  hiddenHeader: { marginTop: spacing.md },
   main: { flex: 1 },
   name: { fontSize: 16, fontWeight: '600', color: colors.text },
   date: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   when: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   whenToday: { color: ACCENT },
   cardBtn: { padding: 4 },
+  sentPill: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  sentPillText: { fontSize: 12, fontWeight: '600', color: ACCENT },
+  // The "Today · <date>" anchor separating recently observed from what's coming up.
+  todayMarker: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.md },
+  todayLine: { flex: 1, height: 1, backgroundColor: ACCENT, opacity: 0.4 },
+  todayMarkerText: { fontSize: 12, fontWeight: '700', color: ACCENT, textTransform: 'uppercase', letterSpacing: 0.5 },
+  noneSoon: { fontSize: 13, color: colors.textMuted, fontStyle: 'italic', marginTop: spacing.xs, marginBottom: spacing.sm },
+  laterToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: spacing.md, marginTop: spacing.xs },
+  laterToggleText: { fontSize: 14, fontWeight: '600', color: colors.textMuted },
   emptyBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.md },
   emptyBtnText: { color: colors.primary, fontWeight: '600', fontSize: 14 },
 });

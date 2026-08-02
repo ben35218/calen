@@ -1,6 +1,6 @@
 import { CalendarEvent, CalendarOccasion } from '../../../api';
 import { DayItems, eventColor, ymd } from '../../../lib/calendar';
-import { occasionTitle } from '../../../lib/occasions';
+import { occasionTitle, occasionIcon } from '../../../lib/occasions';
 import type { EventStatus } from '../../../lib/callStatus';
 
 // Pure layout logic for the Apple-style day view (no JSX, unit-testable):
@@ -50,9 +50,14 @@ export type AllDayItem = {
   id?: string;
   // The full occasion for kind 'occasion', so a tap can focus it in the list.
   occasion?: CalendarOccasion;
-  // Tasks & chores are date-only reminders, not scheduled blocks — rendered
-  // muted with an empty-circle glyph (Apple's reminder look).
+  // Tasks are date-only reminders, not scheduled blocks — rendered muted with
+  // an empty-circle glyph (Apple's reminder look).
   muted?: boolean;
+  // Optional leading MaterialCommunityIcons glyph (an `mdi-…` string or a bare
+  // glyph name), rendered tinted in the item's colour instead of a muted dot /
+  // plain colour bar: chores carry their per-chore icon, occasions their kind
+  // icon, and events a generic calendar glyph.
+  icon?: string;
   faded?: boolean;
   strike?: boolean;
 };
@@ -61,6 +66,10 @@ export type DayLayout = { allDay: AllDayItem[]; blocks: LaidBlock[] };
 
 // Matches the month grid's grocery cart tint.
 export const GROCERY_COLOR = '#F9A825';
+
+// Generic calendar glyph (MaterialCommunityIcons) for a plain event, so events
+// read as calendar items alongside the icon-badged chores/occasions.
+export const EVENT_ICON = 'calendar-blank-outline';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -112,7 +121,7 @@ export function normalizeDay(
     allDay.push({ key: `hol-${h.id}`, title: h.name, color: h.color, kind: 'holiday' });
   }
   for (const o of day.occasions) {
-    allDay.push({ key: `occ-${o.id}`, title: occasionTitle(o), color: calColors.birthdays, kind: 'occasion', id: o.personId, occasion: o });
+    allDay.push({ key: `occ-${o.id}`, title: occasionTitle(o), color: calColors.birthdays, kind: 'occasion', id: o.personId, occasion: o, icon: occasionIcon(o.kind) });
   }
 
   for (const e of day.events) {
@@ -123,7 +132,7 @@ export function normalizeDay(
     // All-day events — and timed events covering this entire day (a multi-day
     // timed span's middle days) — live in the all-day row, like Apple.
     if (e.allDay || (rawStart <= 0 && rawEnd >= DAY_MIN)) {
-      allDay.push({ key: e._id, title: e.title, color: eventColor(e), kind: 'event', id: e._id, faded, strike });
+      allDay.push({ key: e._id, title: e.title, color: eventColor(e), kind: 'event', id: e._id, icon: EVENT_ICON, faded, strike });
       continue;
     }
     // Clip to this column's day; events touching neighbouring days yield one
@@ -148,8 +157,10 @@ export function normalizeDay(
   for (const t of day.tasks) {
     allDay.push({ key: `task-${t._id}`, title: t.title, color: calColors.maintenance, kind: 'task', id: t._id, muted: true });
   }
+  // Chores are Chores-calendar items: tinted in the calendar colour and badged
+  // with their own icon (not a muted reminder dot).
   for (const c of day.chores) {
-    allDay.push({ key: `chore-${c._id}`, title: c.title, color: calColors.chores, kind: 'chore', id: c._id, muted: true });
+    allDay.push({ key: `chore-${c._id}`, title: c.title, color: calColors.chores, kind: 'chore', id: c._id, icon: c.icon });
   }
   for (let i = 0; i < day.recipes.length; i++) {
     const r = day.recipes[i];

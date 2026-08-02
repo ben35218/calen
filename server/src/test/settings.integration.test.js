@@ -45,6 +45,20 @@ test('householdTimezone is independent of the personal timezone', async () => {
   assert.equal(got.body.householdTimezone, 'Asia/Tokyo');
 });
 
+test('PUT /settings homeCity: stores the coarse home area on the household and echoes it', async () => {
+  const u = await registerUser();
+  // Unset defaults to an empty string.
+  const initial = await request().get('/api/settings').set('Authorization', u.auth);
+  assert.equal(initial.body.homeCity, '');
+
+  const put = await request().put('/api/settings').set('Authorization', u.auth)
+    .send({ homeCity: 'Ottawa, Ontario, Canada' });
+  assert.equal(put.status, 200);
+
+  const got = await request().get('/api/settings').set('Authorization', u.auth);
+  assert.equal(got.body.homeCity, 'Ottawa, Ontario, Canada');
+});
+
 test('PUT /settings dayAlertTime: stores a valid HH:mm and echoes it', async () => {
   const u = await registerUser();
   // Unset defaults to null (the 9am default is applied client/cron-side).

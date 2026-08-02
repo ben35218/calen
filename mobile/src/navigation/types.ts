@@ -18,6 +18,19 @@ export interface AssistantFocusEvent {
   phone?: string;
 }
 
+// The decrypted event content the viewer shell's agenda hands its read-only
+// detail view (free viewer mode — see ViewerEventScreen).
+export interface ViewerEventSnapshot {
+  _id: string;
+  title: string;
+  startDate: string;
+  endDate?: string;
+  allDay?: boolean;
+  location?: string;
+  description?: string;
+  calendarType?: string;
+}
+
 // A contact prefilled from device import (direct or AI-assisted), fed into
 // PersonForm in review mode. All fields optional except type + name.
 export interface PersonPrefill {
@@ -55,7 +68,11 @@ export interface PersonPrefill {
 // alias of this type, so existing screen imports keep resolving unchanged.
 export type RootStackParamList = {
   // ----- Calendar -----
-  CalendarHome: undefined;
+  // `fromAssistant` marks an instance pushed on top of the assistant by a nav
+  // chip (see ChatScreen.openNavSuggestion) so the calendar shows a "‹ Calen"
+  // return pill instead of the profile avatar — a plain navigate() would pop the
+  // assistant off the stack (it sits below) and strand the live chat.
+  CalendarHome: { fromAssistant?: boolean } | undefined;
   CalendarDay: { date: string };
   EventForm: { eventId?: string; date?: string; prefill?: Record<string, unknown> };
   // Read-only event detail (tapped from a calendar card). `date` is passed on to
@@ -66,6 +83,10 @@ export type RootStackParamList = {
   // (images + PDFs). `uri` is the on-device decrypted file; `mimeType` feeds the
   // header Share action.
   AttachmentPreview: { uri: string; title?: string; mimeType?: string };
+  // Full-screen in-app preview of a place Calen mentioned in chat (modal
+  // WebView on the Google Maps place lookup). `query` is "Name, Area" from the
+  // reply's place link; `title` is the tapped display text.
+  PlacePreview: { query: string; title?: string };
   // Unified assistant view (Calendar / Chores / Task Plan swap in place). `initial`
   // picks which body opens; the switcher swaps the rest without navigating.
   // `focusEvent` scopes the calendar assistant to one event ("Ask Calen" on the
@@ -113,6 +134,16 @@ export type RootStackParamList = {
   OccasionAlerts: undefined;
   Weather: undefined;
   Invitations: undefined;
+  // ----- Free viewer shell (ViewerNavigator) -----
+  // The read-only shell a locked (no app unlock) user with shared-calendar
+  // access gets instead of the paywall. `ViewerEvent` carries the decrypted
+  // event snapshot straight from the agenda list (the viewer's replica already
+  // holds it — no refetch), plus its calendar's display name/colour.
+  ViewerHome: undefined;
+  ViewerEvent: { event: ViewerEventSnapshot; calendarName: string; accent: string };
+  // The unlock paywall pushed as an upgrade route from the viewer shell (the
+  // same screen the RootNavigator gate renders full-screen).
+  UnlockPaywall: undefined;
   // Manage one event's invitees. `snapshot` is the decrypted event content the
   // invite emails/.ics are built from; no `eventId` = a new-event draft whose
   // invitees queue in lib/inviteeDraft until the event is saved.
@@ -205,13 +236,18 @@ export type RootStackParamList = {
 
   // ----- Profile -----
   ProfileHome: undefined;
-  Account: undefined;
+  // `promptField` deep-links from a Calen assistant "setup" chip: arrives with a
+  // SetupCallout + highlighted field to fill ('homeAddress' when a request needed
+  // the home area; 'mailApp' for invite delivery).
+  Account: { promptField?: 'homeAddress' | 'mailApp' } | undefined;
   // The reminders hub — the master on/off toggle + the personal day-based alert
-  // time (see features/notifications.md).
-  Reminders: undefined;
+  // time (see features/notifications.md). `promptEnable` deep-links from a Calen
+  // "setup" chip: shows a SetupCallout nudging the user to turn reminders on.
+  Reminders: { promptEnable?: boolean } | undefined;
   // The dedicated Privacy & security screen. `focus` deep-links intent: 'unlock'
-  // (locked-data prompt — auto-presents Face ID) or 'recovery'.
-  PrivacyData: { focus?: 'unlock' | 'recovery' } | undefined;
+  // (locked-data prompt — auto-presents Face ID), 'recovery', or 'aiPersonalInfo'
+  // (a Calen "setup" chip — SetupCallout on the "Use personal & contact info" toggle).
+  PrivacyData: { focus?: 'unlock' | 'recovery' | 'aiPersonalInfo' } | undefined;
   // The recovery-code detail view — explains it + create/replace the code.
   RecoveryCode: undefined;
   // Signal-parity F4 — QR device linking. 'show' = the new (locked) device shows
@@ -227,21 +263,34 @@ export type RootStackParamList = {
     id?: string;
     isSelf?: boolean;
     type?: 'family' | 'friend' | 'service';
-    // Open scrolled to a section (e.g. 'dates' from the Occasions list).
-    focus?: 'dates';
+    // Open scrolled to a section (e.g. 'dates' from the Occasions list, 'phone'
+    // from a Calen "setup" chip — SetupCallout + highlighted phone field, or
+    // 'related' from the e-card recipients card to link another contact).
+    focus?: 'dates' | 'phone' | 'related';
     // Review-mode import: a queue of prefilled contacts to step through. The
     // form saves the one at `queueIndex`, then advances to the next.
     prefills?: PersonPrefill[];
     queueIndex?: number;
+    // True when the review queue came from an AI-assisted import: the AI already
+    // pre-sorted, so the "Ask Calen" form-assist panel stays available. A direct
+    // import passes false/omits it, hiding the panel (nothing to re-derive).
+    aiReview?: boolean;
   };
-  ContactImport: undefined;
-  Household: undefined;
+  // `type` seeds the default classification of imported/added contacts from the
+  // roster tab the user launched import from (Family / Friends / Professionals).
+  ContactImport: { type?: 'family' | 'friend' | 'service' } | undefined;
+  // `promptInvite` deep-links from a Calen "setup" chip when the user wants to
+  // share/assign but has no household members — SetupCallout nudging them to
+  // invite someone.
+  Household: { promptInvite?: boolean } | undefined;
   // Help & feedback — submit a question, bug report, or idea (features/feedback.md).
   HelpFeedback: undefined;
 
   // ----- Billing (credits summary card is inlined on ProfileHome) -----
   // Prepaid AI credits: balance, pack store, history, usage + AI preferences.
   Credits: undefined;
+  // The full purchases & grants ledger (the Credits History card's "See all").
+  CreditHistory: undefined;
   // Focused top-up sheet the AI-surface nudges open (low balance / out).
   BuyCredits: { reason: 'low' | 'out' } | undefined;
   // The Add-ons store: one-time feature-calendar purchases (Meals, Maintenance,

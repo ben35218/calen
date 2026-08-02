@@ -4,8 +4,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Linking, Platform } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
 import type { CustomerInfo, PurchasesPackage } from 'react-native-purchases';
-import type { CreditPack } from '../../api';
+import { billingApi, type CreditLedgerEntry, type CreditPack } from '../../api';
 import { useAuth } from '../../store/auth';
 import {
   useBilling, useUnlockActivation, useCreditsActivation, useAddonActivation, useAiPlanActivation,
@@ -22,11 +23,8 @@ import {
   showManageSubscriptions,
   purchasePackage,
   restorePurchases,
+  APPLE_SUBSCRIPTIONS_URL,
 } from '../../lib/purchases';
-
-// The Apple manage-subscriptions deep link — the last-resort fallback when the
-// native sheet is unavailable and CustomerInfo carries no managementURL.
-const APPLE_SUBSCRIPTIONS_URL = 'https://apps.apple.com/account/subscriptions';
 
 export const STORE_NAME = Platform.OS === 'ios' ? 'App Store' : 'Google Play';
 
@@ -66,6 +64,38 @@ export function shortDate(iso?: string | null): string | null {
     month: 'long',
     day: 'numeric',
     ...(sameYear ? {} : { year: 'numeric' }),
+  });
+}
+
+// Friendly labels for the ledger's grant/adjustment kinds. Usage debits are
+// summarized in the "Where your credits go" card, never itemized in History, so
+// `usage` is only a defensive fallback (the History surfaces fetch grants-only).
+export const LEDGER_LABEL: Record<CreditLedgerEntry['kind'], string> = {
+  purchase: 'Credit pack',
+  starter: 'Welcome credits',
+  plan: 'Monthly plan credits',
+  refund: 'Refund',
+  admin: 'Adjustment',
+  usage: 'AI usage',
+};
+
+// Ledger amounts keep grant styling (+N, whole credits) but a prorated usage
+// debit can be fractional — show one decimal instead of flooring it away.
+export function ledgerAmount(n: number): string {
+  return Number.isInteger(n) ? Math.floor(n).toLocaleString() : n.toFixed(1);
+}
+
+// The credit-history query, shared by the Credits screen's History card and the
+// full-history screen so they hit the SAME cache entry (opening "See all" is
+// instant) and the same key `useBilling` invalidates after a purchase lands.
+// `grants: true` asks the server for purchases & grants only — usage debits are
+// summarized in the spend card, and excluding them server-side keeps a heavy AI
+// user's grant history from being pushed out of the ledger window.
+export function useCreditLedger() {
+  return useQuery({
+    queryKey: ['billing', 'ledger'],
+    queryFn: async () => (await billingApi.ledger({ grants: true })).data.entries,
+    staleTime: 60_000,
   });
 }
 
@@ -331,12 +361,15 @@ export function useAiPlanPurchase() {
 
   async function buy() {
     if (!pkg) return;
+    const previousMc = billing.data?.creditBalanceMc ?? 0;
     setBusy(true);
     try {
       await purchasePackage(pkg);
       // The plan flips server-side via the RevenueCat webhook (which also
-      // grants the period's credits) — poll until it lands.
-      activation.start();
+      // grants the period's credits) — poll until BOTH land. The webhook sets
+      // `active` before it $incs the balance, so pass the pre-purchase balance
+      // and wait for it to rise, not just for `active` (see useAiPlanActivation).
+      activation.start(previousMc);
     } catch (e: any) {
       if (!e?.userCancelled) Alert.alert('Purchase failed', e?.message || 'Please try again.');
     } finally {
@@ -354,10 +387,12 @@ export function useAiPlanPurchase() {
         Alert.alert('Nothing to restore', 'No active Calen AI plan was found for this account.');
         return;
       }
+      const previousMc = billing.data?.creditBalanceMc ?? 0;
       const { data } = await billing.refetch();
       // Store shows the entitlement but the server hasn't flipped yet — the
-      // webhook is in flight; poll like a fresh purchase.
-      if (!data?.aiPlan?.active) activation.start();
+      // webhook is in flight; poll like a fresh purchase (wait for the balance
+      // to rise past the pre-restore snapshot, same doctrine as buy()).
+      if (!data?.aiPlan?.active) activation.start(previousMc);
     } catch {
       Alert.alert('Restore failed', 'Could not restore purchases.');
     }

@@ -28,6 +28,59 @@ async function searchPlace(query, kind) {
   }
 }
 
+// Google's Places (New) businessStatus enum → the lowercase status the chat
+// assistant reasons over. Unknown/absent status means "not published" (Google
+// only returns businessStatus when it knows one), which we surface as
+// 'unknown' so the model doesn't wrongly drop a place we simply couldn't vet.
+const BUSINESS_STATUS = {
+  OPERATIONAL: 'operational',
+  CLOSED_TEMPORARILY: 'closed_temporarily',
+  CLOSED_PERMANENTLY: 'closed_permanently',
+};
+
+// Resolve a free-text business/venue query ("Republica Café, Ottawa ON") to its
+// best Google match and current operating status, so the assistant can vet a
+// recommendation before making it (spec: ai-assistant.md — Place verification).
+// Text Search returns businessStatus for the top match in a single call — no
+// separate details lookup. Biased to the household's area when coords are known
+// (mirrors routes/places.js). Returns:
+//   { status, name, address, phone, placeId } on a match (status one of
+//     operational / closed_temporarily / closed_permanently / unknown),
+//   { status: 'not_found' } when Google returns no match,
+//   null on a missing key or API error (caller decides how to fail — chat fails
+//     open to 'unknown' so an outage never suppresses good suggestions).
+async function verifyPlaceStatus(query, { lat, lon } = {}) {
+  if (!query || !apiKey()) return null;
+  const body = { textQuery: String(query), maxResultCount: 1 };
+  const qLat = Number(lat);
+  const qLon = Number(lon);
+  if (Number.isFinite(qLat) && Number.isFinite(qLon)) {
+    // 50 km circle — the API max, roughly "my metro area".
+    body.locationBias = { circle: { center: { latitude: qLat, longitude: qLon }, radius: 50000 } };
+  }
+  try {
+    const { data } = await axios.post(`${BASE}/places:searchText`, body, {
+      headers: {
+        'X-Goog-Api-Key': apiKey(),
+        'Content-Type': 'application/json',
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.businessStatus,places.nationalPhoneNumber',
+      },
+    });
+    const p = (data.places ?? [])[0];
+    if (!p) return { status: 'not_found' };
+    return {
+      status: BUSINESS_STATUS[p.businessStatus] || 'unknown',
+      name: p.displayName?.text ?? null,
+      address: p.formattedAddress ?? null,
+      phone: p.nationalPhoneNumber ?? null,
+      placeId: p.id ?? null,
+    };
+  } catch (err) {
+    console.error('[verifyPlaceStatus] error:', err.response?.data?.error?.message ?? err.message);
+    return null;
+  }
+}
+
 // IANA timezone id (e.g. "Europe/Rome") for a placeId, or null.
 async function placeTimezone(placeId) {
   if (!placeId || !apiKey()) return null;
@@ -147,4 +200,4 @@ async function routeLeg({ origin, destination, mode = 'DRIVE', departureTime }) 
   }
 }
 
-module.exports = { searchPlace, placeTimezone, resolvePlaceWithTz, routeLeg };
+module.exports = { searchPlace, verifyPlaceStatus, placeTimezone, resolvePlaceWithTz, routeLeg };

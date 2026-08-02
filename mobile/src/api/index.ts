@@ -591,8 +591,8 @@ export const recipesApi = {
     api.post<Partial<Recipe>>('/recipes/edit-with-ai', { recipe, instruction }),
   computeIngredientTags: (ingredients: Ingredient[], instructions: string[]) =>
     api.post<{ instructionIngredients: number[][] }>('/recipes/compute-ingredient-tags', { ingredients, instructions }),
-  // Styled recipe email sent by the server (share sheet emails are plain text).
-  shareEmail: (id: string, email: string) => api.post(`/recipes/${id}/share-email`, { email }),
+  // Recipe sharing is device-composed (OS share sheet in RecipeDetailScreen);
+  // the server-sent styled-email path was retired 2026-08-01.
   suggestRecipes: (params: { query: string }) =>
     api.post<{ recipes: RecipeSuggestion[] }>('/recipes/suggest-recipes', params),
   // fromPhoto handled via lib/upload (field 'photo'): POST /recipes/from-photo
@@ -675,6 +675,10 @@ export interface Settings {
   // only) and the on-device scheduler (full HH:mm).
   dayAlertTime?: string | null;
   homeAddress?: string;
+  // Coarse home-area label (city + region/country) the calendar assistant grounds
+  // local suggestions in — derived client-side from the address, or set by hand.
+  // Shared (household-level), plaintext; never the street address.
+  homeCity?: string;
   // Household default zone (scheduler fallback) — derived client-side from the
   // home location; write via the `householdTimezone` key on PUT.
   householdTimezone?: string;
@@ -825,8 +829,9 @@ export const peopleApi = {
     return { data: created.map((r: { data: Person }) => r.data) };
   },
   // AI-assisted import: categorize + pre-fill. The model sees each contact's
-  // name + company only. Web-search enrichment of professionals is OPT-IN
-  // (spec: ai-assistant.md) — it sends business details into live searches.
+  // name + company only. Web-search enrichment of professionals rides along
+  // with the AI-assisted method — choosing it implies `enrich: true`; the
+  // import sheet's hint discloses the lookup (spec: ai-assistant.md).
   classify: (contacts: ImportContact[], enrich = false) =>
     api.post<{ results: ClassifiedContact[] }>('/people/classify', { contacts, enrich }),
 };
@@ -863,8 +868,10 @@ export interface ECard {
   signature?: string;
   photos?: ECardPhoto[];
   recipients: ECardRecipient[];
+  // A card sends once, on its next occurrence; `active` clears + `sentAt` stamps
+  // after the send (no annual recurrence).
   active: boolean;
-  lastSentYear?: number | null;
+  sentAt?: string | null;
 }
 
 export interface ECardInput {
@@ -1520,6 +1527,10 @@ export interface CustomCalendarRecord {
   // Present => read-only holiday calendar whose events each device computes
   // itself from this country config (lib/holidays via calendarPrefs).
   holiday?: { country: string; selectedRegions?: string[]; disabledIds?: string[] };
+  // D1: > 0 once the calendar has minted a per-resource CalendarKey (it is or
+  // was outside-shared) — its events seal under that key, so the client must
+  // load it before the replica can decrypt them (lib/calendarKeys).
+  calKeyVersion?: number;
   mine: boolean;
   access: CalendarAccess;
 }
@@ -1710,6 +1721,10 @@ export interface BillingStatus {
   // The per-user $4.99 one-time app unlock (drives the hard paywall).
   unlocked: boolean;
   unlockPrice: number; // USD display fallback
+  // Free viewer mode: calendars shared with this user + pending calendar
+  // invitations addressed to them. Either count > 0 routes a locked user to
+  // the read-only viewer shell instead of the paywall (lib/viewerAccess).
+  viewer?: { calendarCollaborations: number; pendingCalendarInvitations: number };
   // Prepaid AI-credit balance (1 credit = $0.01 retail). `creditBalance` is
   // whole credits and may be NEGATIVE after a refund — floor display at 0.
   // `unlimited` = exempt admin account (render "Unlimited", ignore balance).
@@ -1725,9 +1740,13 @@ export interface BillingStatus {
   // The optional monthly Calen AI plan (subscribe CTA / active state on the
   // Credits screen).
   aiPlan?: AiPlanStatus;
-  // Per-action counts, always this user's own (analytics — the "By feature"
-  // card; enforcement is the credit balance).
+  // Per-action counts, always this user's own (analytics; enforcement is the
+  // credit balance).
   usage: Record<string, number>;
+  // Credits SPENT per action this period (drives the "Where your credits go"
+  // card — actual debited spend, not counts; may be fractional). Keyed by the
+  // same action names as `usage` ('chat', 'call', 'scan', …).
+  spend?: Record<string, number>;
   usageScope: 'user';
   resetsAt?: string; // ISO instant of the next weekly ANALYTICS window reset (Wed 5PM ET)
   hasHousehold: boolean;
@@ -1746,7 +1765,12 @@ export interface BillingStatus {
 
 export const billingApi = {
   status: () => api.get<BillingStatus>('/billing/status'),
-  ledger: () => api.get<{ entries: CreditLedgerEntry[] }>('/billing/credits/ledger'),
+  // `grants: true` returns purchases & grants only (usage debits excluded) and
+  // a larger window — the History surfaces never itemize usage rows.
+  ledger: (opts?: { grants?: boolean }) =>
+    api.get<{ entries: CreditLedgerEntry[] }>('/billing/credits/ledger', {
+      params: opts?.grants ? { grants: 1 } : undefined,
+    }),
   // Claim a FREE add-on (catalog price 0 — Birthdays/Chores): included with
   // the app but opt-in, unlocked household-wide without a store purchase.
   claimAddon: (addon: string) => api.post<{ addons: string[] }>('/billing/addons/claim', { addon }),

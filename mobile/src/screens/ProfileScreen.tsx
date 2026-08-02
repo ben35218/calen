@@ -19,6 +19,7 @@ import { useBilling } from '../hooks/useBilling';
 import { humanCredits } from './plan/shared';
 import { Badge, Button, Card, ListRow, SectionHeader } from '../components/ui';
 import { useE2eeLocked } from '../hooks/useE2eeLocked';
+import { useInvitationsCount } from '../hooks/useInvitationsCount';
 import { colors, spacing } from '../theme';
 import type { ProfileStackParamList } from '../navigation/ProfileNavigator';
 
@@ -45,6 +46,15 @@ const GROUPS: { header: string; items: Section[] }[] = [
     header: 'Personal',
     items: [
       { route: 'Account', label: 'Account', icon: 'person-outline' },
+      // YOUR inbox (event/calendar/trip/household invites, membership notices,
+      // call outcomes) — every feed behind it is per-user, so it's Personal
+      // scope, not the shared layer (the household-scoped part, join requests
+      // to approve, also surfaces on HouseholdScreen). Its entry point lives
+      // here — not in the calendar's floating chrome — with a count badge; the
+      // calendar avatar carries the same count so the badge trail leads through
+      // Profile to this row. Second, after the conventional identity lead, and
+      // beside Reminders — the "things that arrive for you" cluster.
+      { route: 'Invitations', label: 'Invitations', icon: 'mail-outline' },
       { route: 'Reminders', label: 'Reminders', icon: 'notifications-outline' },
       { route: 'PrivacyData', label: 'Privacy & security', icon: 'lock-closed-outline' },
     ],
@@ -108,6 +118,10 @@ export default function ProfileScreen() {
   const out = data ? !data.unlimited && data.creditBalance <= 0 : false;
   const low = data ? !data.unlimited && !out && data.lowBalance : false;
 
+  // Pending-inbox count on the Invitations row — the continuation of the badge
+  // trail that starts on the calendar's avatar.
+  const invCount = useInvitationsCount();
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Card style={styles.identity}>
@@ -162,6 +176,16 @@ export default function ProfileScreen() {
                 iconColor={colors.primary}
                 title={s.label}
                 onPress={() => nav.navigate(s.route as any)}
+                right={
+                  s.route === 'Invitations' && invCount > 0 ? (
+                    <View style={styles.invBadgeRow}>
+                      <View style={styles.invBadge}>
+                        <Text style={styles.invBadgeText}>{invCount > 9 ? '9+' : invCount}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                    </View>
+                  ) : undefined
+                }
               />
             ))}
           </Card>
@@ -208,6 +232,15 @@ const styles = StyleSheet.create({
   },
   menu: { padding: 0, marginBottom: spacing.md },
   signOut: { marginTop: spacing.md },
+
+  // iOS-Settings-style red count on the Invitations row (badge + chevron —
+  // ListRow's `right` replaces its default chevron, so re-add it).
+  invBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  invBadge: {
+    minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5,
+    backgroundColor: colors.error, alignItems: 'center', justifyContent: 'center',
+  },
+  invBadgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 
   // AI-credits card.
   card: { marginBottom: spacing.md },

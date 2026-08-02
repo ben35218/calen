@@ -1,7 +1,7 @@
 ---
 title: Kitchen (recipes, meal planning, grocery)
 status: current
-last-verified: d96d6b3 (2026-07-24); the recipe add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29)
+last-verified: d96d6b3 (2026-07-24); the recipe add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); recipe sharing is now device-composed via the OS share sheet (`RecipeDetail` `Share.share`) — the server-sent styled email (`POST /recipes/:id/share-email`) was retired 2026-08-01, removing the decrypted-recipe plaintext round-trip (2026-08-01)
 code:
   - mobile/src/screens/kitchen/
   - server/src/routes/recipes.js
@@ -48,7 +48,17 @@ hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
 - CRUD is through the opaque record store (`/records`), not a per-recipe REST
   route. The `recipes` router is **AI/utility only**: `POST /recipes/from-url`,
   `/from-photo`, `/from-ai`, `/generate`, `/edit-with-ai` (capture/generate),
-  `/suggest-recipes`, `/compute-ingredient-tags`, `/:id/share-email`.
+  `/suggest-recipes`, `/compute-ingredient-tags`.
+- **Sharing a recipe is device-composed** (like the household/calendar/trip
+  invites — see [households-sharing.md](households-sharing.md)): `RecipeDetail`'s
+  share action hands the fully rendered recipe (title, meta, description,
+  ingredients, instructions, + a website link) to the OS share sheet
+  (`Share.share`), so the sender picks Mail/Messages/Notes/etc. from their own
+  device. The recipe is already decrypted on-device, so the content travels in
+  the message and the recipient needs nothing installed. The old server-sent
+  styled email (`POST /recipes/:id/share-email`, `recipe_share` template) was
+  **retired 2026-08-01** — it required POSTing the decrypted recipe back to the
+  server in the clear, a plaintext round-trip the share sheet removes.
 - All AI capture paths are consent-gated and annotated (and refused
   server-side via `requireAiEnabled` when the account's AI toggle is off) — see
   [ai-assistant.md](ai-assistant.md).
@@ -73,17 +83,19 @@ hands-free cooking mode. Recipe capture and suggestions are AI-assisted.
 
 - **Models:** `Recipe`, `RecipeSchedule`, `ShoppingSession` (all content records;
   sealed in the opaque store — see [platform/data-model.md](../platform/data-model.md)).
-- **Endpoints:** `recipes.js` (AI/utility + share), `recipeSchedule.js` (planner,
-  grocery, session).
+- **Endpoints:** `recipes.js` (AI/utility only — sharing is device-composed),
+  `recipeSchedule.js` (planner, grocery, session).
 - **Client:** `screens/kitchen/*` (Kitchen, Recipes, RecipeDetail/Form,
   FindRecipes, PlannerPane, GroceryPane/Schedule, CookingMode, AddMeal,
   MealPlannerSettings).
 
 ## Encryption boundary
 
-Recipes, schedules, and shopping state are sealed content records. The
-`share-email` path is a deliberate outside-share (a readable recipe snapshot to
-the recipient). Grocery aggregation happens on-device over decrypted recipes.
+Recipes, schedules, and shopping state are sealed content records. Sharing is
+device-composed from the decrypted on-device recipe (OS share sheet), so a
+recipe's plaintext never round-trips through the server — the former
+`share-email` outside-share was retired 2026-08-01. Grocery aggregation happens
+on-device over decrypted recipes.
 
 ## Verification
 

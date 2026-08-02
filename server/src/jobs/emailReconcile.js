@@ -22,7 +22,7 @@ const BATCH_LIMIT = 100; // bound work per pass; the next tick picks up the rest
 async function retryRow(row, retry, now) {
   const p = row.payload || {};
   const { ok, err } = await mailer.attemptSend({
-    from: p.from, to: row.to, subject: row.subject, text: p.text, html: p.html, attachments: p.attachments,
+    from: p.from, to: row.to, cc: p.cc, subject: row.subject, text: p.text, html: p.html, attachments: p.attachments,
   });
   const attempts = (row.attempts || 1) + 1;
 

@@ -32,10 +32,22 @@ function validateConfig(body) {
   const c = body.credits;
   if (c) {
     if (c.margin !== undefined && (!num(c.margin) || c.margin <= 0)) errors.push('credits.margin must be > 0');
+    // Chat token-pricing knobs: Apple's cut in [0, 1); the chat markup in [1, 1.5].
+    if (c.appleFeePct !== undefined && (!num(c.appleFeePct) || c.appleFeePct < 0 || c.appleFeePct >= 1)) errors.push('credits.appleFeePct must be ≥ 0 and < 1');
+    if (c.chatMargin !== undefined && (!num(c.chatMargin) || c.chatMargin < 1 || c.chatMargin > 1.5)) errors.push('credits.chatMargin must be between 1.0 and 1.5');
     if (c.callRatePerMinute !== undefined && (!num(c.callRatePerMinute) || c.callRatePerMinute < 0)) errors.push('credits.callRatePerMinute must be ≥ 0');
     if (c.starterCredits !== undefined && (!Number.isInteger(c.starterCredits) || c.starterCredits < 0)) errors.push('credits.starterCredits must be an integer ≥ 0');
+    // Token rates are per-type objects ($/1M for input/output/cacheRead/
+    // cacheWrite). Bare numbers (the legacy blended shape) are rejected on
+    // write so the stored doc converges on the per-type shape.
     for (const [fam, rate] of Object.entries(c.tokenRatesPer1M || {})) {
-      if (!num(rate) || rate < 0) errors.push(`credits.tokenRatesPer1M.${fam} must be ≥ 0`);
+      if (!rate || typeof rate !== 'object') {
+        errors.push(`credits.tokenRatesPer1M.${fam} must be an object with input/output/cacheRead/cacheWrite rates`);
+        continue;
+      }
+      for (const type of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+        if (!num(rate[type]) || rate[type] < 0) errors.push(`credits.tokenRatesPer1M.${fam}.${type} must be ≥ 0`);
+      }
     }
     for (const [pid, pack] of Object.entries(c.packs || {})) {
       if (!num(pack?.price) || pack.price < 0) errors.push(`credits.packs.${pid}.price must be ≥ 0`);
@@ -255,10 +267,13 @@ router.post('/credits', async (req, res) => {
 
 // Margin reconciliation for a weekly analytics window: the credits actually
 // DEBITED (flat per-action prices, summed from the usage ledger) against the
-// estimated raw PROVIDER cost (the token/call cost counters recordTokens /
-// recordCallSecondsById maintain from `tokenRatesPer1M`/`callRatePerMinute`).
-// This is the check that keeps `credits.actionCosts` honest once real spend
-// exists: marginMultiple ≈ 2.0 means the flat prices hold the target margin.
+// raw PROVIDER cost (the token/call cost counters recordTokens /
+// recordCallSecondsById maintain from the per-type `tokenRatesPer1M` /
+// `callRatePerMinute`). This is the check that keeps `credits.actionCosts`
+// honest once real spend exists: marginMultiple ≈ 2.0 means the flat prices
+// hold the target margin. Chat's slice runs near its chatMargin (~1.0×
+// after Apple) by construction — its debit is computed from the same
+// per-type rates the cost counters use.
 // All Mc figures are millicredits (Mc / 100000 = $ at the 1-credit-=-$0.01
 // unit); `?period=YYYY-MM-DD` targets a past window (default: current).
 router.get('/reconciliation', async (req, res) => {
@@ -286,13 +301,19 @@ router.get('/reconciliation', async (req, res) => {
     // Small fleet — project the period subdocs and sum in JS (the keys are
     // dynamic period dates, which Mongo aggregation handles awkwardly).
     const users = await User.find(
-      { $or: [{ [`usageTokens.${period}`]: { $exists: true } }, { [`usageCallSeconds.${period}`]: { $exists: true } }] },
-      { [`usageTokens.${period}`]: 1, [`usageCallSeconds.${period}`]: 1 }
+      { $or: [
+        { [`usageTokens.${period}`]: { $exists: true } },
+        { [`usageCallSeconds.${period}`]: { $exists: true } },
+        { [`usageWebSearches.${period}`]: { $exists: true } },
+      ] },
+      { [`usageTokens.${period}`]: 1, [`usageCallSeconds.${period}`]: 1, [`usageWebSearches.${period}`]: 1 }
     ).lean();
     let tokenCostMc = 0;
     let callCostMc = 0;
+    let webSearchCostMc = 0;
     let tokens = 0;
     let callSeconds = 0;
+    let webSearchCount = 0;
     const costByAction = {};
     for (const u of users) {
       const t = u.usageTokens?.[period] || {};
@@ -304,16 +325,20 @@ router.get('/reconciliation', async (req, res) => {
       const c = u.usageCallSeconds?.[period] || {};
       callCostMc += c.costMc || 0;
       callSeconds += c.seconds || 0;
+      const w = u.usageWebSearches?.[period] || {};
+      webSearchCostMc += w.costMc || 0;
+      webSearchCount += w.count || 0;
     }
     if (callCostMc > 0) costByAction.call = (costByAction.call || 0) + callCostMc;
-    const costMc = tokenCostMc + callCostMc;
+    if (webSearchCostMc > 0) costByAction.webSearch = (costByAction.webSearch || 0) + webSearchCostMc;
+    const costMc = tokenCostMc + callCostMc + webSearchCostMc;
 
     res.json({
       period,
       windowStart: window.start.toISOString(),
       windowEnd: window.end.toISOString(),
       revenue: { mc: revenueMc, dollars: revenueMc / 100000, byAction: revenueByAction },
-      cost: { mc: costMc, dollars: costMc / 100000, tokens, callSeconds, byAction: costByAction },
+      cost: { mc: costMc, dollars: costMc / 100000, tokens, callSeconds, webSearches: webSearchCount, byAction: costByAction },
       marginMultiple: costMc > 0 ? Number((revenueMc / costMc).toFixed(2)) : null,
     });
   } catch (err) {

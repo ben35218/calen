@@ -1,18 +1,16 @@
-import React from 'react';
-import { TouchableOpacity, View, Text, StyleSheet } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { invitationsApi, customCalendarsApi, tripsApi, householdApi, callsApi } from '../api';
-import { colors } from '../theme';
 
-// The invitations button in the bottom-right floating pill on the Calendar and
-// Events views (opens the Invitations modal). Shows a count badge for everything
-// the inbox's "New" tab surfaces: an invitation — event, calendar, trip, or
-// household — awaiting a reply; a pending request to join THIS household awaiting
-// approval; an undismissed membership notice (removed / approved); or a Calen
-// phone-call outcome notice awaiting dismissal. Keep this in sync with the "New"
-// filter in InvitationsScreen. Sized to match the pill's other buttons.
-export default function InvitationsButton({ onPress }: { onPress: () => void }) {
+// The Invitations inbox's pending count — everything the inbox's "New" tab
+// surfaces: an invitation — event, calendar, trip, or household — awaiting a
+// reply; a pending request to join THIS household awaiting approval; an
+// undismissed membership notice (removed / approved); or a Calen phone-call
+// outcome notice awaiting dismissal. Keep this in sync with the "New" filter
+// in InvitationsScreen.
+// Drives the badge cascade to the inbox (which lives in Profile, not the
+// calendar chrome): the count overlays the calendar's profile avatar, and the
+// same count badges Profile's Invitations row.
+export function useInvitationsCount(): number {
   const invQ = useQuery({
     queryKey: ['invitations'],
     queryFn: async () => (await invitationsApi.list()).data,
@@ -56,29 +54,9 @@ export default function InvitationsButton({ onPress }: { onPress: () => void }) 
   // membership notices count until dismissed.
   const joinReqs = (joinReqQ.data ?? []).length;
   const notices = (noticesQ.data ?? []).filter((n) => !n.acknowledgedAt).length;
-  const pending =
+  return (
     countPending(invQ.data) + countPending(calInvQ.data) +
     countPending(tripInvQ.data) + countPending(hhInvQ.data) +
-    joinReqs + notices + callNotices;
-
-  return (
-    <TouchableOpacity style={styles.btn} onPress={onPress}>
-      <Ionicons name="mail-outline" size={22} color="#fff" />
-      {pending > 0 ? (
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{pending > 9 ? '9+' : pending}</Text>
-        </View>
-      ) : null}
-    </TouchableOpacity>
+    joinReqs + notices + callNotices
   );
 }
-
-const styles = StyleSheet.create({
-  btn: { paddingHorizontal: 12, paddingVertical: 6 },
-  badge: {
-    position: 'absolute', top: 0, right: 4,
-    minWidth: 16, height: 16, borderRadius: 8, paddingHorizontal: 3,
-    backgroundColor: colors.error, alignItems: 'center', justifyContent: 'center',
-  },
-  badgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
-});

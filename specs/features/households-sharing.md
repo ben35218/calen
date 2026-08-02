@@ -1,11 +1,11 @@
 ---
 title: Households & sharing
 status: current
-last-verified: 0d94240+ (2026-07-29); membership visibility pass — removal now files a persisted `HouseholdNotice` (`GET/POST /household/notices`) so the removed user gets an in-app explanation in the Invitations inbox; a pending invite to another household now also shows on `HouseholdScreen` (Accept/Decline card); the joiner sees their OWN safety code while awaiting approval and the approver prompt points there (2026-07-29); phone invites now canonicalize the typed number to E.164 (`classifyRecipient` → `toE164FromTyped`) so a locally-typed number matches the recipient's saved account phone (2026-07-29); the approve-on-device safety code is now rendered by a shared `components/SecurityCode` (centered monospace group-grid that never splits a group across a line, one-tap copy) on both the joiner's waiting card and the approver surfaces (2026-07-29); rejecting a join request now refreshes the inviter's sent-invitations list so the retired (declined) invite is revoked from the member card immediately (2026-07-29); approving a join request now notifies the joiner (dedicated `alertUser` push + a persisted `HouseholdNotice` `kind:'approved'` in their inbox) and excludes them from the household-wide "new member" alert; `HouseholdNotice.formerHouseholdId` generalized to `householdId` (2026-07-29); removal now also pushes the removed user directly (`alertUser`), and the floating Invitations button badge now counts membership notices + pending join-requests (was missing them) so it mirrors the inbox "New" tab (2026-07-29); outreach is now composer-only-for-non-accounts across ALL four sharing flows (household/trip/calendar/event) — an account-holder recipient gets the server push + in-app inbox with NO composer opening (household reads `userExists` off its POST; trips/calendars/events check `GET /invitations/lookup`, now accepting `phone` for existence-only lookups, failing open on error), the event `event_invitation` server email is retired (device-composed .ics-link email for non-account invitees via `sendInvitations` + `useEmailComposer`; recipient push added to `POST /invitations`), and every pending-invite row gained a paper-plane Remind action that re-opens the composer on demand regardless of account status (2026-07-29)
+last-verified: df8c7f3+ (2026-07-31); the invite-from-contacts autocomplete was extracted to the shared `hooks/useRosterSuggestions` (pure `matchRoster` + the decrypted-roster query) and now also backs the calendar outside-share field — HouseholdScreen behavior unchanged; its local RevealWrap moved to `components/ui.RevealWrap` (2026-07-30); membership visibility pass — removal now files a persisted `HouseholdNotice` (`GET/POST /household/notices`) so the removed user gets an in-app explanation in the Invitations inbox; a pending invite to another household now also shows on `HouseholdScreen` (Accept/Decline card); the joiner sees their OWN safety code while awaiting approval and the approver prompt points there (2026-07-29); phone invites now canonicalize the typed number to E.164 (`classifyRecipient` → `toE164FromTyped`) so a locally-typed number matches the recipient's saved account phone (2026-07-29); the approve-on-device safety code is now rendered by a shared `components/SecurityCode` (centered monospace group-grid that never splits a group across a line, one-tap copy) on both the joiner's waiting card and the approver surfaces (2026-07-29); rejecting a join request now refreshes the inviter's sent-invitations list so the retired (declined) invite is revoked from the member card immediately (2026-07-29); approving a join request now notifies the joiner (dedicated `alertUser` push + a persisted `HouseholdNotice` `kind:'approved'` in their inbox) and excludes them from the household-wide "new member" alert; `HouseholdNotice.formerHouseholdId` generalized to `householdId` (2026-07-29); removal now also pushes the removed user directly (`alertUser`), and the floating Invitations button badge now counts membership notices + pending join-requests (was missing them) so it mirrors the inbox "New" tab (2026-07-29); outreach is now composer-only-for-non-accounts across ALL four sharing flows (household/trip/calendar/event) — an account-holder recipient gets the server push + in-app inbox with NO composer opening (household reads `userExists` off its POST; trips/calendars/events check `GET /invitations/lookup`, now accepting `phone` for existence-only lookups, failing open on error), the event `event_invitation` server email is retired (device-composed .ics-link email for non-account invitees via `sendInvitations` + `useEmailComposer`; recipient push added to `POST /invitations`), and every pending-invite row gained a paper-plane Remind action that re-opens the composer on demand regardless of account status (2026-07-29); `HouseholdScreen` accepts a **`promptInvite`** route param — a Calen assistant "Set up your household" setup chip (`setup_household`, see ai-assistant.md) deep-links here when the user wanted to share/assign but has no other members, showing a `SetupCallout` above the invite section (df8c7f3+, 2026-07-31); the Invitations inbox's entry point moved out of the calendar's floating chrome into **Profile** — a badged Invitations row (in the **"Personal"** group, second after Account's conventional identity lead: every feed behind the inbox is per-user — invites are addressed to the individual, and members never see each other's inboxes — while the household-scoped join-requests-to-approve keep their shared surface on HouseholdScreen), with the pending count also overlaid on the calendar's profile avatar (the E2EE-locked "!" takes precedence) so the badge trail leads avatar → Profile row → inbox; the floating `InvitationsButton` was deleted and its "New"-tab counting rules extracted to `hooks/useInvitationsCount` (unchanged: pending event/calendar/trip/household invites + join requests + undismissed membership notices + unacknowledged call outcomes) (df8c7f3+, 2026-07-31)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - mobile/src/screens/calendar/InvitationsScreen.tsx
-  - mobile/src/components/InvitationsButton.tsx
+  - mobile/src/hooks/useInvitationsCount.ts
   - mobile/src/components/SecurityCode.tsx
   - server/src/routes/household.js
   - server/src/routes/keys.js
@@ -14,6 +14,7 @@ code:
   - server/src/models/{Household,HouseholdInvitation,JoinRequest,HouseholdKeyEnvelope,ResourceKeyEnvelope,HouseholdNotice}.js
   - mobile/src/lib/safetyNumbers.ts
   - mobile/src/lib/shareInvite.ts
+  - mobile/src/hooks/useRosterSuggestions.ts
   - mobile/src/components/EmailAppSheet.tsx
 tests:
   - server/src/test/householdInvitations.integration.test.js
@@ -25,6 +26,7 @@ tests:
   - server/src/services/keyEnvelope.test.js
   - mobile/src/lib/__tests__/safetyNumbers.test.ts
   - mobile/src/lib/__tests__/shareInvite.test.ts
+  - mobile/src/hooks/__tests__/useRosterSuggestions.test.ts
 ---
 
 # Households & sharing
@@ -153,6 +155,12 @@ verification. The cryptographic mechanics are in
   Suggestions exclude current members, people with a pending/accepted invite, and
   the signed-in user. The source is the in-app roster, not the device address
   book; typing a raw email/phone for someone not on file still works.
+  The roster query + matching live in the shared `hooks/useRosterSuggestions`
+  (`matchRoster`: name/email/phone-digit match, resolved to primary email else
+  canonical E.164 phone, capped at 5, excluding a caller-supplied taken set) —
+  also backing the **calendar outside-share field** (AddCalendarScreen, which
+  *stages* instead of sending; details in [calendar](calendar.md)). Each caller
+  keeps its own taken set and send/stage semantics.
 - The invitee sees it via `GET /household/invitations/mine` and accepts
   (`POST /household/invitations/:id/accept`, rate-limited) — which creates a
   `JoinRequest`, **not** an instant join. A pending invitation surfaces in **two**
@@ -227,11 +235,12 @@ verification. The cryptographic mechanics are in
     household-wide `alertHousehold` can't reach them — the removed user is no
     longer in that household, and the approved user is excluded from the
     member-facing "new member" alert.
-  - **Badge coverage.** Both notice kinds count toward the floating Invitations
-    button's "new" badge (`components/InvitationsButton`) while undismissed —
-    that badge must mirror the inbox's "New" filter exactly, which also includes
-    pending join-requests-to-approve and unacknowledged call-outcome notices, not
-    just the four invitation types.
+  - **Badge coverage.** Both notice kinds count toward the Invitations "new"
+    badge (`hooks/useInvitationsCount` — shown on the calendar's profile avatar
+    and on Profile's Invitations row) while undismissed — that badge must
+    mirror the inbox's "New" filter exactly, which also includes pending
+    join-requests-to-approve and unacknowledged call-outcome notices, not just
+    the four invitation types.
 - **Sole member = no-op.** `leave` only applies when the household is **shared**.
   A sole member has no one to leave and nothing to hand over — their household
   *is* their own data — so `POST /household/leave` returns the existing household

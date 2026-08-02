@@ -82,20 +82,16 @@ const CATALOG = [
     key: 'recipe_share',
     stage: 'sharing',
     title: 'Recipe share',
-    trigger: 'A recipe is shared by email (POST /recipes/:id/share-email).',
+    trigger: 'Retired 2026-08-01 — no longer sent. Was: a recipe shared by email (POST /recipes/:id/share-email).',
     audience: 'Any email address.',
     required: false,
-    implemented: true,
-    description: 'A full, self-contained recipe — the recipient needs nothing installed.',
-    sample: {
-      toEmail: 'sam@example.com', fromName: 'Alex',
-      recipe: {
-        title: 'Weeknight Pasta', prepTimeMins: 10, cookTimeMins: 20, servings: 4,
-        description: 'Fast, garlicky, forgiving.',
-        ingredients: [{ amount: '1', unit: 'lb', name: 'spaghetti' }, { amount: '3', unit: 'cloves', name: 'garlic' }],
-        instructions: ['Boil the pasta.', 'Sizzle the garlic.', 'Toss and serve.'],
-      },
-    },
+    implemented: false,
+    description:
+      'RETIRED: recipe sharing is device-composed like the other sharing flows — the sender ' +
+      'hands the full recipe (its content is already decrypted on-device) to the OS share sheet ' +
+      'from RecipeDetailScreen, so the recipient’s address never touches the server and the ' +
+      'decrypted recipe no longer round-trips through the mail path. Entry kept so historical ' +
+      'EmailLog rows keep resolving.',
   },
   {
     key: 'ecard',
@@ -120,7 +116,9 @@ const CATALOG = [
     required: false,
     implemented: true,
     description: 'Confirms the account and its cloud data were removed (Apple 5.1.1(v)).',
-    sample: { email: 'alex@example.com', firstName: 'Alex' },
+    // hadActiveAiPlan previews the richest variant (the Apple-keeps-billing
+    // subscription reminder appended when the account had an active plan).
+    sample: { email: 'alex@example.com', firstName: 'Alex', hadActiveAiPlan: true },
   },
 
   // Referenced by the product but NOT yet wired — a real scheduled-purge

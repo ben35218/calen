@@ -115,8 +115,10 @@ export default function CalendarsScreen() {
     .map((id) => CALENDARS.find((c) => c.id === id)?.name)
     .filter((n): n is string => !!n);
 
-  // The tappable toggle body of a row: accent bar + name (+subtitle). The whole
-  // area flips visibility; dimming signals "hidden by choice".
+  // The tappable toggle body of a row: a leading Apple-style on/off circle + name
+  // (+subtitle). The whole area flips visibility; dimming signals "hidden by
+  // choice". The circle carries the calendar's colour (dimmed when hidden), so
+  // no separate accent bar is needed.
   const toggleArea = (
     id: string,
     name: string,
@@ -133,7 +135,14 @@ export default function CalendarsScreen() {
       accessibilityLabel={`${name} calendar`}
       accessibilityHint={on ? 'Hides its events on the calendar' : 'Shows its events on the calendar'}
     >
-      <View style={[styles.accent, { backgroundColor: tint, opacity: on ? 1 : 0.25 }]} />
+      {/* Apple-style on/off control: a filled check-circle when the calendar is
+          shown, an empty circle when hidden — tinted with the calendar's colour. */}
+      <Ionicons
+        name={on ? 'checkmark-circle' : 'ellipse-outline'}
+        size={24}
+        color={tint}
+        style={!on && styles.circleOff}
+      />
       <View style={styles.nameWrap}>
         <Text style={[styles.name, !on && styles.nameOff]}>{name}</Text>
         {subtitle ? <Text style={styles.nameSub}>{subtitle}</Text> : null}
@@ -291,8 +300,8 @@ const styles = StyleSheet.create({
   group: { marginBottom: spacing.lg },
   groupLabel: { fontSize: 11, fontWeight: '700', color: colors.textMuted, letterSpacing: 1, marginBottom: spacing.sm },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  toggleArea: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: 8 },
-  accent: { width: 4, height: 36, borderRadius: 2 },
+  toggleArea: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 8 },
+  circleOff: { opacity: 0.35 },
   name: { fontSize: 16, color: colors.text },
   nameWrap: { flex: 1 },
   nameSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },

@@ -12,6 +12,7 @@ const {
   occasionOccurrences,
   occasionKindFromLabel,
   assembleCalendarData,
+  deriveAvailability,
 } = require('./index');
 
 const ymd = (d) => new Date(d).toISOString().slice(0, 10);
@@ -419,4 +420,84 @@ test('computeNextDueKm is service reading + interval', () => {
   assert.equal(computeNextDueKm({ intervalKm: 8000 }, 50000), 58000);
   assert.equal(computeNextDueKm({ intervalKm: null }, 50000), null);
   assert.equal(computeNextDueKm({ intervalKm: 8000 }, null), null);
+});
+
+// ── deriveAvailability (free/busy) ────────────────────────────────────────────
+// Fixed to UTC so the asserted wall-clock hours are deterministic on any host.
+const TZ = 'UTC';
+const at = (day, h = 12, mi = 0) => new Date(Date.UTC(2026, 7, day, h, mi)).toISOString(); // Aug 2026
+const from = at(3, 0);   // Mon 2026-08-03
+const to = at(9, 0);     // Sun 2026-08-09
+const byDate = (days) => Object.fromEntries(days.map((d) => [d.date, d]));
+
+test('timed event becomes a busy block with free gaps around it', () => {
+  const days = byDate(deriveAvailability({
+    timezone: TZ, fromDate: from, toDate: to,
+    events: [{ _id: 'e1', title: 'Dentist', allDay: false, startDate: at(3, 14), endDate: at(3, 15) }],
+    trips: [],
+  }));
+  assert.equal(days['2026-08-03'].status, 'partial');
+  assert.deepEqual(days['2026-08-03'].busy, [{ start: '14:00', end: '15:00', title: 'Dentist' }]);
+  assert.deepEqual(days['2026-08-03'].free, [{ start: '08:00', end: '14:00' }, { start: '15:00', end: '22:00' }]);
+});
+
+test('all-day event is a soft note — the day keeps its free hours (Ben-approved rule)', () => {
+  const days = byDate(deriveAvailability({
+    timezone: TZ, fromDate: from, toDate: to,
+    events: [{ _id: 'e2', title: 'Company offsite', allDay: true, startDate: at(4) }],
+    trips: [],
+  }));
+  assert.equal(days['2026-08-04'].status, 'partial');
+  assert.deepEqual(days['2026-08-04'].allDayCommitments, ['Company offsite']);
+  assert.deepEqual(days['2026-08-04'].free, [{ start: '08:00', end: '22:00' }]);
+  assert.equal(days['2026-08-04'].busy, undefined);
+});
+
+test('trip range collapses to whole "away" days', () => {
+  const days = byDate(deriveAvailability({
+    timezone: TZ, fromDate: from, toDate: to,
+    events: [],
+    trips: [{ _id: 't', name: 'Beach weekend', ranges: [{ start: at(8), end: at(9) }] }],
+  }));
+  assert.equal(days['2026-08-08'].status, 'away');
+  assert.equal(days['2026-08-08'].note, 'Beach weekend');
+  assert.equal(days['2026-08-09'].status, 'away');
+});
+
+test('a day with nothing committed is fully free (no busy/free arrays)', () => {
+  const days = byDate(deriveAvailability({ timezone: TZ, fromDate: from, toDate: to, events: [], trips: [] }));
+  assert.equal(days['2026-08-05'].status, 'free');
+  assert.equal(days['2026-08-05'].busy, undefined);
+  assert.equal(days['2026-08-05'].free, undefined);
+  assert.equal(days['2026-08-05'].weekday, 'Wed');
+});
+
+test('assemble → derive: tasks, chores, meals & grocery days never count as busy', () => {
+  // Mirrors the calendar chat route: assemble everything, then derive over the
+  // events + trips only. The reminder-style sources must not occupy time.
+  const data = assembleCalendarData({
+    fromDate: new Date(from), toDate: new Date(to), selfId: 'me',
+    events: [],
+    tasks:  [{ _id: 't1', title: 'Flush water heater', active: true, nextDueDate: at(5), recurrence: { type: 'one-time' } }],
+    chores: [{ _id: 'c1', title: 'Take out trash', active: true, nextDueDate: at(5), recurrence: { type: 'one-time' } }],
+    recipeSchedules: [{ _id: 'r1', scheduledDate: at(5), recipeId: { title: 'Tacos' }, servings: 4 }],
+    groceryShoppingDay: 3, groceryFrequency: 'weekly', // Wednesday grocery marker
+  });
+  const days = byDate(deriveAvailability({
+    timezone: TZ, fromDate: from, toDate: to, events: data.events, trips: data.trips,
+  }));
+  assert.equal(days['2026-08-05'].status, 'free'); // despite task + chore + meal + grocery that day
+});
+
+test('recurring event expands into a busy block on each occurrence', () => {
+  // Weekly Wednesday piano lesson anchored before the window.
+  const data = assembleCalendarData({
+    fromDate: new Date(from), toDate: new Date(to), selfId: 'me',
+    events: [{ _id: 'e6', title: 'Piano', allDay: false, startDate: at(-16, 16), endDate: at(-16, 16, 45), recurrence: { freq: 'weekly', interval: 1, daysOfWeek: [3] } }],
+  });
+  const days = byDate(deriveAvailability({
+    timezone: TZ, fromDate: from, toDate: to, events: data.events, trips: data.trips,
+  }));
+  assert.equal(days['2026-08-05'].status, 'partial'); // Wednesday
+  assert.deepEqual(days['2026-08-05'].busy, [{ start: '16:00', end: '16:45', title: 'Piano' }]);
 });

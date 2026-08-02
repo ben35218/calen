@@ -16,9 +16,15 @@ jest.mock('../../../lib/purchases', () => ({
   logInPurchases: jest.fn(),
   getCurrentOffering: jest.fn(),
   getOfferingById: jest.fn(),
+  getCustomerInfo: jest.fn(),
+  showManageSubscriptions: jest.fn(),
   purchasePackage: jest.fn(),
   restorePurchases: jest.fn(),
+  APPLE_SUBSCRIPTIONS_URL: 'https://apps.apple.com/account/subscriptions',
 }));
+// shared.ts pulls billingApi in for useCreditLedger, and the api barrel reaches
+// the axios client → expo-device, a native module jest-expo can't resolve.
+jest.mock('../../../api', () => ({ billingApi: { ledger: jest.fn() } }));
 
 import { addonForPackage, aiPlanPackage, packForRcPackage, unlockPackage } from '../shared';
 import type { CreditPack } from '../../../api';

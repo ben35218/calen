@@ -65,6 +65,8 @@ export default function MaintenanceChatScreen() {
       }
     },
     toolLabels: {
+      web_search: 'Searching the web…',
+      verify_place: "Checking if it's still open…",
       get_item_tasks: 'Reviewing existing tasks…',
       get_categories: 'Loading categories…',
       create_tasks: 'Adding tasks…',

@@ -185,6 +185,42 @@ async function regionForAddress(address) {
   return null;
 }
 
+// Coarse "home area" label for an address — city + region + country (e.g.
+// "Ottawa, Ontario, Canada"), from the same keyless geocoders as
+// regionForAddress (the address never touches our server). Deliberately
+// city-level: it grounds the calendar assistant's local suggestions without
+// ever exposing the street address. Returns the label, or null when neither
+// provider resolves a locality. Never throws.
+function cityLabel(city, state, country) {
+  return [city, state, country].map((s) => (s || '').trim()).filter(Boolean).join(', ') || null;
+}
+async function cityForAddress(address) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&addressdetails=1`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'HouseholdCalendar/1.0 (household management app)' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const a = data && data[0] && data[0].address;
+      if (a) {
+        const city = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || a.county;
+        const label = cityLabel(city, a.state || a.province || a.state_district, a.country);
+        if (label) return label;
+      }
+    }
+  } catch { /* fall through to Photon */ }
+  try {
+    const res = await fetch(`https://photon.komoot.io/api?q=${encodeURIComponent(address)}&limit=1`);
+    if (res.ok) {
+      const data = await res.json();
+      const p = data && data.features && data.features[0] && data.features[0].properties;
+      if (p) return cityLabel(p.city || p.name || p.county, p.state, p.country);
+    }
+  } catch { /* both failed */ }
+  return null;
+}
+
 // IANA zone id for coordinates, from open-meteo's `timezone=auto` echo (keyless
 // + CORS-open, so an E2EE household resolves its home zone without the address
 // ever touching our server). Returns e.g. "America/Toronto", or null.
@@ -434,7 +470,7 @@ async function loadOutlook(address, { today = new Date(), days = 90, geocoder = 
 
 module.exports = {
   WMO_DESCRIPTIONS, isMowingDay, buildForecast, geocode, geocodePlace, placeCandidates, fetchWeather, loadWeatherForAddress,
-  timezoneForCoords, locationTimezone, regionForAddress, loadWeatherForCoords,
+  timezoneForCoords, locationTimezone, regionForAddress, cityForAddress, loadWeatherForCoords,
   fetchWeatherArchive, buildRangeRecords, loadWeatherRange, buildOutlook, loadOutlook, loadOutlookForCoords,
   buildDailyClimate, loadDailyClimate,
 };

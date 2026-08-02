@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
-import { TouchableOpacity, Text, StyleSheet } from 'react-native';
+import React, { useCallback, useEffect, useLayoutEffect } from 'react';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useChat } from '../../hooks/useChat';
+import type { ChatMessage } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import ChatHeaderButtons from '../chat/ChatHeaderButtons';
 import CreditsBanner from '../../components/CreditsBanner';
 import type { RootStackParamList } from '../../navigation/types';
 import type { AssistantId } from '../chat/assistantTabs';
@@ -17,22 +18,26 @@ const UNIT: Record<string, string> = { daily: 'days', weekly: 'weeks', monthly: 
 // Chores Assistant — a standalone chat that helps plan recurring chores. Like the
 // Calendar assistant, it drafts a chore (open_create_chore_form) that the user
 // reviews and saves in the prefilled chore form; nothing is written until then.
-export default function ChoresAssistantScreen({ onSelectAssistant }: { onSelectAssistant?: (id: AssistantId) => void } = {}) {
+export default function ChoresAssistantScreen({
+  onSelectAssistant,
+  onResumeChat,
+}: {
+  onSelectAssistant?: (id: AssistantId) => void;
+  onResumeChat?: (surfaceKey: string, chatId: string) => void;
+} = {}) {
   const navigation = useNavigation<Nav>();
-  // The chore Calen drafted this turn (from the server's pendingChore side effect).
-  const pendingChore = useRef<Record<string, any> | null>(null);
 
   const chat = useChat({
     endpoint: '/chores/chat',
+    historyKey: 'chores',
     contextEndpoint: '/chores/chat/context',
     buildBody: (messages) => ({ messages }),
-    onResult: (data) => {
-      pendingChore.current =
-        data.pendingChore && typeof data.pendingChore === 'object'
-          ? (data.pendingChore as Record<string, any>)
-          : pendingChore.current;
-    },
+    // The drafted chore is held (and persisted/restored) by useChat as
+    // `pendingChore` — the same channel as the calendar assistant's pendingEvent
+    // — so it survives a resume from history, exactly like the chip that uses it.
     toolLabels: {
+      web_search: 'Searching the web…',
+      verify_place: "Checking if it's still open…",
       list_chores: 'Checking your chores…',
       open_create_chore_form: 'Drafting the chore…',
       suggest_navigation: 'Finding a shortcut…',
@@ -44,11 +49,14 @@ export default function ChoresAssistantScreen({ onSelectAssistant }: { onSelectA
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // "Review & add chore" opens the chore form prefilled with the draft; the form
-  // owns the save (and its E2EE sealing). Any other chip falls through to a send.
+  // "Review & add chore" opens the chore form prefilled with the draft on THAT
+  // turn's message (`msg.pendingChore`), so tapping the chip on an older turn uses
+  // that turn's own draft. The chip stays in scrollback and tappable — it only
+  // ever opens a form (the form owns the save + E2EE sealing), so there's no
+  // direct-create to disable. Any other chip falls through to a send.
   const handleFollowup = useCallback(
-    (text: string): boolean => {
-      const c = pendingChore.current;
+    (text: string, msg: ChatMessage): boolean => {
+      const c = (msg.pendingChore ?? null) as Record<string, any> | null;
       if (text !== 'Review & add chore' || !c) return false;
       const prefill: Record<string, unknown> = {
         title: c.title,
@@ -57,23 +65,19 @@ export default function ChoresAssistantScreen({ onSelectAssistant }: { onSelectA
           ? { type: 'interval', intervalValue: c.interval || 1, intervalUnit: UNIT[c.frequency] || 'weeks' }
           : undefined,
       };
-      chat.resolvePending();
       navigation.navigate('ChoreForm', { prefill });
       return true;
     },
-    [chat, navigation]
+    [navigation]
   );
 
+  // History clock (opens the Recent-chats sheet) + compose (new chat).
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerRight: () =>
-        chat.messages.length > 0 ? (
-          <TouchableOpacity onPress={chat.clear} disabled={chat.loading}>
-            <Text style={styles.clear}>Clear</Text>
-          </TouchableOpacity>
-        ) : undefined,
+      headerRight: () => <ChatHeaderButtons chat={chat} />,
     });
-  }, [navigation, chat.messages.length, chat.loading, chat.clear]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, chat.messages.length, chat.recentChats.length, chat.loading, chat.clear, chat.openHistory]);
 
   return (
     <ChatScreen
@@ -81,6 +85,7 @@ export default function ChoresAssistantScreen({ onSelectAssistant }: { onSelectA
       surface="chores"
       activeAssistant="chores"
       onSelectAssistant={onSelectAssistant}
+      onResumeExternal={onResumeChat}
       banner={<CreditsBanner />}
       emptyHint='e.g. "Set up a weekly trash chore"'
       placeholder="Message…"
@@ -89,7 +94,3 @@ export default function ChoresAssistantScreen({ onSelectAssistant }: { onSelectA
     />
   );
 }
-
-const styles = StyleSheet.create({
-  clear: { color: '#fff', fontSize: 15, fontWeight: '500' },
-});

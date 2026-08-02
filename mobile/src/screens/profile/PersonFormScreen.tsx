@@ -11,6 +11,8 @@ import {
   normalizePerson,
   denormalizeForSave,
   reciprocalUpdates,
+  relatedNameRemovalsOnDelete,
+  reciprocalLabelFor,
   composeName,
   splitName,
   LabeledValue,
@@ -30,13 +32,14 @@ import {
 } from '../../lib/personFields';
 import {
   Button, Input, DateField, Screen, SectionTitle, SectionHeader, Select, PhoneTextField,
-  BottomSheet, useHeaderCheckButton, SwitchRow, ScrollToSection,
+  BottomSheet, useHeaderCheckButton, SwitchRow, ScrollToSection, SetupCallout, Hint,
 } from '../../components/ui';
-import { MultiValueField } from '../../components/MultiValueField';
+import { MultiValueField, LabelChip } from '../../components/MultiValueField';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
+import { addPersonToDeviceContacts, ContactsPermissionError } from '../../lib/deviceContacts';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
@@ -57,7 +60,7 @@ export default function PersonFormScreen() {
   const nav = useNavigation();
   const qc = useQueryClient();
   const { params } = useRoute<R>();
-  const { id, isSelf, type: initialType, prefills, queueIndex = 0, focus } = params || {};
+  const { id, isSelf, type: initialType, prefills, queueIndex = 0, focus, aiReview } = params || {};
 
   const people = qc.getQueryData<Person[]>(['people']) || [];
   const editing = id ? people.find((p) => p._id === id) : undefined;
@@ -91,7 +94,6 @@ export default function PersonFormScreen() {
     relationship: src?.relationship ?? '',
     company: norm.company,
     jobTitle: norm.jobTitle,
-    birthday: src?.birthday ? String(src.birthday).slice(0, 10) : '',
     notes: src?.notes ?? '',
   });
 
@@ -101,14 +103,32 @@ export default function PersonFormScreen() {
   const [phones, setPhones] = useState<LabeledValue[]>(norm.phones);
   const [emails, setEmails] = useState<LabeledValue[]>(norm.emails);
   const [addresses, setAddresses] = useState<LabeledValue[]>(norm.addresses);
-  const [dates, setDates] = useState<LabeledValue[]>(norm.dates);
+  // Birthday is presented as the first "Occasion date" row (label "Birthday"),
+  // seeded from the dedicated `Person.birthday` field; on save it splits back out
+  // to that field (see save()). Personal contacts always get the row so it's the
+  // default on a new contact; service (business) contacts don't.
+  const [dates, setDates] = useState<LabeledValue[]>(() => {
+    if (isService) return norm.dates;
+    const bday = src?.birthday ? String(src.birthday).slice(0, 10) : '';
+    return [{ label: 'birthday', value: bday }, ...norm.dates];
+  });
   const [occasionsHidden, setOccasionsHidden] = useState<boolean>(Boolean((src as Person | undefined)?.occasionsHidden));
   const [urls, setUrls] = useState<LabeledValue[]>(norm.urls);
   const [relatedNames, setRelatedNames] = useState<RelatedName[]>(norm.relatedNames);
   const [linkIndex, setLinkIndex] = useState<number | null>(null);
 
   const [saving, setSaving] = useState(false);
+  // Opt-in "Also save to iPhone Contacts" — offered only when creating a brand-new
+  // Calen contact (not editing, not a device import, not the self card, since an
+  // imported contact already exists on the phone).
+  const showSaveToDevice = !isSelf && !editing && !inQueue;
+  const [saveToDevice, setSaveToDevice] = useState(false);
   const assist = useFormAssist();
+
+  // Hide the "Ask Calen" form-assist panel in a Direct-import review queue (the
+  // contact's details came straight from the phone — nothing to re-derive). It
+  // stays for a normal add/edit and for an AI-assisted review.
+  const showAssist = !isSelf && (!inQueue || !!aiReview);
 
   const set = (k: keyof typeof form) => (v: string) => {
     setForm((f) => ({ ...f, [k]: v }));
@@ -162,6 +182,20 @@ export default function PersonFormScreen() {
         }
         continue;
       }
+      // Birthday isn't a scalar form field anymore — it's the "Birthday" row of
+      // the occasion dates. Route an assistant-filled birthday into that row.
+      if (k === 'birthday') {
+        if (val) {
+          setDates((ds) => {
+            const i = ds.findIndex((d) => d.label.trim().toLowerCase() === 'birthday');
+            return i >= 0
+              ? ds.map((d, idx) => (idx === i ? { ...d, value: val } : d))
+              : [{ label: 'birthday', value: val }, ...ds];
+          });
+          changed.push('birthday');
+        }
+        continue;
+      }
       if (!(k in form)) continue;
       if ((form as any)[k] !== val) changed.push(k);
       (nextForm as any)[k] = val;
@@ -203,20 +237,54 @@ export default function PersonFormScreen() {
       // Structured names apply to personal contacts; service/self carry only the
       // single `name`, so their first/last stay empty.
       const structured = isService || isSelf ? { firstName: '', lastName: '' } : { firstName: form.firstName, lastName: form.lastName };
+      // Split the "Birthday" occasion-date row back out to the dedicated
+      // `birthday` field (the first birthday-labeled row with a value wins); the
+      // remaining rows persist as labeled `dates[]`.
+      const bdayIdx = dates.findIndex((d) => d.label.trim().toLowerCase() === 'birthday' && d.value.trim());
+      const birthday = bdayIdx >= 0 ? dates[bdayIdx].value.trim() : undefined;
+      const datesToSave = bdayIdx >= 0 ? dates.filter((_, i) => i !== bdayIdx) : dates;
+      // Opt-in: also add a copy to the device address book (best-effort — a
+      // permission denial or write error must not block the Calen save). Writing
+      // decrypted data to the user's OWN device is outside the E2EE boundary.
+      let deviceContactId = prefill?.deviceContactId || undefined;
+      if (showSaveToDevice && saveToDevice && !deviceContactId) {
+        try {
+          deviceContactId = await addPersonToDeviceContacts({
+            name: composedName,
+            firstName: isService || isSelf ? undefined : form.firstName,
+            lastName: isService || isSelf ? undefined : form.lastName,
+            type,
+            company: form.company,
+            jobTitle: form.jobTitle,
+            birthday,
+            phones,
+            emails,
+            addresses,
+            urls,
+          });
+        } catch (e) {
+          Alert.alert(
+            'Not saved to iPhone',
+            e instanceof ContactsPermissionError
+              ? 'Contacts permission is off, so this contact was saved in Calen only. You can allow Contacts access in Settings.'
+              : "This contact was saved in Calen, but couldn't be added to your iPhone Contacts."
+          );
+        }
+      }
       const payload: Record<string, unknown> = {
         type,
         name: composedName,
         relationship: form.relationship.trim() || undefined,
-        birthday: form.birthday || undefined,
+        birthday: birthday || undefined,
         notes: form.notes.trim() || undefined,
         // Only persist the exclusion when set; absent = shown (default).
         occasionsHidden: occasionsHidden || undefined,
-        deviceContactId: prefill?.deviceContactId || undefined,
+        deviceContactId: deviceContactId || undefined,
         // Emits the structured names + labeled arrays + company/jobTitle and
         // clears the legacy single phone/email/address/businessName fields.
         ...denormalizeForSave({
           ...structured,
-          phones, emails, addresses, dates, urls, relatedNames,
+          phones, emails, addresses, dates: datesToSave, urls, relatedNames,
           jobTitle: form.jobTitle, company: form.company,
         }),
       };
@@ -233,16 +301,20 @@ export default function PersonFormScreen() {
         savedId = (body._id as string | undefined) || res?.data?._id;
       }
       // Mirror linked related names onto the other contact with the inverse
-      // label (spouse↔spouse, mother→child, …; add-only — see personFields).
-      // Best-effort: this person is already saved, so a failed back-link write
-      // must not surface as a save failure.
+      // label (spouse↔spouse, mother→child, …), keeping the mirror in sync with a
+      // rename, a relabel, or a REMOVAL on this card — see
+      // personFields.reciprocalUpdates. `norm.relatedNames` is this contact's
+      // previously-saved links, letting the mirror tell an intentional relabel
+      // from an unrelated re-save and spot dropped links. Best-effort:
+      // this person is already saved, so a failed back-link write must not surface
+      // as a save failure.
       if (savedId) {
-        for (const u of reciprocalUpdates({ id: savedId, name: composedName }, relatedNames, people)) {
+        for (const u of reciprocalUpdates({ id: savedId, name: composedName }, relatedNames, people, norm.relatedNames)) {
           try {
             const patch = { relatedNames: u.relatedNames };
             await peopleApi.update(u.person._id, await sealUpdate('Person', u.person._id, patch, PERSON_ENC({ ...u.person, ...patch })));
           } catch {
-            // add-only mirror; the next save of either card can retry
+            // best-effort mirror; the next save of either card can retry
           }
         }
       }
@@ -265,6 +337,17 @@ export default function PersonFormScreen() {
         style: 'destructive',
         onPress: async () => {
           await peopleApi.delete(editing._id);
+          // Clear any related-name links that pointed at this now-deleted contact
+          // so the other cards don't keep a dangling relationship. Best-effort:
+          // a failed cleanup write must not block the delete.
+          for (const u of relatedNameRemovalsOnDelete(editing._id, people)) {
+            try {
+              const patch = { relatedNames: u.relatedNames };
+              await peopleApi.update(u.person._id, await sealUpdate('Person', u.person._id, patch, PERSON_ENC({ ...u.person, ...patch })));
+            } catch {
+              // best-effort; the next save of that card can retry
+            }
+          }
           qc.invalidateQueries({ queryKey: ['people'] });
           allowLeave();
           nav.goBack();
@@ -273,7 +356,16 @@ export default function PersonFormScreen() {
     ]);
   }
 
-  useHeaderCheckButton(nav, { onPress: save, loading: saving, disabled: !composedName });
+  // Non-accented area, so the save check is normally a transparent-white ✕-match
+  // (mobile/CLAUDE.md). Exception: in the import review queue the light header
+  // makes that check hard to see and easy to miss while stepping through many
+  // contacts, so we tint it the app primary here (review-import flow only).
+  useHeaderCheckButton(nav, {
+    onPress: save,
+    loading: saving,
+    disabled: !composedName,
+    color: inQueue ? colors.primary : undefined,
+  });
 
   // Discard guard. Every field is seeded synchronously from `src`, so the form
   // is ready on first render — snapshot it once as the clean baseline. Dirty =
@@ -296,12 +388,12 @@ export default function PersonFormScreen() {
 
   return (
     <Screen>
-      {!isSelf ? (
+      {showAssist ? (
         <FormAssist
           formType="person / contact"
           placeholder={'Describe the person, e.g. "my sister Sarah, birthday June 3, lives at 12 Elm St"'}
           fields={assistFields}
-          current={{ ...form, name: composedName, phone: phones[0]?.value ?? '', email: emails[0]?.value ?? '' }}
+          current={{ ...form, name: composedName, phone: phones[0]?.value ?? '', email: emails[0]?.value ?? '', birthday: dates.find((d) => d.label.trim().toLowerCase() === 'birthday')?.value ?? '' }}
           onApply={applyPatch}
         />
       ) : null}
@@ -386,23 +478,6 @@ export default function PersonFormScreen() {
               containerStyle={fs.headField}
               style={[fs.headInput, assist.changed.has('jobTitle') && fs.headInputHighlight]}
             />
-            {!isService ? (
-              <>
-                <CardDivider />
-                <DateField
-                  inlineLabel="Birthday"
-                  clearable
-                  placeholder="None"
-                  value={form.birthday}
-                  onChange={set('birthday')}
-                  highlight={assist.changed.has('birthday')}
-                  containerStyle={fs.dtFieldWrap}
-                  fieldStyle={fs.rowField}
-                  valueStyle={fs.dtValue}
-                  hideIcon
-                />
-              </>
-            ) : null}
           </>
         ) : null}
       </GroupCard>
@@ -411,7 +486,13 @@ export default function PersonFormScreen() {
         <Text style={styles.hint}>Your name, birthday and home address are managed in Account.</Text>
       ) : (
         <>
+          {/* Opened from a Calen "Add this contact" setup chip (`focus: 'phone'`):
+              scroll to the phone section and say why, so Calen can call/text them. */}
+          <ScrollToSection active={focus === 'phone'}>
           <SectionHeader>Phone</SectionHeader>
+          {focus === 'phone' ? (
+            <SetupCallout icon="call">Add a phone number so Calen can call or text this contact for you.</SetupCallout>
+          ) : null}
           <MultiValueField
             entries={phones}
             onChange={setPhones}
@@ -428,6 +509,7 @@ export default function PersonFormScreen() {
               />
             )}
           />
+          </ScrollToSection>
 
           <SectionHeader>Email</SectionHeader>
           <MultiValueField
@@ -475,7 +557,7 @@ export default function PersonFormScreen() {
               opens with this section's title at the top of the viewport. */}
           <ScrollToSection active={focus === 'dates'}>
             <SectionHeader>Occasion dates</SectionHeader>
-            {(form.birthday || dates.some((d) => d.value.trim())) ? (
+            {dates.some((d) => d.value.trim()) ? (
               <SwitchRow
                 label="Show on Occasions calendar"
                 value={!occasionsHidden}
@@ -483,6 +565,9 @@ export default function PersonFormScreen() {
                 color={CALENDAR_COLORS.birthdays}
               />
             ) : null}
+            {/* Birthday is the first row (label "Birthday", defaulted on a new
+                contact); every date row has a clear-✕ on its value, and the
+                red-minus removes the row entirely. */}
             <MultiValueField
               entries={dates}
               onChange={setDates}
@@ -494,6 +579,7 @@ export default function PersonFormScreen() {
                   value={entry.value}
                   onChange={(v) => patch({ value: v })}
                   placeholder="Date"
+                  clearable
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={styles.dateEditor}
                   hideIcon
@@ -523,6 +609,10 @@ export default function PersonFormScreen() {
             )}
           />
 
+          {/* Opened from the e-card recipients card (`focus: 'related'`): scroll
+              this section to the top so the user can link a related contact —
+              anyone linked here becomes a candidate recipient back in the card. */}
+          <ScrollToSection active={focus === 'related'}>
           <SectionHeader>Related names</SectionHeader>
           <MultiValueField<RelatedName>
             entries={relatedNames}
@@ -533,8 +623,9 @@ export default function PersonFormScreen() {
             renderEditor={(entry, patch) => (
               <Input
                 value={entry.value}
-                // Typing a name by hand detaches any linked contact.
-                onChangeText={(v) => patch({ value: v, personId: undefined })}
+                // Typing a name by hand detaches any linked contact (and its
+                // now-moot reciprocal label).
+                onChangeText={(v) => patch({ value: v, personId: undefined, reciprocalLabel: undefined })}
                 placeholder="Name"
                 containerStyle={fs.headField}
                 style={editorField}
@@ -554,7 +645,29 @@ export default function PersonFormScreen() {
                 />
               </TouchableOpacity>
             )}
+            // For a linked contact with a CUSTOM label (no derivable inverse),
+            // let the user set what THIS contact is called on the other's card —
+            // e.g. link "daughter-in-law", set the reciprocal to "father-in-law".
+            // Preset labels derive their inverse automatically, so no control.
+            renderBelow={(entry, patch) => {
+              if (!entry.personId) return null;
+              const isPreset = RELATED_LABELS.some((l) => l.toLowerCase() === entry.label.trim().toLowerCase());
+              if (isPreset) return null;
+              return (
+                <View style={styles.reciprocalRow}>
+                  <Text style={styles.reciprocalHint}>
+                    Who {splitName(composedName).firstName || 'this contact'} is to {splitName(entry.value).firstName || 'them'}:
+                  </Text>
+                  <LabelChip
+                    value={reciprocalLabelFor(entry)}
+                    presets={RELATED_LABELS}
+                    onChange={(label) => patch({ reciprocalLabel: label })}
+                  />
+                </View>
+              );
+            }}
           />
+          </ScrollToSection>
 
           <SectionTitle>Notes</SectionTitle>
           <Input
@@ -566,6 +679,21 @@ export default function PersonFormScreen() {
             style={styles.notes}
             highlight={assist.changed.has('notes')}
           />
+
+          {showSaveToDevice ? (
+            <>
+              <SectionHeader>iPhone Contacts</SectionHeader>
+              <SwitchRow
+                label="Also save to iPhone Contacts"
+                value={saveToDevice}
+                onValueChange={setSaveToDevice}
+              />
+              <Hint>
+                Adds a copy to your phone's address book when you save. Your Calen contacts
+                stay private either way.
+              </Hint>
+            </>
+          ) : null}
         </>
       )}
 
@@ -613,6 +741,11 @@ const styles = StyleSheet.create({
   notes: { height: 80, textAlignVertical: 'top' },
   dateEditor: { backgroundColor: 'transparent', borderWidth: 0, paddingHorizontal: 0 },
   linkBtn: { paddingLeft: 8, paddingRight: 12, paddingVertical: 12 },
+  reciprocalRow: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: spacing.sm,
+    paddingLeft: 12, paddingRight: 14, paddingBottom: 10,
+  },
+  reciprocalHint: { fontSize: 12, color: colors.textMuted, flexShrink: 1 },
   linkList: { maxHeight: 320 },
   linkRow: { paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   linkName: { fontSize: 16, color: colors.text },

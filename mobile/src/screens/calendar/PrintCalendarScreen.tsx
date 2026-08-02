@@ -54,6 +54,7 @@ export default function PrintCalendarScreen() {
   const [cursor, setCursor] = useState({ year: now.getFullYear(), month: now.getMonth() });
   const [preset, setPreset] = useState<AgendaPreset>('twoWeeks');
   const [useColor, setUseColor] = useState(true);
+  const [use24h, setUse24h] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<'print' | 'share' | null>(null);
 
@@ -126,6 +127,7 @@ export default function PrintCalendarScreen() {
         months: [{ year: cursor.year, month: cursor.month }],
         calendars: selected,
         useColor,
+        use24h,
       },
       data,
       holidays
@@ -266,6 +268,10 @@ export default function PrintCalendarScreen() {
       <View style={styles.row}>
         <Text style={styles.name}>Print calendar colours</Text>
         <Switch value={useColor} onValueChange={setUseColor} trackColor={{ true: colors.primary }} />
+      </View>
+      <View style={styles.row}>
+        <Text style={styles.name}>24-hour clock</Text>
+        <Switch value={use24h} onValueChange={setUse24h} trackColor={{ true: colors.primary }} />
       </View>
       <Text style={styles.hint}>
         {useColor

@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import ChatHeaderButtons from '../chat/ChatHeaderButtons';
 import CreditsBanner from '../../components/CreditsBanner';
 import { tripsApi, householdApi } from '../../api';
 import { getHDK, openRecord } from '../../lib/e2ee';
@@ -22,11 +23,13 @@ export default function TripAssistantScreen({
   tripId: tripIdProp,
   tripName: tripNameProp,
   onSelectAssistant,
+  onResumeChat,
   onChangeTrip,
 }: {
   tripId?: string;
   tripName?: string;
   onSelectAssistant?: (id: AssistantId) => void;
+  onResumeChat?: (surfaceKey: string, chatId: string) => void;
   onChangeTrip?: () => void;
 } = {}) {
   const navigation = useNavigation();
@@ -46,6 +49,9 @@ export default function TripAssistantScreen({
 
   const chat = useChat({
     endpoint: '/trips/chat',
+    // Trip chats are trip-scoped, so history is too — the sheet lists only this
+    // trip's conversations.
+    historyKey: `trips:${tripId}`,
     contextEndpoint: `/trips/chat/context?tripId=${tripId}`,
     // Post-drop the DB summary is sealed — POST the decrypted trip instead.
     contextBody: () => (ephemeralRef.current ? { tripId, ...ephemeralRef.current } : null),
@@ -53,6 +59,8 @@ export default function TripAssistantScreen({
     transformResult: aliasCtx.resolveAliases,
     onResult: () => qc.invalidateQueries({ queryKey: ['trips', tripId] }),
     toolLabels: {
+      web_search: 'Searching the web…',
+      verify_place: "Checking if it's still open…",
       suggest_navigation: 'Finding a shortcut…',
     },
   });
@@ -74,16 +82,13 @@ export default function TripAssistantScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // History clock (opens the Recent-chats sheet) + compose (new chat).
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerRight: () =>
-        chat.messages.length > 0 ? (
-          <TouchableOpacity onPress={chat.clear} disabled={chat.loading}>
-            <Text style={styles.clear}>Clear</Text>
-          </TouchableOpacity>
-        ) : undefined,
+      headerRight: () => <ChatHeaderButtons chat={chat} />,
     });
-  }, [navigation, chat.messages.length, chat.loading, chat.clear]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, chat.messages.length, chat.recentChats.length, chat.loading, chat.clear, chat.openHistory]);
 
   // When embedded, a slim bar names the trip being planned and lets the user pop
   // back to the trip picker to choose another (or start a new one).
@@ -107,6 +112,7 @@ export default function TripAssistantScreen({
       // (from a trip's detail page) it stays a focused single-trip chat.
       activeAssistant={onSelectAssistant ? 'trips' : undefined}
       onSelectAssistant={onSelectAssistant}
+      onResumeExternal={onResumeChat}
       banner={<CreditsBanner />}
       footer={tripBar}
       navContext={{ tripId }}
@@ -117,7 +123,6 @@ export default function TripAssistantScreen({
 }
 
 const styles = StyleSheet.create({
-  clear: { color: '#fff', fontSize: 15, fontWeight: '500' },
   tripBar: {
     flexDirection: 'row',
     alignItems: 'center',

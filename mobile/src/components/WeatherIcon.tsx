@@ -67,13 +67,34 @@ function Rainy({ size, style, intensity }: { size: number; style?: StyleProp<Tex
   );
 }
 
-// Thunderstorm is two-tone like Rainy: the gold `thunderstorm` glyph (cloud +
-// bolt) underneath, with a white `cloud` overlaid to cover the cloud so only
-// the lightning bolt below stays gold.
+// Thunderstorm: white cloud, blue rain drops, gold bolt. Like Rainy, only the
+// LOWER band of the glyph is ever rendered, so the glyph's own cloud can never
+// peek past the white overlay. Within that band the glyph is drawn twice: blue
+// for the drops, and gold clipped to the centre strip for the bolt. Geometry is
+// measured from the Ionicons TTF (advance = exactly 1em, so fractions of `size`
+// are exact): the glyph's cloud bottoms out at y 0.65; drops sit at x
+// 0.154–0.299 / 0.703–0.844 (y ≥ 0.662); the bolt (one contour with the cloud)
+// spans x 0.344–0.662 below the cloud. CRITICAL: every clipped inner glyph
+// needs an explicit `width: size` — an RN Text measures at most its parent's
+// width and iOS clips the glyph to the Text's OWN bounds, so inside a narrow
+// clip wrapper an auto-width glyph shows only its leftmost slice (or, offset
+// negatively, nothing at all) no matter where the wrapper's window sits.
+const THUNDER_BAND_TOP = 0.65; // just below the glyph cloud's bottom edge
 function Thunderstorm({ size, style }: { size: number; style?: StyleProp<TextStyle> }) {
+  const bandTop = size * THUNDER_BAND_TOP;
+  const boltLeft = size * 0.34;
+  const boltWidth = size * 0.33; // x 0.34–0.67 window: the bolt, clear of both drop pairs
   return (
     <View style={[{ width: size, height: size }, style as StyleProp<ViewStyle>]}>
-      <Ionicons name="thunderstorm" size={size} color={GOLD} style={{ position: 'absolute', top: 0, left: 0 }} />
+      {/* Lower band, blue: the rain drops (and the bolt, re-coloured below). */}
+      <View style={{ position: 'absolute', top: bandTop, left: 0, width: size, height: size - bandTop, overflow: 'hidden' }}>
+        <Ionicons name="thunderstorm" size={size} color={RAIN} style={{ position: 'absolute', top: -bandTop, left: 0, width: size }} />
+      </View>
+      {/* Centre strip of the lower band, gold: the bolt only. */}
+      <View style={{ position: 'absolute', top: bandTop, left: boltLeft, width: boltWidth, height: size - bandTop, overflow: 'hidden' }}>
+        <Ionicons name="thunderstorm" size={size} color={GOLD} style={{ position: 'absolute', top: -bandTop, left: -boltLeft, width: size }} />
+      </View>
+      {/* Consistent white cloud on top — the only cloud ever drawn. */}
       <Ionicons
         name="cloud"
         size={size * 0.74}

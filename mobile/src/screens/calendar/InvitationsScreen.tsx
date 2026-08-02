@@ -11,6 +11,7 @@ import {
   callsApi, PhoneCallRecord,
 } from '../../api';
 import { refreshCustomCalendars } from '../../lib/calendarPrefs';
+import { ensureSharedCalendarKeys } from '../../lib/calendarKeys';
 import {
   myIdentityPublicKey, openInvitationSnapshot, sealInvitationSnapshot,
   ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint,
@@ -251,7 +252,14 @@ export default function InvitationsScreen() {
       // Access changed either way (decline after accept revokes it): re-pull
       // the calendar list and every calendar view.
       await refreshCustomCalendars();
+      // Load the member-wrapped CalendarKey for the newly joined calendar (a
+      // no-op until the owner's device wraps it) so shared events decrypt.
+      await ensureSharedCalendarKeys().catch(() => {});
       qc.invalidateQueries({ queryKey: ['calendar'] });
+      // Keep the free-viewer-mode gate signal truthful: accepting the first
+      // share (or declining the last one) flips the viewer-content cache via
+      // the billing status mirror.
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
   });
@@ -585,8 +593,7 @@ export default function InvitationsScreen() {
           </View>
         ) : null}
         <Text style={styles.meta}>
-          Before approving, confirm this security code matches the one they see on their own
-          Household screen while they wait — it proves you’re granting access to the right person.
+          Confirm this code matches the one on their Household screen before approving.
         </Text>
         {fingerprints[item._id] ? (
           <SecurityCode code={fingerprints[item._id]} copyable={false} />
@@ -638,7 +645,7 @@ export default function InvitationsScreen() {
         </View>
         <Text style={styles.meta}>
           Accepting shares the family calendar, tasks, trips, and more. A member
-          then confirms you on their device (your data is end-to-end encrypted).
+          then confirms you on their device.
         </Text>
 
         {item.status === 'pending' ? (
@@ -686,7 +693,7 @@ export default function InvitationsScreen() {
           </Text>
           <View style={styles.metaRow}>
             <Ionicons name="lock-closed-outline" size={14} color={colors.textMuted} />
-            <Text style={styles.meta}>Encrypted invitation — unlock to view.</Text>
+            <Text style={styles.meta}>Unlock to view this invitation.</Text>
           </View>
         </View>
       );

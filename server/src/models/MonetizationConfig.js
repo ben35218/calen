@@ -56,14 +56,35 @@ const DEFAULTS = {
   // raw cost × `margin` (2.0 = 100% margin):
   //   tokens: ceil(tokens × ratePer1M/1e6 × margin × 100 × 1000) Mc
   //   calls:  ceil(seconds × callRatePerMinute/60 × margin × 100 × 1000) Mc
-  // `tokenRatesPer1M` are blended RAW $ per 1M tokens (input+output+cache),
-  // matched by substring on the model id ('haiku'/'sonnet'), else `default`.
-  // Deliberately rough — tune the rates against real spend, not the formula.
+  // `tokenRatesPer1M` are RAW $ per 1M tokens PER TOKEN TYPE — Anthropic bills
+  // input, output, cache reads (~0.1× input), and cache writes (1.25× input) at
+  // very different rates, and chat turns are cache-read heavy, so a blended
+  // rate wildly overprices them. Families are matched by substring on the model
+  // id ('haiku'/'sonnet'), else `default`. A legacy stored NUMBER (the old
+  // blended rate) is still honored by credits.tokenCostMc (applied to every
+  // type) until getSingleton migrates it to the per-type shape.
   credits: {
     margin: 2.0,
-    tokenRatesPer1M: { default: 6, haiku: 3, sonnet: 10 },
+    // Chat is TOKEN-PRICED (not flat): each turn debits whole credits sized to
+    // cover its token provider-cost AFTER Apple's storefront cut, plus a slight
+    // margin, ceiled (credits.chatCreditsForTokens). `appleFeePct` is Apple's
+    // commission (0.15 = App Store Small Business Program); `chatMargin` is the
+    // target markup on the after-Apple cost, clamped [1.0, 1.5] — 1.0 leans on
+    // the ceil for the margin. These tune the band; the token rates below still
+    // supply the raw cost.
+    appleFeePct: 0.15,
+    chatMargin: 1.0,
+    tokenRatesPer1M: {
+      default: { input: 6, output: 30, cacheRead: 0.6,  cacheWrite: 7.5  },
+      haiku:   { input: 1, output: 5,  cacheRead: 0.1,  cacheWrite: 1.25 },
+      sonnet:  { input: 3, output: 15, cacheRead: 0.3,  cacheWrite: 3.75 },
+    },
     // Raw Vapi cost per connected minute (STT + TTS + telephony; measured ~$0.082).
     callRatePerMinute: 0.10,
+    // Raw Anthropic web-search fee per executed search ($10 / 1,000 searches).
+    // The extra result tokens a search injects are already captured by the
+    // token counters — this covers only the per-search API fee.
+    webSearchRatePerSearch: 0.01,
     // FLAT published credit prices per completed action — what usage actually
     // debits (whole credits; `callPerMinute` is prorated per connected second).
     // Set from metered token averages with `margin` built in; the token/call
@@ -71,6 +92,9 @@ const DEFAULTS = {
     // spend for margin reconciliation, never to debit. Flat prices mean users
     // can predict spend and a new model id can never misprice a debit.
     actionCosts: {
+      // chat is TOKEN-PRICED (credits.chatCreditsForTokens) — this value is NOT
+      // debited; it survives only as a nominal anchor for the rate card's sort
+      // and legacy readers. The card labels chat "Varies with length".
       chat: 5,
       scan: 3,
       generation: 3,
@@ -79,6 +103,9 @@ const DEFAULTS = {
       manualParse: 40,
       aiHelper: 1,
       callPerMinute: 20,
+      // Web search is NOT a separate debit: it runs inside a chat turn, so its
+      // result tokens are already billed by the token-priced chat debit. See
+      // usageMeter.recordWebSearches (count/cost recorded, never charged).
     },
     // One-time grant per new user (in credits), so the AI can be tried before
     // the first pack purchase. Idempotent via the CreditLedger.
@@ -178,6 +205,42 @@ monetizationConfigSchema.statics.getSingleton = async function getSingleton() {
     doc.credits.actionCosts = { ...DEFAULTS.credits.actionCosts };
     doc.markModified('credits');
     dirty = true;
+  } else if (doc.credits.actionCosts.webSearch != null) {
+    // Web search is no longer a separate debit (folded into token-priced chat);
+    // strip any stored per-search price so the rate card / admin editor drop it.
+    delete doc.credits.actionCosts.webSearch;
+    doc.markModified('credits');
+    dirty = true;
+  }
+  if (doc.credits && doc.credits.webSearchRatePerSearch == null) {
+    doc.credits.webSearchRatePerSearch = DEFAULTS.credits.webSearchRatePerSearch;
+    doc.markModified('credits');
+    dirty = true;
+  }
+  // Backfill the chat token-pricing knobs for docs predating token-priced chat.
+  if (doc.credits && doc.credits.appleFeePct == null) {
+    doc.credits.appleFeePct = DEFAULTS.credits.appleFeePct;
+    doc.markModified('credits');
+    dirty = true;
+  }
+  if (doc.credits && doc.credits.chatMargin == null) {
+    doc.credits.chatMargin = DEFAULTS.credits.chatMargin;
+    doc.markModified('credits');
+    dirty = true;
+  }
+  // Migrate legacy BLENDED token rates (a bare number per family) to the
+  // per-type shape. Known families take the current default per-type prices;
+  // an admin-customized family we don't know keeps its number applied to every
+  // type, so no tuning is silently discarded.
+  if (doc.credits && doc.credits.tokenRatesPer1M) {
+    for (const [fam, rate] of Object.entries(doc.credits.tokenRatesPer1M)) {
+      if (typeof rate !== 'number') continue;
+      doc.credits.tokenRatesPer1M[fam] = DEFAULTS.credits.tokenRatesPer1M[fam]
+        ? { ...DEFAULTS.credits.tokenRatesPer1M[fam] }
+        : { input: rate, output: rate, cacheRead: rate, cacheWrite: rate };
+      doc.markModified('credits');
+      dirty = true;
+    }
   }
   if (!doc.unlock) {
     doc.unlock = { ...DEFAULTS.unlock };

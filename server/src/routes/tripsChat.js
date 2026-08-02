@@ -4,7 +4,7 @@ const Trip = require('../models/Trip');
 const TripItem = require('../models/TripItem');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
-const { streamChat } = require('../services/chatStream');
+const { streamChat, webSearchTool, WEB_SEARCH_SYSTEM_NOTE } = require('../services/chatStream');
 const { meter, getConfig } = require('../middleware/usageMeter');
 const { ASSISTANT_NAME } = require('../config/assistant');
 const { navTool, navPromptSection, collectNav, ensureActionableNav, SUGGEST_NAV_TOOL_NAME } = require('../services/navDestinations');
@@ -200,8 +200,8 @@ router.post('/', meter('chat', 'trips'), async (req, res) => {
       req,
       client,
       model,
-      system: systemPrompt,
-      tools: TOOLS,
+      system: systemPrompt + WEB_SEARCH_SYSTEM_NOTE,
+      tools: [...TOOLS, webSearchTool(model)],
       messages,
       executeTool: (name) => {
         if (name === SUGGEST_NAV_TOOL_NAME) return { acknowledged: true };

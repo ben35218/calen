@@ -7,10 +7,13 @@ import {
   Image,
   TouchableOpacity,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   ActivityIndicator,
   Alert,
+  Linking,
   StyleSheet,
+  useWindowDimensions,
 } from 'react-native';
 import { moderationApi } from '../../api';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -18,26 +21,29 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { colors, radius, spacing } from '../../theme';
 import { navTargetForView } from './navDestinations';
-import { flattenMarkdown } from '../../lib/markdown';
-import { formatCompact } from '../../lib/format';
+import { parseChatLinks, searchUrl, openPlaceInGoogleMaps } from '../../lib/chatLinks';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { takePhoto, pickImage, pickDocument } from '../../lib/media';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { BottomSheet } from '../../components/ui';
 import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import AssistantSwitcher from '../../components/AssistantSwitcher';
-import { useDictation } from '../../hooks/useDictation';
+import { StoredChatWithSurface, filterChats, relativeChatTime, requestResume } from '../../lib/chatHistory';
+import { spliceDictation, useDictation } from '../../hooks/useDictation';
+import { useScrollAwareKeyboard } from '../../hooks/useScrollAwareKeyboard';
+import { useStickToBottom } from '../../hooks/useStickToBottom';
 import { ASSISTANT_TABS, AssistantId } from './assistantTabs';
-import type { ChatController, ChatAttachment } from '../../hooks/useChat';
+import type { ChatController, ChatAttachment, ChatMessage } from '../../hooks/useChat';
 
 // The kinds of actionable follow-up, each with a leading glyph that signals what
-// tapping does: commit now, review AI-drafted content, open another screen, or
-// have Calen place a phone call.
-export type FollowupKind = 'add' | 'review' | 'navigate' | 'call';
+// tapping does: commit now, review AI-drafted content, open another screen, go
+// set up a missing value, or have Calen place a phone call.
+export type FollowupKind = 'add' | 'review' | 'navigate' | 'setup' | 'call';
 const FOLLOWUP_ICONS: Record<FollowupKind, keyof typeof Ionicons.glyphMap> = {
   add: 'checkmark-circle-outline',
   review: 'eye-outline',
   navigate: 'arrow-forward-outline',
+  setup: 'settings-outline',
   call: 'call-outline',
 };
 
@@ -57,6 +63,7 @@ export default function ChatScreen({
   followupKind,
   navContext,
   onSelectAssistant,
+  onResumeExternal,
   surface = 'assistant',
 }: {
   chat: ChatController;
@@ -76,46 +83,177 @@ export default function ChatScreen({
   footer?: React.ReactNode;
   // Which assistant this is, tagged on any content report (Apple 1.2).
   surface?: string;
-  // Intercept a follow-up chip tap. Return true if handled (e.g. a client-side
-  // action like saving an event); otherwise the chip text is sent to the chat.
-  onFollowupPress?: (text: string) => boolean;
+  // Intercept a follow-up chip tap. Receives the chip text plus the assistant
+  // message it belongs to and that message's index (so the handler can read the
+  // turn's own drafted record and, for a one-shot create, mark the chip used via
+  // `chat.markActionUsed(index, text)`). Return true if handled (a client-side
+  // action); otherwise the chip text is sent to the chat as a new message.
+  onFollowupPress?: (text: string, msg: ChatMessage, index: number) => boolean;
   // Tag an actionable follow-up chip with a leading icon so it reads as a button,
   // not just a suggested reply. 'add' commits without review (checkmark), 'review'
   // opens AI-drafted content to review (eye), 'navigate' opens a page (arrow).
   // Return undefined for plain suggested replies (no icon).
   followupKind?: (text: string) => FollowupKind | undefined;
   // Client-only context for resolving the assistant's navigation suggestions
-  // (e.g. the current trip id, needed to open a specific trip / booking form).
-  navContext?: { tripId?: string };
+  // (e.g. the current trip id, or the focused event id — needed to open a
+  // specific trip / booking form, or deep-link "add business phone").
+  navContext?: { tripId?: string; eventId?: string };
+  // Resume a Recent-chats row that belongs to a DIFFERENT assistant than this
+  // one. The unified AssistantScreen passes this to switch tab (and pick the
+  // trip) then resume there. Omitted on standalone surfaces (a trip's own
+  // assistant) — the sheet then hands off via navigation to the Assistant view.
+  onResumeExternal?: (surfaceKey: string, chatId: string) => void;
 }) {
   const scrollRef = useRef<ScrollView>(null);
+  const inputRef = useRef<TextInput>(null);
   const [contextOpen, setContextOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Recent-chats search keyword (filters the sheet by title + message text).
+  const [historyQuery, setHistoryQuery] = useState('');
+  // Reset the keyword each time the sheet closes so it opens fresh next time.
+  useEffect(() => {
+    if (!chat.historyOpen) setHistoryQuery('');
+  }, [chat.historyOpen]);
   const insets = useSafeAreaInsets();
 
-  // Composer dictation (Level 1): live transcript flows straight into the input
-  // so the user can review/edit before sending down the normal chat pipeline.
+  // Composer dictation (Level 1): the live transcript is spliced in at the
+  // cursor position captured when the mic was pressed — it augments what's
+  // already typed rather than replacing it — and the user can review/edit
+  // before sending down the normal chat pipeline.
+  const selectionRef = useRef<{ start: number; end: number } | null>(null);
+  // Whether the composer is actually focused. A programmatic setInput (e.g. the
+  // last dictation's transcript) can leave the caret reported at 0 on an
+  // unfocused field, so we only trust the caret snapshot when it's really
+  // focused — otherwise new speech would splice in at the START of the message.
+  const inputFocusedRef = useRef(false);
+  const dictationBaseRef = useRef({ before: '', after: '' });
   const dictation = useDictation({
-    onText: chat.setInput,
+    onText: (t) => {
+      const { before, after } = dictationBaseRef.current;
+      chat.setInput(spliceDictation(before, after, t));
+    },
     onError: (m) => Alert.alert('Voice input', m),
   });
+  const startDictation = () => {
+    // Insert at the caret only when the field is genuinely focused; otherwise
+    // append at the end. The common flow — speak, pause, tap the mic again to
+    // keep going without ever tapping into the field — leaves it unfocused, and
+    // a stale/zeroed caret would otherwise prepend the new speech at the start.
+    const len = chat.input.length;
+    const sel = (inputFocusedRef.current ? selectionRef.current : null) ?? { start: len, end: len };
+    // Clamp: the field may have been cleared by a send since the last selection.
+    const start = Math.min(sel.start, len);
+    const end = Math.min(Math.max(sel.end, start), len);
+    dictationBaseRef.current = { before: chat.input.slice(0, start), after: chat.input.slice(end) };
+    dictation.start();
+  };
   const aiEnabled = usePrivacyPrefs().prefs.aiEnabled;
   const areaColors = useCalendarColors().colors;
   const navigation = useNavigation();
   const scrollToEnd = () => scrollRef.current?.scrollToEnd({ animated: true });
 
+  // Scroll-aware keyboard: scrolling up to read history tucks the keyboard
+  // away; a deliberate pull past the bottom (overscroll) summons it back.
+  const scrollKeyboard = useScrollAwareKeyboard(inputRef, scrollToEnd);
+
+  // Stick-to-bottom: a streaming reply follows the newest text only while you're
+  // parked at the bottom. Scroll up to read and the view freezes (the jump-to-
+  // latest button appears); return to the bottom to re-engage following.
+  const stick = useStickToBottom(scrollToEnd);
+
+  // Compose both scroll consumers onto the one ScrollView — the keyboard state
+  // machine and the stick-to-bottom tracker each need the same gesture events.
+  const scrollHandlers = {
+    ...scrollKeyboard,
+    onScrollBeginDrag: () => {
+      scrollKeyboard.onScrollBeginDrag();
+      stick.onScrollBeginDrag();
+    },
+    onScroll: (e: Parameters<typeof stick.onScroll>[0]) => {
+      scrollKeyboard.onScroll(e);
+      stick.onScroll(e);
+    },
+    onScrollEndDrag: (e: Parameters<typeof stick.onScrollEndDrag>[0]) => {
+      scrollKeyboard.onScrollEndDrag(e);
+      stick.onScrollEndDrag(e);
+    },
+    onMomentumScrollEnd: (e: Parameters<typeof stick.onMomentumScrollEnd>[0]) => {
+      scrollKeyboard.onMomentumScrollEnd(e);
+      stick.onMomentumScrollEnd(e);
+    },
+  };
+
   // A tapped navigation suggestion opens the mapped screen (arrow chips). Unknown
   // or context-missing views (e.g. a trip view with no trip) are simply inert.
   const openNavSuggestion = (view: string) => {
     const target = navTargetForView(view, navContext ?? {});
-    if (target) (navigation as unknown as { navigate: (r: string, p?: object) => void }).navigate(target.route, target.params);
+    if (!target) return;
+    const nav = navigation as unknown as {
+      navigate: (r: string, p?: object) => void;
+      push: (r: string, p?: object) => void;
+    };
+    // CalendarHome is the app root and headerless, and it already sits below the
+    // assistant on the stack — a plain navigate() would POP the assistant off
+    // (stranding the live chat with no back button). Push a fresh instance on
+    // top instead, flagged so it shows a "‹ Calen" return pill; swipe-back or
+    // the pill drop straight back into the conversation. Other nav targets carry
+    // their own header back button, so a normal navigate() is right for them.
+    if (target.route === 'CalendarHome') {
+      nav.push('CalendarHome', { fromAssistant: true });
+      return;
+    }
+    nav.navigate(target.route, target.params);
+  };
+
+  // A tapped place link opens the native Google Maps app when it's installed;
+  // otherwise it falls back to the full-screen in-app Google place preview
+  // (modal WebView) — closing that drops back into the conversation. A tapped
+  // search suggestion launches the query in the default browser.
+  const openPlace = (text: string, query: string) => {
+    void openPlaceInGoogleMaps(query).then((opened) => {
+      if (!opened)
+        (navigation as unknown as { navigate: (r: string, p?: object) => void }).navigate('PlacePreview', {
+          query,
+          title: text,
+        });
+    });
+  };
+  const openSearch = (_text: string, query: string) => Linking.openURL(searchUrl(query)).catch(() => {});
+
+  // Resume a Recent-chats row. Its own tab loads in place; a chat from another
+  // assistant hands off — to the unified AssistantScreen via onResumeExternal
+  // when embedded, else by navigating into the Assistant view (which claims the
+  // parked request on mount). Either way the target surface owns the reload.
+  const resumeChatRow = (c: StoredChatWithSurface) => {
+    if (c.surfaceKey === chat.historyKey) {
+      chat.resumeChat(c.id);
+      return;
+    }
+    chat.closeHistory();
+    if (onResumeExternal) {
+      onResumeExternal(c.surfaceKey, c.id);
+      return;
+    }
+    requestResume(c.surfaceKey, c.id);
+    (navigation as unknown as { navigate: (r: string, p?: object) => void }).navigate('Assistant', {
+      initial: c.tab,
+    });
   };
 
   // Auto-scroll only when the conversation itself grows (new message or streaming
   // chunk) — not on every content-size change, so expanding the "What I can see &
   // do" card to read it doesn't yank the view to the bottom.
   useEffect(() => {
-    scrollToEnd();
+    const last = chat.messages[chat.messages.length - 1];
+    // A fresh user turn always snaps to the bottom and re-engages following —
+    // you just sent it, you want to see it (and the reply landing under it).
+    if (last?.role === 'user') {
+      stick.pinToBottom();
+      return;
+    }
+    // Streaming chunks and the assistant reply committing only pull the view down
+    // while you're already parked at the bottom. Scrolled up to read? Stay put.
+    if (stick.pinnedRef.current) scrollToEnd();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.messages.length, chat.streamingText]);
 
@@ -126,6 +264,18 @@ export default function ChatScreen({
     activeTab && activeTab.accentKey !== 'primary' ? areaColors[activeTab.accentKey] : colors.primary;
 
   const empty = chat.messages.length === 0 && !chat.streamingText;
+
+  // Recent-chats sheet: the keyword-filtered rows (title + message text match).
+  const filteredHistory = filterChats(chat.recentChats, historyQuery);
+  // Size the scrollable chat list to the screen so the sheet shows a generous
+  // number of rows (not full-screen — the sheet caps at 92%). The second term
+  // leaves room for the title + search pill + padding so nothing clips on short
+  // devices; the taller of a fixed floor and ~72% of the screen wins.
+  const { height: windowHeight } = useWindowDimensions();
+  const historyListHeight = Math.min(
+    Math.max(480, Math.round(windowHeight * 0.72)),
+    Math.round(windowHeight * 0.92) - 150
+  );
 
   // Report objectionable AI output (Apple 1.2). Long-press any assistant reply.
   function reportMessage(content: string) {
@@ -186,11 +336,13 @@ export default function ChatScreen({
         <AssistantSwitcher active={activeAssistant} onSelectAssistant={onSelectAssistant} />
       ) : null}
 
+      <View style={styles.listWrap}>
       <ScrollView
         ref={scrollRef}
         style={styles.flex}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
+        {...scrollHandlers}
       >
         {banner}
 
@@ -259,10 +411,34 @@ export default function ChatScreen({
         ) : null}
 
         {/* Conversation */}
-        {chat.messages.map((msg, i) => (
+        {chat.messages.map((msg, i) => {
+          // Resend affordance: when the last turn was a user message that never
+          // got a reply — the turn errored out, or the user stopped it before any
+          // text streamed — offer a resend icon to the left of that bubble. A
+          // delivered turn always appends an assistant message (so the user bubble
+          // is no longer last), and an out-of-credits turn can't be retried, so
+          // neither shows it. Tapping re-runs the same conversation (`chat.retry`).
+          const canResend =
+            msg.role === 'user' &&
+            i === chat.messages.length - 1 &&
+            !chat.loading &&
+            !chat.streamingText &&
+            !chat.quotaExceeded;
+          return (
           <View key={i}>
             <View style={[styles.row, msg.role === 'user' ? styles.rowRight : styles.rowLeft]}>
               {msg.role === 'user' ? (
+                <>
+                {canResend ? (
+                  <TouchableOpacity
+                    style={styles.resendBtn}
+                    onPress={() => chat.retry()}
+                    accessibilityLabel="Resend message"
+                    hitSlop={8}
+                  >
+                    <Ionicons name="refresh" size={18} color={colors.error} />
+                  </TouchableOpacity>
+                ) : null}
                 <View style={[styles.bubble, styles.bubbleUser]}>
                   {msg.attachments?.length ? (
                     <View style={styles.sentAttachments}>
@@ -273,6 +449,7 @@ export default function ChatScreen({
                   ) : null}
                   {msg.content ? <Text style={styles.bubbleUserText}>{msg.content}</Text> : null}
                 </View>
+                </>
               ) : (
                 <TouchableOpacity
                   style={[styles.bubble, styles.bubbleAssistant]}
@@ -281,27 +458,81 @@ export default function ChatScreen({
                   delayLongPress={400}
                   accessibilityHint="Long-press to report this message"
                 >
-                  <Text style={styles.bubbleAssistantText}>{flattenMarkdown(msg.content)}</Text>
+                  <AssistantText content={msg.content} onPlace={openPlace} onSearch={openSearch} />
                 </TouchableOpacity>
               )}
             </View>
-            {msg.role === 'assistant' && msg.tokens ? (
-              <Text style={styles.tokenMeta}>{formatCompact(msg.tokens)} tokens</Text>
+            {msg.role === 'assistant' && msg.credits ? (
+              <Text style={styles.tokenMeta}>
+                {msg.credits} {msg.credits === 1 ? 'credit' : 'credits'}
+              </Text>
+            ) : null}
+            {/* This turn's chips, inline under its bubble and kept in scrollback:
+                action/suggestion chips + nav suggestions. Every past turn keeps
+                its own, all still tappable. A one-shot create chip already used
+                (usedActions) stays visible but disabled so it can't duplicate. */}
+            {msg.role === 'assistant' && (msg.followups?.length || msg.navSuggestions?.length) ? (
+              <View style={styles.followups}>
+                {msg.followups?.map((f, fi) => {
+                  const kind = followupKind?.(f);
+                  const used = msg.usedActions?.includes(f);
+                  return (
+                    <TouchableOpacity
+                      key={`f${fi}`}
+                      style={[styles.followupChip, used && styles.followupChipUsed]}
+                      onPress={() => {
+                        if (!onFollowupPress?.(f, msg, i)) chat.send(f);
+                      }}
+                      disabled={disabled || used}
+                      accessibilityState={{ disabled: !!used }}
+                    >
+                      {used ? (
+                        <Ionicons name="checkmark-circle" size={15} color={colors.textMuted} style={styles.followupIcon} />
+                      ) : kind ? (
+                        <Ionicons name={FOLLOWUP_ICONS[kind]} size={15} color={colors.primary} style={styles.followupIcon} />
+                      ) : null}
+                      <Text style={[styles.followupChipText, used && styles.followupChipTextUsed]}>{f}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                {msg.navSuggestions?.map((n, ni) => (
+                  <TouchableOpacity
+                    key={`n${ni}`}
+                    style={styles.followupChip}
+                    onPress={() => openNavSuggestion(n.view)}
+                    disabled={disabled}
+                  >
+                    <Ionicons
+                      name={FOLLOWUP_ICONS[n.kind === 'setup' ? 'setup' : 'navigate']}
+                      size={15}
+                      color={colors.primary}
+                      style={styles.followupIcon}
+                    />
+                    <Text style={styles.followupChipText}>{n.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             ) : null}
           </View>
-        ))}
+          );
+        })}
 
         {/* Streaming reply */}
         {chat.streamingText ? (
           <View style={[styles.row, styles.rowLeft]}>
             <View style={[styles.bubble, styles.bubbleAssistant]}>
-              <Text style={styles.bubbleAssistantText}>{flattenMarkdown(chat.streamingText)}</Text>
+              <AssistantText content={chat.streamingText} streaming onPlace={openPlace} onSearch={openSearch} />
             </View>
           </View>
         ) : null}
 
-        {/* Thinking / tool activity */}
-        {chat.loading && !chat.streamingText ? (
+        {/* Thinking / tool activity. Shown for the WHOLE turn while loading —
+            below the last user message before any text arrives, then below the
+            partial reply once it starts streaming (the turn is still working:
+            more text, or a mid-stream tool like "Searching the web…" whose
+            activity would otherwise be invisible). Clears when the turn resolves
+            and the streamed text is committed as a real message. */}
+        {chat.loading ? (
           <View style={[styles.row, styles.rowLeft]}>
             <View style={[styles.bubble, styles.bubbleAssistant, styles.thinking]}>
               <ActivityIndicator size="small" color={colors.primary} />
@@ -310,47 +541,9 @@ export default function ChatScreen({
           </View>
         ) : null}
 
-        {/* Follow-up suggestions */}
-        {chat.followups.length && !chat.loading ? (
-          <View style={styles.followups}>
-            {chat.followups.map((f, i) => {
-              const kind = followupKind?.(f);
-              return (
-                <TouchableOpacity
-                  key={i}
-                  style={styles.followupChip}
-                  onPress={() => {
-                    if (!onFollowupPress?.(f)) chat.send(f);
-                  }}
-                  disabled={disabled}
-                >
-                  {kind ? (
-                    <Ionicons name={FOLLOWUP_ICONS[kind]} size={15} color={colors.primary} style={styles.followupIcon} />
-                  ) : null}
-                  <Text style={styles.followupChipText}>{f}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ) : null}
-
-        {/* Navigation suggestions — the assistant offered to open a relevant
-            screen. Rendered as "navigate" chips (arrow) that open it on tap. */}
-        {chat.navSuggestions.length && !chat.loading ? (
-          <View style={styles.followups}>
-            {chat.navSuggestions.map((n, i) => (
-              <TouchableOpacity
-                key={`nav${i}`}
-                style={styles.followupChip}
-                onPress={() => openNavSuggestion(n.view)}
-                disabled={disabled}
-              >
-                <Ionicons name={FOLLOWUP_ICONS.navigate} size={15} color={colors.primary} style={styles.followupIcon} />
-                <Text style={styles.followupChipText}>{n.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        ) : null}
+        {/* Follow-up / action / nav chips now render inline under each assistant
+            message (in the conversation map above), so they stay in scrollback
+            and every past turn keeps its own — not just a single latest row. */}
 
         {/* Error + retry. Out of credits, retrying is futile — offer the
             buy-credits path instead. */}
@@ -367,6 +560,21 @@ export default function ChatScreen({
           )
         ) : null}
       </ScrollView>
+
+        {/* Jump-to-latest: appears once you scroll up off the bottom (so a
+            streaming reply no longer drags the view). Tapping snaps back down
+            and re-engages following. Hidden on the empty state. */}
+        {!stick.atBottom && !empty ? (
+          <TouchableOpacity
+            style={styles.jumpBtn}
+            onPress={stick.pinToBottom}
+            accessibilityLabel="Scroll to latest"
+            activeOpacity={0.85}
+          >
+            <Ionicons name="chevron-down" size={22} color={colors.text} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
 
       {footer}
 
@@ -415,9 +623,19 @@ export default function ChatScreen({
           <Ionicons name="add" size={26} color="#fff" />
         </TouchableOpacity>
         <TextInput
+          ref={inputRef}
           style={styles.textInput}
           value={chat.input}
           onChangeText={chat.setInput}
+          onSelectionChange={(e) => {
+            selectionRef.current = e.nativeEvent.selection;
+          }}
+          onFocus={() => {
+            inputFocusedRef.current = true;
+          }}
+          onBlur={() => {
+            inputFocusedRef.current = false;
+          }}
           placeholder={placeholder}
           placeholderTextColor={colors.textMuted}
           multiline
@@ -430,10 +648,13 @@ export default function ChatScreen({
             dictation.state === 'listening'
               ? { backgroundColor: activeAccent }
               : { backgroundColor: activeAccent + '1A' },
-            (disabled || chat.loading) && styles.sendBtnDisabled,
+            disabled && styles.sendBtnDisabled,
           ]}
-          onPress={() => (dictation.state === 'listening' ? dictation.stop() : dictation.start())}
-          disabled={disabled || chat.loading}
+          // Not gated on chat.loading: the user can dictate (or type) the next
+          // message while the assistant is still working on the current turn —
+          // the composed text just waits until the reply lands to be sent.
+          onPress={() => (dictation.state === 'listening' ? dictation.stop() : startDictation())}
+          disabled={disabled}
           accessibilityLabel={dictation.state === 'listening' ? 'Stop dictation' : 'Dictate a message'}
         >
           <Ionicons
@@ -443,13 +664,41 @@ export default function ChatScreen({
           />
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.sendBtn, { backgroundColor: activeAccent }, !canSend && styles.sendBtnDisabled]}
-          onPress={() => chat.send()}
-          disabled={!canSend}
-          accessibilityLabel="Send message"
+          style={[
+            styles.sendBtn,
+            { backgroundColor: activeAccent },
+            !(canSend || chat.loading) && styles.sendBtnDisabled,
+          ]}
+          onPress={() => {
+            // While a turn is streaming the button is a Stop control — tapping
+            // it interrupts the assistant (keeps whatever streamed so far) and
+            // returns to idle, rather than doing nothing.
+            if (chat.loading) {
+              chat.stop();
+              return;
+            }
+            // Drop the keyboard on submit so the reply is fully readable. The
+            // hook's send() empties the input state (setInput('')), but a
+            // controlled multiline TextInput on iOS doesn't reliably flush that
+            // empty value to the native field when it lands on the same tick as
+            // the tap — the sent text lingers in the composer. Clearing
+            // imperatively on the NEXT frame (after React has committed value=''
+            // and the field has blurred) reliably empties it; a synchronous
+            // clear here races that commit and often loses. The button is only
+            // enabled when canSend, so there's always real text to clear.
+            // If the mic was still capturing, toggle it off as the turn is sent
+            // — dictation shouldn't keep running after submit. cancel() discards
+            // any trailing result so it can't re-populate the cleared field.
+            if (dictation.state === 'listening') dictation.cancel();
+            chat.send();
+            Keyboard.dismiss();
+            requestAnimationFrame(() => inputRef.current?.clear());
+          }}
+          disabled={!(canSend || chat.loading)}
+          accessibilityLabel={chat.loading ? 'Stop generating' : 'Send message'}
         >
           {chat.loading ? (
-            <ActivityIndicator size="small" color="#fff" />
+            <Ionicons name="stop" size={20} color="#fff" />
           ) : (
             <Ionicons name="arrow-up" size={20} color="#fff" />
           )}
@@ -471,7 +720,128 @@ export default function ChatScreen({
           <Text style={styles.pickerLabel}>Files</Text>
         </TouchableOpacity>
       </BottomSheet>
+
+      {/* Recent chats (device-local, last 7 days) — every assistant's chats in
+          one list, each tagged with its tab icon. Tap to resume: same tab loads
+          in place, another tab hands off (switch tab / pick trip, then resume).
+          Opened from the header's history clock (ChatHeaderButtons). */}
+      <BottomSheet
+        visible={chat.historyOpen}
+        onClose={chat.closeHistory}
+        title="Recent chats"
+        avoidKeyboard
+        style={styles.historySheet}
+      >
+        {chat.recentChats.length === 0 ? (
+          <Text style={styles.historyEmpty}>Chats from the last 7 days show up here.</Text>
+        ) : (
+          <>
+            {/* Keyword search — filters the list by title + message text. */}
+            <View style={styles.historySearchPill}>
+              <Ionicons name="search" size={18} color={colors.textMuted} />
+              <TextInput
+                style={styles.historySearchInput}
+                value={historyQuery}
+                onChangeText={setHistoryQuery}
+                placeholder="Search chats"
+                placeholderTextColor={colors.textMuted}
+                returnKeyType="search"
+                autoCorrect={false}
+                autoCapitalize="none"
+                clearButtonMode="never"
+              />
+              {historyQuery.length > 0 ? (
+                <TouchableOpacity
+                  onPress={() => setHistoryQuery('')}
+                  hitSlop={8}
+                  accessibilityLabel="Clear search"
+                >
+                  <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            {filteredHistory.length === 0 ? (
+              <Text style={styles.historyEmpty}>No chats match “{historyQuery.trim()}”.</Text>
+            ) : (
+              <ScrollView
+                style={[styles.historyList, { maxHeight: historyListHeight }]}
+                keyboardShouldPersistTaps="handled"
+              >
+                {filteredHistory.map((c) => {
+                  const tab = ASSISTANT_TABS.find((t) => t.id === c.tab);
+                  const tabAccent =
+                    !tab || tab.accentKey === 'primary' ? colors.primary : areaColors[tab.accentKey];
+                  return (
+                    <TouchableOpacity
+                      key={c.id}
+                      style={styles.pickerRow}
+                      onPress={() => resumeChatRow(c)}
+                      accessibilityLabel={`Resume ${tab?.label ?? ''} chat: ${c.title}`}
+                    >
+                      <MaterialCommunityIcons
+                        name={tab?.icon ?? 'chat-outline'}
+                        size={22}
+                        color={tabAccent}
+                        style={styles.historyIcon}
+                      />
+                      <View style={styles.historyBody}>
+                        <Text style={styles.historyTitle} numberOfLines={1}>
+                          {c.title}
+                        </Text>
+                        <Text style={styles.historyMeta} numberOfLines={1}>
+                          {tab?.label ? `${tab.label} · ` : ''}
+                          {relativeChatTime(c.updatedAt)} · {c.messages.length} message
+                          {c.messages.length === 1 ? '' : 's'}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </>
+        )}
+      </BottomSheet>
     </KeyboardAvoidingView>
+  );
+}
+
+// An assistant reply's text, with the model's [.. ](place:..) / (search:..)
+// markers rendered as tappable links (see lib/chatLinks): places open the
+// in-app Google place preview, search suggestions launch in the browser.
+// `streaming` holds back a half-received trailing marker so raw markup never
+// flashes while the reply streams in.
+function AssistantText({
+  content,
+  streaming = false,
+  onPlace,
+  onSearch,
+}: {
+  content: string;
+  streaming?: boolean;
+  onPlace: (text: string, query: string) => void;
+  onSearch: (text: string, query: string) => void;
+}) {
+  const segments = parseChatLinks(content, { trimIncomplete: streaming });
+  return (
+    <Text style={styles.bubbleAssistantText}>
+      {segments.map((s, i) =>
+        s.kind === 'text' ? (
+          <Text key={i}>{s.text}</Text>
+        ) : (
+          <Text
+            key={i}
+            style={styles.bubbleLink}
+            onPress={() => (s.kind === 'place' ? onPlace(s.text, s.query) : onSearch(s.text, s.query))}
+            accessibilityRole="link"
+          >
+            {s.text}
+          </Text>
+        ),
+      )}
+    </Text>
   );
 }
 
@@ -497,6 +867,27 @@ const styles = StyleSheet.create({
   disabledTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: spacing.sm },
   disabledText: { fontSize: 13, color: colors.textMuted, textAlign: 'center', lineHeight: 19 },
   scrollContent: { padding: spacing.md, paddingBottom: spacing.lg },
+  // Relative wrapper so the jump-to-latest button can float over the list's
+  // bottom edge, anchored above the composer regardless of the keyboard.
+  listWrap: { flex: 1, position: 'relative' },
+  jumpBtn: {
+    position: 'absolute',
+    bottom: spacing.md,
+    right: spacing.md,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
   contextCard: {
     borderRadius: radius.md,
     marginBottom: spacing.md,
@@ -521,11 +912,14 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', marginBottom: spacing.sm },
   rowLeft: { justifyContent: 'flex-start' },
   rowRight: { justifyContent: 'flex-end' },
+  // Resend icon sitting to the left of an unanswered user bubble.
+  resendBtn: { alignSelf: 'center', paddingHorizontal: spacing.xs, paddingVertical: 4, marginRight: spacing.xs },
   bubble: { maxWidth: '85%', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12 },
   bubbleUser: { backgroundColor: colors.primary, borderBottomRightRadius: 4 },
   bubbleAssistant: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 4 },
   bubbleUserText: { color: '#fff', fontSize: 14, lineHeight: 21 },
   bubbleAssistantText: { color: colors.text, fontSize: 14, lineHeight: 21 },
+  bubbleLink: { color: colors.primary, textDecorationLine: 'underline' },
   tokenMeta: { fontSize: 11, color: colors.textMuted, marginTop: -2, marginBottom: spacing.sm, marginLeft: 4 },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   thinkingText: { fontSize: 13, color: colors.textMuted },
@@ -541,6 +935,11 @@ const styles = StyleSheet.create({
   },
   followupIcon: { marginRight: 5 },
   followupChipText: { color: colors.primary, fontSize: 13, fontWeight: '500' },
+  // A one-shot create chip that's already been used: still visible (so the
+  // history reads truthfully) but muted + non-interactive, with a check glyph, so
+  // it can't fire again and create a duplicate.
+  followupChipUsed: { borderColor: colors.border, backgroundColor: colors.surface, opacity: 0.7 },
+  followupChipTextUsed: { color: colors.textMuted },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -641,4 +1040,27 @@ const styles = StyleSheet.create({
   // +-menu rows.
   pickerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: 14 },
   pickerLabel: { fontSize: 16, color: colors.text },
+  // Recent-chats sheet: search pill, scrollable list, rows.
+  historySearchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    height: 40,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.background,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    marginBottom: spacing.xs,
+  },
+  historySearchInput: { flex: 1, fontSize: 15, color: colors.text, padding: 0 },
+  // Taller than the shared 80% sheet cap so the chat list has real room; the
+  // list height itself (set inline from the window) keeps it clear of full-screen.
+  historySheet: { maxHeight: '92%' },
+  historyList: {},
+  historyIcon: { width: 24, textAlign: 'center' },
+  historyBody: { flex: 1 },
+  historyTitle: { fontSize: 15, color: colors.text, fontWeight: '500' },
+  historyMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  historyEmpty: { fontSize: 13, color: colors.textMuted, paddingVertical: spacing.md },
 });

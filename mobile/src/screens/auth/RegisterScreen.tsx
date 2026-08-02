@@ -108,8 +108,7 @@ export default function RegisterScreen() {
           // ── Passkey path (preferred) ──────────────────────────────────────
           <>
             <Text style={styles.methodHint}>
-              Use a passkey (Face ID / Touch ID) — no password to remember, and it unlocks your
-              encrypted data automatically.
+              Use a passkey (Face ID / Touch ID) — no password to remember.
             </Text>
             {error ? <Text style={authStyles.error}>{error}</Text> : null}
             <Button title="Create account with a passkey" onPress={createWithPasskey} loading={loading} color={AUTH_PRIMARY_BTN_COLOR} />

@@ -53,6 +53,8 @@ export interface PrintOptions {
   months: { year: number; month: number }[];
   calendars: PrintCalendar[];
   useColor: boolean;
+  // Render times on a 24-hour clock ("13:00") instead of compact 12-hour ("1PM").
+  use24h: boolean;
 }
 
 // One printable line: a calendar record normalized to a date + label.
@@ -80,8 +82,18 @@ const storedDate = (iso: string) => new Date(iso).toISOString().slice(0, 10);
 // real instants read in the device zone (mirrors AgendaView).
 const itemDate = (iso: string, allDay: boolean) => (allDay ? storedDate(iso) : ymd(new Date(iso)));
 
-const fmtTime = (iso: string) =>
-  new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+// Compact clock label for a tight print cell. 12-hour drops ":00" and the space
+// ("1:00 PM" → "1PM", "1:30 PM" → "1:30PM"); 24-hour is zero-padded "HH:mm"
+// ("13:00"). The compact form buys horizontal room in the month grid.
+const fmtTime = (iso: string, use24h = false): string => {
+  const d = new Date(iso);
+  const h = d.getHours();
+  const m = d.getMinutes();
+  if (use24h) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const ap = h < 12 ? 'AM' : 'PM';
+  const h12 = ((h + 11) % 12) + 1;
+  return m === 0 ? `${h12}${ap}` : `${h12}:${String(m).padStart(2, '0')}${ap}`;
+};
 
 // "Friday, July 17" from a yyyy-MM-dd, built from parts so the date never
 // shifts across the UTC boundary.
@@ -100,7 +112,8 @@ function dayHeading(dateStr: string): string {
 export function collectPrintItems(
   data: CalendarData,
   holidays: PrintHoliday[],
-  selectedIds: Set<string>
+  selectedIds: Set<string>,
+  use24h = false
 ): PrintItem[] {
   const items: PrintItem[] = [];
 
@@ -113,7 +126,7 @@ export function collectPrintItems(
       date: itemDate(e.startDate, allDay),
       endDate: e.endDate ? itemDate(e.endDate, allDay) : undefined,
       allDay,
-      timeLabel: allDay ? undefined : fmtTime(e.startDate),
+      timeLabel: allDay ? undefined : fmtTime(e.startDate, use24h),
       startMs: allDay ? undefined : +new Date(e.startDate),
       secondary: e.location ?? undefined,
     });
@@ -272,8 +285,10 @@ const MONTH_CSS = `
   td.out .daynum { color: #c8ccd4; }
   .daynum { font-size: 11px; font-weight: 700; color: #3a4150; line-height: 1; margin-bottom: 4px; }
   .item {
-    font-size: 8px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    color: #2b3140; padding: 0.5px 0;
+    font-size: 8px; line-height: 1.3; color: #2b3140; padding: 0.5px 0;
+    /* Wrap long titles to at most two lines instead of clipping to one — a
+       one-line ellipsis dropped too many event names in a tight cell. */
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .item .dot { width: 6px; height: 6px; margin-right: 4px; }
   .item .time { color: #7a8090; font-weight: 600; margin-right: 2px; }
@@ -413,7 +428,7 @@ function groupByDate(items: PrintItem[], o: PrintOptions): Map<string, PrintItem
 
 export function buildPrintHtml(o: PrintOptions, data: CalendarData, holidays: PrintHoliday[]): string {
   const selectedIds = new Set(o.calendars.map((c) => c.id));
-  const byDate = groupByDate(collectPrintItems(data, holidays, selectedIds), o);
+  const byDate = groupByDate(collectPrintItems(data, holidays, selectedIds, o.use24h), o);
   const codes = calendarCodes(o.calendars);
 
   const body =

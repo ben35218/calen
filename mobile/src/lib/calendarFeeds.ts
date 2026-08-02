@@ -341,19 +341,23 @@ export async function previewFeed(rawUrl: string): Promise<{
   };
 }
 
-// Expand every subscribed calendar's feed into CalendarEvent occurrences within
-// [from, to]. Called from loadCalendarData — the chokepoint every calendar view
-// and the reminder scheduler load through. Renders from cache immediately (even
-// stale), fetching inline only for a feed with no cache yet; stale feeds
-// refresh in the background and invalidate the calendar queries on change.
-export async function getFeedEvents(range: { from: string; to: string }): Promise<CalendarEvent[]> {
+// A subscribed feed's parsed masters, ready for range expansion. Opaque to
+// callers — produced by loadFeedSources, consumed by expandFeedSources.
+export interface FeedSource {
+  calendarId: string;
+  events: ICAL.Event[];
+}
+
+// The async half of feed expansion: resolve every subscribed feed's parsed
+// masters. Renders from cache immediately (even stale), fetching inline only
+// for a feed with no cache yet; stale feeds refresh in the background and
+// invalidate the calendar queries on change. Range-independent — load once,
+// then expand any number of ranges synchronously with expandFeedSources.
+export async function loadFeedSources(): Promise<FeedSource[]> {
   const subs = await getSubscribedCalendars();
   if (!subs.length) return [];
   const meta = await loadMeta();
-  const out: CalendarEvent[] = [];
-  const fromDate = new Date(range.from);
-  const toDate = new Date(range.to);
-
+  const out: FeedSource[] = [];
   for (const cal of subs) {
     try {
       let ics = await loadCachedIcs(cal.id);
@@ -365,12 +369,31 @@ export async function getFeedEvents(range: { from: string; to: string }): Promis
       }
       if (!ics) continue;
       const { events } = parsedFor(cal.id, ics);
-      out.push(...expandEvents(cal.id, events, fromDate, toDate));
+      out.push({ calendarId: cal.id, events });
     } catch {} // offline / bad feed — meta carries the error, others still render
   }
+  return out;
+}
 
+// The sync half: expand loaded feed sources into CalendarEvent occurrences
+// within [from, to]. Pure CPU — safe to call per month from render-time
+// derived-data computation.
+export function expandFeedSources(
+  sources: FeedSource[],
+  range: { from: string; to: string },
+): CalendarEvent[] {
+  const fromDate = new Date(range.from);
+  const toDate = new Date(range.to);
+  const out: CalendarEvent[] = [];
+  for (const s of sources) out.push(...expandEvents(s.calendarId, s.events, fromDate, toDate));
   for (const e of out) lastExpandedById.set(e._id, e);
   return out;
+}
+
+// Expand every subscribed calendar's feed into CalendarEvent occurrences within
+// [from, to] — the one-shot composition of the two halves above.
+export async function getFeedEvents(range: { from: string; to: string }): Promise<CalendarEvent[]> {
+  return expandFeedSources(await loadFeedSources(), range);
 }
 
 // Force-refetch one feed now. Throws (FeedError) so the UI can surface failure.

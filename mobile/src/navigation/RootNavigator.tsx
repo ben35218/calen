@@ -4,7 +4,9 @@ import { NavigationContainer, DarkTheme, useNavigationContainerRef } from '@reac
 import { useAuth } from '../store/auth';
 import { isPurchasesConfigured, configurePurchases, logInPurchases } from '../lib/purchases';
 import { useUnlocked } from '../lib/unlock';
+import { useViewerContent } from '../lib/viewerAccess';
 import UnlockPaywallScreen from '../screens/plan/UnlockPaywallScreen';
+import ViewerNavigator from './ViewerNavigator';
 import { useReminderScheduler } from '../hooks/useReminderScheduler';
 import { useAppLock } from '../hooks/useAppLock';
 import { useSelfPersonSeed } from '../hooks/useSelfPersonSeed';
@@ -34,10 +36,14 @@ const navTheme = {
 // unlock paywall (no $4.99 app unlock) → the main tabs. Onboarding sits before
 // the paywall so a new user learns what Calen is before being asked to pay. The
 // paywall is skipped in builds without RevenueCat keys (Expo Go / dev — the
-// "not configured" doctrine) and for admin accounts.
+// "not configured" doctrine) and for admin accounts. Free viewer mode: a locked
+// user with viewer content (a calendar shared with them, or a pending share
+// invitation — lib/viewerAccess mirrors GET /billing/status) gets the read-only
+// ViewerNavigator shell instead of the paywall.
 export default function RootNavigator() {
   const { bootstrapping, isLoggedIn, user } = useAuth();
   const { unlocked, loaded: unlockLoaded } = useUnlocked();
+  const viewer = useViewerContent();
   const onboarding = useOnboardingStatus();
   const remindersEnabled = usePrivacyPrefs().prefs.remindersEnabled;
   const navRef = useNavigationContainerRef<RootStackParamList>();
@@ -53,9 +59,9 @@ export default function RootNavigator() {
 
   const paywallActive = isPurchasesConfigured() && user?.role !== 'admin';
   const needsUnlock = isLoggedIn && paywallActive && unlockLoaded && !unlocked;
-  // Don't flash the app (or the paywall) while the unlock cache is still
-  // reading from disk — hold the splash a beat instead.
-  const unlockPending = isLoggedIn && paywallActive && !unlockLoaded;
+  // Don't flash the app (or the paywall) while the unlock/viewer caches are
+  // still reading from disk — hold the splash a beat instead.
+  const unlockPending = isLoggedIn && paywallActive && !(unlockLoaded && viewer.loaded);
 
   // On-device reminders (Phase 5): schedule while signed in and the user hasn't
   // turned reminders off; refresh on foreground. Flipping the toggle off cancels
@@ -90,7 +96,11 @@ export default function RootNavigator() {
       ) : !onboarding.complete ? (
         <OnboardingScreen onGetStarted={onboarding.markComplete} />
       ) : needsUnlock ? (
-        <UnlockPaywallScreen />
+        // Free viewer mode: shared-calendar access without the unlock. A brand
+        // new invitee's very first login may show the paywall for one status
+        // round-trip (the paywall mounts useBilling, whose fetch caches the
+        // viewer signal and re-renders this gate).
+        viewer.hasContent ? <ViewerNavigator /> : <UnlockPaywallScreen />
       ) : (
         <AppNavigator />
       )}

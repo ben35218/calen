@@ -3,7 +3,7 @@
 // is caught: the window derivation from conversation text, and the recurrence-safe
 // source filter.
 
-import { deriveAiWindow, scopeCalendarSources } from '../aiWindow';
+import { deriveAiWindow, scopeCalendarSources, availabilityForWindow } from '../aiWindow';
 
 const NOW = new Date('2026-07-15T12:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -98,5 +98,45 @@ describe('scopeCalendarSources', () => {
   it('leaves the roster and recipe schedules untouched (birthdays span the year)', () => {
     expect(scoped.people).toEqual(sources.people);
     expect(scoped.recipeSchedules).toEqual(sources.recipeSchedules);
+  });
+});
+
+// The availability-only projection used when "Use personal & contact info in
+// prompts" is off: the calendar records must be reduced to free/busy time with
+// NO record-identifying detail leaving the device.
+describe('availabilityForWindow (privacy toggle off)', () => {
+  const window = { from: new Date('2026-07-20T00:00:00Z'), to: new Date('2026-07-22T23:59:59Z') };
+
+  it('reduces sources to title-stripped free/busy days', () => {
+    const sources = {
+      events: [
+        {
+          _id: 'e1', title: 'Secret therapy session', calendarType: 'appointments', allDay: false,
+          startDate: '2026-07-20T14:00:00.000Z', endDate: '2026-07-20T15:00:00.000Z',
+        },
+      ],
+      tasks: [], chores: [], people: [], trips: [], recipeSchedules: [], selfId: 'me',
+    };
+    const days = availabilityForWindow(sources as any, window, 'UTC');
+    const json = JSON.stringify(days);
+
+    // No title, description, or id may survive into the availability payload.
+    expect(json).not.toContain('Secret therapy session');
+    expect(json).not.toContain('e1');
+
+    const busyDay = days.find((d) => d.date === '2026-07-20');
+    expect(busyDay?.status).toBe('partial');
+    expect(busyDay?.busy).toEqual([{ start: '14:00', end: '15:00' }]);
+  });
+
+  it('drops the trip name from an away day', () => {
+    const sources = {
+      events: [], tasks: [], chores: [], people: [], recipeSchedules: [], selfId: 'me',
+      trips: [{ _id: 'tr1', name: 'Anniversary getaway', startDate: '2026-07-21', endDate: '2026-07-21' }],
+    };
+    const days = availabilityForWindow(sources as any, window, 'UTC');
+    const awayDay = days.find((d) => d.date === '2026-07-21');
+    expect(awayDay?.status).toBe('away');
+    expect(JSON.stringify(days)).not.toContain('Anniversary getaway');
   });
 });

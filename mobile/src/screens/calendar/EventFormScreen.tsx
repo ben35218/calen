@@ -432,7 +432,7 @@ export default function EventFormScreen() {
   }, [isEdit, calendarOptions, form.calendarType]);
 
   // Merge an AI patch into the form and mark the fields that actually changed.
-  const applyPatch = (patch: Record<string, unknown>) => {
+  const applyPatch = (patch: Record<string, unknown>, noHighlight?: string[]) => {
     const next: Partial<typeof form> = {};
     const changedKeys: string[] = [];
     // Intent flag — resolved to a concrete reminderMinutes below/asynchronously.
@@ -466,7 +466,7 @@ export default function EventFormScreen() {
       }
     }
     setForm((f) => ({ ...f, ...next }));
-    assist.mark(changedKeys);
+    assist.mark(noHighlight ? changedKeys.filter((k) => !noHighlight.includes(k)) : changedKeys);
   };
 
   useEffect(() => {
@@ -474,12 +474,16 @@ export default function EventFormScreen() {
   }, [navigation, isEdit]);
 
   // Pre-fill a new event from the calendar assistant's draft ("Edit in form").
-  // Uses the same patch path as FormAssist so the filled fields get highlighted.
+  // Uses the same patch path as FormAssist so the filled fields get highlighted —
+  // except the date/time/all-day fields, which every event always carries: the
+  // form seeds them with defaults, so outlining them as "AI changed this" is just
+  // noise. Highlight only the fields the assistant genuinely populated (title,
+  // location, phone, notes, …).
   const prefilled = useRef(false);
   useEffect(() => {
     if (isEdit || prefilled.current || !prefill) return;
     prefilled.current = true;
-    applyPatch(prefill);
+    applyPatch(prefill, ['allDay', 'date', 'startTime', 'endDate', 'endTime']);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill, isEdit]);
 
@@ -926,8 +930,12 @@ export default function EventFormScreen() {
   const guestInvitationId = eventQ.data?.invitationId;
   // An event read as an outside collaborator on its shared calendar (§9.5):
   // the same read-only view, but there is nothing to leave — access is managed
-  // via the calendar invitation, not per event.
-  const collabReadOnly = !!eventQ.data?.readOnly;
+  // via the calendar invitation, not per event. The server's `readOnly` stamp
+  // retired with the C3b move to the opaque record store, so recompute it
+  // client-side from the calendar's access level (the server 403s the write
+  // regardless — this keeps the UI from offering one).
+  const evCal = customCalendars.find((c) => c.id === eventQ.data?.calendarType);
+  const collabReadOnly = !!eventQ.data?.readOnly || (!!evCal && evCal.access === 'view');
   const readOnlyView = !!guestInvitationId || collabReadOnly;
   useEffect(() => {
     if (readOnlyView) navigation.setOptions({ title: 'Event' });
@@ -1215,6 +1223,10 @@ export default function EventFormScreen() {
           value={form.title}
           onChangeText={(v) => set({ title: v })}
           placeholder="Title"
+          // Explicit: the keyboard must open shifted so the first letter of a
+          // title is capitalized without reaching for shift (RN's documented
+          // 'sentences' default doesn't survive to the native field here).
+          autoCapitalize="sentences"
           containerStyle={formStyles.headField}
           style={[formStyles.headInput, assist.changed.has('title') && formStyles.headInputHighlight]}
         />

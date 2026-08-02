@@ -1,6 +1,16 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, SectionList, TouchableOpacity, RefreshControl } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import {
+  View,
+  Text,
+  StyleSheet,
+  SectionList,
+  TouchableOpacity,
+  RefreshControl,
+  ActivityIndicator,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
+} from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 import { WeatherData } from '../../../api';
@@ -10,15 +20,18 @@ import { itemsForDate, ymd } from '../../../lib/calendar';
 import { getHolidays } from '../../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../../lib/calendarPrefs';
 import { useCallEventStatus } from '../../../lib/callStatus';
+import { mdiName } from '../../../lib/recurrence';
 import WeatherIcon from '../../../components/WeatherIcon';
 import { EmptyState } from '../../../components/ui';
 import { colors, spacing } from '../../../theme';
 import { TodayHandle } from '../todayHandle';
 import { DayNav, openAllDayItem } from './dayNav';
-import { AllDayItem, TimedBlock, addDays, dayHeaderLabel, diffDays, normalizeDay, timeLabel } from './dayViewLayout';
+import { AllDayItem, EVENT_ICON, TimedBlock, addDays, dayHeaderLabel, diffDays, normalizeDay, timeLabel } from './dayViewLayout';
 
 const EXTEND_DAYS = 28;
 const INITIAL_SPAN_DAYS = 8 * 7;
+// Scrolling within this many px of the top prepends the previous stretch.
+const EARLIER_THRESHOLD = 80;
 
 type AgendaRow =
   | { type: 'allday'; item: AllDayItem }
@@ -27,6 +40,7 @@ type AgendaRow =
 type DaySection = {
   date: string;
   title: string;
+  isToday: boolean;
   wx: WeatherData['forecast'][number] | null;
   data: AgendaRow[];
 };
@@ -51,7 +65,12 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
   }));
 
   const listRef = useRef<SectionList<AgendaRow, DaySection>>(null);
+  // Armed only once the user drags, so the programmatic scroll-to-top below
+  // (anchor reset / Today) — which lands within EARLIER_THRESHOLD — can't itself
+  // trigger a prepend before the user has actually scrolled up.
+  const userDragging = useRef(false);
   const scrollTop = useCallback(() => {
+    userDragging.current = false;
     (listRef.current as any)?.getScrollResponder()?.scrollTo({ y: 0, animated: false });
   }, []);
 
@@ -118,58 +137,46 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
     const status = callStatus;
     const out: DaySection[] = [];
     const days = diffDays(window.start, window.end);
+    // Today always gets a section when it falls in the window — even with no
+    // items — so the "Today" marker anchors the list, matching the Occasions
+    // view. An empty window (no item days at all) drops it so the EmptyState
+    // shows through instead.
+    let hasItems = false;
     for (let i = 0; i <= days; i++) {
       const d = addDays(window.start, i);
       const { allDay, timed } = normalizeDay(itemsForDate(calQ.data, d), holidaysByDate[d] ?? [], d, calColors, status);
-      if (!allDay.length && !timed.length) continue;
+      const isToday = d === todayStr;
+      if (!allDay.length && !timed.length && !isToday) continue;
+      if (allDay.length || timed.length) hasItems = true;
       const rows: AgendaRow[] = [
         ...allDay.map((item): AgendaRow => ({ type: 'allday', item })),
         ...timed.sort((a, b) => a.startMin - b.startMin).map((block): AgendaRow => ({ type: 'timed', block })),
       ];
       const wx = (weatherOn && weatherQ.data?.forecast?.find((f) => f.date === d)) || null;
-      out.push({ date: d, title: dayHeaderLabel(d), wx, data: rows });
+      out.push({ date: d, title: dayHeaderLabel(d), isToday, wx, data: rows });
     }
-    return out;
-  }, [calQ.data, window, holidaysByDate, calColors, callStatus, weatherOn, weatherQ.data]);
+    return hasItems ? out : [];
+  }, [calQ.data, window, holidaysByDate, calColors, callStatus, weatherOn, weatherQ.data, todayStr]);
 
-  // "Load earlier" prepends 4 weeks, then restores the previously-first day so
-  // the list doesn't visually jump. This is the one scrollToLocation into
-  // possibly-unrendered content, so a failure jumps near the estimate and
-  // retries once (see onScrollToIndexFailed).
-  const restoreDate = useRef<string | null>(null);
-  const retrySection = useRef<number | null>(null);
-  const scrollToSection = useCallback((sectionIndex: number, animated: boolean) => {
-    retrySection.current = sectionIndex;
-    try {
-      listRef.current?.scrollToLocation({ sectionIndex, itemIndex: 0, animated, viewOffset: 0 });
-    } catch {}
-  }, []);
-  const loadEarlier = useCallback(() => {
-    restoreDate.current = sections[0]?.date ?? window.start;
+  // Infinite scroll upward: reaching the top prepends the previous stretch.
+  // `maintainVisibleContentPosition` anchors the visible day so the inserted
+  // content grows above the viewport without a jump (needs the new
+  // architecture, on by default here) — no scroll-restore dance required.
+  // `loadingEarlier` guards against re-firing before the window state settles;
+  // it clears once `window.start` actually moves.
+  const loadingEarlier = useRef(false);
+  const [earlierLoading, setEarlierLoading] = useState(false);
+  const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!userDragging.current || loadingEarlier.current) return;
+    if (e.nativeEvent.contentOffset.y > EARLIER_THRESHOLD) return;
+    loadingEarlier.current = true;
+    setEarlierLoading(true);
     setWindow((w) => ({ ...w, start: addDays(w.start, -EXTEND_DAYS) }));
-  }, [sections, window.start]);
+  }, []);
   useEffect(() => {
-    if (!restoreDate.current || !sections.length) return;
-    const d = restoreDate.current;
-    restoreDate.current = null;
-    const idx = sections.findIndex((s) => s.date >= d);
-    if (idx > 0) scrollToSection(idx, false);
-  }, [sections, scrollToSection]);
-  const onScrollToIndexFailed = useCallback(
-    (info: { index: number; averageItemLength: number }) => {
-      const idx = retrySection.current;
-      retrySection.current = null;
-      (listRef.current as any)?.getScrollResponder()?.scrollTo({ y: info.index * info.averageItemLength, animated: false });
-      if (idx != null) {
-        setTimeout(() => {
-          try {
-            listRef.current?.scrollToLocation({ sectionIndex: idx, itemIndex: 0, animated: false, viewOffset: 0 });
-          } catch {}
-        }, 120);
-      }
-    },
-    []
-  );
+    loadingEarlier.current = false;
+    setEarlierLoading(false);
+  }, [window.start]);
 
   const renderRow = useCallback(
     ({ item, section }: { item: AgendaRow; section: DaySection }) => {
@@ -181,7 +188,9 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
             activeOpacity={0.7}
             onPress={() => openAllDayItem(navigation, it, section.date)}
           >
-            {it.muted ? (
+            {it.icon ? (
+              <MaterialCommunityIcons name={mdiName(it.icon) as any} size={22} color={it.color} style={styles.circle} />
+            ) : it.muted ? (
               <Ionicons name="ellipse-outline" size={22} color={colors.textMuted} style={styles.circle} />
             ) : (
               <View style={[styles.colorBar, { backgroundColor: it.color }]} />
@@ -205,7 +214,7 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
           activeOpacity={0.7}
           onPress={() => navigation.navigate('EventDetail', { eventId: b.eventId, date: section.date })}
         >
-          <View style={[styles.colorBar, { backgroundColor: b.color }]} />
+          <MaterialCommunityIcons name={EVENT_ICON as any} size={22} color={b.color} style={styles.circle} />
           <View style={styles.rowBody}>
             <Text style={[styles.rowTitle, b.strike && styles.strike]} numberOfLines={1}>{b.title}</Text>
             {b.location ? (
@@ -225,22 +234,39 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
     [navigation]
   );
 
-  const renderHeader = useCallback(
-    ({ section }: { section: DaySection }) => (
-      <View style={styles.header}>
-        <Text style={[styles.headerText, section.date === todayStr && styles.headerToday]}>{section.title}</Text>
-        {section.wx ? (
-          <View style={styles.headerWx}>
-            <WeatherIcon code={section.wx.weatherCode} size={16} />
-            <Text style={styles.headerWxText}>
-              {Math.round(section.wx.tempMax)}°/{Math.round(section.wx.tempMin)}°
-            </Text>
-          </View>
-        ) : null}
+  const renderHeader = useCallback(({ section }: { section: DaySection }) => {
+    const wx = section.wx ? (
+      <View style={styles.headerWx}>
+        <WeatherIcon code={section.wx.weatherCode} size={16} />
+        <Text style={styles.headerWxText}>
+          {Math.round(section.wx.tempMax)}°/{Math.round(section.wx.tempMin)}°
+        </Text>
       </View>
-    ),
-    [todayStr]
-  );
+    ) : null;
+    if (section.isToday) {
+      // A "Today" divider marker (accent lines + label) above today's header,
+      // mirroring the Occasions view's today marker.
+      return (
+        <View style={styles.todayHeaderWrap}>
+          <View style={styles.todayMarker}>
+            <View style={styles.todayLine} />
+            <Text style={styles.todayMarkerText}>Today</Text>
+            <View style={styles.todayLine} />
+          </View>
+          <View style={styles.todayHeaderRow}>
+            <Text style={[styles.headerText, styles.headerToday]}>{section.title}</Text>
+            {wx}
+          </View>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.header}>
+        <Text style={styles.headerText}>{section.title}</Text>
+        {wx}
+      </View>
+    );
+  }, []);
 
   if (calQ.data && !sections.length) {
     return (
@@ -262,12 +288,13 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
       stickySectionHeadersEnabled
       onEndReachedThreshold={0.6}
       onEndReached={() => setWindow((w) => ({ ...w, end: addDays(w.end, EXTEND_DAYS) }))}
-      onScrollToIndexFailed={onScrollToIndexFailed}
+      onScroll={onScroll}
+      onScrollBeginDrag={() => { userDragging.current = true; }}
+      scrollEventThrottle={16}
+      maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
       refreshControl={<RefreshControl refreshing={calQ.isRefetching} onRefresh={calQ.refetch} tintColor={colors.textMuted} />}
       ListHeaderComponent={
-        <TouchableOpacity style={styles.earlier} onPress={loadEarlier}>
-          <Text style={styles.earlierText}>Load earlier</Text>
-        </TouchableOpacity>
+        <View style={styles.earlier}>{earlierLoading ? <ActivityIndicator color={colors.textMuted} /> : null}</View>
       }
       contentContainerStyle={styles.content}
       style={styles.list}
@@ -280,8 +307,9 @@ export default AgendaView;
 const styles = StyleSheet.create({
   list: { flex: 1, backgroundColor: colors.background },
   content: { paddingBottom: 96 },
-  earlier: { alignItems: 'center', paddingVertical: spacing.sm },
-  earlierText: { color: colors.primary, fontSize: 14, fontWeight: '600' },
+  // Fixed height so toggling the spinner never shifts content under
+  // maintainVisibleContentPosition.
+  earlier: { height: 40, alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -295,6 +323,28 @@ const styles = StyleSheet.create({
   },
   headerText: { fontSize: 17, fontWeight: '700', color: colors.text },
   headerToday: { color: colors.primary },
+  todayHeaderWrap: {
+    backgroundColor: colors.background,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  todayMarker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+  },
+  todayLine: { flex: 1, height: 1, backgroundColor: colors.primary, opacity: 0.35 },
+  todayMarkerText: { fontSize: 11, fontWeight: '700', color: colors.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  todayHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
+  },
   headerWx: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   headerWxText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
   row: {

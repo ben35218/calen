@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -19,12 +19,13 @@ import {
 import type { CountryCode } from '../../lib/holidays';
 import { detectHomeRegion } from '../../lib/homeRegion';
 import { refreshFeed, getFeedMeta, dropFeedCache, FeedError } from '../../lib/calendarFeeds';
-import { Screen, Input, SectionTitle, Button, SwitchRow, useHeaderCheckButton, ColorPicker } from '../../components/ui';
+import { Screen, Input, RevealWrap, SectionTitle, Button, SwitchRow, useHeaderCheckButton, ColorPicker } from '../../components/ui';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
+import { useRosterSuggestions } from '../../hooks/useRosterSuggestions';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
-import { classifyRecipient, composeShareSms } from '../../lib/shareInvite';
+import { classifyRecipient, composeShareSms, Recipient } from '../../lib/shareInvite';
 import { useEmailComposer } from '../../components/EmailAppSheet';
 
 function memberName(m: HouseholdMember): string {
@@ -124,6 +125,10 @@ export default function AddCalendarScreen() {
   const [emailDraft, setEmailDraft] = useState('');
   const [emailError, setEmailError] = useState('');
   const [emailNote, setEmailNote] = useState('');
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  // The account-existence lookup on add is awaited (it decides whether the
+  // composer opens) — surface it on the add button so the tap isn't silent.
+  const [addingOutside, setAddingOutside] = useState(false);
   const { composeEmail, emailSheet } = useEmailComposer();
   // Editing state loads async from AsyncStorage; seed the form once it arrives.
   const [seeded, setSeeded] = useState(!calendarId);
@@ -229,7 +234,7 @@ export default function AddCalendarScreen() {
       if (e?.response?.data?.error === 'decrypt_required') {
         Alert.alert(
           'Sharing outside isn’t available yet',
-          'This household is end-to-end encrypted, so people outside it can’t read this calendar’s events yet. Remove the outside emails to save.',
+          'Calendars can’t be shared with people outside your household yet. Remove the outside emails to save.',
         );
       } else {
         Alert.alert('Couldn’t save calendar', 'Check your connection and try again.');
@@ -265,9 +270,56 @@ export default function AddCalendarScreen() {
   const flipOutsideAccess = (key: string) =>
     setOutside((prev) => prev.map((o) => (outsideKey(o) === key ? { ...o, access: flip(o.access) } : o)));
 
-  // Add an outside person by email or phone; household members belong above. The
-  // invite is composed from this device on add — texted (phone) or emailed
-  // (email) from the owner's own apps; the server sends no invite mail/text.
+  // Already staged outside entries, household member emails, and the owner's
+  // own email — hidden from suggestions, and (for the typed path) rejected with
+  // a pointed message before staging.
+  const takenOutside = useMemo(() => {
+    const set = new Set<string>();
+    for (const o of outside) set.add(outsideKey(o).toLowerCase());
+    for (const m of household?.members ?? []) if (m.email) set.add(m.email.toLowerCase());
+    if (user?.email) set.add(user.email.toLowerCase());
+    return set;
+  }, [outside, household?.members, user?.email]);
+
+  // Roster contacts matching what's typed, resolved to the recipient a tap
+  // would stage — the shared autocomplete behind every share/invite field.
+  // Only live while the Outside section renders (default/subscription/holiday
+  // calendars never share outside).
+  const suggestions = useRosterSuggestions(
+    emailDraft,
+    takenOutside,
+    !readOnly && !isDefault && !isSubscription && !isHoliday,
+  );
+
+  // Stage a recipient (typed or tapped suggestion) in the outside list at View
+  // Only. Unlike the household invite, nothing is sent here — the share grants
+  // on save. The outreach IS composed from this device on add — texted (phone)
+  // or emailed (email) from the owner's own apps; the server sends no invite
+  // mail/text.
+  const stageOutside = async (recipient: Recipient) => {
+    const key = outsideKey(recipient);
+    if (outside.some((o) => outsideKey(o) === key)) return;
+    setOutside((prev) => [...prev, { ...recipient, access: 'view' }]);
+    // A recipient already on Calen needs no outreach from this device: when
+    // the share saves, the server pushes their registered devices and the
+    // invite lands in their in-app inbox (households-sharing.md). The composer
+    // only opens for someone not on Calen yet; the row's Remind button
+    // re-opens it on demand. Lookup failures fail open (compose anyway).
+    setAddingOutside(true);
+    let exists = false;
+    try {
+      exists = (await invitationsApi.lookup(recipient)).data.userExists;
+    } catch { /* fail open */ } finally {
+      setAddingOutside(false);
+    }
+    if (exists) {
+      setEmailNote('They’re on Calen — they’ll be notified in-app when you save.');
+      return;
+    }
+    await composeOutreach(recipient);
+  };
+
+  // Add whatever's typed by email or phone; household members belong above.
   const addOutsideRecipient = async () => {
     if (!emailDraft.trim()) return;
     const recipient = classifyRecipient(emailDraft);
@@ -280,23 +332,18 @@ export default function AddCalendarScreen() {
     setEmailError('');
     setEmailNote('');
     setEmailDraft('');
-    const key = outsideKey(recipient);
-    if (outside.some((o) => outsideKey(o) === key)) return;
-    setOutside((prev) => [...prev, { ...recipient, access: 'view' }]);
-    // A recipient already on Calen needs no outreach from this device: when
-    // the share saves, the server pushes their registered devices and the
-    // invite lands in their in-app inbox (households-sharing.md). The composer
-    // only opens for someone not on Calen yet; the row's Remind button
-    // re-opens it on demand. Lookup failures fail open (compose anyway).
-    let exists = false;
-    try {
-      exists = (await invitationsApi.lookup(recipient)).data.userExists;
-    } catch { /* fail open */ }
-    if (exists) {
-      setEmailNote('They’re on Calen — they’ll be notified in-app when you save.');
-      return;
-    }
-    await composeOutreach(recipient);
+    setSuggestOpen(false);
+    await stageOutside(recipient);
+  };
+
+  // A tapped suggestion skips the typed-path checks — `takenOutside` already
+  // filtered members, the owner, and staged duplicates out of the dropdown.
+  const addFromSuggestion = async (entry: Recipient) => {
+    setEmailError('');
+    setEmailNote('');
+    setEmailDraft('');
+    setSuggestOpen(false);
+    await stageOutside(entry);
   };
 
   // Raw outreach — always opens the composer (Messages or the mail-app
@@ -617,26 +664,54 @@ export default function AddCalendarScreen() {
         {!readOnly ? (
           <>
             {outside.length > 0 ? <CardDivider /> : null}
-            <View style={styles.emailAddRow}>
-              <Input
-                value={emailDraft}
-                onChangeText={(t) => {
-                  setEmailDraft(t);
-                  if (emailError) setEmailError('');
-                }}
-                placeholder="Add email or phone…"
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-                returnKeyType="done"
-                onSubmitEditing={addOutsideRecipient}
-                containerStyle={styles.emailInput}
-                style={fs.headInput}
-              />
-              <TouchableOpacity onPress={addOutsideRecipient} disabled={!emailDraft.trim()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="add-circle" size={28} color={emailDraft.trim() ? color : colors.border} />
-              </TouchableOpacity>
-            </View>
+            <RevealWrap open={suggestOpen} count={suggestions.length}>
+              <View style={styles.emailAddRow}>
+                <Input
+                  value={emailDraft}
+                  onChangeText={(t) => {
+                    setEmailDraft(t);
+                    if (emailError) setEmailError('');
+                    if (emailNote) setEmailNote('');
+                    setSuggestOpen(true);
+                  }}
+                  placeholder="Add name, email, or phone…"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  returnKeyType="done"
+                  onSubmitEditing={addOutsideRecipient}
+                  blurOnSubmit={false}
+                  containerStyle={styles.emailInput}
+                  style={fs.headInput}
+                />
+                {addingOutside ? (
+                  <ActivityIndicator size="small" color={color} />
+                ) : (
+                  <TouchableOpacity onPress={addOutsideRecipient} disabled={!emailDraft.trim()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="add-circle" size={28} color={emailDraft.trim() ? color : colors.border} />
+                  </TouchableOpacity>
+                )}
+              </View>
+              {suggestOpen && suggestions.length > 0 ? (
+                <View style={styles.dropdown}>
+                  {suggestions.map(({ p, entry }) => (
+                    <TouchableOpacity key={p._id} style={styles.suggestRow} onPress={() => addFromSuggestion(entry)}>
+                      <Ionicons
+                        name={'phone' in entry ? 'chatbubble-outline' : 'mail-outline'}
+                        size={16}
+                        color={colors.textMuted}
+                      />
+                      <View style={styles.suggestText}>
+                        <Text style={styles.suggestName} numberOfLines={1}>{p.name}</Text>
+                        <Text style={styles.suggestEmail} numberOfLines={1}>
+                          {'email' in entry ? entry.email : entry.phone}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
+            </RevealWrap>
           </>
         ) : null}
         {emailError ? <Text style={styles.emailError}>{emailError}</Text> : null}
@@ -694,6 +769,19 @@ const styles = StyleSheet.create({
   accessPillText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
   emailAddRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingRight: 14 },
   emailInput: { flex: 1, marginBottom: 0 },
+  // Contact autocomplete under the add field (mirrors EventInviteesScreen),
+  // inset to sit inside the GroupCard.
+  dropdown: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface,
+    marginHorizontal: 14, marginBottom: spacing.sm, overflow: 'hidden',
+  },
+  suggestRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
+  },
+  suggestText: { flex: 1 },
+  suggestName: { fontSize: 14, color: colors.text },
+  suggestEmail: { fontSize: 12, color: colors.textMuted },
   emailError: { fontSize: 13, color: colors.error, paddingBottom: 8, paddingHorizontal: 14 },
   emailNote: { fontSize: 13, color: colors.success, paddingBottom: 8, paddingHorizontal: 14 },
   remindBtn: { marginRight: spacing.sm },

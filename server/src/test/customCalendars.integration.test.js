@@ -117,12 +117,13 @@ test('validation: bad keys are rejected; duplicate keys conflict', async () => {
 });
 
 // Event CRUD moved to the unified opaque /records store in C3b (the per-collection
-// /calendar/events routes were deleted), and per-event calendar-access enforcement
-// (view vs full, feed/holiday read-only) moved to CalendarKey possession + the
-// client — the content-blind server can't see an event's calendarType. So the
-// tests below assert only the calendar-level surface (/api/calendars): sharing
-// tiers, the `access`/`mine` flags, and the invitation lifecycle. Event-storage
-// and resource-lane scoping are covered by records.integration.test.js.
+// /calendar/events routes were deleted). READS on a shared calendar are governed
+// by CalendarKey possession; WRITES in the calendar lane are enforced server-side
+// again since free viewer mode — /records 403s creates/updates/deletes from
+// 'view' collaborators via the record's plaintext `scope.resource` (see
+// records.integration.test.js). So the tests below assert only the calendar-level
+// surface (/api/calendars): sharing tiers, the `access`/`mine` flags, and the
+// invitation lifecycle.
 
 // ── Outside-household sharing (CalendarInvitation flow, §9.5) ────────────────
 
@@ -230,8 +231,8 @@ test('member access levels: the calendar carries the member’s view/full access
   });
 
   // The member sees the calendar with access: 'view' (the client keys read-only
-  // mode off this; the content-blind /records store no longer enforces per-event
-  // write access — CalendarKey possession + the client do).
+  // mode off this; /records also rejects calendar-lane writes from 'view'
+  // holders server-side).
   const list = await request().get('/api/calendars').set('Authorization', member.auth);
   assert.equal(list.body.find((c) => c.key === cal.body.key).access, 'view');
 
@@ -339,6 +340,67 @@ test('holiday calendar: owner can edit its regions/disabled config', async () =>
   assert.equal(edit.status, 200);
   assert.equal(edit.body.holiday.country, 'GB'); // country preserved
   assert.deepEqual(edit.body.holiday.selectedRegions, ['Scotland']);
+});
+
+// ── Free viewer mode: the billing-status viewer counts ──────────────────────
+// GET /billing/status → `viewer` carries how many calendars are shared with the
+// caller + how many calendar invitations await them. A locked user with either
+// count > 0 gets the read-only viewer shell instead of the hard paywall
+// (billing-plans.md "Free viewer mode").
+
+const viewerCounts = async (auth) => {
+  const res = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.equal(res.status, 200);
+  return res.body.viewer;
+};
+
+test('viewer counts: pending → accepted → revoked across the invitation lifecycle', async () => {
+  const { owner } = await setupHouseholdOfTwo();
+  const outsider = await registerUser({ firstName: 'Vera' });
+
+  // Nothing shared yet → both counts zero (this user would see the paywall).
+  assert.deepEqual(await viewerCounts(outsider.auth), {
+    calendarCollaborations: 0,
+    pendingCalendarInvitations: 0,
+  });
+
+  // Owner shares → the pending invitation counts (viewer shell opens to accept).
+  const cal = await createCalendar(owner.auth, { sharedWithOutside: [outsider.user.email] });
+  assert.deepEqual(await viewerCounts(outsider.auth), {
+    calendarCollaborations: 0,
+    pendingCalendarInvitations: 1,
+  });
+
+  // Accept → the pending invite becomes a collaboration.
+  const inbox = await request().get('/api/calendars/invitations').set('Authorization', outsider.auth);
+  const inv = inbox.body.find((i) => i.calendarKey === cal.body.key);
+  await request().post(`/api/calendars/invitations/${inv._id}/accept`).set('Authorization', outsider.auth);
+  assert.deepEqual(await viewerCounts(outsider.auth), {
+    calendarCollaborations: 1,
+    pendingCalendarInvitations: 0,
+  });
+
+  // Owner revokes the share → both counts drop to zero (back to the paywall).
+  await request().put(`/api/calendars/${cal.body.key}`)
+    .set('Authorization', owner.auth).send({ sharedWithOutside: [] });
+  assert.deepEqual(await viewerCounts(outsider.auth), {
+    calendarCollaborations: 0,
+    pendingCalendarInvitations: 0,
+  });
+});
+
+test('viewer counts: an email-only pre-signup invite counts for the freshly registered recipient', async () => {
+  const { owner } = await setupHouseholdOfTwo();
+  const email = `viewer-${Date.now()}@example.com`;
+  await createCalendar(owner.auth, { sharedWithOutside: [email] });
+
+  // The recipient registers AFTER the share: the invitation still has no
+  // toUserId (the lazy claim happens on their first inbox fetch), so the count
+  // must match by address — this is what routes their very first session into
+  // the viewer shell.
+  const late = await registerUser({ email, firstName: 'Wren' });
+  const counts = await viewerCounts(late.auth);
+  assert.equal(counts.pendingCalendarInvitations, 1);
 });
 
 test('outside share now succeeds on an E2EE-active household (Signal-parity D1 CalendarKey)', async () => {

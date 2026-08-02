@@ -3,9 +3,9 @@
 // route (validation, author-only edits), that creation is NOT blocked under an
 // E2EE-active household (e-cards are the plaintext exception), and the scheduler
 // send pass (fires on the occasion's month/day/hour in the author's timezone,
-// records a dry EmailLog per recipient with kind 'ecard', and is idempotent
-// within the same year via lastSentYear).
-const { test, before, after } = require('node:test');
+// records a dry EmailLog per recipient with kind 'ecard', then deactivates the
+// card — a card sends ONCE on its next occurrence and does not recur annually).
+const { test, before, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { startDb, stopDb, request, registerUser } = require('./harness');
 
@@ -15,6 +15,7 @@ const User = require('../models/User');
 const Household = require('../models/Household');
 const ECard = require('../models/ECard');
 const EmailLog = require('../models/EmailLog');
+const mailer = require('../services/mailer');
 const { runECardCheck, localHour, localDateStr } = require('../jobs/scheduler');
 
 before(startDb);
@@ -42,7 +43,8 @@ test('POST validates month/day/recipients and rejects bad input', async () => {
   const ok = await request().post('/api/ecards').set('Authorization', u.auth).send(validBody());
   assert.equal(ok.status, 201);
   assert.equal(ok.body.recipients[0].email, 'friend@example.com');
-  assert.equal(ok.body.lastSentYear, null);
+  assert.equal(ok.body.active, true);
+  assert.equal(ok.body.sentAt, null);
 });
 
 test('the chosen card style (template key) persists through create and edit', async () => {
@@ -168,7 +170,7 @@ test('list + author-only patch/delete', async () => {
   assert.equal((await ECard.findById(id)), null);
 });
 
-test('scheduler sends on the occasion date/hour, logs one dry EmailLog per recipient, and is idempotent', async () => {
+test('scheduler sends on the occasion date/hour, logs one dry EmailLog per recipient, then deactivates (one-time, no recurrence)', async () => {
   const u = await registerUser({ firstName: 'Sender' });
   // Pin the author to UTC so we can align the card to "now" deterministically.
   await User.updateOne({ _id: u.user._id }, { $set: { timezone: 'UTC' } });
@@ -178,7 +180,6 @@ test('scheduler sends on the occasion date/hour, logs one dry EmailLog per recip
   const day = Number(today.slice(8, 10));
   const hour = localHour('UTC');
   const sendTime = `${String(hour).padStart(2, '0')}:00`;
-  const thisYear = Number(today.slice(0, 4));
 
   await request().post('/api/ecards').set('Authorization', u.auth).send(validBody({
     month, day, sendTime,
@@ -193,11 +194,42 @@ test('scheduler sends on the occasion date/hour, logs one dry EmailLog per recip
   assert.ok(logs.every((l) => l.status === 'dry'), 'SMTP unset → dry sends');
 
   const card = await ECard.findOne({ userId: u.user._id }).lean();
-  assert.equal(card.lastSentYear, thisYear, 'lastSentYear armed after send');
+  assert.equal(card.active, false, 'card deactivated after its one-time send');
+  assert.ok(card.sentAt, 'sentAt stamped after send');
 
-  // Second run the same day must not re-send.
+  // Second run (same day, or any later run incl. next year) must not re-send:
+  // a deactivated card is never queried again, so the card never recurs.
   await runECardCheck();
-  assert.equal(await EmailLog.countDocuments({ kind: 'ecard' }), before + 2, 'idempotent within the year');
+  assert.equal(await EmailLog.countDocuments({ kind: 'ecard' }), before + 2, 'one-time — no repeat send');
+});
+
+test('the scheduler CCs the author on every card it sends (server-sent → sender keeps a copy)', async () => {
+  const u = await registerUser({ firstName: 'Copied' });
+  await User.updateOne({ _id: u.user._id }, { $set: { timezone: 'UTC' } });
+
+  const today = localDateStr('UTC');
+  const month = Number(today.slice(5, 7));
+  const day = Number(today.slice(8, 10));
+  const sendTime = `${String(localHour('UTC')).padStart(2, '0')}:00`;
+
+  await request().post('/api/ecards').set('Authorization', u.auth).send(validBody({
+    month, day, sendTime,
+    recipients: [{ email: 'x@example.com', name: 'X' }, { email: 'y@example.com', name: 'Y' }],
+  }));
+
+  // Spy on the send so we can assert the CC the scheduler threads through — the
+  // dry EmailLog row only records `to`, so CC isn't observable there.
+  const spy = mock.method(mailer, 'sendECard');
+  try {
+    await runECardCheck();
+  } finally {
+    spy.mock.restore();
+  }
+
+  const mine = spy.mock.calls.filter((c) => c.arguments[0].fromName === 'Copied');
+  assert.equal(mine.length, 2, 'one send per recipient');
+  assert.ok(mine.every((c) => c.arguments[0].ccEmail === u.user.email),
+    "each send CCs the author's own address");
 });
 
 test('a card whose send hour already passed today still goes out (catch-up, not next year)', async () => {
@@ -207,7 +239,6 @@ test('a card whose send hour already passed today still goes out (catch-up, not 
   const today = localDateStr('UTC');
   const month = Number(today.slice(5, 7));
   const day = Number(today.slice(8, 10));
-  const thisYear = Number(today.slice(0, 4));
 
   // Send time at the very start of the day → its hour is already in the past for
   // any current hour, yet the occasion is today, so it must still send.
@@ -218,5 +249,6 @@ test('a card whose send hour already passed today still goes out (catch-up, not 
 
   await runECardCheck();
   const card = await ECard.findById(id).lean();
-  assert.equal(card.lastSentYear, thisYear, 'past-hour card on the occasion day still sends');
+  assert.equal(card.active, false, 'past-hour card on the occasion day still sends (then deactivates)');
+  assert.ok(card.sentAt, 'sentAt stamped');
 });

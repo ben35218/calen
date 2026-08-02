@@ -1,15 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQueryClient } from '@tanstack/react-query';
 // expo-contacts 56 deprecated its function API on the package root; the same
 // functions (getContactsAsync/requestPermissionsAsync/Fields) live under /legacy.
 import * as Contacts from 'expo-contacts/legacy';
 import { peopleApi, ImportContact, Person } from '../../api';
+import { openRecord } from '../../lib/e2ee';
+import { buildImportedMatcher } from '../../lib/personFields';
 import { canonicalizePhoneForStorage } from '../../lib/phone';
-import { BottomSheet, Button, Input, SegmentedControl, SwitchRow } from '../../components/ui';
+import { BottomSheet, Button, Input, Hint } from '../../components/ui';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { useBilling } from '../../hooks/useBilling';
 import { ASSISTANT_NAME } from '../../config';
@@ -18,6 +20,7 @@ import type { PersonPrefill } from '../../navigation/types';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
+type Rt = RouteProp<ProfileStackParamList, 'ContactImport'>;
 type Method = 'direct' | 'ai';
 type ApplyMode = 'auto' | 'review';
 
@@ -41,9 +44,11 @@ type Row = {
   selected: boolean;
   // Default classification for a Direct import. There's no per-row tag in the
   // picker anymore (the roster has three types — Family / Friends /
-  // Professionals — so a two-way switch was misleading); the type is set in the
-  // Review-each form's Type field, or left at this default for Import-all.
-  type: 'family' | 'friend';
+  // Professionals — so a two-way switch was misleading); the default is seeded
+  // from the roster tab the import was launched from, and the type is set per
+  // contact in the Review-each form's Type field, or left at this default for
+  // Import-all.
+  type: 'family' | 'friend' | 'service';
   alreadyImported: boolean;
 };
 
@@ -59,6 +64,10 @@ type Row = {
 // (requireAiEnabled) would reject or that the user has opted out of.
 export default function ContactImportScreen() {
   const nav = useNavigation<Nav>();
+  const { params } = useRoute<Rt>();
+  // Default classification for imported contacts, seeded from the roster tab the
+  // user launched import from (Family / Friends / Professionals).
+  const defaultType: Row['type'] = params?.type ?? 'friend';
   const qc = useQueryClient();
   const { prefs } = usePrivacyPrefs();
   const { data: billing } = useBilling();
@@ -78,13 +87,21 @@ export default function ContactImportScreen() {
   const [access, setAccess] = useState<'all' | 'limited'>('all');
   const [rows, setRows] = useState<Row[]>([]);
   const [search, setSearch] = useState('');
-  const [hideImported, setHideImported] = useState(false);
-  const [method, setMethod] = useState<Method>('ai');
-  // Web-search enrichment of professionals is opt-in (spec: ai-assistant.md).
-  const [enrich, setEnrich] = useState(false);
+  // Default to hiding already-imported contacts so the list opens focused on
+  // what's left to add. The toggle is always shown so the user can reveal them.
+  const [hideImported, setHideImported] = useState(true);
+  // Default to Direct — the plain "you pick, details come straight from the
+  // phone" path — rather than opening on AI-assisted.
+  const [method, setMethod] = useState<Method>('direct');
   const [applyMode, setApplyMode] = useState<ApplyMode>('review');
   const [optionsOpen, setOptionsOpen] = useState(false);
+  // Each option switch's explanation stays hidden behind an info button until
+  // the user asks to see it (progressive disclosure).
+  const [reviewHintShown, setReviewHintShown] = useState(false);
+  const [aiHintShown, setAiHintShown] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Guards the one-shot auto-select for limited access below.
+  const autoSelectedRef = useRef(false);
 
   // Read the device address book and map it into rows, flagging already-imported
   // contacts. Re-callable after the user widens limited access, preserving any
@@ -101,9 +118,24 @@ export default function ContactImportScreen() {
         Contacts.Fields.Company,
       ],
     });
-    // Device ids of contacts already pulled in, so we can flag re-imports.
-    const existing = qc.getQueryData<Person[]>(['people']) || [];
-    const imported = new Set(existing.map((p) => p.deviceContactId).filter(Boolean) as string[]);
+    // The decrypted roster, for flagging re-imports. Ensure it's actually
+    // loaded (same queryFn as the People list) rather than trusting the shared
+    // cache — this screen can be reached before the roster has ever fetched, and
+    // an empty cache read would silently flag nothing. A failed fetch (offline)
+    // degrades to whatever is cached.
+    const existing = await qc
+      .ensureQueryData<Person[]>({
+        queryKey: ['people'],
+        queryFn: async () => {
+          const people = (await peopleApi.list()).data;
+          return Promise.all(people.map((p) => openRecord('Person', p)));
+        },
+      })
+      .catch(() => qc.getQueryData<Person[]>(['people']) || []);
+    // Matches by the stored deviceContactId link, falling back to phone/email/
+    // name identity — roster people imported before the link existed (or added
+    // by hand) carry no deviceContactId and would otherwise never be flagged.
+    const isImported = buildImportedMatcher(existing);
 
     const mapped: Row[] = data
       .filter((c) => c.name)
@@ -135,8 +167,8 @@ export default function ContactImportScreen() {
           birthday,
           company: (c as any).company || undefined,
           selected: false,
-          type: 'friend' as const,
-          alreadyImported: imported.has(key),
+          type: defaultType,
+          alreadyImported: isImported({ key, name: c.name!, phones, emails }),
         };
       });
     // Carry over selection + manual tag for contacts that were already in the
@@ -148,7 +180,7 @@ export default function ContactImportScreen() {
         return old ? { ...r, selected: old.selected, type: old.type } : r;
       });
     });
-  }, [qc]);
+  }, [qc, defaultType]);
 
   useEffect(() => {
     (async () => {
@@ -192,6 +224,18 @@ export default function ContactImportScreen() {
   useEffect(() => {
     if (outOfCredits && applyMode !== 'review') setApplyMode('review');
   }, [outOfCredits, applyMode]);
+
+  // First import with only LIMITED contacts access (iOS: a hand-picked subset):
+  // the user already chose exactly whom to share, so pre-select all of them to
+  // save a "select all" tap. One-shot (a later manual deselect must stick) and
+  // only when nothing has been imported yet.
+  useEffect(() => {
+    if (autoSelectedRef.current) return;
+    if (status !== 'ready' || access !== 'limited' || !rows.length) return;
+    if (rows.some((r) => r.alreadyImported)) return;
+    autoSelectedRef.current = true;
+    setRows((rs) => rs.map((r) => ({ ...r, selected: true })));
+  }, [status, access, rows]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -241,7 +285,9 @@ export default function ContactImportScreen() {
       birthday: r.birthday,
       company: r.company,
     }));
-    const { data } = await peopleApi.classify(contacts, enrich);
+    // Choosing AI-assisted cleanup implies the professional web lookup — no
+    // separate opt-in toggle (spec: ai-assistant.md); the sheet hint discloses it.
+    const { data } = await peopleApi.classify(contacts, true);
     const byKey = new Map(data.results.map((c) => [c.key, c]));
     return selected.map((r) => {
       const c = byKey.get(r.key);
@@ -279,8 +325,10 @@ export default function ContactImportScreen() {
     try {
       const prefills = await buildPrefills();
       if (applyMode === 'review') {
-        // Step through the person form for each, starting at the first.
-        nav.replace('PersonForm', { prefills, queueIndex: 0 });
+        // Step through the person form for each, starting at the first. Flag an
+        // AI-assisted review so the form keeps the "Ask Calen" panel; a Direct
+        // import hides it (nothing to re-derive — details came from the phone).
+        nav.replace('PersonForm', { prefills, queueIndex: 0, aiReview: method === 'ai' && aiImportAllowed });
         return;
       }
       await peopleApi.bulk(prefills.map((p) => ({ ...p })));
@@ -321,7 +369,9 @@ export default function ContactImportScreen() {
       <View style={styles.center}>
         <Ionicons name="lock-closed-outline" size={40} color={colors.textMuted} />
         <Text style={styles.deniedText}>
-          Contacts access is off. Enable it in Settings to import family and friends.
+          Contacts access is off. Turning it on just lets you pick which contacts to
+          import — nothing is added automatically. Enable it in Settings to choose
+          family and friends.
         </Text>
         <View style={styles.deniedAction}>
           <Button title="Open Settings" variant="ghost" onPress={() => Linking.openSettings()} />
@@ -331,18 +381,9 @@ export default function ContactImportScreen() {
   }
 
   const busyLabel =
-    method === 'ai' && aiImportAllowed && applyMode !== 'review'
-      ? `${ASSISTANT_NAME} is sorting…`
-      : applyMode === 'review'
+    applyMode === 'review'
       ? `Review ${selectedCount}`
       : `Import ${selectedCount} contact${selectedCount !== 1 ? 's' : ''}`;
-
-  // One-line summary of the current import configuration for the footer chip
-  // that opens the options sheet.
-  const usingAi = aiImportAllowed && method === 'ai';
-  const optionsSummary = `${usingAi ? 'AI-assisted' : 'Direct'} · ${
-    applyMode === 'review' ? 'Review each' : 'Import all'
-  }${usingAi && enrich ? ' · Web lookup' : ''}`;
 
   return (
     <View style={styles.container}>
@@ -352,23 +393,27 @@ export default function ContactImportScreen() {
           <TouchableOpacity onPress={toggleAll}>
             <Text style={styles.selectAll}>{allFilteredSelected ? 'Deselect all' : 'Select all'}</Text>
           </TouchableOpacity>
-          {importedCount > 0 ? (
-            <TouchableOpacity
-              onPress={() => setHideImported((v) => !v)}
-              style={styles.hideToggle}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: hideImported }}
-            >
-              <Ionicons
-                name={hideImported ? 'checkbox' : 'square-outline'}
-                size={18}
-                color={hideImported ? colors.primary : colors.textMuted}
-              />
-              <Text style={styles.hideToggleLabel}>Hide imported</Text>
-            </TouchableOpacity>
-          ) : null}
+          <TouchableOpacity
+            onPress={() => setHideImported((v) => !v)}
+            style={styles.hideToggle}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: hideImported }}
+          >
+            <Ionicons
+              name={hideImported ? 'checkbox' : 'square-outline'}
+              size={18}
+              color={hideImported ? colors.primary : colors.textMuted}
+            />
+            <Text style={styles.hideToggleLabel}>Hide imported</Text>
+          </TouchableOpacity>
           <Text style={styles.count}>{selectedCount} selected</Text>
         </View>
+      </View>
+
+      <View style={styles.introHint}>
+        <Hint>
+          Nothing is imported automatically — pick the contacts you want, then tap the button below to add just those to {ASSISTANT_NAME}.
+        </Hint>
       </View>
 
       {access === 'limited' ? (
@@ -440,7 +485,7 @@ export default function ContactImportScreen() {
         >
           <Ionicons name="options-outline" size={16} color={colors.textMuted} />
           <Text style={styles.optionsBarText} numberOfLines={1}>
-            {optionsSummary}
+            Import options
           </Text>
           <Ionicons name="chevron-up" size={16} color={colors.textMuted} />
         </TouchableOpacity>
@@ -448,70 +493,82 @@ export default function ContactImportScreen() {
       </View>
 
       <BottomSheet visible={optionsOpen} onClose={() => setOptionsOpen(false)} title="Import options">
-        {aiImportAllowed ? (
-          <>
-            <Text style={styles.sheetLabel}>Method</Text>
-            <SegmentedControl
-              value={method}
-              options={[
-                { label: 'AI-assisted', value: 'ai' },
-                { label: 'Direct', value: 'direct' },
-              ]}
-              onChange={(v) => setMethod(v as Method)}
-            />
-            <Text style={styles.sheetHint}>
-              {method === 'ai'
-                ? `${ASSISTANT_NAME} sorts each into Family / Friends / Professionals from names and companies only — phone numbers, emails, and birthdays stay on your device.`
-                : 'Tag each contact yourself; details come straight from your phone.'}
-            </Text>
-          </>
-        ) : (
-          <Text style={styles.sheetHint}>
-            {outOfCredits
-              ? "AI-assisted sorting is off because you're out of AI credits. Tag each contact yourself; details come straight from your phone."
-              : `AI-assisted sorting is off because ${
-                  prefs.aiEnabled ? '“Use personal & contact info in prompts” is' : '“Use AI features” is'
-                } turned off in Privacy & security. Tag each contact yourself; details come straight from your phone.`}
-          </Text>
-        )}
-
-        {aiImportAllowed && method === 'ai' ? (
-          <>
-            <SwitchRow
-              label="Look up professionals on the web"
-              value={enrich}
-              onValueChange={setEnrich}
-              color={colors.primary}
-            />
-            <Text style={styles.sheetHint}>
-              {enrich
-                ? 'Business names, addresses, and phone numbers may be sent to a web search to verify and complete professional contacts.'
-                : 'Professionals are sorted without any web lookup — nothing about them leaves the AI request.'}
-            </Text>
-          </>
-        ) : null}
-
-        <Text style={[styles.sheetLabel, styles.sheetLabelSpaced]}>Apply</Text>
         {outOfCredits ? (
           <Text style={styles.sheetHint}>
             Without AI credits, each contact is reviewed in the form before saving.
           </Text>
         ) : (
           <>
-            <SegmentedControl
-              value={applyMode}
-              options={[
-                { label: 'Review each', value: 'review' },
-                { label: 'Import all', value: 'auto' },
-              ]}
-              onChange={(v) => setApplyMode(v as ApplyMode)}
-            />
-            <Text style={styles.sheetHint}>
-              {applyMode === 'review'
-                ? 'Open each contact in the form to review before saving.'
-                : 'Save every selected contact at once, without review.'}
-            </Text>
+            <View style={styles.switchInfoRow}>
+              <View style={styles.switchInfoLabelWrap}>
+                <Text style={styles.switchInfoLabel}>Review contact info</Text>
+                <TouchableOpacity
+                  onPress={() => setReviewHintShown((s) => !s)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="About reviewing contact info"
+                  accessibilityState={{ expanded: reviewHintShown }}
+                >
+                  <Ionicons
+                    name={reviewHintShown ? 'information-circle' : 'information-circle-outline'}
+                    size={18}
+                    color={colors.textMuted}
+                  />
+                </TouchableOpacity>
+              </View>
+              <Switch
+                value={applyMode === 'review'}
+                onValueChange={(v) => setApplyMode(v ? 'review' : 'auto')}
+                trackColor={{ true: colors.primary }}
+              />
+            </View>
+            {reviewHintShown ? (
+              <Text style={styles.sheetHint}>
+                Open each contact in the form to review before saving. Turn off to save every selected contact at once, without review.
+              </Text>
+            ) : null}
           </>
+        )}
+
+        {aiImportAllowed ? (
+          <>
+            <View style={styles.switchInfoRow}>
+              <View style={styles.switchInfoLabelWrap}>
+                <Text style={styles.switchInfoLabel}>AI Assistant</Text>
+                <TouchableOpacity
+                  onPress={() => setAiHintShown((s) => !s)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="About the AI Assistant"
+                  accessibilityState={{ expanded: aiHintShown }}
+                >
+                  <Ionicons
+                    name={aiHintShown ? 'information-circle' : 'information-circle-outline'}
+                    size={18}
+                    color={colors.textMuted}
+                  />
+                </TouchableOpacity>
+              </View>
+              <Switch
+                value={method === 'ai'}
+                onValueChange={(v) => setMethod(v ? 'ai' : 'direct')}
+                trackColor={{ true: colors.primary }}
+              />
+            </View>
+            {aiHintShown ? (
+              <Text style={styles.sheetHint}>
+                {`${ASSISTANT_NAME} cleans up and sorts each contact into Family / Friends / Professionals from names and companies only — phone numbers, emails, and birthdays stay on your device. Business names, addresses, and phone numbers may be sent to a web search to verify and complete professional contacts.`}
+              </Text>
+            ) : null}
+          </>
+        ) : (
+          <Text style={styles.sheetHint}>
+            {outOfCredits
+              ? "AI assistant is off because you're out of AI credits."
+              : `AI assistant is off because ${
+                  prefs.aiEnabled ? '“Use personal & contact info in prompts” is' : '“Use AI features” is'
+                } turned off in Privacy & security.`}
+          </Text>
         )}
 
         <View style={styles.sheetDone}>
@@ -528,6 +585,7 @@ const styles = StyleSheet.create({
   deniedText: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.md, lineHeight: 20 },
   deniedAction: { marginTop: spacing.lg },
   toolbar: { padding: spacing.md, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  introHint: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   banner: {
     flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
@@ -568,8 +626,12 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm, marginBottom: spacing.sm,
   },
   optionsBarText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
-  sheetLabel: { fontSize: 13, fontWeight: '700', color: colors.textMuted, marginBottom: spacing.xs },
-  sheetLabelSpaced: { marginTop: spacing.md },
   sheetHint: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: spacing.xs },
+  switchInfoRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+  },
+  switchInfoLabelWrap: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, marginRight: spacing.md },
+  switchInfoLabel: { fontSize: 15, color: colors.text },
   sheetDone: { marginTop: spacing.lg },
 });

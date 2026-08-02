@@ -8,7 +8,11 @@ jest.mock('../e2ee', () => ({
 }));
 jest.mock('../records', () => ({ syncRecords: jest.fn(), hasSyncedRecords: jest.fn() }));
 jest.mock('../replica', () => ({ getAll: jest.fn(), upsert: jest.fn(), remove: jest.fn() }));
-jest.mock('../calendarFeeds', () => ({ getFeedEvents: jest.fn(async () => []) }));
+jest.mock('../calendarFeeds', () => ({
+  getFeedEvents: jest.fn(async () => []),
+  loadFeedSources: jest.fn(async () => []),
+  expandFeedSources: jest.fn(() => []),
+}));
 jest.mock('../addons', () => ({
   applyAddonLocks: jest.fn(),
   getOwnedAddonIds: jest.fn(async () => new Set()),

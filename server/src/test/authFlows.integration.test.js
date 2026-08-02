@@ -148,6 +148,66 @@ test('delete account: passwordless account deletes on session token alone', asyn
   assert.equal(await User.findById(user._id), null, 'user is gone');
 });
 
+test('delete account: purges the RevenueCat subscriber for the user id and its alias', async () => {
+  // billing-plans.md "Account deletion × billing": with a secret key set,
+  // deletion issues DELETE /v1/subscribers/{id} for both RC identities —
+  // best-effort data minimization (it can't cancel the store subscription).
+  const { user, auth } = await registerUser({ email: 'rcpurge@example.com', password: 'right-password-1' });
+  await User.updateOne({ _id: user._id }, { $set: { revenueCatId: 'rc-alias-1', aiPlanActive: true } });
+
+  const calls = [];
+  const realFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: opts?.method, auth: opts?.headers?.Authorization });
+    return { ok: true };
+  };
+  process.env.REVENUECAT_SECRET_API_KEY = 'sk_test_123';
+  try {
+    const res = await request().delete('/api/auth/account').set('Authorization', auth).send({ password: 'right-password-1' });
+    assert.equal(res.status, 200);
+    assert.equal(await User.findById(user._id), null, 'user is gone');
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.REVENUECAT_SECRET_API_KEY;
+  }
+  const rc = calls.filter((c) => c.url.includes('api.revenuecat.com'));
+  assert.equal(rc.length, 2, 'one DELETE per RC identity');
+  assert.ok(rc.some((c) => c.url.endsWith(`/v1/subscribers/${user._id}`)), 'user id purged');
+  assert.ok(rc.some((c) => c.url.endsWith('/v1/subscribers/rc-alias-1')), 'alias purged');
+  for (const c of rc) {
+    assert.equal(c.method, 'DELETE');
+    assert.equal(c.auth, 'Bearer sk_test_123');
+  }
+});
+
+test('delete account: RevenueCat purge is skipped without a key and never blocks deletion', async () => {
+  const { user, auth } = await registerUser({ email: 'rcnokey@example.com', password: 'right-password-1' });
+  const calls = [];
+  const realFetch = global.fetch;
+  global.fetch = async (url) => { calls.push(String(url)); return { ok: true }; };
+  try {
+    const res = await request().delete('/api/auth/account').set('Authorization', auth).send({ password: 'right-password-1' });
+    assert.equal(res.status, 200);
+    assert.equal(await User.findById(user._id), null, 'user is gone');
+  } finally {
+    global.fetch = realFetch;
+  }
+  assert.equal(calls.filter((u) => u.includes('revenuecat')).length, 0, 'no RC call without a key');
+
+  // And a purge that throws must not fail the deletion (best-effort doctrine).
+  const { user: u2, auth: auth2 } = await registerUser({ email: 'rcboom@example.com', password: 'right-password-1' });
+  global.fetch = async () => { throw new Error('network down'); };
+  process.env.REVENUECAT_SECRET_API_KEY = 'sk_test_123';
+  try {
+    const res = await request().delete('/api/auth/account').set('Authorization', auth2).send({ password: 'right-password-1' });
+    assert.equal(res.status, 200, 'deletion survives a failing purge');
+    assert.equal(await User.findById(u2._id), null, 'user is gone');
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.REVENUECAT_SECRET_API_KEY;
+  }
+});
+
 // ── Change password (biometric-first, current-password fallback) ──────────────
 
 test('change password: biometric path omits currentPassword and changes the hash on the session alone', async () => {

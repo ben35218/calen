@@ -3,7 +3,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const Chore = require('../models/Chore');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
-const { streamChat } = require('../services/chatStream');
+const { streamChat, webSearchTool, WEB_SEARCH_SYSTEM_NOTE } = require('../services/chatStream');
 const { ASSISTANT_NAME } = require('../config/assistant');
 const { meter, getConfig } = require('../middleware/usageMeter');
 const { navTool, navPromptSection, collectNav, ensureActionableNav, SUGGEST_NAV_TOOL_NAME } = require('../services/navDestinations');
@@ -145,8 +145,8 @@ router.post('/', meter('chat', 'chores'), async (req, res) => {
       req,
       client,
       model,
-      system: buildSystemPrompt(),
-      tools: TOOLS,
+      system: buildSystemPrompt() + WEB_SEARCH_SYSTEM_NOTE,
+      tools: [...TOOLS, webSearchTool(model)],
       messages,
       executeTool: (name, input) => executeTool(name, input, {
         clientChores: Array.isArray(req.body.chores) ? req.body.chores : null,

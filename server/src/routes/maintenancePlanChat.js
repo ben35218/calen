@@ -8,7 +8,7 @@ const { addDays } = require('date-fns');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
-const { streamChat } = require('../services/chatStream');
+const { streamChat, webSearchTool, WEB_SEARCH_SYSTEM_NOTE } = require('../services/chatStream');
 const { ASSISTANT_NAME } = require('../config/assistant');
 const { meter, getConfig } = require('../middleware/usageMeter');
 const { navTool, navPromptSection, collectNav, ensureActionableNav, SUGGEST_NAV_TOOL_NAME } = require('../services/navDestinations');
@@ -284,8 +284,8 @@ router.post('/', meter('chat', 'maintenance'), async (req, res) => {
       req,
       client,
       model,
-      system: systemPrompt,
-      tools: TOOLS,
+      system: systemPrompt + WEB_SEARCH_SYSTEM_NOTE,
+      tools: [...TOOLS, webSearchTool(model)],
       messages,
       executeTool: (name, input) => executeTool(name, input, {
         clientCategories: Array.isArray(req.body.categories) ? req.body.categories : null,

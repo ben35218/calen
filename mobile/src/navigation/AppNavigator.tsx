@@ -15,6 +15,7 @@ import CalendarDayScreen from '../screens/calendar/CalendarDayScreen';
 import EventFormScreen from '../screens/calendar/EventFormScreen';
 import EventDetailScreen from '../screens/calendar/EventDetailScreen';
 import AttachmentPreviewScreen from '../screens/calendar/AttachmentPreviewScreen';
+import PlacePreviewScreen from '../screens/chat/PlacePreviewScreen';
 import AssistantScreen from '../screens/chat/AssistantScreen';
 import CalendarSearchScreen from '../screens/calendar/CalendarSearchScreen';
 import CalendarsScreen from '../screens/calendar/CalendarsScreen';
@@ -89,6 +90,7 @@ import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
 import AddOnsScreen from '../screens/plan/AddOnsScreen';
 import CreditsScreen from '../screens/plan/CreditsScreen';
+import CreditHistoryScreen from '../screens/plan/CreditHistoryScreen';
 import BuyCreditsSheet from '../screens/plan/BuyCreditsSheet';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -150,11 +152,33 @@ export default function AppNavigator() {
       <Stack.Screen
         name="AttachmentPreview"
         component={AttachmentPreviewScreen}
-        options={({ route }) => ({
+        options={({ navigation, route }) => ({
           ...hdr(BLACK),
           headerShadowVisible: false,
           presentation: 'modal',
           title: route.params?.title || 'Attachment',
+          headerLeft: () => (
+            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
+              <Ionicons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+          ),
+        })}
+      />
+      {/* In-app place preview (WebView on the Google Maps lookup) for places
+          Calen links in chat. Dark modal; closing resumes the conversation. */}
+      <Stack.Screen
+        name="PlacePreview"
+        component={PlacePreviewScreen}
+        options={({ navigation, route }) => ({
+          ...hdr(BLACK),
+          headerShadowVisible: false,
+          presentation: 'modal',
+          title: route.params?.title || 'Place',
+          headerLeft: () => (
+            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
+              <Ionicons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+          ),
         })}
       />
       <Stack.Screen name="EventForm" component={EventFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
@@ -292,6 +316,7 @@ export default function AppNavigator() {
       {/* The feature-calendar add-ons store. Never titled "App Store" (5.2.5). */}
       <Stack.Screen name="AddOns" component={AddOnsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add-ons' }} />
       <Stack.Screen name="Credits" component={CreditsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI credits' }} />
+      <Stack.Screen name="CreditHistory" component={CreditHistoryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Credit history' }} />
       <Stack.Screen
         name="BuyCredits"
         component={BuyCreditsSheet}

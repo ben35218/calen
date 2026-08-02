@@ -11,7 +11,7 @@
 import { customCalendarsApi, calendarApi, type CalendarKeyPending, type CalendarEvent } from '../api';
 import {
   getHDK, mintCalendarKey, wrapCalendarKeyForMember, loadCalendarKeys,
-  sealForCalendar, currentCalendarKeyVersion,
+  sealForCalendar, currentCalendarKeyVersion, getResourceKey,
 } from './e2ee';
 import * as replica from './replica';
 import { syncRecords, resetRecordCursor } from './records';
@@ -90,6 +90,50 @@ async function reconcileOne(p: CalendarKeyPending, events: CalendarEvent[]): Pro
     const members = await wrapFor(resource, version, p.missingMembers);
     if (members.length) await customCalendarsApi.wrapMembers(resource, { keyVersion: version, members });
   }
+}
+
+// Load the shared-lane CalendarKeys this device is entitled to but doesn't
+// hold, both directions of D1:
+//   - calendars shared TO this user (`mine:false`) — the member wrap, unwrapped
+//     with the identity keyPair;
+//   - the user's OWN calendars that ever minted a CalendarKey
+//     (`calKeyVersion > 0`) — the household wrap, unwrapped with the HDK.
+// Then re-pull the record feed so rows an earlier keyless sync skipped decrypt
+// into the replica. Neither side is covered elsewhere: the owner reconcile
+// pass above only touches calendars with PENDING work (keys/pending is empty
+// in steady state), and openOpaqueRecord doesn't lazy-load resource keys — so
+// after a sign-out wipes the replica and the in-memory keys, the owner's own
+// cal-scoped events (and a collaborator's shared events) would never decrypt
+// back in. The owner arm keys off `calKeyVersion`, not the outside-share list,
+// so a fully-un-shared calendar whose rows are still sealed under an old
+// CalendarKey keeps decrypting too. Best-effort and idempotent; a locked
+// session is a harmless no-op (loadCalendarKeys unwraps nothing). Runs from
+// the keys-ready hook on every unlock (auth store), the viewer shell, and on
+// accepting a calendar invitation.
+export async function ensureSharedCalendarKeys(): Promise<void> {
+  let shared: { key: string }[];
+  try {
+    const { data } = await customCalendarsApi.list();
+    shared = data.filter(
+      (c) => !c.feedUrl && !c.holiday && (!c.mine || (c.calKeyVersion ?? 0) > 0),
+    );
+  } catch { return; }
+  if (!shared.length) return;
+
+  const missing = shared.filter((c) => {
+    const version = currentCalendarKeyVersion(c.key);
+    return !version || !getResourceKey(c.key, version);
+  });
+  if (!missing.length) return;
+
+  const loaded = await Promise.all(
+    missing.map((c) => loadCalendarKeys(c.key).catch(() => 0)),
+  );
+  if (!loaded.some((v) => v > 0)) return;
+
+  // The sync cursor sits at the first undecryptable row (lib/records), so an
+  // incremental pull re-reads the skipped shared events now the keys are held.
+  await syncRecords().catch(() => {});
 }
 
 // Run the full reconciliation. Needs an unlocked session (HDK held); a no-op

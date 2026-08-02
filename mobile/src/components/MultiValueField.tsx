@@ -7,8 +7,9 @@ import { colors, spacing, radius } from '../theme';
 import type { LabeledValue } from '../lib/personFields';
 
 // The Apple-Contacts-style label picker: a bottom sheet of preset labels plus an
-// "Add Custom Label" path. A custom (non-preset) current label is shown pinned at
-// the top so it reads as selected and can be re-chosen.
+// "Add Custom Label" path. Only the presets are listed — a custom (non-preset)
+// current label is NOT added to the list; it lives solely on the row where it was
+// created (the label chip), so the picker vocabulary stays fixed.
 function LabelPicker({
   visible,
   value,
@@ -24,8 +25,6 @@ function LabelPicker({
 }) {
   const [mode, setMode] = useState<'list' | 'custom'>('list');
   const [custom, setCustom] = useState('');
-  const isCustom = !!value && !presets.some((p) => p.toLowerCase() === value.toLowerCase());
-  const rows = isCustom ? [value, ...presets] : presets;
 
   const close = () => {
     setMode('list');
@@ -38,12 +37,15 @@ function LabelPicker({
   };
 
   return (
-    <BottomSheet visible={visible} onClose={close} title="Label" avoidKeyboard>
+    // Only the custom-label input needs keyboard avoidance; wrapping the list
+    // mode in a KeyboardAvoidingView imposes a flex height that stops the option
+    // ScrollView self-sizing, clipping its last row ("Add Custom Label…").
+    <BottomSheet visible={visible} onClose={close} title="Label" avoidKeyboard={mode === 'custom'}>
       {mode === 'list' ? (
         // Longer preset lists (related names) outgrow small screens, so the
         // options scroll within a capped height instead of overflowing the sheet.
         <ScrollView style={styles.optionList}>
-          {rows.map((label) => {
+          {presets.map((label) => {
             const selected = label.toLowerCase() === value.toLowerCase();
             return (
               <TouchableOpacity key={label} style={styles.optionRow} onPress={() => choose(label)}>
@@ -64,10 +66,13 @@ function LabelPicker({
             onChangeText={setCustom}
             placeholder="Custom label"
             autoFocus
-            autoCapitalize="none"
-            onSubmitEditing={() => custom.trim() && choose(custom.trim())}
+            // Engage the keyboard's shift per word so the label reads Title Case
+            // as it's typed; it's lowercased on save (labels are stored lowercase,
+            // Title Case is display-only) and re-capitalized by the label chip.
+            autoCapitalize="words"
+            onSubmitEditing={() => custom.trim() && choose(custom.trim().toLowerCase())}
           />
-          <Button title="Add Label" onPress={() => choose(custom.trim())} disabled={!custom.trim()} />
+          <Button title="Add Label" onPress={() => choose(custom.trim().toLowerCase())} disabled={!custom.trim()} />
         </View>
       )}
     </BottomSheet>
@@ -75,8 +80,10 @@ function LabelPicker({
 }
 
 // A tappable label pill (label text + chevron) that opens the LabelPicker. Styled
-// like an inline form label so it sits flush in a grouped card row.
-function LabelChip({
+// like an inline form label so it sits flush in a grouped card row. Exported so
+// callers can reuse the same picker outside a MultiValueField row (e.g. the
+// person form's reciprocal-label control for a linked custom relationship).
+export function LabelChip({
   value,
   presets,
   onChange,
@@ -120,6 +127,7 @@ export function MultiValueField<T extends LabeledValue>({
   stacked,
   renderEditor,
   renderTrailing,
+  renderBelow,
   newEntry,
 }: {
   entries: T[];
@@ -135,6 +143,10 @@ export function MultiValueField<T extends LabeledValue>({
   renderEditor: (entry: T, patch: (p: Partial<T>) => void, index: number) => React.ReactNode;
   // Optional extra control on the label row (e.g. the related-name link button).
   renderTrailing?: (entry: T, patch: (p: Partial<T>) => void, index: number) => React.ReactNode;
+  // Optional full-width line rendered below a row (e.g. the related-name
+  // reciprocal-label control for a linked custom relationship). Return null to
+  // render nothing for a given entry.
+  renderBelow?: (entry: T, patch: (p: Partial<T>) => void, index: number) => React.ReactNode;
   // Build a blank entry; defaults to { label: defaultLabel, value: '' }.
   newEntry?: () => T;
 }) {
@@ -178,6 +190,7 @@ export function MultiValueField<T extends LabeledValue>({
                 {renderTrailing ? renderTrailing(entry, patch, i) : null}
               </View>
             )}
+            {renderBelow ? renderBelow(entry, patch, i) : null}
           </View>
         );
       })}
@@ -195,7 +208,8 @@ const styles = StyleSheet.create({
   labelRow: { flexDirection: 'row', alignItems: 'center' },
   removeBtn: { paddingLeft: 12, paddingRight: 8, paddingVertical: 12 },
   labelChip: { flexDirection: 'row', alignItems: 'center', gap: 2, minWidth: 64, maxWidth: 110 },
-  labelText: { fontSize: 15, color: colors.primary, flexShrink: 1 },
+  // Labels are stored lowercase; capitalize for display only (Title Case).
+  labelText: { fontSize: 15, color: colors.primary, flexShrink: 1, textTransform: 'capitalize' },
   divider: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch', backgroundColor: colors.border, marginHorizontal: 10, marginVertical: 8 },
   inlineEditor: { flex: 1 },
   stacked: { paddingBottom: 6 },
@@ -207,6 +221,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
   },
-  optionText: { fontSize: 16, color: colors.text, flex: 1 },
+  // Labels are stored lowercase; display Title Case to match the label chip on the
+  // row. ("Add Custom Label…" is already cased, so `capitalize` leaves it as-is.)
+  optionText: { fontSize: 16, color: colors.text, flex: 1, textTransform: 'capitalize' },
   addCustom: { color: colors.primary, fontWeight: '600' },
 });

@@ -15,6 +15,26 @@ const mailer = require('./mailer');
 // Models the userId/email sweep must never touch (handled specially or global).
 const SKIP_MODELS = new Set(['User', 'Household', 'AuditLog', 'MonetizationConfig']);
 
+// Best-effort RevenueCat subscriber purge (billing-plans.md "Account deletion
+// × billing"): removes RC's copy of the purchase history for the user id and
+// any stored alias — data minimization matching the full-wipe promise. It does
+// NOT (and cannot) cancel a store subscription; only Apple manages those,
+// which is why the client warns and the good-bye email reminds. Optional:
+// skipped silently unless REVENUECAT_SECRET_API_KEY is configured, and it must
+// never fail or stall the deletion itself (per-request timeout, errors eaten).
+async function purgeRevenueCatSubscriber(user) {
+  const key = process.env.REVENUECAT_SECRET_API_KEY;
+  if (!key) return;
+  const ids = [...new Set([String(user._id), user.revenueCatId].filter(Boolean))];
+  await Promise.all(ids.map((id) =>
+    fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(5000),
+    }).catch(() => {})
+  ));
+}
+
 // Delete `user` and everything they own. Handles the shared-household cases:
 //   • last member out  → household + household-scoped records are deleted too
 //   • others remain     → ownership is handed to the oldest remaining member and
@@ -29,10 +49,20 @@ async function deleteUserAndData(user) {
   // Account-deleted confirmation (account lifecycle) — sent BEFORE the purge,
   // while the address is still valid. Best-effort; the mailer never throws. The
   // EmailLog row it writes is itself swept below (email-keyed PII removal), which
-  // is fine: the send is independent of the log.
+  // is fine: the send is independent of the log. `hadActiveAiPlan` makes the
+  // email carry the Apple-keeps-billing reminder — deleting the account can't
+  // cancel the store subscription, and this pointer must survive app access.
   if (user.email) {
-    mailer.sendAccountDeletedConfirmation({ email: user.email, firstName: user.firstName }).catch(() => {});
+    mailer.sendAccountDeletedConfirmation({
+      email: user.email,
+      firstName: user.firstName,
+      hadActiveAiPlan: Boolean(user.aiPlanActive),
+    }).catch(() => {});
   }
+
+  // RevenueCat's subscriber record goes with the account (best-effort, never
+  // blocking — see purgeRevenueCatSubscriber).
+  await purgeRevenueCatSubscriber(user);
 
   // 1. Every collection scoped to this user's own id.
   for (const [name, Model] of Object.entries(mongoose.models)) {
@@ -95,4 +125,4 @@ async function deleteUserAndData(user) {
   return { deleted };
 }
 
-module.exports = { deleteUserAndData };
+module.exports = { deleteUserAndData, purgeRevenueCatSubscriber };

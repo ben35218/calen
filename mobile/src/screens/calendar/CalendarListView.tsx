@@ -14,9 +14,11 @@ import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { mdiName } from '../../lib/recurrence';
 import { occasionIcon, occasionNoun, occasionFocusFrom } from '../../lib/occasions';
 import { CardRow, SkeletonList } from '../../components/ui';
+import { MonthJumpHeaderButton } from './MonthJumpSheet';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import type { TodayHandle } from './todayHandle';
+import type { YearMonth } from '../../lib/calendarWindow';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList>;
 
@@ -67,7 +69,13 @@ const monthWeeks = (m: MonthGrid) => m.weeks.filter((w) => w.some((c) => c.curre
 // continuously into the adjacent month and snaps to a full month on release; tap
 // a day to fill the list. A content layer inside CalendarScreen — the host owns
 // the floating chrome, so this draws only the grid + list under it.
-const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function CalendarListView({ active }, ref) {
+const CalendarListView = forwardRef<TodayHandle, {
+  active: boolean;
+  // Cross-layer month continuity (see CalendarScreen): report the visible
+  // month, adopt the shared one each time this layer becomes active.
+  getViewedMonth?: () => YearMonth | null;
+  onViewedMonth?: (m: YearMonth) => void;
+}>(function CalendarListView({ active, getViewedMonth, onViewedMonth }, ref) {
   const nav = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -180,12 +188,25 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
 
   useImperativeHandle(ref, () => ({ scrollToToday: goToday }));
 
-  // This layer stays mounted across view-switcher changes, so re-centre on today
-  // (current month, today selected + circled) each time List becomes active,
-  // rather than resuming a stale month the user last browsed to.
+  // Report the visible month to the host while active, for cross-layer
+  // month continuity with the grid family.
   useEffect(() => {
-    if (active) goToday();
-  }, [active]);
+    if (active) onViewedMonth?.(cursor);
+  }, [active, cursor, onViewedMonth]);
+
+  // This layer stays mounted across view-switcher changes. Each time List
+  // becomes active it adopts the shared viewed month — so switching views
+  // keeps the month in both directions — selecting today when that month is
+  // today's (the pre-continuity behavior), else the month's 1st so the day
+  // list below reflects the visible month.
+  useEffect(() => {
+    if (!active) return;
+    const now = new Date();
+    const target = getViewedMonth?.() ?? { year: now.getFullYear(), month: now.getMonth() };
+    const isNowMonth = target.year === now.getFullYear() && target.month === now.getMonth();
+    setCursor((c) => (c.year === target.year && c.month === target.month ? c : { year: target.year, month: target.month }));
+    setSelected(isNowMonth ? ymd(now) : ymd(new Date(target.year, target.month, 1)));
+  }, [active, getViewedMonth]);
 
   // ── The selected day's items ──
   const day = useMemo(() => itemsForDate(calQ.data, selected), [calQ.data, selected]);
@@ -260,10 +281,13 @@ const CalendarListView = forwardRef<TodayHandle, { active: boolean }>(function C
 
   return (
     <View style={styles.screen}>
-      {/* Header: month label + weekday row, drawn under the host's button row. */}
+      {/* Header: month label + weekday row, drawn under the host's button row.
+          The label is the same month/year jump-sheet button as the grid layers;
+          a pick teleports the carousel to that month (the tapped-day selection
+          stays put, matching a swipe between months). */}
       <View style={{ height: insets.top + TOP_BAR_ROW }} />
       <View style={styles.monthHeader}>
-        <Text style={styles.monthLabel}>{monthLabel}</Text>
+        <MonthJumpHeaderButton label={monthLabel} current={cursor} onSelect={setCursor} />
       </View>
       <View style={styles.weekdayRow}>
         {WEEKDAYS.map((d, i) => (
@@ -363,7 +387,6 @@ function ListItem({ icon, color, title, subtitle, onPress, faded, strike }: { ic
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   monthHeader: { paddingHorizontal: spacing.md, height: 40, justifyContent: 'center' },
-  monthLabel: { fontSize: 20, fontWeight: '700', color: colors.text },
   weekdayRow: { flexDirection: 'row', paddingHorizontal: spacing.md },
   weekdayCell: { alignItems: 'center', paddingVertical: 4 },
   weekdayText: { fontSize: 13, color: colors.textMuted, fontWeight: '600' },

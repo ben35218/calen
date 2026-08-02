@@ -1,12 +1,17 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { CalendarData, CalendarOccasion, Chore, Task } from '../../api';
-import { loadCalendarData } from '../../lib/calendarData';
+import { CalendarData, CalendarEvent, CalendarOccasion, Chore, Task } from '../../api';
+import { expandCalendarRange, loadCalendarWindowSources } from '../../lib/calendarData';
+import {
+  MonthWindow, YearMonth, initialWindow, extendPast, extendFuture, ensureCovers,
+  monthsIn, monthRange, ymKey, mergeCalendarChunks,
+} from '../../lib/calendarWindow';
+import { MonthJumpHeaderButton } from './MonthJumpSheet';
 import { loadPassiveForecast } from '../../lib/weatherSource';
 import WeatherIcon from '../../components/WeatherIcon';
 import { useAuth } from '../../store/auth';
@@ -20,7 +25,8 @@ import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 import { Skeleton } from '../../components/ui';
 import AssistantButton from '../../components/AssistantButton';
-import InvitationsButton from '../../components/InvitationsButton';
+import { ASSISTANT_NAME } from '../../config';
+import { useInvitationsCount } from '../../hooks/useInvitationsCount';
 import AnchoredMenu, { AnchoredMenuItem } from '../../components/AnchoredMenu';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { useCallEventStatus } from '../../lib/callStatus';
@@ -85,6 +91,13 @@ const chipTimeLabel = (iso: string) =>
     .replace(':00', '')
     .replace(/\s+/g, '');
 
+// Chip sizing, shared by the grid's week-height math and WeekRow's rendering.
+// Titles longer than charsPerLine wrap to a second line (capped at 2 lines);
+// total chip rows add one for a start time (capped at 3).
+const titleLines = (charsPerLine: number, label: string) => (label.trim().length > charsPerLine ? 2 : 1);
+const chipRows = (charsPerLine: number, chip: Chip) => Math.min(3, titleLines(charsPerLine, chip.label) + (chip.time ? 1 : 0));
+const chipHeight = (rows: number) => (rows >= 3 ? CHIP_H3 : rows === 2 ? CHIP_H2 : CHIP_H1);
+
 // Whether this app launch already auto-opened an in-progress trip (module-level
 // so returning to the calendar later in the session doesn't re-hijack it).
 let autoOpenedTrip = false;
@@ -96,15 +109,6 @@ type RenderCell = { date: string; day: number; isToday: boolean; content: CellCo
 type WeekWeather = { startCol: number; endCol: number; days: { col: number; code: number; tempMax: number }[] };
 type RenderWeek = { key: string; cells: RenderCell[]; bars: WeekBar[]; weather: WeekWeather | null; height: number; headerH: number; monthLabel: string };
 
-// 2 past months + current + 9 future, matching the web's initView window.
-function monthWindow(): { year: number; month: number }[] {
-  const base = new Date();
-  return Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(base.getFullYear(), base.getMonth() + (i - 2), 1);
-    return { year: d.getFullYear(), month: d.getMonth() };
-  });
-}
-
 // The scrolling month grid plus its fixed header rows (sticky Month Year +
 // weekday labels). A content layer inside CalendarScreen's view toggle: the
 // host owns all floating chrome (avatar, pills) and crossfades this layer
@@ -113,7 +117,14 @@ function monthWindow(): { year: number; month: number }[] {
 // Memoized: the host CalendarScreen re-renders on unrelated state changes (e.g.
 // opening the view-switcher menu). Without memo, every such render re-renders
 // the whole month grid subtree, starving the menu's open/close animation frames.
-const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }>(function CalendarGrid({ density }, ref) {
+const CalendarGrid = React.memo(forwardRef<TodayHandle, {
+  density: GridDensity;
+  // Cross-layer month continuity (see the host): report the visible month,
+  // adopt the shared one when this layer becomes the active one again.
+  active: boolean;
+  getViewedMonth: () => YearMonth | null;
+  onViewedMonth: (m: YearMonth) => void;
+}>(function CalendarGrid({ density, active, getViewedMonth, onViewedMonth }, ref) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -126,31 +137,27 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
   const cellSize = (width - spacing.md * 2) / 7;
   const headerH = insets.top + TOP_BAR_ROW + HEADER_MONTH_H + WEEKDAY_ROW_H;
   const topPad = headerH + 8;
-  // Approx. characters that fit on one chip line; titles longer than this wrap
-  // to a second line (titles are capped at 2 lines).
+  // Approx. characters that fit on one chip line.
   const charsPerLine = Math.max(4, Math.floor((cellSize - 8) / 6.5));
-  const titleLines = (label: string) => (label.trim().length > charsPerLine ? 2 : 1);
-  // Total chip rows: title lines plus one row for a start time (capped at 3).
-  const chipRows = (chip: Chip) => Math.min(3, titleLines(chip.label) + (chip.time ? 1 : 0));
-  const chipHeight = (rows: number) => (rows >= 3 ? CHIP_H3 : rows === 2 ? CHIP_H2 : CHIP_H1);
   const listRef = useRef<FlatList<RenderWeek>>(null);
 
-  const win = useMemo(monthWindow, []);
+  // The unbounded month window: opens small (last month → a season ahead) and
+  // only ever grows — scrolling near either edge extends it, and the header's
+  // month/year sheet grows it to cover a jump target. No hard stop.
+  const [win, setWin] = useState<MonthWindow>(() => initialWindow(new Date()));
   const range = useMemo(() => {
-    const first = new Date(win[0].year, win[0].month, 1);
-    const last = new Date(win[win.length - 1].year, win[win.length - 1].month + 1, 0);
-    return { from: first.toISOString(), to: last.toISOString(), fromDate: first, toDate: last };
+    const first = new Date(win.start.year, win.start.month, 1);
+    const last = new Date(win.end.year, win.end.month + 1, 0);
+    return { fromDate: first, toDate: last };
   }, [win]);
 
   // Continuous (Sunday-first) week grid spanning the whole window: gridStart is
   // the Sunday on/before the first day, rangeEnd the last day of the last month.
   const grid = useMemo(() => {
-    const first = new Date(win[0].year, win[0].month, 1);
-    const gridStart = new Date(first);
-    gridStart.setDate(1 - first.getDay());
-    const rangeEnd = new Date(win[win.length - 1].year, win[win.length - 1].month + 1, 0);
-    return { gridStart, rangeEnd };
-  }, [win]);
+    const gridStart = new Date(range.fromDate);
+    gridStart.setDate(1 - range.fromDate.getDay());
+    return { gridStart, rangeEnd: range.toDate };
+  }, [range]);
 
   // Open on the week that contains today. Round the day count first so a DST
   // hour shift between gridStart and today can't tip the floor across a week.
@@ -165,10 +172,41 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
 
   // background sync: paint instantly from the local replica; the server pull
   // runs behind it and invalidates ['calendar'] only when something changed.
-  const calQ = useQuery({
-    queryKey: ['calendar', range.from, range.to],
-    queryFn: async () => loadCalendarData({ from: range.from, to: range.to, sync: 'background' }),
+  // The load is split so the window can grow for free: one range-INDEPENDENT
+  // sources query (the replica read) is the only async state.
+  const srcQ = useQuery({
+    queryKey: ['calendar', 'sources'],
+    queryFn: async () => loadCalendarWindowSources({ sync: 'background' }),
   });
+
+  // Month expansions are DERIVED data — computed synchronously from the
+  // sources and memoized per month, never fetched through query state. Saving
+  // an event refetches the sources and this recomputes in ONE pass with ONE
+  // re-render (the previous frame stays up until then) — the edit just
+  // appears in its cells, no per-month churn and no skeleton flash. Growing
+  // the window only expands the added months (cache hits for the rest); the
+  // cache resets when the sources object changes.
+  const months = useMemo(() => monthsIn(win), [win]);
+  const monthCache = useRef<{ src: unknown; map: Map<string, CalendarData> }>({ src: null, map: new Map() });
+  const data = useMemo(() => {
+    const src = srcQ.data;
+    if (!src) return undefined;
+    const cache = monthCache.current;
+    if (cache.src !== src) {
+      cache.src = src;
+      cache.map.clear();
+    }
+    const datas = months.map((m) => {
+      const key = ymKey(m);
+      const hit = cache.map.get(key);
+      if (hit) return hit;
+      const r = monthRange(m);
+      const d = expandCalendarRange(src, r.from, r.to);
+      cache.map.set(key, d);
+      return d;
+    });
+    return mergeCalendarChunks(datas);
+  }, [srcQ.data, months]);
 
   // The Weather calendar's toggle drives a 7-day forecast strip in the grid
   // (a translucent lane above the event bars). Passive source resolution
@@ -193,15 +231,15 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
   // launch, and only if the user hasn't already navigated somewhere else).
   // TripDetail is pushed over this screen, so its back button pops to the calendar.
   useEffect(() => {
-    if (autoOpenedTrip || !calQ.data) return;
+    if (autoOpenedTrip || !data) return;
     autoOpenedTrip = true;
     if (!navigation.isFocused()) return;
     const today = ymd(new Date());
-    const current = (calQ.data.trips ?? []).find(
+    const current = (data.trips ?? []).find(
       (t) => t.status !== 'considering' && (t.ranges ?? []).some((r) => ld(r.start) <= today && today <= ld(r.end)),
     );
     if (current) navigation.navigate('TripDetail', { id: current.id });
-  }, [calQ.data, navigation]);
+  }, [data, navigation]);
 
   // Holidays from every visible per-country calendar, each tagged with its own
   // colour so a day can carry (say) Canadian and US holidays side by side.
@@ -220,55 +258,94 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
   const visible = (id: string) => visibility[id] !== false;
 
   const visData: CalendarData | undefined = useMemo(() => {
-    if (!calQ.data) return undefined;
+    if (!data) return undefined;
     return {
-      ...calQ.data,
-      trips: visible('trips') ? calQ.data.trips : [],
-      events: (calQ.data.events ?? []).filter((e) => visible(e.calendarType)),
+      ...data,
+      trips: visible('trips') ? data.trips : [],
+      events: (data.events ?? []).filter((e) => visible(e.calendarType)),
     };
-  }, [calQ.data, visibility]);
+  }, [data, visibility]);
 
+  // Per-week row cache: growing the window (edge scroll or a month/year jump)
+  // gives the derived data/holidaysByDate objects new identities, but the
+  // content of already-built weeks is unchanged — so validity keys on the
+  // underlying INPUTS, and unchanged weeks are reused by object identity
+  // (which also lets the memoized WeekRow rows bail out of re-rendering).
+  const weekRowCache = useRef<{ sig: unknown[]; map: Map<string, RenderWeek> }>({ sig: [], map: new Map() });
   const { weeks, offsets, todayWeekOffset } = useMemo(() => {
-    const data = calQ.data;
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+    const sig: unknown[] = [srcQ.data, holidayCals, visibility, calColors, callStatus, forecastByDate, charsPerLine, density, todayStr];
+    const cache = weekRowCache.current;
+    if (cache.sig.length !== sig.length || sig.some((v, i) => v !== cache.sig[i])) {
+      cache.sig = sig;
+      cache.map.clear();
+    }
+
+    // Bucket every dated item once, so each cell is an O(1) lookup instead of
+    // a scan over each collection — this is what keeps a rebuild linear in
+    // days (not days × items) as the window grows without bound.
+    const chipEventsByDate = new Map<string, CalendarEvent[]>();
+    const occasionsByDate = new Map<string, CalendarOccasion[]>();
+    const tasksByDate = new Map<string, Task[]>();
+    const choresByDate = new Map<string, Chore[]>();
+    const recipesByDate = new Map<string, RecipeCell[]>();
+    const groceryDates = new Set<string>();
+    const bucket = <T,>(map: Map<string, T[]>, key: string, row: T) => {
+      const list = map.get(key);
+      if (list) list.push(row);
+      else map.set(key, [row]);
+    };
+    if (data) {
+      for (const e of data.events ?? []) {
+        if (!visible(e.calendarType)) continue;
+        const start = eventLd(e, e.startDate);
+        const end = e.endDate ? eventLd(e, e.endDate) : start;
+        // Multi-day events render as the overlaid week bars, not cell chips.
+        if (start === end) bucket(chipEventsByDate, start, e);
+      }
+      if (visible('birthdays')) for (const o of data.occasions ?? []) bucket(occasionsByDate, ld(o.date), o);
+      if (visible('maintenance')) for (const t of data.tasks ?? []) if (t.nextDueDate) bucket(tasksByDate, ld(t.nextDueDate), t);
+      if (visible('chores')) for (const c of data.chores ?? []) if (c.nextDueDate) bucket(choresByDate, ld(c.nextDueDate), c);
+      if (visible('recipes')) {
+        for (const r of data.recipes ?? []) {
+          bucket(recipesByDate, ld(r.scheduledDate), {
+            recipeId: typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined),
+          });
+        }
+        for (const g of data.groceryShopping ?? []) groceryDates.add(g.date);
+      }
+    }
 
     const content = (dateStr: string): CellContent => {
       // Holidays are computed on-device from prefs, so they render the moment
       // the grid mounts — never held back waiting on the synced data below.
       const chips: Chip[] = [];
       for (const h of holidaysByDate[dateStr] ?? []) chips.push({ key: `hol-${h.id}`, label: h.name, color: h.color });
-      if (!data) return { chips, tasks: [], chores: [], recipes: [], grocery: false, occasions: [] };
-      // Occasions render as icons (below), not event-style chips.
-      const occasions = visible('birthdays') ? (data.occasions ?? []).filter((o) => ld(o.date) === dateStr) : [];
-      for (const e of data.events ?? []) {
-        if (!visible(e.calendarType)) continue;
-        const start = eventLd(e, e.startDate);
-        const end = e.endDate ? eventLd(e, e.endDate) : start;
-        if (start === end && start === dateStr) {
-          const time = e.allDay ? undefined : chipTimeLabel(e.startDate);
-          chips.push({
-            key: `e-${e._id}`, label: e.title, color: eventColor(e), time, eventId: e._id,
-            cancelled: Boolean(e.cancelled) || callStatus.isCancelled(e._id, dateStr),
-            reschedulePending: callStatus.isReschedulePending(e._id, dateStr),
-          });
-        }
+      for (const e of chipEventsByDate.get(dateStr) ?? []) {
+        const time = e.allDay ? undefined : chipTimeLabel(e.startDate);
+        chips.push({
+          key: `e-${e._id}`, label: e.title, color: eventColor(e), time, eventId: e._id,
+          cancelled: Boolean(e.cancelled) || callStatus.isCancelled(e._id, dateStr),
+          reschedulePending: callStatus.isReschedulePending(e._id, dateStr),
+        });
       }
-      const tasks = visible('maintenance') ? (data.tasks ?? []).filter((t) => t.nextDueDate && ld(t.nextDueDate) === dateStr) : [];
-      const chores = visible('chores') ? (data.chores ?? []).filter((c) => c.nextDueDate && ld(c.nextDueDate) === dateStr) : [];
-      const recipes = visible('recipes')
-        ? (data.recipes ?? [])
-            .filter((r) => ld(r.scheduledDate) === dateStr)
-            .map((r) => ({ recipeId: typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined) }))
-        : [];
-      const grocery = visible('recipes') ? (data.groceryShopping ?? []).some((g) => g.date === dateStr) : false;
-      return { chips, tasks, chores, recipes, grocery, occasions };
+      return {
+        chips,
+        tasks: tasksByDate.get(dateStr) ?? [],
+        chores: choresByDate.get(dateStr) ?? [],
+        recipes: recipesByDate.get(dateStr) ?? [],
+        grocery: groceryDates.has(dateStr),
+        // Occasions render as icons (below), not event-style chips.
+        occasions: occasionsByDate.get(dateStr) ?? [],
+      };
     };
 
     const cellItemsHeight = (c: CellContent): number => {
       const chipsH = c.chips
         .slice(0, CHIP_MAX)
-        .reduce((s, chip) => s + chipHeight(chipRows(chip)), 0);
+        .reduce((s, chip) => s + chipHeight(chipRows(charsPerLine, chip)), 0);
       const hasIcons = c.tasks.length > 0 || c.chores.length > 0 || c.recipes.length > 0 || c.grocery || c.occasions.length > 0;
       return chipsH + (c.chips.length > CHIP_MAX ? MORE_H : 0) + (hasIcons ? ICON_ROW_H : 0);
     };
@@ -284,6 +361,13 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
     const weeksR: RenderWeek[] = [];
     const cursor = new Date(grid.gridStart);
     while (cursor <= grid.rangeEnd) {
+      const wkKey = ymd(cursor);
+      const hit = cache.map.get(wkKey);
+      if (hit) {
+        weeksR.push(hit);
+        cursor.setDate(cursor.getDate() + 7);
+        continue;
+      }
       const cells: RenderCell[] = [];
       let monthLabel = '';
       for (let i = 0; i < 7; i++) {
@@ -334,7 +418,9 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
         const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + cellItemsHeight(c.content)));
         height = Math.min(MAX_WEEK, Math.max(MIN_WEEK, headerH + weatherPad + maxCell + VPAD));
       }
-      weeksR.push({ key: weekDates[0], cells, bars, weather, height, headerH, monthLabel });
+      const row: RenderWeek = { key: wkKey, cells, bars, weather, height, headerH, monthLabel };
+      cache.map.set(wkKey, row);
+      weeksR.push(row);
       cursor.setDate(cursor.getDate() + 7);
     }
 
@@ -346,7 +432,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
     const twOff = tIdx >= 0 ? offs[tIdx] : 0;
 
     return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff };
-  }, [calQ.data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, callStatus, density, forecastByDate]);
+  }, [srcQ.data, holidayCals, data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, callStatus, density, forecastByDate]);
 
   // Place today's week at the top of the viewport, just below the sticky header.
   const goToday = (animated = true) =>
@@ -362,10 +448,10 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
   // shifts down, so snap back to it with the final offsets.
   const snappedToToday = useRef(false);
   useEffect(() => {
-    if (snappedToToday.current || !calQ.data) return;
+    if (snappedToToday.current || !data) return;
     snappedToToday.current = true;
     goToday(false);
-  }, [calQ.data, todayWeekOffset]);
+  }, [data, todayWeekOffset]);
 
   // Track which week sits at the top of the viewport so the sticky header can
   // show that week's "Month Year" label. offsets[i] is week i's top within the content.
@@ -379,16 +465,155 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
     if (idx !== curIdx) setCurIdx(idx);
   };
 
+  // ── Unbounded scroll: nearing either edge grows the window. One extension
+  // per edge at a time — the guard ref resets only when that edge actually
+  // moves, so a burst of onStart/EndReached callbacks can't stack extensions.
+  // Upward growth is anchored by maintainVisibleContentPosition (below): the
+  // prepended weeks extend the content above the viewport without a jump.
+  const extendingPast = useRef(false);
+  const extendingFuture = useRef(false);
+  useEffect(() => { extendingPast.current = false; }, [win.start.year, win.start.month]);
+  useEffect(() => { extendingFuture.current = false; }, [win.end.year, win.end.month]);
+  const onStartReached = () => {
+    if (extendingPast.current) return;
+    extendingPast.current = true;
+    setWin((w) => extendPast(w));
+  };
+  const onEndReached = () => {
+    if (extendingFuture.current) return;
+    extendingFuture.current = true;
+    setWin((w) => extendFuture(w));
+  };
+
+  // ── Month/year quick jump (the header label's sheet). Grow the window to
+  // cover the target if needed, then snap (no animation — it's a teleport) to
+  // the first week whose majority (Wednesday) falls in that month. The effect
+  // keys on jumpSeq so an in-window jump fires even though weeks didn't change.
+  // The sheet's open/close state lives in MonthJumpHeaderButton (below), NOT
+  // here — flipping it here would re-render this whole grid subtree before the
+  // sheet could mount, making the sheet slow to open.
+  const pendingJump = useRef<YearMonth | null>(null);
+  const [jumpSeq, setJumpSeq] = useState(0);
+  const jumpTo = useCallback((target: YearMonth) => {
+    pendingJump.current = target;
+    setWin((w) => ensureCovers(w, target));
+    setJumpSeq((s) => s + 1);
+  }, []);
+  useEffect(() => {
+    const t = pendingJump.current;
+    if (!t) return;
+    const prefix = `${t.year}-${pad(t.month + 1)}`;
+    const idx = weeks.findIndex((w) => w.cells[3].date.startsWith(prefix));
+    if (idx < 0) return;
+    pendingJump.current = null;
+    setCurIdx(idx);
+    listRef.current?.scrollToOffset({ offset: Math.max(0, topPad + offsets[idx] - headerH), animated: false });
+  }, [jumpSeq, weeks, offsets]);
+
+  // The month under the sticky header right now, for the sheet's highlight.
+  const curYm: YearMonth = useMemo(() => {
+    const wed = weeks[curIdx]?.cells[3]?.date;
+    const d = wed ? new Date(wed + 'T12:00:00') : new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  }, [weeks, curIdx]);
+
+  // Cross-layer month continuity: report the month under the sticky header so
+  // the List layer can adopt it, and adopt the shared month when this layer
+  // becomes the active one again (a teleport; no-op if already showing it).
+  const curYmRef = useRef(curYm);
+  curYmRef.current = curYm;
+  useEffect(() => { onViewedMonth(curYm); }, [curYm, onViewedMonth]);
+  useEffect(() => {
+    if (!active) return;
+    const m = getViewedMonth();
+    if (m && (m.year !== curYmRef.current.year || m.month !== curYmRef.current.month)) jumpTo(m);
+  }, [active, getViewedMonth, jumpTo]);
+
   // First-ever load only (empty replica, the initial sync still running):
   // cached launches paint real data instantly and never show placeholders.
-  const showSkeleton = calQ.isLoading;
+  const showSkeleton = !data;
 
-  const renderWeek = ({ item: week }: { item: RenderWeek }) => {
-    // The weather lane (when this week holds forecast days) sits above the
-    // event-bar lanes: every cell's content shifts down by one lane so the
-    // rows stay aligned across the week.
-    const weatherPad = week.weather ? BAR_H : 0;
-    return (
+  const renderWeek = ({ item }: { item: RenderWeek }) => (
+    <WeekRow
+      week={item}
+      density={density}
+      cellSize={cellSize}
+      charsPerLine={charsPerLine}
+      showSkeleton={showSkeleton}
+      calColors={calColors}
+    />
+  );
+
+  return (
+    <View style={styles.screen}>
+      <FlatList
+        ref={listRef}
+        data={weeks}
+        keyExtractor={(w) => w.key}
+        renderItem={renderWeek}
+        initialScrollIndex={initialWeekIndex}
+        getItemLayout={(_, index) => ({ length: weeks[index].height, offset: offsets[index], index })}
+        contentContainerStyle={[styles.content, { paddingTop: topPad }]}
+        onScrollToIndexFailed={() => {}}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        onStartReached={onStartReached}
+        onStartReachedThreshold={0.5}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={2}
+        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+      />
+
+      {/* ── Fixed 3-row header: (host button row) · sticky Month Year · weekday labels ── */}
+      <View style={[styles.topBar, { height: headerH, paddingTop: insets.top }]}>
+        {/* Row 1 — empty space under the host's avatar + action buttons */}
+        <View style={{ height: TOP_BAR_ROW }} />
+
+        {/* Row 2 — current month, updated as the user scrolls. Tapping it opens
+            the month/year jump sheet (the fast-travel counterpart to scrolling). */}
+        <View style={[styles.headerMonthRow, { height: HEADER_MONTH_H }]}>
+          <MonthJumpHeaderButton label={weeks[curIdx]?.monthLabel} current={curYm} onSelect={jumpTo} />
+        </View>
+
+        {/* Row 3 — weekday labels */}
+        <View style={[styles.weekdayRow, { height: WEEKDAY_ROW_H }]}>
+          {WEEKDAYS.map((d, i) => (
+            <View key={i} style={[styles.weekdayCell, { width: cellSize }]}>
+              <Text style={styles.weekdayText}>{d}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}));
+
+// One week row of the month grid — module-level and memoized, so a grid
+// re-render only re-renders rows whose RenderWeek object actually changed (the
+// week cache above keeps unchanged rows' identity stable across window growth
+// for exactly this reason). Keeping this as an inline closure re-rendered every
+// mounted row on every grid render — the bulk of the jump sheet's open/close lag.
+const WeekRow = React.memo(function WeekRow({
+  week,
+  density,
+  cellSize,
+  charsPerLine,
+  showSkeleton,
+  calColors,
+}: {
+  week: RenderWeek;
+  density: GridDensity;
+  cellSize: number;
+  charsPerLine: number;
+  showSkeleton: boolean;
+  calColors: Record<string, string>;
+}) {
+  const navigation = useNavigation<Nav>();
+  // The weather lane (when this week holds forecast days) sits above the
+  // event-bar lanes: every cell's content shifts down by one lane so the
+  // rows stay aligned across the week.
+  const weatherPad = week.weather ? BAR_H : 0;
+  return (
     <View style={[styles.weekRow, { height: week.height }]}>
       {week.cells.map((cell, col) => {
         const c = cell.content;
@@ -489,7 +714,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
                   activeOpacity={0.7}
                   style={[
                     styles.chip,
-                    { backgroundColor: chip.color, height: chipHeight(chipRows(chip)) - 2 },
+                    { backgroundColor: chip.color, height: chipHeight(chipRows(charsPerLine, chip)) - 2 },
                     // A resolved call fades the chip; a confirmed cancellation
                     // also strikes the title (see chipText below).
                     chip.cancelled ? styles.chipCancelled : chip.reschedulePending ? styles.chipRescheduled : null,
@@ -508,7 +733,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
                   }
                   delayLongPress={LONG_PRESS_MS}
                 >
-                  <Text style={[styles.chipText, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(chip.label)} ellipsizeMode="clip">{chip.label}</Text>
+                  <Text style={[styles.chipText, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(charsPerLine, chip.label)} ellipsizeMode="clip">{chip.label}</Text>
                   {/* numberOfLines={1} keeps the time on one line; ellipsizeMode "clip"
                       cuts off overflow (e.g. "10:30A") with no "…" and no wrapped "M". */}
                   {chip.time ? <Text style={styles.chipTime} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text> : null}
@@ -677,46 +902,8 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, { density: GridDensity }
         </TouchableOpacity>
       ))}
     </View>
-    );
-  };
-
-  return (
-    <View style={styles.screen}>
-      <FlatList
-        ref={listRef}
-        data={weeks}
-        keyExtractor={(w) => w.key}
-        renderItem={renderWeek}
-        initialScrollIndex={initialWeekIndex}
-        getItemLayout={(_, index) => ({ length: weeks[index].height, offset: offsets[index], index })}
-        contentContainerStyle={[styles.content, { paddingTop: topPad }]}
-        onScrollToIndexFailed={() => {}}
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-      />
-
-      {/* ── Fixed 3-row header: (host button row) · sticky Month Year · weekday labels ── */}
-      <View style={[styles.topBar, { height: headerH, paddingTop: insets.top }]}>
-        {/* Row 1 — empty space under the host's avatar + action buttons */}
-        <View style={{ height: TOP_BAR_ROW }} />
-
-        {/* Row 2 — current month, updated as the user scrolls */}
-        <View style={[styles.headerMonthRow, { height: HEADER_MONTH_H }]}>
-          <Text style={styles.monthLabel}>{weeks[curIdx]?.monthLabel}</Text>
-        </View>
-
-        {/* Row 3 — weekday labels */}
-        <View style={[styles.weekdayRow, { height: WEEKDAY_ROW_H }]}>
-          {WEEKDAYS.map((d, i) => (
-            <View key={i} style={[styles.weekdayCell, { width: cellSize }]}>
-              <Text style={styles.weekdayText}>{d}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
-    </View>
   );
-}));
+});
 
 // The view-switcher modes, in menu order (List sits apart, below a divider —
 // mirroring Apple Calendar). Each maps to a glyph shown both in the popover and
@@ -734,6 +921,11 @@ const DENSITY_META: { key: MonthDensity; label: string; icon: string; dividerBef
 // use) and crossfade in place with a slight zoom, so the chrome never moves.
 export default function CalendarScreen() {
   const navigation = useNavigation<Nav>();
+  // When the assistant pushed this calendar on top of itself (a nav chip), the
+  // Calen FAB's slot shows a "‹ Calen" return pill instead — the chat is one
+  // tap (or a swipe-back) away, returning where the user launched from.
+  const route = useRoute<RouteProp<CalendarStackParamList, 'CalendarHome'>>();
+  const fromAssistant = route.params?.fromAssistant ?? false;
   const insets = useSafeAreaInsets();
   const aiEnabled = useAiEnabled();
   const { user } = useAuth();
@@ -751,6 +943,14 @@ export default function CalendarScreen() {
   const progress = useRef(new Animated.Value(0)).current; // 0 = grid, 1 = list
   const gridRef = useRef<TodayHandle>(null);
   const listRef = useRef<TodayHandle>(null);
+
+  // The month on screen in whichever layer is active — a ref, not state (it
+  // moves at scroll frequency and must not re-render the host). Each layer
+  // reports its visible month here and adopts it when it becomes active, so
+  // switching views keeps the viewed month in both directions.
+  const viewedMonth = useRef<YearMonth | null>(null);
+  const onViewedMonth = useCallback((m: YearMonth) => { viewedMonth.current = m; }, []);
+  const getViewedMonth = useCallback(() => viewedMonth.current, []);
 
   // Crossfade whenever we cross into/out of List (button taps and the async
   // initial load of a stored List preference alike).
@@ -787,18 +987,33 @@ export default function CalendarScreen() {
   const activeIcon = DENSITY_META.find((m) => m.key === density)?.icon ?? 'view-stream-outline';
 
   const initial = user?.firstName?.charAt(0).toUpperCase() ?? '?';
-  // Encrypted data locked on this device → badge the profile button so it's
-  // obvious there's something to resolve (unlock) in Profile.
+  // The avatar is the badge anchor for everything that resolves inside Profile.
+  // Two badges share it with a precedence rule — security beats inbox: encrypted
+  // data locked on this device shows the red "!", otherwise a pending count for
+  // the Invitations inbox (which lives in Profile; the same count badges its row
+  // there, so the trail continues after the tap).
   const dataLocked = useE2eeLocked();
+  const invCount = useInvitationsCount();
 
   return (
     <View style={styles.screen}>
       <Animated.View style={[StyleSheet.absoluteFill, gridLayer]} pointerEvents={isList ? 'none' : 'auto'}>
-        <CalendarGrid ref={gridRef} density={gridDensity} />
+        <CalendarGrid
+          ref={gridRef}
+          density={gridDensity}
+          active={!isList}
+          getViewedMonth={getViewedMonth}
+          onViewedMonth={onViewedMonth}
+        />
       </Animated.View>
       {listMounted ? (
         <Animated.View style={[StyleSheet.absoluteFill, listLayer]} pointerEvents={isList ? 'auto' : 'none'}>
-          <CalendarListView ref={listRef} active={isList} />
+          <CalendarListView
+            ref={listRef}
+            active={isList}
+            getViewedMonth={getViewedMonth}
+            onViewedMonth={onViewedMonth}
+          />
         </Animated.View>
       ) : null}
 
@@ -811,12 +1026,22 @@ export default function CalendarScreen() {
           style={styles.avatar}
           activeOpacity={0.8}
           onPress={() => navigation.navigate('ProfileHome')}
-          accessibilityLabel={dataLocked ? 'Profile — encrypted data locked, action needed' : 'Profile'}
+          accessibilityLabel={
+            dataLocked
+              ? 'Profile — encrypted data locked, action needed'
+              : invCount > 0
+                ? `Profile — ${invCount} invitation${invCount === 1 ? '' : 's'} to review`
+                : 'Profile'
+          }
         >
           <Text style={styles.avatarText}>{initial}</Text>
           {dataLocked ? (
             <View style={styles.lockBadge}>
               <Text style={styles.lockBadgeText}>!</Text>
+            </View>
+          ) : invCount > 0 ? (
+            <View style={styles.lockBadge}>
+              <Text style={styles.lockBadgeText}>{invCount > 9 ? '9+' : invCount}</Text>
             </View>
           ) : null}
         </TouchableOpacity>
@@ -844,7 +1069,8 @@ export default function CalendarScreen() {
         items={menuItems}
       />
 
-      {/* ── Bottom-left: Today ───────────────────────────────────────────────── */}
+      {/* ── Bottom-left: Today | Calendars (labelled — Calendars is a primary
+          destination, and a calendar glyph inside a calendar app is ambiguous) ── */}
       <View style={[styles.pill, styles.bottomLeft, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity
           style={styles.todayBtn}
@@ -852,18 +1078,31 @@ export default function CalendarScreen() {
         >
           <Text style={styles.todayText}>Today</Text>
         </TouchableOpacity>
+        <View style={styles.pillDivider} />
+        <TouchableOpacity style={styles.todayBtn} onPress={() => navigation.navigate('Calendars')}>
+          <Text style={styles.todayText}>Calendars</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* ── Bottom-right: Calendars + Invitations + Assistant ─────────────────── */}
-      <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
-        <TouchableOpacity style={styles.bottomPillBtn} onPress={() => navigation.navigate('Calendars')}>
-          <Ionicons name="calendar-outline" size={22} color={BTN_FG} />
+      {/* ── Bottom-right: the standalone Calen FAB — the screen's one primary
+          action. When the assistant pushed this calendar (fromAssistant), the
+          slot becomes the "‹ Calen" return pill back into the live chat. ── */}
+      {fromAssistant ? (
+        <TouchableOpacity
+          style={[styles.backPill, styles.bottomRight, { bottom: insets.bottom + 16 }]}
+          activeOpacity={0.8}
+          onPress={() => navigation.goBack()}
+          accessibilityLabel={`Back to ${ASSISTANT_NAME}`}
+        >
+          <Ionicons name="chevron-back" size={22} color={BTN_FG} />
+          <Text style={styles.backPillText}>{ASSISTANT_NAME}</Text>
         </TouchableOpacity>
-        <InvitationsButton onPress={() => navigation.navigate('Invitations')} />
-        {aiEnabled && (
-          <AssistantButton onPress={() => navigation.navigate('Assistant', { initial: 'calendar' })} />
-        )}
-      </View>
+      ) : aiEnabled ? (
+        <AssistantButton
+          style={[styles.bottomRight, { bottom: insets.bottom + 16 }]}
+          onPress={() => navigation.navigate('Assistant', { initial: 'calendar' })}
+        />
+      ) : null}
     </View>
   );
 }
@@ -916,7 +1155,6 @@ function IconChip({ count, icon, color }: { count: number; icon: string; color: 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   content: { paddingHorizontal: spacing.md, paddingBottom: 96 },
-  monthLabel: { fontSize: 20, fontWeight: '700', color: colors.text },
   weekdayRow: { flexDirection: 'row' },
   weekdayCell: { alignItems: 'center', paddingVertical: 4 },
   weekdayText: { fontSize: 13, color: colors.textMuted, fontWeight: '600' },
@@ -967,7 +1205,16 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3,
   },
   avatarText: { color: BTN_FG, fontSize: 18, fontWeight: '700' },
-  // Red "!" overlay, top-right of the avatar, when encrypted data is locked.
+  // Return-to-assistant pill shown in the Calen FAB's slot when the calendar
+  // was pushed on top of the assistant by a nav chip (fromAssistant).
+  backPill: {
+    flexDirection: 'row', alignItems: 'center', height: 44, borderRadius: 22,
+    backgroundColor: PILL_BG, paddingLeft: 6, paddingRight: 16,
+    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3,
+  },
+  backPillText: { color: BTN_FG, fontSize: 16, fontWeight: '700', marginLeft: 2 },
+  // Red overlay, top-right of the avatar: "!" when encrypted data is locked,
+  // else the pending Invitations count (security wins — never both).
   lockBadge: {
     position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9,
     backgroundColor: colors.error, alignItems: 'center', justifyContent: 'center',
@@ -982,7 +1229,7 @@ const styles = StyleSheet.create({
   bottomLeft: { position: 'absolute', left: spacing.md, zIndex: 10 },
   bottomRight: { position: 'absolute', right: spacing.md, zIndex: 10 },
   pillBtn: { paddingHorizontal: 8, paddingVertical: 6 },
-  bottomPillBtn: { paddingHorizontal: 12, paddingVertical: 6 },
-  todayBtn: { paddingHorizontal: 22, paddingVertical: 6 },
+  pillDivider: { width: StyleSheet.hairlineWidth, height: 20, backgroundColor: colors.border },
+  todayBtn: { paddingHorizontal: 16, paddingVertical: 6 },
   todayText: { color: BTN_FG, fontSize: 17, fontWeight: '700' },
 });

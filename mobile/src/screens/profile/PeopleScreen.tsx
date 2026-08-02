@@ -23,6 +23,7 @@ import { peopleApi, Person } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import { ensureSelfPerson } from '../../lib/selfPerson';
 import { normalizePerson } from '../../lib/personFields';
+import { useContactSort, type ContactSort } from '../../lib/contactSortPref';
 import * as replica from '../../lib/replica';
 import { HeaderIconButton, CenteredLoader, EmptyState } from '../../components/ui';
 import { colors, spacing, radius } from '../../theme';
@@ -46,9 +47,10 @@ type Section = { letter: string; data: Person[] };
 
 // Contacts roster split across Family / Friends / Professionals tabs, presented
 // as an iOS-Contacts-style alphabetical list: initials avatars, letter section
-// headers, a right-edge A–Z scrubber, and a floating search pill. The "You" card
-// pins to the top of Family; the header "+" (kept in the nav bar) adds into the
-// active tab.
+// headers, a right-edge A–Z scrubber, and a floating search pill. The account
+// holder's own "You" card is not shown among the contacts — it is excluded from
+// the roster and edited from Account; the header "+" (kept in the nav bar) adds
+// into the active tab.
 export default function PeopleScreen() {
   const nav = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
@@ -57,6 +59,8 @@ export default function PeopleScreen() {
   const [tab, setTab] = useState<TabKey>('family');
   const [query, setQuery] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
+  // Device-local: sort the roster by first name (default) or last name.
+  const { sort, setContactSort } = useContactSort();
 
   // Lift the floating search pill above the keyboard so the field it opens stays
   // visible while typing. Use the `Will` events on iOS (they fire with the show
@@ -79,7 +83,8 @@ export default function PeopleScreen() {
   // import from the device address book.
   const openAddMenu = useCallback(() => {
     const addManually = () => nav.navigate('PersonForm', { type: tab });
-    const importContacts = () => nav.navigate('ContactImport');
+    // Seed the import's default classification from the tab we launched from.
+    const importContacts = () => nav.navigate('ContactImport', { type: tab });
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         { options: ['Add', 'Import from Contacts', 'Cancel'], cancelButtonIndex: 2 },
@@ -158,8 +163,9 @@ export default function PeopleScreen() {
   );
 
   // Group the active tab's contacts into alphabetical sections, sorted and
-  // section-keyed by name (non-letter leads fall into "#"), then filtered by the
-  // search query. The self "You" card is handled separately as a pinned header.
+  // section-keyed by the chosen name field (first or last; non-letter leads fall
+  // into "#"), then filtered by the search query. The account holder's own self
+  // Person is excluded entirely.
   const sections = useMemo<Section[]>(() => {
     if (!people) return [];
     const q = query.trim().toLowerCase();
@@ -167,10 +173,13 @@ export default function PeopleScreen() {
     const roster = people.filter(
       (p) => p.type === tab && p !== selfPerson && (!q || matchesPerson(p, q, qDigits))
     );
-    roster.sort((a, b) => a.name.trim().toLowerCase().localeCompare(b.name.trim().toLowerCase()));
+    // Precompute the sort key once per contact (it normalizes to read structured
+    // first/last), then sort and section by it.
+    const keyed = roster.map((p) => ({ p, key: sortKey(p, sort) }));
+    keyed.sort((a, b) => a.key.localeCompare(b.key));
     const buckets = new Map<string, Person[]>();
-    for (const p of roster) {
-      const first = p.name.trim().charAt(0).toUpperCase();
+    for (const { p, key } of keyed) {
+      const first = key.charAt(0).toUpperCase();
       const letter = /[A-Z]/.test(first) ? first : '#';
       const bucket = buckets.get(letter);
       if (bucket) bucket.push(p);
@@ -179,15 +188,7 @@ export default function PeopleScreen() {
     return [...buckets.entries()]
       .sort(([a], [b]) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b)))
       .map(([letter, data]) => ({ letter, data }));
-  }, [people, tab, selfPerson, query]);
-
-  const showSelf =
-    tab === 'family' &&
-    !!selfPerson &&
-    (() => {
-      const q = query.trim().toLowerCase();
-      return !q || matchesPerson(selfPerson, q, q.replace(/\D/g, ''));
-    })();
+  }, [people, tab, selfPerson, query, sort]);
 
   // Jump the list to a scrubbed letter, snapping to the nearest following
   // section when that exact letter has no contacts.
@@ -240,6 +241,19 @@ export default function PeopleScreen() {
         ))}
       </View>
 
+      <View style={styles.sortRow}>
+        <TouchableOpacity
+          style={styles.sortBtn}
+          onPress={() => setContactSort(sort === 'first' ? 'last' : 'first')}
+          activeOpacity={0.6}
+          accessibilityRole="button"
+          accessibilityLabel={`Sorting by ${sort === 'first' ? 'first' : 'last'} name. Tap to switch.`}
+        >
+          <Ionicons name="swap-vertical" size={14} color={colors.primary} />
+          <Text style={styles.sortText}>{sort === 'first' ? 'First name' : 'Last name'}</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.body}>
         <SectionList
           ref={listRef}
@@ -251,11 +265,6 @@ export default function PeopleScreen() {
           keyboardDismissMode="on-drag"
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
           onScrollToIndexFailed={() => {}}
-          ListHeaderComponent={
-            showSelf ? (
-              <ContactRow person={selfPerson!} self onPress={() => nav.navigate('Account')} />
-            ) : null
-          }
           renderSectionHeader={({ section }) => (
             <Text style={styles.sectionHeader}>{section.letter}</Text>
           )}
@@ -263,7 +272,7 @@ export default function PeopleScreen() {
             <ContactRow person={item} onPress={() => nav.navigate('PersonDetail', { id: item._id })} />
           )}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
-          ListEmptyComponent={showSelf ? null : <EmptyState variant="inline" message={emptyLabel} />}
+          ListEmptyComponent={<EmptyState variant="inline" message={emptyLabel} />}
         />
 
         {!query.trim() && sections.length > 0 ? (
@@ -356,6 +365,20 @@ function matchesPerson(p: Person, q: string, qDigits: string): boolean {
   return false;
 }
 
+// The lowercased sort/section key for a contact under the chosen order. Sorting
+// by last name leads with the surname (falling back to the first name when a
+// contact has none, e.g. a single-token or business name), then the first name
+// as a tiebreak; sorting by first name is the mirror. Reads the structured
+// first/last via normalizePerson so legacy single-`name` records sort sensibly.
+function sortKey(p: Person, mode: ContactSort): string {
+  const n = normalizePerson(p);
+  const first = (n.firstName || p.name || '').trim();
+  const last = (n.lastName || '').trim();
+  const primary = mode === 'last' ? last || first : first || last;
+  const secondary = mode === 'last' ? first : last;
+  return `${primary} ${secondary}`.trim().toLowerCase();
+}
+
 function nameParts(name: string): string[] {
   return name.trim().split(/\s+/).filter(Boolean);
 }
@@ -420,6 +443,17 @@ const styles = StyleSheet.create({
   tabActive: { backgroundColor: colors.primary },
   tabText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   tabTextActive: { color: '#fff' },
+
+  sortRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
+    backgroundColor: colors.background,
+  },
+  sortBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2 },
+  sortText: { fontSize: 13, fontWeight: '600', color: colors.primary },
 
   sectionHeader: {
     fontSize: 13,

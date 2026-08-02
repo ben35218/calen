@@ -4,7 +4,6 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import AnchoredMenu, { AnchoredMenuItem } from '../../../components/AnchoredMenu';
-import InvitationsButton from '../../../components/InvitationsButton';
 import { DayViewMode } from '../../../lib/calendarPrefs';
 import { colors, spacing } from '../../../theme';
 import { DayNav } from './dayNav';
@@ -25,7 +24,8 @@ const MODE_META: { key: DayViewMode; label: string; icon: string; dividerBefore?
 
 // The day view's floating chrome, floating over whichever layer is active:
 // back-to-month pill (labelled with the anchor's month), the switcher/search/
-// add pill, the Today pill, and the month-jump + invitations-inbox pill.
+// add pill, the Today pill, and the month-jump pill. (The Invitations inbox
+// lives in Profile — badged via the month view's avatar — not in this chrome.)
 export default function DayViewChrome({
   monthLabel,
   date,
@@ -106,7 +106,6 @@ export default function DayViewChrome({
         >
           <Ionicons name="calendar-outline" size={22} color={BTN_FG} />
         </TouchableOpacity>
-        <InvitationsButton onPress={() => navigation.navigate('Invitations')} />
       </View>
     </>
   );

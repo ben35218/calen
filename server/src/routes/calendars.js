@@ -12,6 +12,7 @@ const {
   normalizeCollaboratorEntry,
   effectiveCalendarAccess,
   isCalendarOutsideShared,
+  addressedToUser,
 } = require('../services/calendarSharing');
 
 const router = express.Router();
@@ -24,15 +25,6 @@ const ownsCalendar = (cal, req) => req.scopeIds.some((id) => String(id) === Stri
 
 // Canonical key for an outside-share entry (email or phone).
 const outsideKey = (e) => e?.email || e?.phone || '';
-
-// Invitations addressed to a user: to their account, or (before claiming) to
-// their email or saved phone.
-function addressedToUser(user) {
-  const or = [{ toUserId: user._id }];
-  if (user.email) or.push({ toEmail: user.email.toLowerCase() });
-  if (user.phone) or.push({ toPhone: user.phone });
-  return or;
-}
 
 // Normalize a client outside-share list to `{ email|phone, access }` entries,
 // applying loose phone normalization and dropping invalid/duplicate addresses.

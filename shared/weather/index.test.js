@@ -211,3 +211,33 @@ test('regionForAddress parses Nominatim addressdetails, Photon fallback, null wh
     assert.equal(await regionForAddress('nowhere'), null);
   });
 });
+
+test('cityForAddress builds a coarse city+region+country label, Photon fallback, null when both fail', async () => {
+  const { cityForAddress } = require('./index');
+
+  // Nominatim addressdetails → "City, Region, Country" (never the street).
+  await withFetch(async (url) => {
+    assert.ok(String(url).includes('addressdetails=1'));
+    return jsonRes([{ address: { city: 'Ottawa', state: 'Ontario', country: 'Canada' } }]);
+  }, async () => {
+    assert.equal(await cityForAddress('123 Main St, Ottawa'), 'Ottawa, Ontario, Canada');
+  });
+
+  // town/village stands in when there's no `city`; missing parts are dropped.
+  await withFetch(async () => jsonRes([{ address: { town: 'Perth', country: 'Canada' } }]), async () => {
+    assert.equal(await cityForAddress('Perth'), 'Perth, Canada');
+  });
+
+  // Photon fallback when Nominatim finds nothing.
+  await withFetch(async (url) => {
+    if (String(url).includes('nominatim')) return jsonRes([]);
+    return jsonRes({ features: [{ properties: { city: 'Austin', state: 'Texas', country: 'United States' } }] });
+  }, async () => {
+    assert.equal(await cityForAddress('456 Elm St'), 'Austin, Texas, United States');
+  });
+
+  // Null (not a throw) when both providers fail.
+  await withFetch(async () => { throw new Error('offline'); }, async () => {
+    assert.equal(await cityForAddress('nowhere'), null);
+  });
+});

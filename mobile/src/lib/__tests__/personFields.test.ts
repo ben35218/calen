@@ -1,10 +1,25 @@
 import {
-  inverseRelatedLabel, reciprocalUpdates, RelatedName,
+  inverseRelatedLabel, reciprocalLabelFor, reciprocalUpdates, relatedNameRemovalsOnDelete, RelatedName,
   splitName, composeName, normalizePerson, denormalizeForSave, canonicalizePhones, NormalizedPerson,
+  DATE_LABELS, DEFAULT_DATE_LABEL, buildImportedMatcher,
 } from '../personFields';
 import type { Person } from '../../api';
 
 const person = (p: Partial<Person> & { _id: string; name: string }) => p as Person;
+
+describe('date labels', () => {
+  it('leads with birthday (the default) then the recognised kinds — no "other" catch-all', () => {
+    // Birthday is first + default (a new contact starts with a Birthday date row);
+    // a non-kind date uses a custom label (picker "Add Custom Label").
+    expect(DATE_LABELS).toEqual(['birthday', 'anniversary', 'death']);
+    expect(DATE_LABELS[0]).toBe('birthday');
+    expect(DATE_LABELS).not.toContain('other');
+    // `anniversary` is the sole wedding label; `marriage` was dropped as a
+    // redundant preset (still recognised by the engine for legacy contacts).
+    expect(DATE_LABELS).not.toContain('marriage');
+    expect(DEFAULT_DATE_LABEL).toBe('birthday');
+  });
+});
 
 describe('splitName / composeName', () => {
   it('splits a composed name into first token + remaining surname', () => {
@@ -123,6 +138,36 @@ describe('inverseRelatedLabel', () => {
   });
 });
 
+describe('relatedNames reciprocalLabel round-trip', () => {
+  it('preserves personId + reciprocalLabel through normalize and save', () => {
+    const p = person({
+      _id: 'x',
+      name: 'X',
+      relatedNames: [{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' }],
+    } as any);
+    const n = normalizePerson(p);
+    expect(n.relatedNames).toEqual([{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' }]);
+    const saved = denormalizeForSave({
+      firstName: '', lastName: '', phones: [], emails: [], addresses: [],
+      dates: [], urls: [], relatedNames: n.relatedNames, jobTitle: '', company: '',
+    });
+    expect(saved.relatedNames).toEqual([{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' }]);
+  });
+});
+
+describe('reciprocalLabelFor', () => {
+  it('derives a preset label inverse and ignores any stale reciprocalLabel on it', () => {
+    expect(reciprocalLabelFor({ label: 'mother', value: 'x', reciprocalLabel: 'father-in-law' })).toBe('child');
+    expect(reciprocalLabelFor({ label: 'spouse', value: 'x' })).toBe('spouse');
+  });
+
+  it('uses the chosen reciprocal label for a custom relationship, else other', () => {
+    expect(reciprocalLabelFor({ label: 'daughter-in-law', value: 'x', reciprocalLabel: 'father-in-law' })).toBe('father-in-law');
+    expect(reciprocalLabelFor({ label: 'daughter-in-law', value: 'x' })).toBe('other');
+    expect(reciprocalLabelFor({ label: 'uncle', value: 'x', reciprocalLabel: '  ' })).toBe('other');
+  });
+});
+
 describe('reciprocalUpdates', () => {
   const self = { id: 'a', name: 'Alice' };
 
@@ -179,5 +224,264 @@ describe('reciprocalUpdates', () => {
     const entries: RelatedName[] = [{ label: 'partner', value: 'Bob', personId: 'b' }];
     const updates = reciprocalUpdates(self, entries, [bob]);
     expect(updates[0].relatedNames).toEqual([{ label: 'partner', value: 'Alice', personId: 'a' }]);
+  });
+
+  it('refreshes a stale mirrored name on the linked contact when the saver renamed (keeps the label)', () => {
+    // Bob's back-link still holds the saver's OLD name ("Alice"); the saver now
+    // goes by "Alicia". The mirror updates the value, leaving the (customized)
+    // label alone — and never touches an unrelated entry.
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [
+        { label: 'friend', value: 'Carol', personId: 'c' },
+        { label: 'daughter', value: 'Alice', personId: 'a' },
+      ],
+    } as any);
+    const renamed = { id: 'a', name: 'Alicia' };
+    const entries: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    const updates = reciprocalUpdates(renamed, entries, [bob]);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].relatedNames).toEqual([
+      { label: 'friend', value: 'Carol', personId: 'c' },
+      { label: 'daughter', value: 'Alicia', personId: 'a' },
+    ]);
+  });
+
+  it('emits no back-link write when the mirrored name is already current', () => {
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'daughter', value: 'Alice', personId: 'a' }],
+    } as any);
+    const entries: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    expect(reciprocalUpdates(self, entries, [bob])).toEqual([]);
+  });
+
+  it('propagates a relabel (spouse → partner) onto the linked contact mirror', () => {
+    // Alan (self) has Kyra as spouse and now relabels her to partner; Kyra's
+    // back-link (spouse → Alan) must follow to partner. Detected via prevEntries.
+    const kyra = person({
+      _id: 'k',
+      name: 'Kyra',
+      relatedNames: [{ label: 'spouse', value: 'Alan', personId: 'alan' }],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'spouse', value: 'Kyra', personId: 'k' }];
+    const entries: RelatedName[] = [{ label: 'partner', value: 'Kyra', personId: 'k' }];
+    const updates = reciprocalUpdates({ id: 'alan', name: 'Alan' }, entries, [kyra], prev);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].relatedNames).toEqual([{ label: 'partner', value: 'Alan', personId: 'alan' }]);
+  });
+
+  it('collapses a gendered relabel to the neutral inverse on the mirror', () => {
+    const kyra = person({
+      _id: 'k',
+      name: 'Kyra',
+      relatedNames: [{ label: 'child', value: 'Alan', personId: 'alan' }],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'mother', value: 'Kyra', personId: 'k' }];
+    const entries: RelatedName[] = [{ label: 'father', value: 'Kyra', personId: 'k' }];
+    const updates = reciprocalUpdates({ id: 'alan', name: 'Alan' }, entries, [kyra], prev);
+    // mother→child and father→child are the same inverse, so no write is needed.
+    expect(updates).toEqual([]);
+  });
+
+  it('mirrors a custom relationship using the saver-chosen reciprocal label', () => {
+    // Alice links Bob as a custom "daughter-in-law" and sets the reciprocal to
+    // "father-in-law"; Bob's card gets that exact label (not the 'other' fallback).
+    const bob = person({ _id: 'b', name: 'Bob' });
+    const entries: RelatedName[] = [
+      { label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' },
+    ];
+    const updates = reciprocalUpdates(self, entries, [bob]);
+    // Mirror carries the inverse label AND the saver's own label as its reciprocal
+    // so Bob's card is self-consistent.
+    expect(updates[0].relatedNames).toEqual([
+      { label: 'father-in-law', value: 'Alice', personId: 'a', reciprocalLabel: 'daughter-in-law' },
+    ]);
+  });
+
+  it('falls back to other for a custom relationship with no reciprocal chosen', () => {
+    const bob = person({ _id: 'b', name: 'Bob' });
+    const entries: RelatedName[] = [{ label: 'daughter-in-law', value: 'Bob', personId: 'b' }];
+    const updates = reciprocalUpdates(self, entries, [bob]);
+    expect(updates[0].relatedNames).toEqual([{ label: 'other', value: 'Alice', personId: 'a' }]);
+  });
+
+  it('propagates an edited custom reciprocal label onto the existing mirror', () => {
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'father-in-law', value: 'Alice', personId: 'a' }],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' }];
+    const entries: RelatedName[] = [{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'parent-in-law' }];
+    const updates = reciprocalUpdates(self, entries, [bob], prev);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].relatedNames).toEqual([
+      { label: 'parent-in-law', value: 'Alice', personId: 'a', reciprocalLabel: 'daughter-in-law' },
+    ]);
+  });
+
+  it('renaming the saver refreshes the mirror value but keeps its custom label + reciprocal', () => {
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'father-in-law', value: 'Alice', personId: 'a', reciprocalLabel: 'daughter-in-law' }],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' }];
+    const entries: RelatedName[] = [{ label: 'daughter-in-law', value: 'Bob', personId: 'b', reciprocalLabel: 'father-in-law' }];
+    const updates = reciprocalUpdates({ id: 'a', name: 'Alicia' }, entries, [bob], prev);
+    expect(updates[0].relatedNames).toEqual([
+      { label: 'father-in-law', value: 'Alicia', personId: 'a', reciprocalLabel: 'daughter-in-law' },
+    ]);
+  });
+
+  it('does NOT relabel an independently-customized mirror on an unrelated re-save', () => {
+    // Bob's back-link is a customized "daughter"; Alice re-saves without changing
+    // her own label (mother → mother), so the customization is preserved.
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'daughter', value: 'Alice', personId: 'a' }],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    const entries: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    expect(reciprocalUpdates(self, entries, [bob], prev)).toEqual([]);
+  });
+
+  it('removing a linked related name strips the back-link from the other contact', () => {
+    // Alice drops her link to Bob; Bob's card loses only the entry pointing back
+    // at Alice, keeping his unrelated entries.
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [
+        { label: 'friend', value: 'Carol', personId: 'c' },
+        { label: 'daughter', value: 'Alice', personId: 'a' },
+      ],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    const updates = reciprocalUpdates(self, [], [bob], prev);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].person).toBe(bob);
+    expect(updates[0].relatedNames).toEqual([{ label: 'friend', value: 'Carol', personId: 'c' }]);
+  });
+
+  it('unlinking (typing free text over a linked row) also strips the back-link', () => {
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'child', value: 'Alice', personId: 'a' }],
+    } as any);
+    const prev: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    const entries: RelatedName[] = [{ label: 'mother', value: 'Bobby' }]; // no personId
+    const updates = reciprocalUpdates(self, entries, [bob], prev);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].relatedNames).toEqual([]);
+  });
+
+  it('a kept link is a sync, not a removal — and removal skips ghosts and no-back-link contacts', () => {
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'child', value: 'Alice', personId: 'a' }],
+    } as any);
+    const carol = person({ _id: 'c', name: 'Carol' }); // never linked back
+    const prev: RelatedName[] = [
+      { label: 'mother', value: 'Bob', personId: 'b' }, // kept below
+      { label: 'friend', value: 'Carol', personId: 'c' }, // removed, but no back-link on Carol
+      { label: 'spouse', value: 'Gone', personId: 'ghost' }, // removed, not in roster
+    ];
+    const entries: RelatedName[] = [{ label: 'mother', value: 'Bob', personId: 'b' }];
+    expect(reciprocalUpdates(self, entries, [bob, carol], prev)).toEqual([]);
+  });
+
+  it('dedups removal writes when several prev rows linked the same contact', () => {
+    const bob = person({
+      _id: 'b',
+      name: 'Bob',
+      relatedNames: [{ label: 'child', value: 'Alice', personId: 'a' }],
+    } as any);
+    const prev: RelatedName[] = [
+      { label: 'mother', value: 'Bob', personId: 'b' },
+      { label: 'friend', value: 'Bob', personId: 'b' },
+    ];
+    const updates = reciprocalUpdates(self, [], [bob], prev);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].relatedNames).toEqual([]);
+  });
+});
+
+describe('relatedNameRemovalsOnDelete', () => {
+  it('clears related-name entries that pointed at the deleted contact', () => {
+    const alan = person({
+      _id: 'alan',
+      name: 'Alan',
+      relatedNames: [
+        { label: 'partner', value: 'Kyra', personId: 'k' },
+        { label: 'friend', value: 'Carol', personId: 'c' },
+      ],
+    } as any);
+    const carol = person({ _id: 'c', name: 'Carol' });
+    const updates = relatedNameRemovalsOnDelete('k', [alan, carol]);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].person).toBe(alan);
+    expect(updates[0].relatedNames).toEqual([{ label: 'friend', value: 'Carol', personId: 'c' }]);
+  });
+
+  it('leaves contacts that never linked to the deleted one untouched', () => {
+    const bob = person({ _id: 'b', name: 'Bob', relatedNames: [{ label: 'friend', value: 'Carol', personId: 'c' }] } as any);
+    expect(relatedNameRemovalsOnDelete('k', [bob])).toEqual([]);
+  });
+
+  it('ignores free-text (unlinked) related names sharing a name', () => {
+    const bob = person({ _id: 'b', name: 'Bob', relatedNames: [{ label: 'friend', value: 'Kyra' }] } as any);
+    expect(relatedNameRemovalsOnDelete('k', [bob])).toEqual([]);
+  });
+});
+
+describe('buildImportedMatcher', () => {
+  const row = (r: Partial<import('../personFields').DeviceContactIdentity> & { key: string; name: string }) => r as any;
+
+  it('matches by the stored deviceContactId link', () => {
+    const match = buildImportedMatcher([person({ _id: 'p1', name: 'Sarah Smith', deviceContactId: 'dev-1' } as any)]);
+    expect(match(row({ key: 'dev-1', name: 'Renamed On Device' }))).toBe(true);
+    expect(match(row({ key: 'dev-2', name: 'Someone Else' }))).toBe(false);
+  });
+
+  it('flags a pre-link import by phone, across storage formats', () => {
+    // Imported before deviceContactId existed AND before E.164 canonicalization:
+    // no link, free-form national number.
+    const match = buildImportedMatcher([
+      person({ _id: 'p1', name: 'S. Smith', phones: [{ label: 'mobile', value: '(604) 555-1212' }] } as any),
+    ]);
+    // The picker canonicalizes device numbers to E.164 before matching.
+    expect(match(row({ key: 'dev-9', name: 'Sarah Smith', phones: [{ label: 'mobile', value: '+16045551212' }] }))).toBe(true);
+  });
+
+  it('folds the legacy single phone field into the match set', () => {
+    const match = buildImportedMatcher([person({ _id: 'p1', name: 'S. Smith', phone: '604 555 1212' } as any)]);
+    expect(match(row({ key: 'dev-9', name: 'Sarah Smith', phones: [{ label: 'mobile', value: '+16045551212' }] }))).toBe(true);
+  });
+
+  it('matches by email, case-insensitively', () => {
+    const match = buildImportedMatcher([
+      person({ _id: 'p1', name: 'S. Smith', emails: [{ label: 'home', value: 'Sarah@Example.com' }] } as any),
+    ]);
+    expect(match(row({ key: 'dev-9', name: 'Sarah', emails: [{ label: 'work', value: 'sarah@example.com' }] }))).toBe(true);
+    expect(match(row({ key: 'dev-9', name: 'Sarah', emails: [{ label: 'work', value: 'other@example.com' }] }))).toBe(false);
+  });
+
+  it('matches by exact full name (trimmed, case- and whitespace-insensitive) but never partially', () => {
+    const match = buildImportedMatcher([person({ _id: 'p1', name: '  Sarah   Smith ' } as any)]);
+    expect(match(row({ key: 'dev-9', name: 'sarah smith' }))).toBe(true);
+    expect(match(row({ key: 'dev-9', name: 'Sarah' }))).toBe(false);
+    expect(match(row({ key: 'dev-9', name: 'Sarah Smithers' }))).toBe(false);
+  });
+
+  it('flags nothing when the roster is empty', () => {
+    const match = buildImportedMatcher([]);
+    expect(match(row({ key: 'dev-1', name: 'Anyone', phones: [{ label: 'mobile', value: '+16045551212' }] }))).toBe(false);
   });
 });

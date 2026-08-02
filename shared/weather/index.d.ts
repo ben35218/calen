@@ -82,6 +82,7 @@ export function fetchWeather(lat: number, lon: number): Promise<any>;
 export function timezoneForCoords(lat: number, lon: number): Promise<string | null>;
 export function locationTimezone(address: string, opts?: { geocoder?: (address: string) => Promise<{ lat: number; lon: number }> }): Promise<string | null>;
 export function regionForAddress(address: string): Promise<{ countryCode: string | null; state: string | null } | null>;
+export function cityForAddress(address: string): Promise<string | null>;
 export function loadWeatherForAddress(address: string, opts?: { geocoder?: (address: string) => Promise<{ lat: number; lon: number }> }): Promise<WeatherForecast>;
 export function loadWeatherForCoords(lat: number, lon: number): Promise<WeatherForecast>;
 export function fetchWeatherArchive(lat: number, lon: number, startDate: string, endDate: string): Promise<any>;

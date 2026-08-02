@@ -1,7 +1,7 @@
 ---
 title: Notifications & reminders
 status: current
-last-verified: 55bfc65+ (2026-07-29); day-based reminder default moved from 7am to **9am local** (`ALERT_HOUR`) across the server cron + on-device scheduler, and made **per-user configurable** via `User.dayAlertTime` (`PUT /settings`, Reminders screen TimeField) — cron honors the hour, on-device honors HH:mm (2026-07-29); moved the reminders controls (master toggle + day-based time) out of the Account screen into a dedicated Reminders screen off the profile hub (2026-07-29); e-card sends now flow through the mailer's lifecycle gates + delivery outbox (queue/retry) and the `ecard` template is admin-toggleable — see email-lifecycle.md (2026-07-29); calendar-level occasion alerts (noon day-of + 2wk default, on-device) + scheduled e-card server send (2026-07-28); e-card sends at-or-after the send hour on the occasion day (catch-up) (2026-07-28); e-card emails render via the style-gallery card renderer (ecardTemplates.js), template key passed through the scheduler (2026-07-28); scheduler also passes font/framing overrides + photos (embedded as inline CID attachments; missing files skipped, never fatal) (2026-07-28); paired alert slots (event/chore/task/occasion) must hold distinct values — second picker excludes the first's value via `excludeUsedAlert`, preventing duplicate notifications (2026-07-28)
+last-verified: 55bfc65+ (2026-07-29); day-based reminder default moved from 7am to **9am local** (`ALERT_HOUR`) across the server cron + on-device scheduler, and made **per-user configurable** via `User.dayAlertTime` (`PUT /settings`, Reminders screen TimeField) — cron honors the hour, on-device honors HH:mm (2026-07-29); moved the reminders controls (master toggle + day-based time) out of the Account screen into a dedicated Reminders screen off the profile hub (2026-07-29); e-card sends now flow through the mailer's lifecycle gates + delivery outbox (queue/retry) and the `ecard` template is admin-toggleable — see email-lifecycle.md (2026-07-29); calendar-level occasion alerts (noon day-of + 2wk default, on-device) + scheduled e-card server send (2026-07-28); e-card sends at-or-after the send hour on the occasion day (catch-up) (2026-07-28); e-card emails render via the style-gallery card renderer (ecardTemplates.js), template key passed through the scheduler (2026-07-28); scheduler also passes font/framing overrides + photos (embedded as inline CID attachments; missing files skipped, never fatal) (2026-07-28); paired alert slots (event/chore/task/occasion) must hold distinct values — second picker excludes the first's value via `excludeUsedAlert`, preventing duplicate notifications (2026-07-28); the Reminders screen accepts a **`promptEnable`** route param — a Calen assistant "Set up reminders" setup chip (`setup_reminders`, see ai-assistant.md) deep-links here and, while the master toggle is still off, shows a `SetupCallout` nudging the user to turn reminders on (df8c7f3+, 2026-07-31); e-cards are now **one-time** — `runECardCheck` sends a card on its next occurrence then clears `active` + stamps `sentAt` (replacing the annual `lastSentYear` guard), so a sent card never re-fires (df8c7f3+, 2026-07-31)
 code:
   - mobile/src/lib/notifications.ts
   - mobile/src/lib/useSyncTimezone.ts
@@ -107,8 +107,10 @@ obsolete.
   **email** (`mailer.sendECard`) on the occasion's month/day at the **first
   hourly tick at or after** the author's local send-time — so a card scheduled
   same-day past its hour, or one whose exact tick was missed (deploy/downtime),
-  still goes out that day. Annual recurrence with a `lastSentYear` guard keeps it
-  to once per year. **Delivery needs SMTP** (`SMTP_URL`/`SMTP_HOST`);
+  still goes out that day. Each card sends **once**, on its next occurrence:
+  after a successful send `runECardCheck` clears `active` and stamps `sentAt`, so
+  a sent card is never queried again and does **not** recur annually.
+  **Delivery needs SMTP** (`SMTP_URL`/`SMTP_HOST`);
   unconfigured, every email is a logged dry-run (EmailLog `status:'dry'`), not
   delivered. Like every send, an e-card flows through the mailer's lifecycle
   gates + delivery outbox: a provider-blocked send is queued and auto-retried,

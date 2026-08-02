@@ -1,18 +1,20 @@
 import React, { useCallback } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, ActivityIndicator, AppState, Linking, Platform,
+  TouchableOpacity,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
-import { useQuery } from '@tanstack/react-query';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-import { billingApi, type CreditLedgerEntry } from '../../api';
 import { Badge, Button, Card, Hint, SectionTitle } from '../../components/ui';
 import { isPurchasesConfigured } from '../../lib/purchases';
 import { deriveAiPlanState } from '../../lib/planState';
+import type { RootStackParamList } from '../../navigation/types';
 import { TERMS_URL, PRIVACY_URL } from '../../config';
 import { colors, spacing, radius } from '../../theme';
 import {
-  useCreditsPurchase, useAiPlanPurchase, describeReset, humanCredits, shortDate,
+  useCreditsPurchase, useAiPlanPurchase, useCreditLedger,
+  describeReset, humanCredits, shortDate, ledgerAmount, LEDGER_LABEL,
 } from './shared';
 import PackStore from './PackStore';
 
@@ -35,30 +37,14 @@ const ACTION_LABEL: Record<string, string> = {
   generation: 'Recipe generation',
   manualParse: 'Owner’s manual parsing',
   aiHelper: 'Form assist',
+  webSearch: 'Web searches',
 };
 
-const LEDGER_LABEL: Record<CreditLedgerEntry['kind'], string> = {
-  purchase: 'Credit pack',
-  starter: 'Welcome credits',
-  plan: 'Monthly plan credits',
-  refund: 'Refund',
-  admin: 'Adjustment',
-  usage: 'AI usage', // fallback — usage rows normally label by their action
-};
-
-// Usage-debit ledger rows labeled by the action that spent the credits.
-const USAGE_LABEL: Record<string, string> = {
-  chat: 'Chat',
-  call: 'Phone call',
-  scan: 'Photo scan',
-  generation: 'Recipe generation',
-  manualParse: 'Owner’s manual parsing',
-  aiHelper: 'Form assist',
-};
-
-// The "What things cost" price list: the flat published per-action prices from
+// The "What things cost" price list: the published per-action prices from
 // `status.actionCosts`, singular labels kept consistent with the "By feature
-// this week" card's naming. `callPerMinute` renders per-minute.
+// this week" card's naming. `callPerMinute` renders per-minute; `chat` is
+// token-priced (grows with the reply), so it reads "Varies with length"
+// instead of a flat number — each reply reports its own credit cost in-thread.
 // "Photo scan" covers items-from-photo and recipes-from-photo (receipts are
 // plain E2EE attachments, never AI-scanned); "Recipe generation" covers
 // generate-from-description and suggest-recipes — nothing generates plans.
@@ -75,24 +61,23 @@ const COST_LABEL: Record<string, string> = {
 };
 
 function costValue(key: string, credits: number): string {
+  // Chat is token-priced — its credit cost grows with the conversation length,
+  // so there's no single flat number to show (each reply reports its own).
+  if (key === 'chat') return 'Varies with length';
   if (key === 'callPerMinute') return `${credits} credits/min`;
   return `${credits} ${credits === 1 ? 'credit' : 'credits'}`;
 }
 
-// Ledger amounts keep grant styling (+N, whole credits) but a prorated usage
-// debit can be fractional — show one decimal instead of flooring it away.
-function ledgerAmount(n: number): string {
-  return Number.isInteger(n) ? Math.floor(n).toLocaleString() : n.toFixed(1);
-}
+// How many History rows the card shows inline before deferring the rest to the
+// full-history screen — a peek, not the whole ledger, so the card can't grow
+// without bound.
+const HISTORY_PREVIEW = 5;
 
 export default function CreditsScreen() {
+  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { billing, activation, rows, busyId, buy } = useCreditsPurchase();
   const plan = useAiPlanPurchase();
-  const ledger = useQuery({
-    queryKey: ['billing', 'ledger'],
-    queryFn: async () => (await billingApi.ledger()).data.entries,
-    staleTime: 60_000,
-  });
+  const ledger = useCreditLedger();
 
   // Returning from the native manage-subscriptions sheet must reflect a
   // cancellation or reactivation without an app restart — refetch RC
@@ -118,7 +103,19 @@ export default function CreditsScreen() {
   const out = !data.unlimited && data.creditBalance <= 0;
   const low = !data.unlimited && !out && data.lowBalance;
   const reset = describeReset(data.resetsAt);
-  const actions = Object.entries(data.usage ?? {}).filter(([, count]) => Number(count) > 0);
+  // "Where your credits go": credits SPENT per feature this week, biggest first
+  // — the summary of what the balance went to, so the History card can stay a
+  // clean purchase/grant log (usage debits are aggregated here, not listed there).
+  const spending = Object.entries(data.spend ?? {})
+    .filter(([, credits]) => Number(credits) > 0)
+    .sort(([, a], [, b]) => Number(b) - Number(a));
+  const spentTotal = spending.reduce((sum, [, c]) => sum + Number(c), 0);
+  // History is purchases & grants only — the server excludes usage debits (they
+  // live in the spend card); the filter is defensive belt-and-suspenders. The
+  // card shows only the most recent few, with a "See all" drill-in to the rest.
+  const grants = (ledger.data ?? []).filter((e) => e.kind !== 'usage');
+  const grantsPreview = grants.slice(0, HISTORY_PREVIEW);
+  const hasMoreGrants = grants.length > HISTORY_PREVIEW;
 
   const aiPlan = data.aiPlan;
   // Localized store price when RC has loaded; USD catalog fallback otherwise.
@@ -136,15 +133,19 @@ export default function CreditsScreen() {
   // iOS-only: no Play Store product exists yet, and Apple owns the manage sheet.
   const canManage = Platform.OS === 'ios';
 
-  // The rate card: price ascending from the live server values (a hard-coded
-  // order would go stale when actionCosts is re-tuned), ties alphabetical by
-  // label. The per-minute call row pins last regardless of price — its unit
-  // differs from the per-action rows, and the per-second billing note under
-  // the list is its footnote.
+  // The rate card. Chat pins FIRST — it's the headline action and now
+  // token-priced ("Varies with length"), so sorting it by its nominal number
+  // would be misleading. The per-minute call row pins LAST — its unit differs
+  // from the per-action rows and the per-second billing note is its footnote.
+  // Everything between ascends by the live server price (a hard-coded order
+  // would go stale when actionCosts is re-tuned), ties alphabetical by label.
+  const costRank = (k: string) => (k === 'chat' ? -1 : k === 'callPerMinute' ? 1 : 0);
   const costs = Object.entries(data.actionCosts ?? {})
-    .filter(([, credits]) => Number(credits) > 0)
+    .filter(([key, credits]) => key === 'chat' || Number(credits) > 0)
     .sort(([a, av], [b, bv]) => {
-      if ((a === 'callPerMinute') !== (b === 'callPerMinute')) return a === 'callPerMinute' ? 1 : -1;
+      const ra = costRank(a);
+      const rb = costRank(b);
+      if (ra !== rb) return ra - rb;
       return Number(av) - Number(bv) || (COST_LABEL[a] ?? a).localeCompare(COST_LABEL[b] ?? b);
     });
 
@@ -247,7 +248,7 @@ export default function CreditsScreen() {
                 cancel.
               </Text>
               {canManage ? (
-                <Button title="Manage subscription" variant="ghost" onPress={plan.manage} />
+                <Button title="Manage subscription" variant="ghost" onPress={plan.manage} style={styles.planButton} />
               ) : null}
             </>
           ) : planView.state === 'cancelled' ? (
@@ -257,7 +258,7 @@ export default function CreditsScreen() {
                 Your credits are yours forever.
               </Text>
               {canManage ? (
-                <Button title="Manage subscription" variant="ghost" onPress={plan.manage} />
+                <Button title="Manage subscription" variant="ghost" onPress={plan.manage} style={styles.planButton} />
               ) : null}
               <Text style={styles.planNote}>
                 Changed your mind? Re-subscribe from the same App Store sheet.
@@ -320,34 +321,37 @@ export default function CreditsScreen() {
         </Card>
       ) : null}
 
-      {/* This week's per-feature usage (analytics, not a cap). */}
-      {actions.length > 0 ? (
+      {/* Where your credits go: credits SPENT per feature this week (a summary,
+          not a cap). Answers "what am I spending on?" so the History card below
+          stays a clean purchase/grant log. */}
+      {spending.length > 0 ? (
         <Card style={styles.card}>
-          <Text style={styles.heading}>By feature this week</Text>
+          <Text style={styles.heading}>Where your credits go</Text>
           {reset ? <Text style={styles.reset}>{reset}</Text> : null}
-          {actions.map(([action, count]) => (
+          {spending.map(([action, credits]) => (
             <View key={action} style={styles.actionRow}>
               <Text style={styles.actionLabel}>{ACTION_LABEL[action] ?? action}</Text>
-              <Text style={styles.actionCount}>{count}</Text>
+              <Text style={styles.actionCount}>{ledgerAmount(Number(credits))}</Text>
             </View>
           ))}
+          <View style={[styles.actionRow, styles.spendTotalRow]}>
+            <Text style={styles.spendTotalLabel}>Spent this week</Text>
+            <Text style={styles.spendTotalValue}>{ledgerAmount(spentTotal)} credits</Text>
+          </View>
         </Card>
       ) : null}
 
-      {/* Every balance movement from the credit ledger: grants (packs, plan
-          periods, welcome credits, adjustments) AND usage debits, each usage
-          row labeled by the action that spent the credits. */}
-      {(ledger.data?.length ?? 0) > 0 ? (
+      {/* Purchases & grants only: packs, plan periods, welcome credits, refunds,
+          adjustments. Usage debits are summarized in the "Where your credits go"
+          card above rather than listed one-by-one here (they'd bury the
+          purchases and make this an illegible per-message log). */}
+      {grants.length > 0 ? (
         <Card style={styles.card}>
           <Text style={styles.heading}>History</Text>
-          {ledger.data!.map((e, i) => (
+          {grantsPreview.map((e, i) => (
             <View key={i} style={styles.actionRow}>
               <View style={styles.ledgerText}>
-                <Text style={styles.actionLabel}>
-                  {e.kind === 'usage' && e.action
-                    ? USAGE_LABEL[e.action] ?? e.action
-                    : LEDGER_LABEL[e.kind] ?? e.kind}
-                </Text>
+                <Text style={styles.actionLabel}>{LEDGER_LABEL[e.kind] ?? e.kind}</Text>
                 <Text style={styles.ledgerDate}>{shortDate(e.createdAt)}</Text>
               </View>
               <Text style={[styles.actionCount, e.credits < 0 && { color: colors.error }]}>
@@ -355,6 +359,16 @@ export default function CreditsScreen() {
               </Text>
             </View>
           ))}
+          {hasMoreGrants ? (
+            <TouchableOpacity
+              style={styles.seeAllRow}
+              onPress={() => nav.navigate('CreditHistory')}
+              accessibilityRole="button"
+            >
+              <Text style={styles.seeAllText}>See all history</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.primary} />
+            </TouchableOpacity>
+          ) : null}
         </Card>
       ) : null}
 
@@ -414,6 +428,7 @@ const styles = StyleSheet.create({
   planLabel: { fontSize: 17, fontWeight: '700', color: colors.text, flexShrink: 1 },
   planDesc: { color: colors.text, fontSize: 14, lineHeight: 19, marginTop: 6, marginBottom: spacing.sm },
   planNote: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: spacing.sm },
+  planButton: { marginTop: spacing.sm },
 
   costNote: { fontSize: 12, color: colors.textMuted, marginTop: 6, lineHeight: 16 },
 
@@ -427,6 +442,30 @@ const styles = StyleSheet.create({
   actionCount: { fontSize: 14, fontWeight: '600', color: colors.textMuted },
   ledgerText: { flex: 1, marginRight: spacing.sm },
   ledgerDate: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+
+  // "See all history" footer row on the History card — a hairline-topped tap
+  // target that drills into the full-history screen.
+  seeAllRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    marginTop: 4,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  seeAllText: { fontSize: 14, fontWeight: '600', color: colors.primary },
+
+  // The spend card's total, set off from the per-feature rows by a hairline.
+  spendTotalRow: {
+    marginTop: 4,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  spendTotalLabel: { fontSize: 14, fontWeight: '600', color: colors.text },
+  spendTotalValue: { fontSize: 14, fontWeight: '700', color: colors.text },
 
   cardNote: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 18 },
 

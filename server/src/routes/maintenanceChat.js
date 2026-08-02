@@ -8,7 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { computeNextDueDate, anchorRecurrence } = require('../services/recurrence');
 const { extractTextFromPdf } = require('../services/manualParser');
-const { streamChat } = require('../services/chatStream');
+const { streamChat, webSearchTool, WEB_SEARCH_SYSTEM_NOTE } = require('../services/chatStream');
 const { ASSISTANT_NAME } = require('../config/assistant');
 const { meter, getConfig } = require('../middleware/usageMeter');
 
@@ -304,8 +304,8 @@ router.post('/', meter('chat', 'maintenance'), async (req, res) => {
       req,
       client,
       model,
-      system: systemPrompt,
-      tools: TOOLS,
+      system: systemPrompt + WEB_SEARCH_SYSTEM_NOTE,
+      tools: [...TOOLS, webSearchTool(model)],
       messages,
       executeTool: (name, input) => executeTool(name, input, {
         userId, itemId,

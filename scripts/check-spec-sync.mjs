@@ -46,8 +46,8 @@ const RULES = [
   // Features.
   { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|server\/src\/services\/sessions\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/api\/client\.ts|mobile\/src\/lib\/(passkeys|secureToken|deviceId|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
     tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(passkeys|deviceKey|deviceLink)\.)/ },
-  { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/(safetyNumbers|shareInvite)\.ts|mobile\/src\/components\/EmailAppSheet\.tsx)/, specs: ['specs/features/households-sharing.md'],
-    tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|keyHygiene|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(safetyNumbers|guardianRecovery|shareInvite)\.)/ },
+  { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/(safetyNumbers|shareInvite)\.ts|mobile\/src\/hooks\/useRosterSuggestions\.ts|mobile\/src\/components\/EmailAppSheet\.tsx)/, specs: ['specs/features/households-sharing.md'],
+    tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|keyHygiene|recoveryMandate)\.|mobile\/src\/(lib\/__tests__\/(safetyNumbers|guardianRecovery|shareInvite)|hooks\/__tests__\/useRosterSuggestions)\.)/ },
   { re: /^(server\/src\/routes\/(calendars|calendarChat|eventAttachments|invitations)\.js|mobile\/src\/screens\/calendar\/|mobile\/src\/lib\/(calendar|calendarData|eventRepeat|calendarKeys|holidays)\.ts|shared\/calendar\/)/, specs: ['specs/features/calendar.md'],
     tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/(lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat|addons)\.|screens\/calendar\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(recipes|recipeSchedule)\.js|mobile\/src\/screens\/kitchen\/|mobile\/src\/lib\/grocery)/, specs: ['specs/features/kitchen.md'],
@@ -57,11 +57,11 @@ const RULES = [
   { re: /^(server\/src\/routes\/(trips|tripsChat)\.js|mobile\/src\/screens\/trips\/|mobile\/src\/lib\/tripKeys\.ts|server\/src\/services\/tripSharing\.js)/, specs: ['specs/features/trips.md'],
     tests: /^(server\/src\/test\/(tripKeys|tripShare|tripAttachments)\.|server\/src\/services\/tripSharing\.test\.js$|mobile\/src\/lib\/__tests__\/(tripKeys|addons|shareInvite)\.)/ },
   { re: /^(server\/src\/routes\/people\.js|mobile\/src\/screens\/profile\/(People|Person|ContactImport))/, specs: ['specs/features/people-contacts.md'],
-    tests: /^server\/src\/test\/people\./ },
+    tests: /^(server\/src\/test\/people\.|mobile\/src\/lib\/__tests__\/(personFields|vcard|phone)\.)/ },
   { re: /^(mobile\/src\/screens\/onboarding\/|mobile\/src\/lib\/onboarding\.ts)/, specs: ['specs/features/onboarding.md'],
     tests: /^mobile\/src\/lib\/__tests__\/onboarding\./ },
-  { re: /^(server\/src\/routes\/(calendarChat|choresChat|maintenanceChat|maintenancePlanChat|tripsChat|calls|formAssist)\.js|server\/src\/services\/(chatStream|chatSuggestions|aiUsage|phoneCalls)\.js|mobile\/src\/screens\/chat\/|mobile\/src\/lib\/aiPayload\.ts)/, specs: ['specs/features/ai-assistant.md'],
-    tests: /^(server\/src\/test\/aiPrivacy\.|server\/src\/services\/phoneCalls\.test\.js$|server\/src\/middleware\/usageMeter\.tokens\.test\.js$|mobile\/src\/lib\/__tests__\/(aiPayload|aiWindow)\.)/ },
+  { re: /^(server\/src\/routes\/(calendarChat|choresChat|maintenanceChat|maintenancePlanChat|tripsChat|calls|formAssist)\.js|server\/src\/services\/(chatStream|chatSuggestions|aiUsage|phoneCalls)\.js|mobile\/src\/screens\/chat\/|mobile\/src\/lib\/(aiPayload|chatLinks)\.ts|mobile\/src\/hooks\/(useScrollAwareKeyboard|useDictation)\.ts)/, specs: ['specs/features/ai-assistant.md'],
+    tests: /^(server\/src\/test\/aiPrivacy\.|server\/src\/services\/phoneCalls\.test\.js$|server\/src\/middleware\/usageMeter\.tokens\.test\.js$|mobile\/src\/lib\/__tests__\/(aiPayload|aiWindow|chatLinks)\.|mobile\/src\/hooks\/__tests__\/(useScrollAwareKeyboard|useDictation)\.)/ },
   // Email lifecycle: the code-owned catalog + mailer + delivery ledger/outbox +
   // reconcile + the two admin email views. Ordered BEFORE the admin rule so the
   // email surfaces win; adminEmail.js itself stays admin-portal-owned.
@@ -70,8 +70,8 @@ const RULES = [
     tests: /^server\/src\/test\/email(Lifecycle|Reconcile)\./ },
   { re: /^(admin\/|server\/src\/routes\/(admin|adminHelpers|adminAnalytics|adminAnalyticsHelpers|adminEmail)\.js)/, specs: ['specs/features/admin-portal.md'],
     tests: /^(server\/src\/test\/admin\.|server\/src\/routes\/admin(Analytics)?Helpers\.test\.js$)/ },
-  { re: /^(server\/src\/routes\/(billing|monetizationConfig)\.js|mobile\/src\/screens\/plan\/|mobile\/src\/lib\/(purchases|addons)\.ts|mobile\/src\/hooks\/useBilling\.ts)/, specs: ['specs/features/billing-plans.md'],
-    tests: /^(server\/src\/test\/billingWebhook\.|server\/src\/routes\/billing\.test\.js$|mobile\/src\/(lib\/__tests__\/addons\.|screens\/plan\/__tests__\/))/ },
+  { re: /^(server\/src\/routes\/(billing|monetizationConfig)\.js|mobile\/src\/screens\/plan\/|mobile\/src\/lib\/(purchases|addons|unlock|viewerAccess)\.ts|mobile\/src\/hooks\/useBilling\.ts|mobile\/src\/screens\/viewer\/|mobile\/src\/navigation\/ViewerNavigator\.tsx)/, specs: ['specs/features/billing-plans.md'],
+    tests: /^(server\/src\/test\/billingWebhook\.|server\/src\/routes\/billing\.test\.js$|mobile\/src\/(lib\/__tests__\/(addons|unlock|viewerAccess)\.|screens\/plan\/__tests__\/|screens\/viewer\/__tests__\/|hooks\/__tests__\/useBilling\.))/ },
   { re: /^(server\/src\/routes\/notifications\.js|server\/src\/jobs\/scheduler\.js|server\/src\/services\/(push|notify)\.js|mobile\/src\/lib\/(notifications|push)\.ts)/, specs: ['specs/features/notifications.md'],
     tests: /^(server\/src\/test\/notifications\.|server\/src\/jobs\/scheduler\.test\.js$|mobile\/src\/lib\/__tests__\/notifications\.)/ },
   // In-app feedback (questions/bugs/ideas): plaintext model + submit route + the

@@ -1,8 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  totalTokens, currentPeriodKey, recordCallSecondsById, adminUnlimited, creditStatus, periodUsage,
+  totalTokens, currentPeriodKey, recordCallSecondsById, recordWebSearches, adminUnlimited, creditStatus, periodUsage,
 } = require('./usageMeter');
+const { webSearchCostMc } = require('../services/credits');
 
 const P = currentPeriodKey();
 
@@ -21,6 +22,23 @@ test('recordCallSecondsById returns the rounded seconds (0/negative → no-op)',
   assert.equal(recordCallSecondsById({}, 71.4), 71);
   assert.equal(recordCallSecondsById({}, 0), 0);
   assert.equal(recordCallSecondsById({}, -5), 0);
+});
+
+test('recordWebSearches returns the rounded count (0/negative → no-op; no user → count only)', () => {
+  // Web search is NOT debited (folded into token-priced chat) — this only
+  // counts + estimates cost. No req.user → nothing to write, count reported back.
+  assert.equal(recordWebSearches({}, 2.6), 3);
+  assert.equal(recordWebSearches({}, 0), 0);
+  assert.equal(recordWebSearches({}, -1), 0);
+  assert.equal(recordWebSearches({}, undefined), 0);
+});
+
+test('webSearchCostMc: raw per-search API fee in margin-free Mc ($0.01 → 1000 Mc)', () => {
+  const config = { credits: { webSearchRatePerSearch: 0.01 } };
+  assert.equal(webSearchCostMc(1, config), 1_000);
+  assert.equal(webSearchCostMc(3, config), 3_000);
+  assert.equal(webSearchCostMc(0, config), 0);
+  assert.equal(webSearchCostMc(2, { credits: {} }), 0);
 });
 
 test('adminUnlimited: only admins, and only while the config toggle allows it', () => {

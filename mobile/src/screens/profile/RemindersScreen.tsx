@@ -2,14 +2,14 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, AppState, Linking, Switch, TouchableOpacity,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { settingsApi } from '../../api';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { ensureNotificationPermission, rescheduleReminders } from '../../lib/notifications';
-import { Screen, Card, TimeField } from '../../components/ui';
+import { Screen, Card, TimeField, SetupCallout } from '../../components/ui';
 import { form as fs } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
 
@@ -19,6 +19,9 @@ import { colors, spacing } from '../../theme';
 // is no header save button; the screen just uses the default back navigation.
 export default function RemindersScreen() {
   const qc = useQueryClient();
+  // A Calen "Set up reminders" chip lands here when the user wanted alerts but
+  // reminders are off — show a callout while the master toggle is still off.
+  const promptEnable = useRoute<RouteProp<{ Reminders: { promptEnable?: boolean } | undefined }, 'Reminders'>>().params?.promptEnable;
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -73,6 +76,9 @@ export default function RemindersScreen() {
 
   return (
     <Screen>
+      {promptEnable && !prefs.remindersEnabled ? (
+        <SetupCallout icon="notifications">Turn on reminders so Calen can alert you about events, tasks, chores, and birthdays.</SetupCallout>
+      ) : null}
       <Card style={styles.sectionCard}>
         <View style={styles.mainRow}>
           <View style={styles.iconBubble}>

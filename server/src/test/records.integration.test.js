@@ -191,6 +191,106 @@ test('C3: cross-household isolation — the unified sync never leaks another hou
   assert.equal(put.status, 404);
 });
 
+// ── Calendar-lane write authorization (free viewer mode hardening) ──────────
+// A 'view' collaborator holds a member key envelope (they need it to READ the
+// shared calendar), but the calendar lane rejects their writes: POST/PUT/DELETE
+// of a record whose `scope` names the calendar require 'full' effective access.
+// Also closes the foreign-scope hole: no one can POST records claiming a
+// calendar they have no access to.
+
+// Owner + an outside collaborator seated on an owner calendar at `access`,
+// holding a member key envelope (as the real accept + owner-wrap flow leaves them).
+async function setupSharedCalendar(access) {
+  const { owner } = await setupActiveHousehold(`Own${access}`);
+  const outsider = await registerUser({ firstName: `Col${access}` });
+  await enrollKeys(outsider.auth);
+
+  const key = `custom-lane${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+  const cal = await request().post('/api/calendars')
+    .set('Authorization', owner.auth)
+    .send({ key, name: 'Lane', color: '#1976D2', sharedWithOutside: [{ email: outsider.user.email, access }] });
+  assert.equal(cal.status, 201);
+  const inbox = await request().get('/api/calendars/invitations').set('Authorization', outsider.auth);
+  const inv = inbox.body.find((i) => i.calendarKey === key);
+  const accept = await request().post(`/api/calendars/invitations/${inv._id}/accept`)
+    .set('Authorization', outsider.auth);
+  assert.equal(accept.status, 200);
+  await ResourceKeyEnvelope.create({
+    resourceType: 'calendar', resourceKey: key, keyVersion: 1,
+    recipient: 'member', userId: outsider.user._id,
+    wrappedKey: b64u(96), wrappedByUserId: owner.user._id,
+  });
+  return { owner, outsider, key };
+}
+
+const calScoped = (resource) => ({
+  enc: { alg: 'xchacha20poly1305-ietf-v2', nonce: b64u(32), ct: b64u(120), ks: 'cal' },
+  keyVersion: 1,
+  scope: { kind: 'calendar', resource, version: 1 },
+});
+
+test('calendar lane: a view collaborator reads but cannot POST/PUT/DELETE', async () => {
+  const { owner, outsider, key } = await setupSharedCalendar('view');
+
+  // The owner's event on the shared calendar…
+  const ev = await request().post('/api/records')
+    .set('Authorization', owner.auth).send(calScoped(key));
+  assert.equal(ev.status, 201);
+
+  // …is readable through the collaborator's resource lane…
+  const sync = await request().get('/api/records/sync').set('Authorization', outsider.auth);
+  assert.ok(sync.body.records.find((r) => String(r._id) === String(ev.body._id)), 'view collaborator reads the lane');
+
+  // …but every write is rejected (they hold the envelope; access is view).
+  const post = await request().post('/api/records')
+    .set('Authorization', outsider.auth).send(calScoped(key));
+  assert.equal(post.status, 403, 'view collaborator cannot create');
+
+  const put = await request().put(`/api/records/${ev.body._id}`)
+    .set('Authorization', outsider.auth).send(calScoped(key));
+  assert.equal(put.status, 403, 'view collaborator cannot replace');
+
+  // Dropping the scope from the body must not shed the calendar lane — the
+  // STORED scope still gates the write.
+  const putNoScope = await request().put(`/api/records/${ev.body._id}`)
+    .set('Authorization', outsider.auth)
+    .send({ enc: { alg: 'xchacha20poly1305-ietf-v2', nonce: b64u(32), ct: b64u(120), ks: 'cal' }, keyVersion: 1 });
+  assert.equal(putNoScope.status, 403, 'stored scope still gates a scope-less body');
+
+  const del = await request().delete(`/api/records/${ev.body._id}`).set('Authorization', outsider.auth);
+  assert.equal(del.status, 403, 'view collaborator cannot tombstone');
+
+  // The owner is unaffected (e.g. the re-seal pass).
+  const ownerPut = await request().put(`/api/records/${ev.body._id}`)
+    .set('Authorization', owner.auth).send(calScoped(key));
+  assert.equal(ownerPut.status, 200);
+});
+
+test('calendar lane: a full-access collaborator writes; view→full upgrades take effect', async () => {
+  const { outsider, key } = await setupSharedCalendar('full');
+
+  const post = await request().post('/api/records')
+    .set('Authorization', outsider.auth).send(calScoped(key));
+  assert.equal(post.status, 201, 'full collaborator creates');
+
+  const put = await request().put(`/api/records/${post.body._id}`)
+    .set('Authorization', outsider.auth).send(calScoped(key));
+  assert.equal(put.status, 200, 'full collaborator replaces');
+
+  const del = await request().delete(`/api/records/${post.body._id}`).set('Authorization', outsider.auth);
+  assert.equal(del.status, 200, 'full collaborator tombstones');
+});
+
+test('calendar lane: a non-collaborator cannot POST records claiming a foreign calendar scope', async () => {
+  const { key } = await setupSharedCalendar('view');
+  const rando = await registerUser({ firstName: 'Rand' });
+  await enrollKeys(rando.auth);
+
+  const post = await request().post('/api/records')
+    .set('Authorization', rando.auth).send(calScoped(key));
+  assert.equal(post.status, 403, 'no seat on the calendar → no writes into its lane');
+});
+
 // A household member (joined via the real flow) reads a co-member's opaque record
 // through the household lane, though it carries no plaintext author.
 test('C3: a household co-member reads an opaque record via the household lane', async () => {

@@ -191,6 +191,11 @@ const userSchema = new mongoose.Schema({
   // Per-user weekly assistant CALL-TIME usage in connected seconds:
   // { 'YYYY-MM-DD': { seconds } }. Analytics-only. See usageMeter.
   usageCallSeconds: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // Per-user weekly chat WEB-SEARCH usage: { 'YYYY-MM-DD': { count, costMc } }
+  // (executed server-side web_search tool searches + their raw per-search API
+  // fee). Analytics/reconciliation-only; the debit is the flat per-search
+  // price. See usageMeter.recordWebSearches.
+  usageWebSearches: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   // AI calls refused with 402 after the credit balance ran out:
   // { 'YYYY-MM-DD': { action: count } }. Analytics-only — feeds the admin
   // AI-usage abuse view (hammering the API after the block is the signal).
@@ -198,6 +203,9 @@ const userSchema = new mongoose.Schema({
 
   timezone:          { type: String, default: 'America/Toronto' },
   homeAddress:       { type: String, default: '' },
+  // Coarse home-area label (city + region/country) — see Household.homeCity.
+  // Kept here as the pre-household fallback, mirroring homeAddress/timezone.
+  homeCity:          { type: String, default: '' },
   lat:               { type: Number },
   lon:               { type: Number },
   aboutMe:             { type: String, trim: true },

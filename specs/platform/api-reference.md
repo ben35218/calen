@@ -1,7 +1,7 @@
 ---
 title: API reference
 status: current
-last-verified: 55bfc65+ (2026-07-28); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29)
+last-verified: df8c7f3+ (2026-07-31); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
@@ -54,6 +54,12 @@ client-**sealed** blob in a single server collection, reached through
   [platform/crypto-e2ee.md](crypto-e2ee.md) and [data-model.md](data-model.md).
 - Records may be scoped to a shared **calendar** or **trip** resource (with a key
   version), which is how sharing and key rotation ride along.
+- **Calendar-lane writes are authorized** from that plaintext scope: creating,
+  replacing, or tombstoning a record whose stored or incoming
+  `scope.kind === 'calendar'` requires `full` effective access on the calendar
+  (`403` for `view` collaborators and for foreign-scope claims). Trips are
+  exempt (trip collaborators are full-access by design). See
+  [features/calendar.md](../features/calendar.md).
 - The mobile client mirrors this into a local replica and drives the UI
   offline-first (`mobile/src/lib/recordStore.ts`, `records.ts`).
 
@@ -103,6 +109,10 @@ See `app.js` for exact paths. Grouped for orientation:
   and is returned by `GET /settings`).
 - **Billing:** `/api/billing` (`webhook` — public, secret-verified, RC
   `app_user_id` = USER id; `status` — the per-user app unlock (`unlocked`),
+  the free-viewer-mode signal (`viewer: { calendarCollaborations,
+  pendingCalendarInvitations }` — a locked user with either > 0 gets the
+  read-only viewer shell instead of the paywall, see
+  [features/billing-plans.md](../features/billing-plans.md)),
   prepaid credit balance (`creditBalance`/`creditBalanceMc`, `lowBalance`,
   `unlimited`, `packs`), per-user usage analytics, and the household's owned
   feature-calendar `addons` + `addonCatalog`; `credits/ledger` — the caller's
@@ -123,6 +133,14 @@ See `app.js` for exact paths. Grouped for orientation:
     `Household.timezone`; echoed by `GET /settings`. The client derives it from
     the home location keyless + client-side, so an E2EE household's address is
     never sent to resolve it. Distinct from the personal `timezone` key.
+  - `PUT /settings` also accepts `homeCity` — a coarse household home-area label
+    (city + region/country, e.g. "Ottawa, Ontario, Canada") stored **plaintext**
+    on `Household.homeCity` and echoed by `GET /settings`. Derived client-side
+    from the home address (same keyless geocoders as `householdTimezone`, so an
+    E2EE household's address is never sent to resolve it) or set by hand; it
+    grounds the calendar assistant's local suggestions — the street address
+    itself is never put in an AI prompt. See
+    [features/ai-assistant.md](../features/ai-assistant.md).
   - `PUT /settings` also accepts `dayAlertTime` — the personal wall-clock time
     (`"HH:mm"`) that DAY-BASED alerts fire at, stored on `User.dayAlertTime` and
     echoed by `GET /settings`. An empty string clears it back to the 9am default

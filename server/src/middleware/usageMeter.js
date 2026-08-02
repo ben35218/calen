@@ -10,7 +10,9 @@
 //      per-action analytics counters and DEBIT the flat published price for the
 //      action (credits.actionCosts). Token usage is recorded separately
 //      (recordTokens) as the provider-cost estimate reconciliation compares
-//      debits against.
+//      debits against. TOKEN-PRICED actions (chat) are the exception: meter()
+//      counts them but does NOT flat-debit — the stream debits token-based
+//      credits (recordChatCredits) once the turn's token total is known.
 //
 // The debit is a flat price, but it lands only after the action completes, so
 // this is still a pre-check on the balance: the last action may overdraw
@@ -146,7 +148,10 @@ function periodUsage(doc, period) {
 
 // ── Token recording (analytics counters + credit debit) ──────────────────────
 // Total tokens an API response consumed: input + output + cache read + write.
-// This is the literal "tokens used" the app shows and prices into credits.
+// This is the literal "tokens used" the app shows. Pricing does NOT use this
+// sum — cost is computed per token type (credits.usageBreakdown +
+// tokenCostMc), since cache reads cost ~0.1× input and a blended sum would
+// wildly overprice cache-heavy chat turns.
 function totalTokens(usage) {
   if (!usage) return 0;
   return (usage.input_tokens || 0)
@@ -155,25 +160,33 @@ function totalTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
-// Bump the weekly token counters by explicit id, including the estimated raw
-// PROVIDER cost of the call (tokens × model rate, margin-free Mc) — the
-// reconciliation side that debited flat prices are compared against. The
-// DEBIT itself is the flat per-action price, charged once per completed
-// action by meter()'s finish handler, NOT here (a single action may make
-// several model calls). Per-USER only — AI usage, calls, and credits are
+// Bump the weekly token counters by explicit id, including the raw PROVIDER
+// cost of the call (per-token-type counts × per-type model rates, margin-free
+// Mc) — the reconciliation side that debited flat prices are compared
+// against. The DEBIT itself is the flat per-action price, charged once per
+// completed action by meter()'s finish handler, NOT here (a single action may
+// make several model calls). Per-USER only — AI usage, calls, and credits are
 // individual concerns; household-level counters were retired with the
 // per-user billing restructure (fleet analytics sum the user counters).
-// `action` gets per-action token/cost splits for analytics; `model` picks the
-// cost rate. Fire-and-forget; returns the token count.
-function bumpTokenCounters({ userId, tokens, action = null, model = null }) {
+// `usage` is the raw Anthropic usage object (per-type costing + `byType`
+// analytics splits); `tokens` stays the display sum. `action` gets per-action
+// token/cost splits for analytics; `model` picks the cost rates.
+// Fire-and-forget; returns the token count.
+function bumpTokenCounters({ userId, tokens, usage = null, action = null, model = null }) {
   if (!tokens) return 0;
   const period = currentPeriodKey();
   if (userId) {
     getConfig()
       .then((config) => {
-        const costMc = credits.tokenCostMc(tokens, model, config);
+        const breakdown = usage ? credits.usageBreakdown(usage) : tokens;
+        const costMc = credits.tokenCostMc(breakdown, model, config);
         const inc = { [`usageTokens.${period}.tokens`]: tokens };
         if (costMc > 0) inc[`usageTokens.${period}.costMc`] = costMc;
+        if (usage && typeof breakdown === 'object') {
+          for (const [type, count] of Object.entries(breakdown)) {
+            if (count > 0) inc[`usageTokens.${period}.byType.${type}`] = count;
+          }
+        }
         if (action) {
           inc[`usageTokens.${period}.byAction.${action}`] = tokens;
           if (costMc > 0) inc[`usageTokens.${period}.byActionCostMc.${action}`] = costMc;
@@ -192,9 +205,55 @@ async function recordTokens(req, usage, action = null, model = null) {
   return bumpTokenCounters({
     userId: req.user?._id,
     tokens: totalTokens(usage),
+    usage,
     action,
     model,
   });
+}
+
+// Debit a completed CHAT turn token-based (chat is the one token-priced action;
+// see credits.TOKEN_PRICED_ACTIONS). `breakdown` is the turn's summed per-type
+// token counts ({ input, output, cacheRead, cacheWrite }) across the agentic
+// loop and `model` picks the per-type cost rates; the whole-credit charge
+// (chatCreditsForTokens: after-Apple token cost + margin, ceiled) is debited
+// once, ledgered as action `chat`, and RETURNED so chatStream can echo
+// `creditsUsed` to the client. Best-effort (mirrors recordTokens): a metering
+// bug must never break chat. Returns 0 when there's no user / no tokens.
+async function recordChatCredits(req, breakdown, model) {
+  const userId = req.user?._id;
+  if (!userId || !breakdown) return 0;
+  const config = await getConfig();
+  const creditsToCharge = credits.chatCreditsForTokens(breakdown, model, config);
+  if (creditsToCharge > 0) {
+    credits.debitUsageMc(userId, creditsToCharge * credits.MC_PER_CREDIT, 'chat');
+  }
+  return creditsToCharge;
+}
+
+// ── Web-search recording (analytics + cost estimate only; NOT debited) ───────
+// Chat web searches (Anthropic's server-side web_search tool) run INSIDE a chat
+// turn, so the extra result tokens they inject are already billed by the
+// token-priced chat debit (chatCreditsForTokens). We therefore do NOT charge a
+// separate per-search credit — that would double-bill those tokens. The only
+// uncovered cost is Anthropic's small per-search API fee (~$0.01/search), which
+// we still RECORD (count + `webSearchRatePerSearch` estimate) so reconciliation
+// can see it drag chat's margin and we can revisit if it grows. Called once per
+// chat turn by streamChat with the turn's total. Fire-and-forget; returns count.
+function recordWebSearches(req, count) {
+  const n = Math.round(Number(count) || 0);
+  if (n <= 0) return 0;
+  const userId = req.user?._id;
+  if (!userId) return n;
+  const period = currentPeriodKey();
+  getConfig()
+    .then((config) => {
+      const costMc = credits.webSearchCostMc(n, config);
+      const inc = { [`usageWebSearches.${period}.count`]: n };
+      if (costMc > 0) inc[`usageWebSearches.${period}.costMc`] = costMc;
+      return User.updateOne({ _id: userId }, { $inc: inc });
+    })
+    .catch((err) => console.error('[recordWebSearches] user inc failed:', err.message));
+  return n;
 }
 
 // ── Call-time recording ──────────────────────────────────────────────────────
@@ -285,7 +344,11 @@ function meter(action, surface = null) {
           if (surface) inc[`usage.${period}.breakdown.${action}.${surface}`] = 1;
           User.updateOne({ _id: user._id }, { $inc: inc })
             .catch((err) => console.error('[usageMeter] user increment failed:', err.message));
-          credits.debitUsageMc(user._id, credits.actionDebitMc(action, config), action);
+          // Token-priced actions (chat) are debited by their stream once the
+          // turn's token total is known — the flat price would ignore length.
+          if (!credits.TOKEN_PRICED_ACTIONS.has(action)) {
+            credits.debitUsageMc(user._id, credits.actionDebitMc(action, config), action);
+          }
         }
       });
 
@@ -382,7 +445,9 @@ module.exports = {
   meter, mapsGuard, getConfig, invalidateConfigCache, currentPeriodKey, nextPeriodResetAt, periodWindow,
   adminUnlimited, creditStatus, periodUsage,
   // Token recording
-  recordTokens, totalTokens, bumpTokenCounters,
+  recordTokens, totalTokens, bumpTokenCounters, recordChatCredits,
+  // Web-search recording
+  recordWebSearches,
   // Call-time recording
   meterCallSeconds, recordCallSecondsById,
 };

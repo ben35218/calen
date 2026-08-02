@@ -196,6 +196,10 @@ export async function maintainKeyHygiene(): Promise<void> {
     const { reconcileCalendarKeys } = await import('./calendarKeys');
     await reconcileCalendarKeys();
   } catch { /* offline / locked / nothing to do — retried on a later unlock */ }
+  // (Shared-lane CalendarKey loading — ensureSharedCalendarKeys — runs from the
+  // auth store's keys-ready hook instead: this pass only runs on restored
+  // sessions, and the keys must load on EVERY unlock, a fresh login included,
+  // or cal-scoped rows re-pulled into a wiped replica stay undecryptable.)
   try {
     const { reconcileTripKeys } = await import('./tripKeys');
     await reconcileTripKeys();

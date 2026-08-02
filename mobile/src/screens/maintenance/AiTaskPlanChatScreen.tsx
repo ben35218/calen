@@ -5,6 +5,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
+import ChatHeaderButtons from '../chat/ChatHeaderButtons';
 import CreditsBanner from '../../components/CreditsBanner';
 import { ProposedTask } from '../../api';
 import { Badge } from '../../components/ui';
@@ -21,13 +22,20 @@ type Nav = NativeStackNavigationProp<MaintenanceStackParamList>;
 // creates tasks immediately), this is item-agnostic: Calen stages tasks into a
 // live list, then the user links items and creates them through the same review
 // flow as templates (TaskTemplateReview). Nothing is saved until then.
-export default function AiTaskPlanChatScreen({ onSelectAssistant }: { onSelectAssistant?: (id: AssistantId) => void } = {}) {
+export default function AiTaskPlanChatScreen({
+  onSelectAssistant,
+  onResumeChat,
+}: {
+  onSelectAssistant?: (id: AssistantId) => void;
+  onResumeChat?: (surfaceKey: string, chatId: string) => void;
+} = {}) {
   const navigation = useNavigation<Nav>();
   const accent = useCalendarColors().colors.maintenance;
   const [plan, setPlan] = useState<ProposedTask[]>([]);
 
   const chat = useChat({
     endpoint: '/maintenance/plan-chat',
+    historyKey: 'maintenance-plan',
     contextEndpoint: '/maintenance/plan-chat/context',
     buildBody: (messages) => ({ messages }),
     onResult: (data) => {
@@ -36,6 +44,8 @@ export default function AiTaskPlanChatScreen({ onSelectAssistant }: { onSelectAs
       }
     },
     toolLabels: {
+      web_search: 'Searching the web…',
+      verify_place: "Checking if it's still open…",
       get_home_context: 'Reviewing your home…',
       propose_tasks: 'Adding to your plan…',
       suggest_navigation: 'Finding a shortcut…',
@@ -47,16 +57,13 @@ export default function AiTaskPlanChatScreen({ onSelectAssistant }: { onSelectAs
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // History clock (opens the Recent-chats sheet) + compose (new chat).
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerRight: () =>
-        chat.messages.length > 0 ? (
-          <TouchableOpacity onPress={chat.clear} disabled={chat.loading}>
-            <Text style={styles.clear}>Clear</Text>
-          </TouchableOpacity>
-        ) : undefined,
+      headerRight: () => <ChatHeaderButtons chat={chat} />,
     });
-  }, [navigation, chat.messages.length, chat.loading, chat.clear]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, chat.messages.length, chat.recentChats.length, chat.loading, chat.clear, chat.openHistory]);
 
   const removeTask = (index: number) => setPlan((prev) => prev.filter((_, i) => i !== index));
 
@@ -104,6 +111,7 @@ export default function AiTaskPlanChatScreen({ onSelectAssistant }: { onSelectAs
       footer={footer}
       activeAssistant="maintenance"
       onSelectAssistant={onSelectAssistant}
+      onResumeExternal={onResumeChat}
       emptyHint='e.g. "Help me set up maintenance for my house"'
       placeholder="Tell Calen about your home…"
     />
@@ -111,7 +119,6 @@ export default function AiTaskPlanChatScreen({ onSelectAssistant }: { onSelectAs
 }
 
 const styles = StyleSheet.create({
-  clear: { color: '#fff', fontSize: 15, fontWeight: '500' },
   footer: {
     borderTopWidth: 1,
     borderTopColor: colors.border,

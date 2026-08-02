@@ -21,6 +21,7 @@ import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { exportEncryptedBackup, importEncryptedBackup } from '../../lib/exportData';
 import {
   Input, Screen, Card, Button, SectionTitle, SectionHeader, Badge, ListRow, Chip, Hint, SwitchRow,
+  SetupCallout, ScrollToSection,
 } from '../../components/ui';
 import { GroupCard, CardDivider } from '../../components/formStyles';
 import { colors, spacing } from '../../theme';
@@ -28,7 +29,9 @@ import { colors, spacing } from '../../theme';
 // Where the screen should land when opened. `unlock` = the locked-data prompt
 // (auto-presents Face ID); `recovery` = jump the user's attention to recovery
 // methods. Replaces the old AccountScreen `{ section: 'privacy' }` deep-link.
-type Focus = 'unlock' | 'recovery';
+// 'aiPersonalInfo' = a Calen "Turn on personal info" setup chip — scroll to the
+// AI card and call out the personal/contact-info toggle.
+type Focus = 'unlock' | 'recovery' | 'aiPersonalInfo';
 type KeyStatus = 'locked' | 'ready' | 'pending' | null;
 
 // The dedicated Privacy & security screen. Split out of AccountScreen so the "how
@@ -742,8 +745,14 @@ export default function PrivacyDataScreen() {
           the server) plus the personal/contact-info toggle (aiUsePersonalInfo).
           Lives here with the other data controls, not on the billing/Credits
           screen: these are privacy choices, not purchases. */}
+      <ScrollToSection active={focus === 'aiPersonalInfo'}>
       <Card style={styles.sectionCard}>
         <SectionTitle style={styles.cardTitle}>Artificial intelligence</SectionTitle>
+        {/* Arrived from a Calen "Turn on personal info" setup chip because a
+            request needed it while the toggle below was off. */}
+        {focus === 'aiPersonalInfo' && !(prefs.aiEnabled && prefs.aiUsePersonalInfo) ? (
+          <SetupCallout icon="sparkles">Turn on “Use personal & contact info” so Calen can see your calendar and household to answer this.</SetupCallout>
+        ) : null}
         <SwitchRow
           label="Use AI features"
           value={prefs.aiEnabled}
@@ -761,11 +770,14 @@ export default function PrivacyDataScreen() {
           />
           <Text style={styles.switchHint}>
             On, the assistant sees household members and friends by name only (plus a professional’s saved
-            business details). Off, it sees no people at all — form assist won’t use your contacts and
-            contact-based AI import is unavailable.
+            business details), and can read your calendar — event titles, details, and trips — to answer and
+            act on them. Off, it sees no people at all, and it can no longer read your calendar: it sees only
+            whether you’re free or busy, never the events themselves, and can’t edit or cancel a specific
+            event. Form assist won’t use your contacts and contact-based AI import is unavailable.
           </Text>
         </View>
       </Card>
+      </ScrollToSection>
 
       {/* App lock (Signal-parity A4). */}
       <Card style={styles.sectionCard}>

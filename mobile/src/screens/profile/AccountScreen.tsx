@@ -2,22 +2,25 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Alert, ActivityIndicator, TouchableOpacity, Linking,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { locationTimezone } from '@household/weather';
 import { settingsApi, authApi, householdApi } from '../../api';
 import { useAuth } from '../../store/auth';
+import { useBilling } from '../../hooks/useBilling';
+import { isPurchasesConfigured, showManageSubscriptions, APPLE_SUBSCRIPTIONS_URL } from '../../lib/purchases';
 import { getHDK, sealUpdate, openRecord, reauthWithBiometric } from '../../lib/e2ee';
 import { isDeviceKeyEnabled } from '../../lib/deviceKey';
 import { invalidatePlaceBias } from '../../lib/placeBias';
 import { detectHomeRegion } from '../../lib/homeRegion';
+import { detectHomeCity } from '../../lib/homeCity';
 import { autoSelectHolidayRegion } from '../../lib/calendarPrefs';
 import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { resolveCurrentAddress } from '../../lib/currentLocation';
 import {
   Input, DateField, Screen, useHeaderCheckButton, Card, Button,
-  SectionTitle, SectionHeader, PhoneField, InfoCard, ListRow,
+  SectionTitle, SectionHeader, PhoneField, InfoCard, ListRow, SetupCallout,
 } from '../../components/ui';
 import { MailAppPickerSheet } from '../../components/EmailAppSheet';
 import {
@@ -42,6 +45,9 @@ import { colors, spacing } from '../../theme';
 export default function AccountScreen() {
   const qc = useQueryClient();
   const navigation = useNavigation();
+  // A Calen "setup" deep-link may land here asking for a specific field — see
+  // the SetupCallout + highlight below (currently 'homeAddress').
+  const promptField = useRoute<RouteProp<{ Account: { promptField?: 'homeAddress' | 'mailApp' } | undefined }, 'Account'>>().params?.promptField;
   const { user, setUser, logout } = useAuth();
 
   const { data: settings, isLoading } = useQuery({
@@ -55,7 +61,7 @@ export default function AccountScreen() {
 
   // ── Identity + location ─────────────────────────────────────────────────────
   const [form, setForm] = useState({
-    firstName: '', lastName: '', phone: '', birthday: '', homeAddress: '',
+    firstName: '', lastName: '', phone: '', birthday: '', homeAddress: '', homeCity: '',
   });
   const [saving, setSaving] = useState(false);
   // Gate for the discard guard's baseline: the identity form seeds from the
@@ -99,6 +105,7 @@ export default function AccountScreen() {
       phone: settings.phone ?? '',
       birthday: settings.birthday ? String(settings.birthday).slice(0, 10) : '',
       homeAddress: settings.homeAddress ?? '',
+      homeCity: settings.homeCity ?? '',
     });
     loadedAddress.current = settings.homeAddress ?? '';
     // Decrypt the sealed home location over the plaintext (§9.1 P5); dormant
@@ -123,6 +130,26 @@ export default function AccountScreen() {
 
   const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  // ── Home area (city) ─────────────────────────────────────────────────────────
+  // A coarse "city or general area" label the calendar assistant grounds local
+  // suggestions in (never the street address). Auto-derived from the address
+  // when the user picks/fills one, but overridable by hand — a manual edit sets
+  // cityEdited so a later address change doesn't clobber it.
+  const cityEdited = useRef(false);
+  const [derivingCity, setDerivingCity] = useState(false);
+  const setCity = (v: string) => { cityEdited.current = true; setForm((f) => ({ ...f, homeCity: v })); };
+  async function deriveCity(address: string) {
+    const addr = (address || '').trim();
+    if (!addr) return;
+    setDerivingCity(true);
+    try {
+      const label = await detectHomeCity(addr);
+      if (label) { cityEdited.current = false; setForm((f) => ({ ...f, homeCity: label })); }
+    } catch { /* keep whatever's there */ } finally {
+      setDerivingCity(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -134,6 +161,9 @@ export default function AccountScreen() {
         // No timezone here: the stored zone follows the device automatically
         // (lib/useSyncTimezone) — the sync is its single writer.
         homeAddress: form.homeAddress,
+        // Coarse home area for the calendar assistant (plaintext, never the
+        // street address). Auto-derived or hand-set above.
+        homeCity: form.homeCity.trim(),
       };
       // Seal the home location alongside the plaintext (§9.1 P5); no-op without
       // an HDK. The blob also carries the household NAME (C2) — merge the
@@ -158,6 +188,14 @@ export default function AccountScreen() {
         void detectHomeRegion(newAddress).then((h) =>
           h?.region ? autoSelectHolidayRegion(h.country, h.region) : null,
         );
+        // A hand-typed address may never have triggered the on-pick city
+        // derivation; if the user hasn't set the area by hand, fill it from the
+        // new address and persist it (same keyless geocode as the timezone).
+        if (!cityEdited.current && !form.homeCity.trim()) {
+          void detectHomeCity(newAddress).then((label) =>
+            label ? settingsApi.update({ homeCity: label }) : null,
+          ).catch(() => {});
+        }
       }
       qc.invalidateQueries({ queryKey: ['settings'] });
       invalidatePlaceBias();
@@ -270,13 +308,52 @@ export default function AccountScreen() {
   const [delBusy, setDelBusy] = useState(false);
   const [delError, setDelError] = useState('');
 
+  // Billing-aware deletion (billing-plans.md "Account deletion × billing"):
+  // deleting the account can't cancel the Apple-billed Calen AI plan, so an
+  // active plan interposes a keep-billing warning — with the same
+  // manage-subscriptions affordance as the plan card — before the destructive
+  // confirm. Billing status unavailable (offline, fresh cache) degrades to the
+  // plain confirm: deletion must never block on a billing read.
+  const { data: billing } = useBilling();
+
+  async function openManageSubscriptions() {
+    try {
+      if (isPurchasesConfigured()) await showManageSubscriptions();
+      else await Linking.openURL(APPLE_SUBSCRIPTIONS_URL);
+    } catch {
+      Linking.openURL(APPLE_SUBSCRIPTIONS_URL).catch(() => {});
+    }
+  }
+
   function confirmDelete() {
     // Password accounts must type their password first; passwordless
     // (passkey/OAuth) accounts have none, so the session token is the proof.
     if (hasPassword && !delPw) return;
+    if (billing?.aiPlan?.active) {
+      Alert.alert(
+        'Your Calen AI plan stays active',
+        'Deleting your account does not cancel your subscription — Apple will keep billing it. If you don’t want more charges, cancel it in your App Store subscriptions first.',
+        [
+          { text: 'Manage subscription', onPress: () => { void openManageSubscriptions(); } },
+          { text: 'Delete anyway', style: 'destructive', onPress: confirmWipe },
+          { text: 'Cancel', style: 'cancel' },
+        ],
+      );
+      return;
+    }
+    confirmWipe();
+  }
+
+  function confirmWipe() {
+    // Credits are prepaid value — name what's forfeited, never silently eat it.
+    // (Exempt admins render "Unlimited" everywhere; their balance is noise.)
+    const creditsLeft = billing?.unlimited ? 0 : Math.max(0, billing?.creditBalance ?? 0);
+    const creditNote = creditsLeft > 0
+      ? ` Your remaining ${creditsLeft.toLocaleString()} AI credit${creditsLeft === 1 ? '' : 's'} will be forfeited.`
+      : '';
     Alert.alert(
       'Delete your account?',
-      'This permanently deletes your account and all your data, including anything you added to your household. This cannot be undone.',
+      `This permanently deletes your account and all your data, including anything you added to your household.${creditNote} This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete account', style: 'destructive', onPress: runDelete },
@@ -305,8 +382,17 @@ export default function AccountScreen() {
     );
   }
 
+  // Highlight the home-address field only until the user has actually filled it.
+  const promptHomeAddress = promptField === 'homeAddress' && !form.homeAddress.trim();
+
   return (
     <Screen>
+      {/* Arrived from a Calen "Add your home address" setup chip: say why, then
+          highlight the address field so the fix is obvious. */}
+      {promptHomeAddress ? (
+        <SetupCallout icon="location">Add your home address so Calen can tailor weather and local suggestions to where you are.</SetupCallout>
+      ) : null}
+
       {/* ── Account (identity + location) ── */}
       <SectionHeader>Account</SectionHeader>
       <GroupCard>
@@ -389,10 +475,12 @@ export default function AccountScreen() {
         <PlacesAutocomplete
           value={form.homeAddress}
           onChangeText={set('homeAddress')}
+          onSelect={(p) => deriveCity(p.description)}
           placeholder="Home address"
           type="address"
           containerStyle={fs.headField}
           inputStyle={fs.headInput}
+          highlight={promptHomeAddress}
         />
         {/* Only a prefill shortcut for an empty field — once there's an address
             (typed or picked), it's redundant, so hide it. */}
@@ -404,6 +492,30 @@ export default function AccountScreen() {
             <Text style={styles.locateLabel}>Use my current location</Text>
           </TouchableOpacity>
         ) : null}
+        <CardDivider />
+        {/* Home area (city) — the coarse location Calen uses to suggest local
+            activities. Auto-fills from the address; editable to override. The
+            street address is never sent to the assistant, only this. */}
+        <Input
+          value={form.homeCity}
+          onChangeText={setCity}
+          placeholder="City or general area"
+          containerStyle={fs.headField}
+          style={fs.headInput}
+        />
+        {derivingCity ? (
+          <View style={styles.locateRow}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={styles.cityHint}>Finding your area…</Text>
+          </View>
+        ) : (!form.homeCity.trim() && form.homeAddress.trim()) ? (
+          <TouchableOpacity style={styles.locateRow} onPress={() => deriveCity(form.homeAddress)} activeOpacity={0.7}>
+            <Ionicons name="locate-outline" size={16} color={colors.primary} />
+            <Text style={styles.locateLabel}>Fill from home address</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.cityHint}>Calen uses this to suggest local activities — never your street address.</Text>
+        )}
         <CardDivider />
         <DateField
           inlineLabel="Your birthday"
@@ -488,6 +600,7 @@ const styles = StyleSheet.create({
   emailExpand: { paddingHorizontal: 14, paddingBottom: spacing.sm },
   locateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: 14, paddingBottom: spacing.sm },
   locateLabel: { fontSize: 13, color: colors.primary, fontWeight: '600' },
+  cityHint: { fontSize: 12, color: colors.textMuted, paddingHorizontal: 14, paddingBottom: spacing.sm, lineHeight: 16 },
   dangerCard: { borderColor: colors.error + '55' },
   // Email row text
   secText: { flex: 1, minWidth: 0 },

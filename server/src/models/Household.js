@@ -36,6 +36,14 @@ const householdSchema = new mongoose.Schema({
   // Shared (household-level) settings — moved off User in Phase 3.
   timezone:           { type: String, default: 'America/Toronto' },
   homeAddress:        { type: String, default: '' },
+  // Coarse home-area label (city + region/country, e.g. "Ottawa, Ontario,
+  // Canada") derived client-side from homeAddress — or set by hand. Stored
+  // PLAINTEXT like `timezone` (not sealed with homeAddress): it is coarse enough
+  // to be non-sensitive, and the server-side cloud AI reads it to ground local
+  // suggestions in the household's actual area instead of guessing from the
+  // timezone. The street address itself is never sent to the model. See
+  // ai-assistant.md "Home area is coarse, not the street address".
+  homeCity:           { type: String, default: '' },
   lat:                { type: Number },
   lon:                { type: Number },
   // null = no shopping day configured yet. New households start unset so no

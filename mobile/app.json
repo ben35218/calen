@@ -26,7 +26,8 @@
           "readdle-spark",
           "ymail",
           "protonmail",
-          "fastmail"
+          "fastmail",
+          "comgooglemaps"
         ],
         "NSCameraUsageDescription": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
         "NSPhotoLibraryUsageDescription": "Attach photos of items, receipts, and confirmations from your library.",

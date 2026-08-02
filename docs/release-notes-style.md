@@ -30,10 +30,28 @@ from the output of `npm run release:notes` (see [scripts/release-notes.mjs](../s
 - **A short "FIXED" section** at the end for notable bug fixes testers had hit.
 - **Warm bookends:** a one-line thanks at the top, a "report via Help & feedback"
   nudge at the bottom (plain text — no emoji).
-- **≤ 4000 characters** (App Store Connect `whatsNew` hard limit). Tighten if over.
-- Keep bullets short; one idea each.
 
-## Canonical example (2026-07-30, build 24 — accepted by App Store Connect)
+### Keep it short
+
+Testers skim these on a phone, in TestFlight, before opening the app. A wall of
+text gets skipped entirely, so brevity is a rule, not a preference:
+
+- **Target ~1200 characters** for the whole thing (the App Store Connect
+  `whatsNew` hard limit is 4000 — that's the ceiling, not the goal).
+- **At most 6 area sections**, and **at most 3 bullets per area.** If a release
+  touched more, cut to what a tester can actually go and try.
+- **One line per bullet** — one idea, no sub-clauses, no parenthetical asides,
+  no naming the setting path unless the tester needs it to find the feature.
+- **Cut anything a tester can't act on.** Pricing mechanics, internal reasons,
+  and "we also refactored X" never earn a line.
+- When two bullets describe the same feature from different angles, keep one.
+
+## Format reference (2026-07-30, build 24 — accepted by App Store Connect)
+
+This is the proof of the PLAIN-TEXT format App Store Connect accepts — copy its
+shape, not its length. At ~1650 characters, with 5 bullets in one section and
+several running to two clauses, it sits well past the target above; today it
+would be cut to the three things a tester should actually go and try per area.
 
 ```
 What to Test — this build

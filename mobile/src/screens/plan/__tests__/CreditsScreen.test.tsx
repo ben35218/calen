@@ -6,11 +6,17 @@ import { render, cleanup, fireEvent } from '@testing-library/react-native';
 // renewal wording when inactive; "renews with N credits" + Manage subscription
 // when active & renewing; "Cancelled — benefits until ⟨date⟩" + Manage when
 // auto-renew is off — hidden for unlimited admins; the "What things cost" flat
-// price list from `status.actionCosts`; and a History that itemizes usage debits
-// by action alongside the grants.
+// price list from `status.actionCosts`; a "Where your credits go" card that
+// summarizes credits SPENT per feature this week (from `status.spend`); and a
+// History limited to purchases & grants (usage debits are NOT listed there).
 
-// useFocusEffect fires outside a navigator in this bare render — no-op it.
-jest.mock('@react-navigation/native', () => ({ useFocusEffect: () => {} }));
+// useFocusEffect fires outside a navigator in this bare render — no-op it;
+// useNavigation feeds the History card's "See all" drill-in.
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: () => {},
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
 
 // Ionicons render as labelled text (same stub as AddOnsScreen.test.tsx).
 jest.mock('@expo/vector-icons', () => {
@@ -79,9 +85,20 @@ jest.mock('../shared', () => ({
     refresh: jest.fn().mockResolvedValue(undefined),
     manage: mockPlanManage,
   }),
+  useCreditLedger: () => ({ data: mockLedger.entries }),
   describeReset: () => null,
   humanCredits: (n: number) => Math.max(0, Math.floor(n ?? 0)).toLocaleString(),
   shortDate: (iso?: string | null) => (iso ? 'August 15' : null),
+  ledgerAmount: (n: number) =>
+    Number.isInteger(n) ? Math.floor(n).toLocaleString() : n.toFixed(1),
+  LEDGER_LABEL: {
+    purchase: 'Credit pack',
+    starter: 'Welcome credits',
+    plan: 'Monthly plan credits',
+    refund: 'Refund',
+    admin: 'Adjustment',
+    usage: 'AI usage',
+  },
 }));
 
 import CreditsScreen from '../CreditsScreen';
@@ -106,6 +123,7 @@ function baseStatus(overrides: any = {}) {
       expiresAt: null,
     },
     usage: {},
+    spend: {},
     usageScope: 'user',
     hasHousehold: true,
     ...overrides,
@@ -194,19 +212,23 @@ describe('CreditsScreen', () => {
     expect(view.queryByText('Buy credits')).toBeNull();
   });
 
-  it('renders the flat per-action prices as a rate card: price ascending, call pinned last', async () => {
+  it('renders the rate card: chat pinned first, price ascending, call pinned last', async () => {
     const view = await render(<CreditsScreen />);
     expect(view.getByText('What things cost')).toBeTruthy();
-    expect(view.getByText('5 credits')).toBeTruthy();
+    // Chat is token-priced (grows with the reply), so it reads "Varies with
+    // length" instead of a flat number; each reply reports its own cost.
+    expect(view.getByText('Varies with length')).toBeTruthy();
     expect(view.getByText('20 credits/min')).toBeTruthy();
-    // Cheapest → priciest from the live server values (ties alphabetical by
-    // label), with the per-minute call row last — its unit differs and the
-    // per-second billing note under the list is its footnote.
+    // Web search is no longer a separate charge (folded into token-priced chat).
+    expect(view.queryByText('Web search')).toBeNull();
+    // Chat pins first; the rest ascend by the live server price (ties
+    // alphabetical by label); the per-minute call row pins last — its unit
+    // differs and the per-second billing note under the list is its footnote.
     const labels = [
+      'Chat message', // token-priced, pinned first
       'Form assist', // 1
       'Photo scan', // 3
       'Recipe generation', // 3 — tie broken alphabetically
-      'Chat message', // 5
       'Owner’s manual parsing', // 40
       'Phone call', // 20/min, pinned last
     ].map((t) => view.getByText(t));
@@ -215,7 +237,7 @@ describe('CreditsScreen', () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
-  it('history itemizes usage debits by action and plan grants, keeping grant styling', async () => {
+  it('history lists purchases & grants only — usage debits are excluded', async () => {
     mockLedger.entries = [
       { kind: 'usage', credits: -6.7, productId: null, action: 'call', note: null, createdAt: '2026-07-28T00:00:00Z' },
       { kind: 'usage', credits: -2, productId: null, action: 'chat', note: null, createdAt: '2026-07-27T00:00:00Z' },
@@ -223,15 +245,61 @@ describe('CreditsScreen', () => {
       { kind: 'purchase', credits: 500, productId: 'credits_499', action: null, note: null, createdAt: '2026-07-01T00:00:00Z' },
     ];
     const view = await render(<CreditsScreen />);
-    // Usage rows label by action; a prorated call debit keeps its fraction.
-    expect(view.getAllByText('Phone call').length).toBe(2); // price list + ledger row
-    expect(view.getByText('-6.7')).toBeTruthy();
-    expect(view.getByText('Chat')).toBeTruthy();
-    expect(view.getByText('-2')).toBeTruthy();
-    // Grants render as today: labeled kind, +whole credits.
+    // Grants render as before: labeled kind, +whole credits.
     expect(view.getByText('Monthly plan credits')).toBeTruthy();
     expect(view.getByText('+600')).toBeTruthy();
     expect(view.getByText('Credit pack')).toBeTruthy();
     expect(view.getByText('+500')).toBeTruthy();
+    // Usage debits are summarized in the spend card, never itemized in History.
+    expect(view.queryByText('-6.7')).toBeNull();
+    expect(view.queryByText('-2')).toBeNull();
+  });
+
+  it('history caps the inline card and drills into the full history when there are more', async () => {
+    mockNavigate.mockClear();
+    // Six grants — one over the inline cap, so a "See all" appears.
+    mockLedger.entries = Array.from({ length: 6 }, (_, i) => ({
+      kind: 'purchase',
+      credits: 500,
+      productId: 'credits_499',
+      action: null,
+      note: null,
+      createdAt: `2026-07-0${i + 1}T00:00:00Z`,
+    }));
+    const view = await render(<CreditsScreen />);
+    // Only the cap (5) of the six grant rows render inline.
+    expect(view.getAllByText('Credit pack')).toHaveLength(5);
+    // The "See all" affordance drills into the full-history screen.
+    const seeAll = view.getByText('See all history');
+    fireEvent.press(seeAll);
+    expect(mockNavigate).toHaveBeenCalledWith('CreditHistory');
+  });
+
+  it('history hides "See all" when the grants fit inline', async () => {
+    mockLedger.entries = [
+      { kind: 'plan', credits: 600, productId: 'calen_ai_monthly_499', action: null, note: null, createdAt: '2026-07-15T00:00:00Z' },
+      { kind: 'purchase', credits: 500, productId: 'credits_499', action: null, note: null, createdAt: '2026-07-01T00:00:00Z' },
+    ];
+    const view = await render(<CreditsScreen />);
+    expect(view.getByText('Monthly plan credits')).toBeTruthy();
+    expect(view.queryByText('See all history')).toBeNull();
+  });
+
+  it('spend card summarizes credits per feature this week, biggest first, with a total', async () => {
+    mockStatus.data = baseStatus({ spend: { chat: 42, call: 6.7, scan: 3 } });
+    const view = await render(<CreditsScreen />);
+    expect(view.getByText('Where your credits go')).toBeTruthy();
+    // Feature labels reuse the friendly analytics names; a prorated call keeps
+    // its fraction.
+    expect(view.getByText('Chat & assistants')).toBeTruthy();
+    expect(view.getByText('42')).toBeTruthy();
+    expect(view.getByText('Assistant calls')).toBeTruthy();
+    expect(view.getByText('6.7')).toBeTruthy();
+    // A total row sums the week's spend.
+    expect(view.getByText('Spent this week')).toBeTruthy();
+    expect(view.getByText('51.7 credits')).toBeTruthy();
+    // Biggest-first ordering: chat (42) before scan (3).
+    const json = JSON.stringify(view.toJSON());
+    expect(json.indexOf('Chat & assistants')).toBeLessThan(json.indexOf('Photo scans'));
   });
 });

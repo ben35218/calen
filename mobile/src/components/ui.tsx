@@ -25,6 +25,7 @@ import type { KeyboardAwareScrollViewRef } from 'react-native-keyboard-controlle
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence } from 'react-native-reanimated';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '../theme';
 import {
   COUNTRIES,
@@ -47,6 +48,7 @@ export function Button({
   variant = 'primary',
   color,
   compact,
+  style,
 }: {
   title: string;
   onPress: () => void;
@@ -55,6 +57,7 @@ export function Button({
   variant?: 'primary' | 'ghost' | 'danger';
   color?: string;
   compact?: boolean;
+  style?: StyleProp<ViewStyle>;
 }) {
   const isGhost = variant === 'ghost';
   const isDanger = variant === 'danger';
@@ -73,6 +76,8 @@ export function Button({
         // Ghost-variant colour override tints the outline instead of the fill.
         color && isGhost ? { borderColor: color } : null,
         (disabled || loading) && styles.btnDisabled,
+        // Caller layout override (e.g. margin to space it from card copy).
+        style,
       ]}
     >
       {loading ? (
@@ -373,6 +378,32 @@ export function useRevealOnOpen(open: boolean, itemCount: number) {
   return ref;
 }
 
+// Wraps an input + its inline dropdown so the pair is scrolled clear of the
+// keyboard when the dropdown opens. The scroll context only exists for
+// components rendered INSIDE <Screen> — a screen component that itself renders
+// Screen reads a null context, making useRevealOnOpen a silent no-op there.
+// Screens therefore use this child component around the input/dropdown pair;
+// calling useRevealOnOpen directly is only correct in a component that is
+// already rendered inside a Screen (e.g. PlacesAutocomplete).
+export function RevealWrap({
+  open,
+  count,
+  style,
+  children,
+}: {
+  open: boolean;
+  count: number;
+  style?: StyleProp<ViewStyle>;
+  children: React.ReactNode;
+}) {
+  const ref = useRevealOnOpen(open, count);
+  return (
+    <View ref={ref} collapsable={false} style={style}>
+      {children}
+    </View>
+  );
+}
+
 // Wraps a form section that should sit at the top of the viewport when the
 // screen opens focused on it (a `focus` deep-link, e.g. PersonForm's
 // `focus: 'dates'` from the Occasions list). Must be a DIRECT child of a
@@ -499,21 +530,30 @@ export function BottomSheet({
   style?: StyleProp<ViewStyle>;
   avoidKeyboard?: boolean;
 }) {
-  const sheet = (
-    <Pressable style={[styles.modalSheet, style]} onPress={(e) => e.stopPropagation()}>
-      {title ? <Text style={styles.modalTitle}>{title}</Text> : null}
-      {children}
-    </Pressable>
-  );
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalBackdrop} onPress={onClose}>
-        {avoidKeyboard ? (
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>{sheet}</KeyboardAvoidingView>
-        ) : (
-          sheet
-        )}
-      </Pressable>
+      {/* The KeyboardAvoidingView must be the full-screen flex container (not a
+          wrapper hugging the sheet) or `behavior:'padding'` mis-measures and the
+          sheet floats detached from the keyboard with the scrim showing through.
+          It owns the dim scrim + docks the sheet to the bottom; when the keyboard
+          opens it lifts the sheet to sit flush on top of it. */}
+      <KeyboardAvoidingView
+        style={styles.modalBackdrop}
+        behavior={avoidKeyboard && Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        {/* Tap-outside-to-close scrim behind the sheet. */}
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <Pressable
+          // Pad the bottom past the home indicator so the last row (e.g. the
+          // label picker's "Add Custom Label…") clears the safe-area inset.
+          style={[styles.modalSheet, { paddingBottom: spacing.md + insets.bottom }, style]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          {title ? <Text style={styles.modalTitle}>{title}</Text> : null}
+          {children}
+        </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -629,6 +669,33 @@ export function FormError({ children, style }: { children?: React.ReactNode; sty
 // One size (13 / lineHeight 18); replaces the drifting `hint`/`intro` locals.
 export function Hint({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
   return <Text style={[styles.hint, style]}>{children}</Text>;
+}
+
+// A prominent tinted-banner callout (louder than a muted Hint) shown at the top
+// of a settings screen when the user arrived from a Calen "setup" deep-link — it
+// states why they're here and what to fill in. Mirrors the app's tinted-banner
+// convention (CreditsBanner, EventLocation's phone callout). Defaults to the
+// app-primary tint; pass `accent` for a feature-area colour (e.g. a calendar
+// colour). Pair it with `highlight` on the target field to draw the eye there.
+export function SetupCallout({
+  children,
+  icon = 'information-circle',
+  accent = colors.primary,
+  style,
+}: {
+  children: React.ReactNode;
+  icon?: keyof typeof Ionicons.glyphMap;
+  accent?: string;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View style={[styles.setupCallout, { backgroundColor: accent + '1A', borderColor: accent + '55' }, style]}>
+      <View style={[styles.setupCalloutIcon, { backgroundColor: accent }]}>
+        <Ionicons name={icon} size={16} color="#fff" />
+      </View>
+      <Text style={styles.setupCalloutText}>{children}</Text>
+    </View>
+  );
 }
 
 // The standard leading disc for list rows: a solid-fill circle (borderRadius =
@@ -1706,6 +1773,26 @@ const styles = StyleSheet.create({
   skeletonRowText: { flex: 1, marginLeft: spacing.md },
   formError: { color: colors.error, marginVertical: spacing.sm, fontSize: 14 },
   hint: { fontSize: 13, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.md },
+  // SetupCallout — a tinted fill + border, filled icon disc, bold text (tint
+  // colours applied inline from the `accent` prop). Deliberately louder than Hint.
+  setupCallout: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  setupCalloutIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setupCalloutText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text, lineHeight: 19 },
   colorPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   chip: {
     borderWidth: 1,
@@ -1790,7 +1877,9 @@ const styles = StyleSheet.create({
   selectPlaceholder: { color: colors.textMuted },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    // A firmer scrim so a bottom sheet reads as clearly on top of the busy screen
+    // behind it (the label picker over the contact form), not blended into it.
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-end',
   },
   modalSheet: {

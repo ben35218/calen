@@ -5,7 +5,6 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const Recipe = require('../models/Recipe');
-const { sendRecipeShare } = require('../services/mailer');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter } = require('../middleware/usageMeter');
@@ -381,25 +380,10 @@ async function generateRecipeWithAI(description) {
 // tag-ingredients was retired too (the server can't read a sealed recipe) — the
 // client re-tags via compute-ingredient-tags with the decrypted body + re-seals.
 
-// Email a styled copy of the recipe (the share sheet can only send plain text).
-// The recipe content is client-supplied (decrypted on-device) — the server can't
-// read the sealed row.
-router.post('/:id/share-email', async (req, res) => {
-  try {
-    const recipe = req.body?.recipe;
-    if (!recipe || typeof recipe !== 'object') return res.status(400).json({ error: 'recipe is required' });
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ error: 'Enter a valid email address' });
-    }
-    const fromName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ');
-    const sent = await sendRecipeShare({ toEmail: email, fromName, recipe });
-    if (!sent.sent) return res.status(502).json({ error: 'Could not send the email' });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Recipe email-share (POST /:id/share-email) RETIRED 2026-08-01: recipe sharing
+// is device-composed — the sender hands the decrypted recipe to the OS share
+// sheet from RecipeDetailScreen, so the recipient's address and the recipe body
+// no longer round-trip through the server. See mailer.js "Recipe shares".
 
 // Compute ingredient-to-step tags from provided data (no DB write — for the edit UI)
 router.post('/compute-ingredient-tags', meter('aiHelper'), requireAiEnabled, async (req, res) => {

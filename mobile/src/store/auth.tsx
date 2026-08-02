@@ -13,10 +13,12 @@ import {
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
 import { maintainKeyHygiene } from '../lib/dropMigration';
+import { ensureSharedCalendarKeys } from '../lib/calendarKeys';
 import { queryClient } from '../lib/queryClient';
 import { clearAll as clearReplica } from '../lib/replica';
 import { resetRecordCursor, syncRecords } from '../lib/records';
 import { cacheUnlocked, clearUnlockCache } from '../lib/unlock';
+import { clearViewerContentCache } from '../lib/viewerAccess';
 
 // Enroll (or unlock) the E2EE keypair after auth, then make sure this session
 // holds the household key (owner mints it lazily on first unlock). Additive and
@@ -87,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // another account on this device can't inherit the paywall unlock.
     queryClient.clear();
     clearUnlockCache();
+    clearViewerContentCache();
     await clearReplica().catch(() => {});
     // Wiping the replica MUST also reset the record-sync cursor: it lives in its
     // own AsyncStorage key, so without this the next sign-in resumes incremental
@@ -153,6 +156,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => subscribeKeysReady(() => {
     void (async () => {
       try { await syncRecords(); } catch { /* offline — the cached replica stands */ }
+      // Shared-lane CalendarKeys (D1, both directions): the sync above can only
+      // decrypt cal-scoped rows if the calendar's key is held, and sign-out
+      // wiped the in-memory keys — load them and re-pull (the helper syncs
+      // again itself), or an owner's outside-shared calendar (and a
+      // collaborator's shared calendar) comes back empty after re-login.
+      try { await ensureSharedCalendarKeys(); } catch { /* offline — retried on the next unlock */ }
       queryClient.invalidateQueries();
     })();
   }), []);

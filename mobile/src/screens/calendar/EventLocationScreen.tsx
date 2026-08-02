@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Image, StyleSheet, Alert, Text } from 'react-native';
+import { View, Image, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -10,7 +10,7 @@ import { getCachedToken } from '../../lib/secureToken';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
 import { setLocationDraft } from '../../lib/locationDraft';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
-import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader } from '../../components/ui';
+import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader, SetupCallout } from '../../components/ui';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing, radius } from '../../theme';
@@ -35,9 +35,31 @@ interface PlaceDetails {
   international_phone_number?: string;
 }
 
-// The event's Location view (Apple Calendar-style): search a place, preview and
-// edit its details — name, address, and the business phone Calen dials for
-// Call to Cancel. Two modes:
+// Strip a leading business name from an address so the resolved place card never
+// shows the same name on both lines. Google's autocomplete `description` (and
+// sometimes `formatted_address`) prefixes an establishment's address with its
+// name — "St. Martha's Brasserie, 2571 St Joseph Blvd…" — which read as a bug
+// when dumped verbatim into a field labeled "Address".
+function addressWithoutName(addr: string, nm: string): string {
+  const a = addr.trim();
+  const n = nm.trim();
+  if (n && a.toLowerCase().startsWith(n.toLowerCase())) {
+    return a.slice(n.length).replace(/^[\s,]+/, '');
+  }
+  return a;
+}
+
+// The event's Location view (Apple Calendar-style). One input model at a time:
+//  - EMPTY: a single search field (Google Places) with a quiet "Enter an address
+//    manually" escape hatch below it.
+//  - PICKED: a picked place collapses into a read-only place card — map, name,
+//    and address on separate lines (name stripped from the address) — with an ✕
+//    to change/clear it. The business phone stays a first-class editable field
+//    below the card (it's what Calen dials for Call to Cancel, and is often the
+//    thing being added).
+//  - MANUAL: the Name / Address fields for a place Google can't find, reached via
+//    the escape hatch, with a "Search for a place instead" link back.
+// Two save modes:
 //  - draft (from the event form): the checkmark hands the values back via
 //    locationDraft, and the form saves them with the event.
 //  - event (eventId param; e.g. Call to Cancel needing a phone number): the
@@ -54,6 +76,10 @@ export default function EventLocationScreen() {
   const [address, setAddress] = useState(initial?.location ?? '');
   const [phone, setPhone] = useState(initial?.phone ?? '');
   const [placeId, setPlaceId] = useState<string | undefined>(initial?.placeId);
+  // A location already on the event but with no place_id (typed by hand, or a
+  // legacy record) opens straight into the manual fields so its value is visible
+  // and editable rather than hidden behind an empty search box.
+  const [manual, setManual] = useState<boolean>(!!(initial?.location && !initial?.placeId));
   // Draft mode is ready immediately; event mode waits for the decrypt below
   // before the discard guard snapshots its clean baseline.
   const [seeded, setSeeded] = useState(!eventId);
@@ -72,16 +98,23 @@ export default function EventLocationScreen() {
       const e = (await openRecord('CalendarEvent', eventQ.data)) as unknown as Record<string, unknown>;
       if (cancelled) return;
       setEvent(e);
-      setAddress((prev) => prev || String(e.location ?? ''));
+      const loc = String(e.location ?? '');
+      const pid = e.placeId ? String(e.placeId) : undefined;
+      setAddress((prev) => prev || loc);
       setPhone((prev) => prev || String(e.phone ?? ''));
-      setPlaceId((prev) => prev ?? (e.placeId ? String(e.placeId) : undefined));
+      setPlaceId((prev) => prev ?? pid);
+      // Same rule as the initial seed: a saved location with no place_id opens
+      // in the editable manual fields.
+      if (loc && !pid && !initial?.placeId) setManual(true);
       setSeeded(true);
     })();
     return () => { cancelled = true; };
   }, [eventQ.data]);
 
-  // A picked place prefills the details from Google where available.
+  // A picked place prefills the details from Google where available and collapses
+  // the search into the resolved place card.
   const onPick = async (p: PlacePrediction) => {
+    setManual(false);
     setPlaceId(p.place_id);
     setName(p.main_text ?? '');
     setAddress(p.secondary_text ?? p.description);
@@ -95,6 +128,16 @@ export default function EventLocationScreen() {
     } catch {
       /* details are best-effort — fields stay editable either way */
     }
+  };
+
+  // Clear the picked place / manual entry and return to the empty search state.
+  const clearPlace = () => {
+    setPlaceId(undefined);
+    setName('');
+    setAddress('');
+    setPhone('');
+    setSearch('');
+    setManual(false);
   };
 
   // The single string stored on the event: "Name, address" like the
@@ -154,6 +197,9 @@ export default function EventLocationScreen() {
 
   const previewAddress = address.trim();
   const token = getCachedToken();
+  const mapUri = previewAddress
+    ? `${API_URL}/places/staticmap?token=${token}&q=${encodeURIComponent(previewAddress)}&w=640&h=320`
+    : null;
 
   // The callout is tinted with the event's own calendar colour (the calendar
   // whose Reschedule/Cancel card sent the user here), not the app primary —
@@ -161,75 +207,103 @@ export default function EventLocationScreen() {
   const calType = String((event?.calendarType as string | undefined) ?? 'activities');
   const accent = calColors[calType] || customCalendars.find((c) => c.id === calType)?.color || colors.primary;
 
+  const picked = !!placeId;
+  // Card lines: name titles the place; address sits below with the name stripped
+  // so it never repeats. With no name (a bare address) the address is the title.
+  const cardAddress = addressWithoutName(address, name);
+  const cardTitle = name.trim() || cardAddress || previewAddress;
+  const cardSubtitle = name.trim() ? cardAddress : '';
+
   return (
     <Screen>
-      {/* Sent here from the event view's Reschedule/Cancel card with no number
-          yet: a prominent accent callout (not a muted hint) so the reason the
-          user is here — and the action to take — is the first thing they see. */}
+      {/* Sent here from the event view's Reschedule/Cancel card — or a Calen
+          "Add business phone" setup chip — with no number yet: a prominent accent
+          callout so the reason the user is here is the first thing they see. */}
       {promptPhone && !phone.trim() ? (
-        <View style={[styles.callout, { backgroundColor: accent + '1A', borderColor: accent + '55' }]}>
-          <View style={[styles.calloutIcon, { backgroundColor: accent }]}>
-            <Ionicons name="call" size={16} color="#fff" />
-          </View>
-          <Text style={styles.calloutText}>Add a business phone number to activate calling.</Text>
-        </View>
+        <SetupCallout icon="call" accent={accent}>Add a business phone number to activate calling.</SetupCallout>
       ) : null}
 
-      <PlacesAutocomplete
-        value={search}
-        onChangeText={setSearch}
-        onSelect={onPick}
-        placeholder="Search for a business or address"
-      />
+      {picked ? (
+        /* PICKED — the resolved place collapses into a read-only card. */
+        <View style={styles.placeCard}>
+          {mapUri ? <Image source={{ uri: mapUri }} style={styles.placeMap} /> : null}
+          <View style={styles.placeBody}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.placeName} numberOfLines={2}>{cardTitle}</Text>
+              {cardSubtitle ? <Text style={styles.placeAddr} numberOfLines={2}>{cardSubtitle}</Text> : null}
+            </View>
+            <TouchableOpacity
+              onPress={clearPlace}
+              style={styles.changeBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Change location"
+            >
+              <Ionicons name="close" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : manual ? (
+        /* MANUAL — enter a place Google can't find. */
+        <>
+          <TouchableOpacity onPress={() => setManual(false)} accessibilityRole="button">
+            <Text style={[styles.link, { color: accent }]}>Search for a place instead</Text>
+          </TouchableOpacity>
+          <SectionTitle>Location details</SectionTitle>
+          <Input label="Name" value={name} onChangeText={setName} placeholder="Business or place name" />
+          <Input label="Address" value={address} onChangeText={setAddress} placeholder="Street address" />
+          {mapUri ? (
+            <View style={styles.mapCard}>
+              <Image source={{ uri: mapUri }} style={styles.mapImage} />
+            </View>
+          ) : null}
+        </>
+      ) : (
+        /* EMPTY — search is the primary path; manual is the escape hatch. */
+        <>
+          <PlacesAutocomplete
+            value={search}
+            onChangeText={setSearch}
+            onSelect={onPick}
+            placeholder="Search for a business or address"
+          />
+          <TouchableOpacity onPress={() => setManual(true)} accessibilityRole="button">
+            <Text style={[styles.link, { color: accent }]}>Enter an address manually</Text>
+          </TouchableOpacity>
+        </>
+      )}
 
-      <SectionTitle>Details</SectionTitle>
-      <Input label="Name" value={name} onChangeText={setName} placeholder="Business or place name" />
-      <Input label="Address" value={address} onChangeText={setAddress} placeholder="Street address" />
+      {/* The business phone is always editable — it's the field Calen dials for
+          Call to Cancel, and often the reason the user is on this screen. */}
       <PhoneField
         label="Phone"
         value={phone}
         onChangeText={setPhone}
         placeholder="Business phone number"
+        containerStyle={styles.phone}
         // Draw attention to the empty field when we sent the user here to add one.
         highlight={promptPhone && !phone.trim()}
       />
       <Hint>Calen uses the phone number to call the business — for example to cancel this appointment for you.</Hint>
-
-      {previewAddress ? (
-        <View style={styles.mapCard}>
-          <Image
-            source={{ uri: `${API_URL}/places/staticmap?token=${token}&q=${encodeURIComponent(previewAddress)}&w=640&h=320` }}
-            style={styles.mapImage}
-          />
-        </View>
-      ) : null}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  // Accent callout (mirrors the app's tinted-banner convention, e.g. CreditsBanner):
-  // a calendar-colour-tinted fill + border, a filled icon disc, and bold text —
-  // deliberately louder than a muted Hint so the CTA doesn't blend into the page.
-  // The tint colours are applied inline from the event's calendar accent.
-  callout: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.md,
+  link: { fontSize: 14, fontWeight: '600', paddingVertical: spacing.sm },
+  placeCard: {
+    borderRadius: radius.lg, overflow: 'hidden',
+    backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
   },
-  calloutIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
+  placeMap: { width: '100%', height: 140 },
+  placeBody: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md },
+  placeName: { fontSize: 16, fontWeight: '600', color: colors.text },
+  placeAddr: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
+  changeBtn: {
+    width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.background,
   },
-  calloutText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text, lineHeight: 19 },
+  phone: { marginTop: spacing.lg },
   mapCard: {
     height: 160, borderRadius: radius.lg, overflow: 'hidden',
     marginTop: spacing.lg, backgroundColor: colors.surface,

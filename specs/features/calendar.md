@@ -1,13 +1,14 @@
 ---
 title: Calendar & events
 status: current
-last-verified: bb130ef+ (2026-07-30); the Add-ons storefront row on the Calendars view is now permanent — when every add-on is owned it no longer disappears but persists as the stable store/manage entry (HOUSEHOLD group's closing row) with subtitle "All add-ons added" instead of the catalog list, so the entry point keeps its learned location and future add-ons surface there (2026-07-30); the Event Action (call placement) screen shows the flat call price ("~N credits/min", from `billing/status.actionCosts.callPerMinute`) above the call CTA — pre-call cost transparency per billing-plans.md (2026-07-30); the Appointments built-in calendar's default colour is now blue `#1976D2` (was purple `#7B1FA2`) in both defaults maps (`lib/calendarPrefs.CALENDARS` + `lib/calendar.CALENDAR_COLORS`); device colour overrides are untouched, and the colour editor's reset now returns Appointments to blue (2026-07-29); `guestListVisible` and hand-set `cancelled` writes now go through client re-seal — the Invitees screen's guest-list toggle (`calendarApi.setGuestListVisible`) and both mark-cancelled surfaces (`calendarApi.cancelEvent`) re-seal the event via the replica instead of PUTting the field plaintext, which the opaque store rejects on an E2EE household with the misleading "update to the latest app version" error (the TestFlight-19 invitee bug); the event form also seals `guestListVisible` into every create/edit payload so the flag survives re-seals and syncs across devices (2026-07-29); calendar loading is now cache-first — `loadCalendarData` gained a `sync: 'inline' | 'background'` mode: the interactive views (month grid, List layer, day timeline/agenda, search) paint immediately from the local replica while `revalidateCalendar()` pulls records+settings+trips concurrently behind the paint and invalidates `['calendar']` only on actual change (deduped, 10s floor; trips reconciled into the replica including removals; grocery config cached device-local in `hc_grocery_settings`); a never-synced device falls back to inline; holiday chips render on mount independent of the data query; the month grid's first-load spinner was replaced with deterministic per-cell skeleton placeholders (per density) and the List layer's day list with `SkeletonList` (2026-07-29); deleting a recurring event offers Apple's "Delete This Event Only" (adds the occurrence's day to a sealed `exceptionDates` list the shared engine skips) vs "Delete All Future Events" (sets `recurrence.until` to the day before, or deletes the series when it's the first occurrence); shared by the detail view + edit form via `lib/eventDelete.ts` + `calendarApi.excludeOccurrence`/`truncateSeries` (HDK-sealed; outside-shared calendars not yet handled) (2026-07-29); event detail view now reflects every configured field — recurrence summary line ("Repeats weekly … until <date>", accent-coloured), a Travel Time row (duration + "Leave by" on timed events), and an Apple-style mini hour-grid timeline card placing the event block by its clock time (timed events only; all-day omits it), whose block content adapts to duration — >1h shows title+location+time, exactly 1h drops location, <1h shows title only; the "Delete Event" control is an Apple-style translucent floating pill **pinned to the screen** (a sibling of the scroll view, so it stays fixed while content scrolls beneath it instead of scrolling away attached to the map); the location map closes the scroll content below it (2026-07-29); the event detail view re-pulls the event on focus (`useFocusEffect`) so edits made in the form — e.g. turning off recurrence, which un-hides the Cancel/Reschedule card — are reflected on return without a manual refresh; the Cancel/Reschedule card moved to sit directly below the timeline card and above the Calendar row (was down among the alert/travel rows); its title shortened to "Cancel/Reschedule" (was "Cancel or Reschedule", which truncated in the one-line card title) (2026-07-29); Starts/Ends picker commits on dismiss (tap-away accepts) + start-time change past the end drags the end to preserve duration, and the symmetric reverse — editing the end (time or date) before the start drags the start back to preserve duration, via shared lib/datetime.startKeepingDuration reused by every Starts/Ends form (2026-07-28, reverse 2026-07-29); event detail view renders both alerts grouped in one divided card, with the Delete Event pill floating over the location map (2026-07-28); Birthdays→Occasions calendar (labeled contact dates as annual occasions), calendar-level occasion alerts, scheduled e-cards (2026-07-28); per-contact occasion exclusion (`occasionsHidden`) + occasion rows open PersonForm scrolled to Dates (2026-07-28); e-card recipients scoped to the occasion's contact + linked contacts, with inline add-email + per-recipient address picker for multi-email contacts (2026-07-28); scheduled-card indicator on the occasion row + edit/cancel + live email preview (2026-07-28); occasions render as kind icons (not chips) on the month grid and tap through to the Occasions screen from calendar/day/agenda surfaces (2026-07-28); a tapped occasion scrolls to the top of the Occasions list and is highlighted (`focus` param) (2026-07-28); e-card hour picker opens scrolled to noon (2026-07-28); e-card style gallery — 3 designs per occasion kind, greeting-card email with CSS-motion progressive enhancement, in-form style picker + animated live preview (2026-07-28); e-card personalization — fully editable card lines (greeting/sign-off/signature overrides), email-safe font menu, up to 3 inline CID photos (2026-07-28); default greeting + subject address recipients by first name only (2026-07-28); travel-time origin is an editable "starting address" (home-seeded, not labelled as home) with Current-location + Home one-tap shortcuts via shared `lib/currentLocation.ts` (2026-07-28); the two event alert slots must be distinct — each picker excludes the other slot's value (`excludeUsedAlert`) so the same lead time can't be set twice (2026-07-28); event attachments always seal on-device before upload (removed the plaintext fallback) and the server accepts iOS's relabeled opaque-binary content-types so the encrypted `.bin` ciphertext isn't dropped as "No file uploaded"; the event view previews attachments in-app via a WebView (images + PDFs render inline on the AttachmentPreview screen, Share button in the header) — WebView is used instead of RN's <Image>, which hard-crashes on the new architecture in both an RN <Modal> and a plain native-stack screen; expo-sharing alone (the interim fix) only gave the share sheet, not a direct preview (2026-07-29); the End Repeat (`until`) date loads back as the local Y-M-D via `ymd(new Date(until))` instead of slicing the ISO's UTC date, fixing a one-day-forward drift on every edit in behind-UTC timezones (2026-07-29); new events default travel time **on** only once the event location (destination) is set, then with the origin seeded from the user's current location, but only when location has already been shared with the app (`resolveCurrentAddressIfShared` reads the granted permission without prompting, and no GPS fix is taken until a destination exists); applied once so it doesn't override the user turning it back off; with no destination or no shared location the default is off; editing an existing event leaves its saved travel-time setting untouched; the Travel Time row shows "On" while enabled but not yet computed instead of "None"; the "Home" origin shortcut decrypts the E2EE-sealed home address client-side via shared `lib/homeAddress.ts` (2026-07-29); the Occasions empty-state CTA now reads "Add dates in Contacts" (was "…in People") to match the app-wide Contacts naming (copy-only) (2026-07-29); the Add-ons storefront row's subtitle names the full add-on catalog in store order with **no price** (every add-on, owned or not; the store screen does the selling) — spec + CalendarsScreen tests aligned to the shipped component, which dropped the earlier per-locked price line (2026-07-29); leaving the event form or its Invitees screen with unsaved edits (header ✕ / back / swipe-back / Android back) prompts an Apple-style "Discard Changes?" action sheet, guarded app-wide via the shared `useUnsavedChangesGuard` hook (listens on React Navigation `beforeRemove`; a successful save/delete/leave calls `allowLeave` to exit without prompting) (2026-07-29); editing an event **never** auto-changes its travel time — the debounced drive-time recompute is suppressed while the destination/origin still match what the event loaded with (a `travelSeedRef` snapshot), so merely opening a travel-enabled event no longer silently nulls-and-refetches its saved minutes (which also spuriously dirtied the unsaved-changes guard); recompute resumes only once the user actually edits the destination or starting point (2026-07-29); the pushed **Travel Time** sub-screen now carries a header ✓ checkmark (+ ✕ close) like the app's other form sub-screens — edits already sync back live via the travelDraft store, so the checkmark just confirms/returns (2026-07-29); do-not-call is now surfaced on both call screens — the Event Action screen pre-checks the event's number (`GET /calls/suppressed`) and disables the call button with a reason when it's suppressed, and the Interaction outcome view shows an explicit "asked not to be called again" notice driven by the per-call `dncCaptured` flag (2026-07-29); the Cancel/Reschedule card now appears on **recurring** events too, scoped to the tapped occurrence — the call carries `PhoneCall.occurrenceDate` (the occurrence's local Y-M-D) + that day's start instant, and the call-derived cancelled/reschedule dimming is re-keyed from series-id to event+occurrenceDate (`lib/callStatus.buildEventStatus`, consumed across the month grid / day timeline / agenda / list / detail), so one call dims only its own instance; unscoped/legacy calls still match every day; the series-wide "Mark appointment as cancelled" fallback is hidden on recurring occurrences (2026-07-29); the card moved to be the first row of the details group (directly above the Calendar card) and its title relabelled "Reschedule/Cancel" (was "Cancel/Reschedule"); the two idle states (no-phone / ready-to-call) dropped their explanatory subtitle so the row is a clean single-line "Reschedule/Cancel" button (2026-07-29); tapping the card with no business number yet routes to the Location view with a `promptPhone` flag that shows a prominent callout banner at the top ("Add a business phone number to activate calling.", styled per the app's tinted-banner convention and tinted with the event's own calendar colour rather than the app primary — was a muted hint that blended in) and highlights the phone field (2026-07-29); calendar-share email invites (AddCalendarScreen outside-share) now compose via the shared mail-app chooser (`useEmailComposer`/EmailAppSheet — behavior specced in households-sharing.md) instead of a bare `mailto:` (2026-07-29); clearing the event location now switches travel time **off** (and drops the saved/computed drive time) on both the add and edit forms — travel time is anchored to the destination, so removing the destination removes travel time; only ever turns it off, so it can't fight the user re-enabling it (2026-07-29); accepting a cross-household event invitation now seals the recipient's **own** copy on-device (client-minted `_id` + HDK-sealed `enc` with `invitationId` folded in) and posts that to `POST /invitations/:id/accept`, matching the C3b server contract — the mobile client previously posted the bare plaintext snapshot `{ event }`, which the opaque store rejects with "A sealed event copy (_id + enc) is required", so accepting any sealed invite in-app failed; a locked vault now surfaces an "unlock your vault" message instead (the seal is factored into `lib/invitees.sealAcceptedCopy`, unit-tested) (2026-07-29); the organizer's device now actually forwards `guestListVisible` on every `invitationsApi.send` (sealed/plaintext/SMS lanes, via `sendInvitations`) — it was previously never sent, so the per-invitation flag always defaulted to visible and the "Guests can see guest list" toggle was a silent no-op (recipients always saw the guest list regardless of the switch) (2026-07-29); the Starts/Ends duration-keeping rule is now symmetric in both directions — editing the **start** (time or date) to at/after the end pushes the **end** forward to preserve the span (new `lib/datetime.endKeepingDuration`/`endTimeKeepingDuration`, mirrors of `startKeepingDuration`/`startTimeKeepingDuration`), so the end is never left before the start on the event form, the trip and trip-item/journey forms, and the cancel/reschedule time windows (closing an equal-date hole where advancing the start date onto the end's day previously produced end-before-start) (2026-07-29); the event-detail mini timeline card is now a **compact, fixed-size window** (`TIME_CARD_MAX_HOURS = 3`, opening ~1h before the event) so a long event no longer stretches the card into a wall of hours — an event longer than the window overflows it and has its block **clipped at the card's bottom edge** (`blockBottom = clipped ? canvasH : y(endDec)`) while the block's start–end text keeps the true end time (2026-07-29); event invite outreach is now device-composed end-to-end (households-sharing.md policy): the server `event_invitation` email is retired — `POST /invitations` instead pushes account-holder recipients (title-free for sealed invites) and the organizer's device composes the .ics-link email for non-account invitees via `sendInvitations` + the mail-app chooser (`eventInviteEmailContent`, sealed invites get a notice-only body since their public .ics 404s); `GET /invitations/lookup` also accepts `phone` (existence only); the Invitees screen's pending email rows gained a paper-plane Remind; calendar outside-shares now skip the composer for account-holder recipients (lookup-gated, fail-open) with their own row Remind (2026-07-29)
+last-verified: df8c7f3+ (2026-08-02); **switching between the grid family and List now preserves the viewed month in both directions** — each layer reports its visible month into a host ref (`viewedMonth`) and adopts it on becoming active (grid→List re-cursors the carousel, today selected when the adopted month is today's else the 1st; List→grid teleports via `jumpTo`, no-op when already there); List's former unconditional enter-on-today re-centre is retired (2026-08-02); the **List layer's month-label header is now the same month/year jump-sheet button** as the grid family's sticky header — the label + sheet pair extracted to a shared `MonthJumpHeaderButton` (exported from `MonthJumpSheet`); in List a pick teleports the month carousel via its cursor (tapped-day selection stays put, matching a swipe), and the button owns the sheet's open state outside the heavy calendar layer + defers the pick's jump one frame so the sheet opens/dismisses instantly (the grid additionally caches built week rows by underlying-input identity across window growth and renders them via a memoized `WeekRow`, so a jump only computes/renders the newly covered weeks) (2026-08-02); shared-lane key loading now covers the OWNER side too — `ensureCollaboratorCalendarKeys` became `ensureSharedCalendarKeys`: besides the member wraps for `mine:false` calendars it also loads the household wrap for the user's own calendars with `calKeyVersion > 0` (surfaced on the serialized calendar + `CustomCalendarRecord`), and it moved from `maintainKeyHygiene` (restored sessions only) to the auth store's keys-ready hook so it runs on EVERY unlock — fixes the owner's outside-shared calendar coming back EMPTY after sign-out/sign-in (the wiped replica re-pulled cal-scoped rows but nothing reloaded the CalendarKey: `reconcileCalendarKeys` skips steady-state calendars and `openOpaqueRecord` doesn't lazy-load resource keys) (2026-08-01); the month grid's fixed 12-month window (2 past + 9 future, inherited from the web initView) is retired — the grid scrolls an **unbounded month window**: opens last-month → +3 (`lib/calendarWindow.initialWindow`), grows 6 months at whichever edge the user nears (one extension per edge until it moves; upward growth anchored by `maintainVisibleContentPosition={{minIndexForVisible:1}}` so prepends don't jump), and the sticky Month-Year header label became a button (chevron-down) opening the **month/year jump sheet** (`MonthJumpSheet`: ‹ year › stepper + 3×4 month grid, visible month filled primary / today's month tinted; a pick grows the window via `ensureCovers` and snaps un-animated to that month's first majority week); the grid's load split into a range-independent sources query (`loadCalendarWindowSources`, `['calendar','sources']` — now also carrying the parsed ICS feed masters via `calendarFeeds.loadFeedSources`/`expandFeedSources`) + **synchronous render-time per-month expansions** (`expandCalendarRange` made sync; memoized per month in the grid, cache reset on sources change) merged by `lib/calendarWindow.mergeCalendarChunks` (identity dedup; unit-tested with the window math in `lib/__tests__/calendarWindow.test.ts`), with `loadCalendarData` now a thin composition of the two halves and the week builder bucketing items by date (O(1) cell lookups); the sync-derived shape replaced a first-cut per-month `useQueries` layer the same day — async chunk state made an event save re-key and re-fetch every month (whole-grid reload/skeleton flash); saving an event now repaints in one pass with one re-render (2026-08-01); collaborator half of D1 + server-side view-only enforcement (free viewer mode) — new `lib/calendarKeys.ensureCollaboratorCalendarKeys()` loads the member-wrapped CalendarKeys for calendars shared TO this user (`mine:false`) and re-pulls the record feed so shared events decrypt into the replica (runs from the viewer shell, on calendar-invitation accept, and from `maintainKeyHygiene` — previously nothing ever loaded a collaborator's member wrap, so shared events silently stayed ciphertext); `/records` now enforces calendar-lane write access server-side from the record's plaintext `scope` (POST/PUT/DELETE with a stored or incoming `scope.kind:'calendar'` require `full` effective access via `canWriteCalendarType`, 403 otherwise; stored scope gates a scope-less body; trips exempt) — superseding the C3b-era "enforcement moved to CalendarKey possession + the client" doctrine; `EventFormScreen` recomputes its read-only collaborator view from the calendar's `access === 'view'` (the server `readOnly` stamp is dead post-C3b); the locked-user viewer shell itself is specced in billing-plans.md "Free viewer mode" (2026-07-31); the calendar Outside-My-Household add field gained the contacts-roster autocomplete the household invite field already had (shared `hooks/useRosterSuggestions` + `matchRoster`, suggestions exclude staged outside entries / member emails / the owner; a tapped suggestion stages at View Only then runs the same lookup-gated outreach), placeholder now "Add name, email, or phone…", keyboard stays open across adds, a spinner replaces the add button during the account lookup, and the "They're on Calen" note clears on typing; the reveal-above-keyboard wrap was extracted to `components/ui.RevealWrap` and the event-invitee picker switched to it, fixing its silent no-op `useRevealOnOpen` call (null scroll context from the Screen-rendering component) that left the suggestion dropdown occluded by the keyboard (2026-07-30); the Add-ons storefront row on the Calendars view is now permanent — when every add-on is owned it no longer disappears but persists as the stable store/manage entry (HOUSEHOLD group's closing row) with subtitle "All add-ons added" instead of the catalog list, so the entry point keeps its learned location and future add-ons surface there (2026-07-30); the Event Action (call placement) screen shows the flat call price ("~N credits/min", from `billing/status.actionCosts.callPerMinute`) above the call CTA — pre-call cost transparency per billing-plans.md (2026-07-30); the Appointments built-in calendar's default colour is now blue `#1976D2` (was purple `#7B1FA2`) in both defaults maps (`lib/calendarPrefs.CALENDARS` + `lib/calendar.CALENDAR_COLORS`); device colour overrides are untouched, and the colour editor's reset now returns Appointments to blue (2026-07-29); `guestListVisible` and hand-set `cancelled` writes now go through client re-seal — the Invitees screen's guest-list toggle (`calendarApi.setGuestListVisible`) and both mark-cancelled surfaces (`calendarApi.cancelEvent`) re-seal the event via the replica instead of PUTting the field plaintext, which the opaque store rejects on an E2EE household with the misleading "update to the latest app version" error (the TestFlight-19 invitee bug); the event form also seals `guestListVisible` into every create/edit payload so the flag survives re-seals and syncs across devices (2026-07-29); calendar loading is now cache-first — `loadCalendarData` gained a `sync: 'inline' | 'background'` mode: the interactive views (month grid, List layer, day timeline/agenda, search) paint immediately from the local replica while `revalidateCalendar()` pulls records+settings+trips concurrently behind the paint and invalidates `['calendar']` only on actual change (deduped, 10s floor; trips reconciled into the replica including removals; grocery config cached device-local in `hc_grocery_settings`); a never-synced device falls back to inline; holiday chips render on mount independent of the data query; the month grid's first-load spinner was replaced with deterministic per-cell skeleton placeholders (per density) and the List layer's day list with `SkeletonList` (2026-07-29); deleting a recurring event offers Apple's "Delete This Event Only" (adds the occurrence's day to a sealed `exceptionDates` list the shared engine skips) vs "Delete All Future Events" (sets `recurrence.until` to the day before, or deletes the series when it's the first occurrence); shared by the detail view + edit form via `lib/eventDelete.ts` + `calendarApi.excludeOccurrence`/`truncateSeries` (HDK-sealed; outside-shared calendars not yet handled) (2026-07-29); event detail view now reflects every configured field — recurrence summary line ("Repeats weekly … until <date>", accent-coloured), a Travel Time row (duration + "Leave by" on timed events), and an Apple-style mini hour-grid timeline card placing the event block by its clock time (timed events only; all-day omits it), whose block content adapts to duration — >1h shows title+location+time, exactly 1h drops location, <1h shows title only; the "Delete Event" control is an Apple-style translucent floating pill **pinned to the screen** (a sibling of the scroll view, so it stays fixed while content scrolls beneath it instead of scrolling away attached to the map); the location map closes the scroll content below it (2026-07-29); the event detail view re-pulls the event on focus (`useFocusEffect`) so edits made in the form — e.g. turning off recurrence, which un-hides the Cancel/Reschedule card — are reflected on return without a manual refresh; the Cancel/Reschedule card moved to sit directly below the timeline card and above the Calendar row (was down among the alert/travel rows); its title shortened to "Cancel/Reschedule" (was "Cancel or Reschedule", which truncated in the one-line card title) (2026-07-29); Starts/Ends picker commits on dismiss (tap-away accepts) + start-time change past the end drags the end to preserve duration, and the symmetric reverse — editing the end (time or date) before the start drags the start back to preserve duration, via shared lib/datetime.startKeepingDuration reused by every Starts/Ends form (2026-07-28, reverse 2026-07-29); event detail view renders both alerts grouped in one divided card, with the Delete Event pill floating over the location map (2026-07-28); Birthdays→Occasions calendar (labeled contact dates as annual occasions), calendar-level occasion alerts, scheduled e-cards (2026-07-28); per-contact occasion exclusion (`occasionsHidden`) + occasion rows open PersonForm scrolled to Dates (2026-07-28); e-card recipients scoped to the occasion's contact + linked contacts, with inline add-email + per-recipient address picker for multi-email contacts (2026-07-28); scheduled-card indicator on the occasion row + edit/cancel + live email preview (2026-07-28); occasions render as kind icons (not chips) on the month grid and tap through to the Occasions screen from calendar/day/agenda surfaces (2026-07-28); a tapped occasion scrolls to the top of the Occasions list and is highlighted (`focus` param) (2026-07-28); e-card hour picker opens scrolled to noon (2026-07-28); e-card style gallery — 3 designs per occasion kind, greeting-card email with CSS-motion progressive enhancement, in-form style picker + animated live preview (2026-07-28); e-card personalization — fully editable card lines (greeting/sign-off/signature overrides), email-safe font menu, up to 3 inline CID photos (2026-07-28); default greeting + subject address recipients by first name only (2026-07-28); travel-time origin is an editable "starting address" (home-seeded, not labelled as home) with Current-location + Home one-tap shortcuts via shared `lib/currentLocation.ts` (2026-07-28); the two event alert slots must be distinct — each picker excludes the other slot's value (`excludeUsedAlert`) so the same lead time can't be set twice (2026-07-28); event attachments always seal on-device before upload (removed the plaintext fallback) and the server accepts iOS's relabeled opaque-binary content-types so the encrypted `.bin` ciphertext isn't dropped as "No file uploaded"; the event view previews attachments in-app via a WebView (images + PDFs render inline on the AttachmentPreview screen, Share button in the header) — WebView is used instead of RN's <Image>, which hard-crashes on the new architecture in both an RN <Modal> and a plain native-stack screen; expo-sharing alone (the interim fix) only gave the share sheet, not a direct preview (2026-07-29); the End Repeat (`until`) date loads back as the local Y-M-D via `ymd(new Date(until))` instead of slicing the ISO's UTC date, fixing a one-day-forward drift on every edit in behind-UTC timezones (2026-07-29); new events default travel time **on** only once the event location (destination) is set, then with the origin seeded from the user's current location, but only when location has already been shared with the app (`resolveCurrentAddressIfShared` reads the granted permission without prompting, and no GPS fix is taken until a destination exists); applied once so it doesn't override the user turning it back off; with no destination or no shared location the default is off; editing an existing event leaves its saved travel-time setting untouched; the Travel Time row shows "On" while enabled but not yet computed instead of "None"; the "Home" origin shortcut decrypts the E2EE-sealed home address client-side via shared `lib/homeAddress.ts` (2026-07-29); the Occasions empty-state CTA now reads "Add dates in Contacts" (was "…in People") to match the app-wide Contacts naming (copy-only) (2026-07-29); the Add-ons storefront row's subtitle names the full add-on catalog in store order with **no price** (every add-on, owned or not; the store screen does the selling) — spec + CalendarsScreen tests aligned to the shipped component, which dropped the earlier per-locked price line (2026-07-29); leaving the event form or its Invitees screen with unsaved edits (header ✕ / back / swipe-back / Android back) prompts an Apple-style "Discard Changes?" action sheet, guarded app-wide via the shared `useUnsavedChangesGuard` hook (listens on React Navigation `beforeRemove`; a successful save/delete/leave calls `allowLeave` to exit without prompting) (2026-07-29); editing an event **never** auto-changes its travel time — the debounced drive-time recompute is suppressed while the destination/origin still match what the event loaded with (a `travelSeedRef` snapshot), so merely opening a travel-enabled event no longer silently nulls-and-refetches its saved minutes (which also spuriously dirtied the unsaved-changes guard); recompute resumes only once the user actually edits the destination or starting point (2026-07-29); the pushed **Travel Time** sub-screen now carries a header ✓ checkmark (+ ✕ close) like the app's other form sub-screens — edits already sync back live via the travelDraft store, so the checkmark just confirms/returns (2026-07-29); do-not-call is now surfaced on both call screens — the Event Action screen pre-checks the event's number (`GET /calls/suppressed`) and disables the call button with a reason when it's suppressed, and the Interaction outcome view shows an explicit "asked not to be called again" notice driven by the per-call `dncCaptured` flag (2026-07-29); the Cancel/Reschedule card now appears on **recurring** events too, scoped to the tapped occurrence — the call carries `PhoneCall.occurrenceDate` (the occurrence's local Y-M-D) + that day's start instant, and the call-derived cancelled/reschedule dimming is re-keyed from series-id to event+occurrenceDate (`lib/callStatus.buildEventStatus`, consumed across the month grid / day timeline / agenda / list / detail), so one call dims only its own instance; unscoped/legacy calls still match every day; the series-wide "Mark appointment as cancelled" fallback is hidden on recurring occurrences (2026-07-29); the card moved to be the first row of the details group (directly above the Calendar card) and its title relabelled "Reschedule/Cancel" (was "Cancel/Reschedule"); the two idle states (no-phone / ready-to-call) dropped their explanatory subtitle so the row is a clean single-line "Reschedule/Cancel" button (2026-07-29); tapping the card with no business number yet routes to the Location view with a `promptPhone` flag that shows a prominent callout banner at the top ("Add a business phone number to activate calling.", styled per the app's tinted-banner convention and tinted with the event's own calendar colour rather than the app primary — was a muted hint that blended in) and highlights the phone field (2026-07-29); calendar-share email invites (AddCalendarScreen outside-share) now compose via the shared mail-app chooser (`useEmailComposer`/EmailAppSheet — behavior specced in households-sharing.md) instead of a bare `mailto:` (2026-07-29); clearing the event location now switches travel time **off** (and drops the saved/computed drive time) on both the add and edit forms — travel time is anchored to the destination, so removing the destination removes travel time; only ever turns it off, so it can't fight the user re-enabling it (2026-07-29); accepting a cross-household event invitation now seals the recipient's **own** copy on-device (client-minted `_id` + HDK-sealed `enc` with `invitationId` folded in) and posts that to `POST /invitations/:id/accept`, matching the C3b server contract — the mobile client previously posted the bare plaintext snapshot `{ event }`, which the opaque store rejects with "A sealed event copy (_id + enc) is required", so accepting any sealed invite in-app failed; a locked vault now surfaces an "unlock your vault" message instead (the seal is factored into `lib/invitees.sealAcceptedCopy`, unit-tested) (2026-07-29); the organizer's device now actually forwards `guestListVisible` on every `invitationsApi.send` (sealed/plaintext/SMS lanes, via `sendInvitations`) — it was previously never sent, so the per-invitation flag always defaulted to visible and the "Guests can see guest list" toggle was a silent no-op (recipients always saw the guest list regardless of the switch) (2026-07-29); the Starts/Ends duration-keeping rule is now symmetric in both directions — editing the **start** (time or date) to at/after the end pushes the **end** forward to preserve the span (new `lib/datetime.endKeepingDuration`/`endTimeKeepingDuration`, mirrors of `startKeepingDuration`/`startTimeKeepingDuration`), so the end is never left before the start on the event form, the trip and trip-item/journey forms, and the cancel/reschedule time windows (closing an equal-date hole where advancing the start date onto the end's day previously produced end-before-start) (2026-07-29); the event-detail mini timeline card is now a **compact, fixed-size window** (`TIME_CARD_MAX_HOURS = 3`, opening ~1h before the event) so a long event no longer stretches the card into a wall of hours — an event longer than the window overflows it and has its block **clipped at the card's bottom edge** (`blockBottom = clipped ? canvasH : y(endDec)`) while the block's start–end text keeps the true end time (2026-07-29); event invite outreach is now device-composed end-to-end (households-sharing.md policy): the server `event_invitation` email is retired — `POST /invitations` instead pushes account-holder recipients (title-free for sealed invites) and the organizer's device composes the .ics-link email for non-account invitees via `sendInvitations` + the mail-app chooser (`eventInviteEmailContent`, sealed invites get a notice-only body since their public .ics 404s); `GET /invitations/lookup` also accepts `phone` (existence only); the Invitees screen's pending email rows gained a paper-plane Remind; calendar outside-shares now skip the composer for account-holder recipients (lookup-gated, fail-open) with their own row Remind (2026-07-29); the shared calendar engine gained `deriveAvailability` — a free/busy reduction over already-expanded events + trip overlays (timed events → busy hour-blocks, trips → whole "away" days, all-day events → a soft note that keeps the day free, and tasks/chores/meals/grocery excluded as non-occupying) consumed by the calendar assistant's new `get_availability` tool; the busy/free rule and its waking-window/timezone handling are specced in [ai-assistant.md](ai-assistant.md) (2026-07-30); the event Location view's `promptPhone` callout now renders via the shared `components/ui.SetupCallout` (extracted from its inline banner, still tinted with the event's calendar colour — behavior unchanged), and the calendar assistant can now route the user to it itself via a `setup_event_phone` setup chip when it needs a number to call an event about (see ai-assistant.md) (df8c7f3+, 2026-07-31); the calendar assistant's **edit and delete now actually work on mobile** — the `open_edit_event_form`/`delete_event` tools stage the action for a device-side confirm tap (an "Open the event to edit" chip opening the native `EventForm`, or a single "Delete from my calendar" chip that batch-deletes the staged events through the shared `lib/eventDelete` `assistantDeletePerform` — one-off delete, or recurring exclude-occurrence vs delete-series) instead of the old web `navigateTo` route the RN app silently dropped (which left forms un-opened and events un-deleted while the model falsely reported success); behavior specced in [ai-assistant.md](ai-assistant.md) (df8c7f3+, 2026-07-31); the event **Location view** was reworked from a search field stacked over an always-visible Name/Address/Phone form (two competing input models, and a picked place's Google address duplicated the name into the Address field) into a **single-input-model state machine** — Empty (search + "Enter an address manually" escape hatch), Picked (the resolved place collapses into a read-only card: static map, name, and the address on its own line with the leading business name stripped, plus an ✕ to change it), and Manual (Name/Address fields + "Search for a place instead" back-link, entered automatically for a saved location that has no place_id); the business phone stays an editable field in all three states; storage is unchanged (single de-duplicated `location` string + `placeId` + `phone`) (df8c7f3+, 2026-07-31); the calendar's floating chrome was **re-hierarchized by priority** — the bottom-left pill became a labelled **Today | Calendars** pair (Calendars promoted from an ambiguous calendar-glyph icon to a text label), the assistant entry was promoted from a pill icon to a standalone 56pt **Calen FAB** alone in the bottom-right corner (surface disc, gradient C at 28pt, one shadow step above the pills) — the screen's single primary action — and the `fromAssistant` "‹ Calen" return pill moved from the avatar slot to the FAB slot (the avatar stays put — see ai-assistant.md); the **Invitations inbox lost its floating button entirely** (month and day views; `components/InvitationsButton` deleted): it is event-driven, not frequency-driven, so its entry point moved to a badged **Invitations row in Profile** and the count now cascades — calendar avatar badge (E2EE-locked "!" takes precedence, else the pending count, 9+ cap) → Profile's Invitations row (same count) → the inbox; the "New"-tab counting rules were extracted to `hooks/useInvitationsCount` (df8c7f3+, 2026-07-31); occasion contacts hidden via `occasionsHidden` are now **omitted entirely** from the Occasions list (the old dimmed "Hidden from calendar" group was removed — they were already skipped everywhere else), and the list's `Hint` shows only when occasions exist while the empty state gained a clear "add a date to a contact" message; the copy now treats birthday as one of the contact's dates (birthday was merged into the person form/detail dates card) and says "contacts", not "People" (df8c7f3+, 2026-07-31); e-cards are now **one-time** — a card sends on its next upcoming occurrence then deactivates (`ECard.active`/`sentAt` replace the old annual `lastSentYear` guard in `runECardCheck`), the form hint reads "Sends once on `<next date>`", and the E2EE plaintext-exception disclosure is shown at **create time only**; the e-card recipients card gained an **"Add a related contact"** row that opens the occasion contact itself (`PersonForm` `focus: 'related'`, scrolled to Related names) to manage the link — the newly linked contact then appears as a recipient candidate automatically on return (recipients = the occasion contact + their related names) — and the editable card lines gained a visible edit affordance ("Tap to edit" pencil badge — tapping it focuses the greeting line with the caret at the start — plus dashed underlines); the **Print** month-grid layout now wraps event titles to **2 lines** (CSS line-clamp, no more one-line ellipsis) and prints **compact 12-hour times** ("1PM") with a Print-screen **24-hour clock** toggle ("13:00"); the **Subscribe** screen gained an optional email-driven **provider helper** (detect Gmail/iCloud/Outlook → deep-link to their calendar-link settings + steps; the user still pastes the URL); the **Calendars view** rows show a **leading** Apple-style on/off circle carrying the calendar's colour (filled check-circle shown / empty dimmed circle hidden), replacing the old leading accent bar; the per-country **Holidays editor lost its "Remove <country>" danger button** (removal stays available via Calendars → Edit Calendar → Delete); and the modal-presented **Attachment/Place preview** screens gained a top-left close ✕ (df8c7f3+, 2026-07-31); the day view (single/multi-day all-day lane + List agenda) now renders date-only **chores** as Chores-calendar items — tinted in the Chores calendar colour and badged with the chore's own MaterialCommunityIcons glyph (`AllDayItem.icon`, sourced from `Chore.icon`), replacing the muted empty-circle reminder chip; date-only **tasks** keep the muted dot (df8c7f3+, 2026-07-31); the day-view icon treatment was extended to **events** (a generic calendar glyph, `EVENT_ICON = 'calendar-blank-outline'`) and **occasions** (their `occasionIcon` kind glyph) — both the all-day lane chips and the List agenda rows now lead with the colour-tinted glyph instead of a plain colour bar (the timed hour-grid blocks are unchanged); and the **List** view gained a **"Today" divider marker** above today's header (accent lines + label, mirroring the Occasions view), with today always kept as a section when it's in-window (even empty, unless the whole window is empty) so the marker anchors the list (df8c7f3+, 2026-08-01); the List view's explicit **"Load earlier"** button was replaced by **infinite scroll upward** — scrolling within `EARLIER_THRESHOLD` (80px) of the top prepends the previous `EXTEND_DAYS` stretch, anchored by `maintainVisibleContentPosition={{minIndexForVisible:1}}` (new-arch default) so content grows above the viewport without a jump; a `loadingEarlier` ref guards re-fires until `window.start` moves, and a fixed-height header spinner shows while it settles (the scroll-restore `scrollToLocation`/`onScrollToIndexFailed` dance was removed) (df8c7f3+, 2026-08-01); the **Occasions list** was reworked from a flat forward-only run (every occasion shown at its next occurrence, so a just-passed date silently jumped to the bottom ~12 months out and there was no sense of the window being viewed) into a **today-anchored timeline** — `lib/occasions.collectOccasions(people, now?)` anchors each occasion to the occurrence nearest today and returns a signed `offset` (recently-passed within `PAST_WINDOW_DAYS` (7) → negative, today → 0, else next upcoming → positive), and the screen renders **Recently observed** (dimmed, no schedule prompt, "Sent" pill when its one-time card already went out), a **"Today · `<date>`"** marker, **Coming up** (the highlighted `COMING_UP_DAYS` (60) plan-ahead horizon carrying the e-card envelope), and a collapsed **"Later this year (N)"** tail (auto-expanded when a calendar-tapped focus occasion lives there); `whenLabel` gained past phrasings ("Yesterday" / "N days ago"); windowing extracted from OccasionsScreen into `lib/occasions.ts` + unit-tested (`lib/__tests__/occasions.test.ts`, injectable `now`) (df8c7f3+, 2026-07-31); the redundant **`marriage`** date-label preset was dropped — `anniversary` is now the sole wedding label offered in the contact date-label picker (`DATE_LABELS`), though the shared engine still recognises a legacy `marriage` label on pre-existing contacts (kind/noun/icon/e-card templates for it are retained for backward compatibility) (df8c7f3+, 2026-07-31); the **thunderstorm** weather icon composite was rebuilt on the Rainy pattern — only the glyph's lower band is rendered (blue base for the drops + a gold centre strip for the bolt) under the standard white cloud, with band/strip positions measured from the Ionicons TTF and an explicit `width: size` on every clipped inner glyph (an RN Text measures at most its parent's width and iOS clips the glyph to the Text's own bounds, which had made narrow clip windows show the wrong glyph slice — the gold right drops + stray blue cloud edge of the first attempt, then the gold bolt strip rendering nothing) (df8c7f3+, 2026-08-01); the event form's **Title** field now declares `autoCapitalize="sentences"` explicitly so the keyboard opens shifted and the first letter of a new or edited title is capitalized without reaching for shift (df8c7f3+, 2026-08-02)
 code:
   - mobile/src/screens/calendar/
   - mobile/src/lib/calendar.ts
   - mobile/src/lib/calendarData.ts
+  - mobile/src/lib/calendarWindow.ts       # unbounded month-window math + per-month chunk merge
   - mobile/src/lib/eventRepeat.ts
-  - mobile/src/lib/occasions.ts            # occasion kind → title/icon/noun
+  - mobile/src/lib/occasions.ts            # occasion kind → title/icon/noun + list windowing (collectOccasions)
   - server/src/models/CalendarEvent.js
   - server/src/models/CustomCalendar.js
   - server/src/models/ECard.js             # scheduled occasion e-cards (plaintext exception)
@@ -25,7 +26,7 @@ tests:
   - shared/calendar/index.test.js
   - server/src/test/ecards.integration.test.js
   - server/src/services/ecardTemplates.test.js
-  - mobile/src/lib/__tests__/{calendarData,calendarFeeds,calendarPrefs,holidays,homeRegion,weatherSource,recurrence,tz,printCalendar,addons}.test.ts
+  - mobile/src/lib/__tests__/{calendarData,calendarFeeds,calendarPrefs,calendarWindow,holidays,homeRegion,weatherSource,recurrence,tz,printCalendar,addons,occasions}.test.ts
   - mobile/src/screens/calendar/__tests__/CalendarsScreen.test.tsx
   - mobile/src/screens/calendar/dayview/__tests__/dayViewLayout.test.ts
 ---
@@ -50,6 +51,11 @@ and printing. It is also the anchor for the calendar AI assistant.
   `startDate`, optional `endDate`, and an `allDay` flag (default true). The
   business `phone` (which Calen dials for cancel/reschedule) is entered on the
   location screen via the shared `PhoneField` and stored as canonical E.164.
+- **Title capitalization:** the event form's Title field (create *and* edit)
+  declares `autoCapitalize="sentences"` explicitly, so the keyboard opens shifted
+  and the first letter of a typed title is capitalized without reaching for
+  shift. It must stay explicit — RN's documented `sentences` default is not what
+  the native field ends up with here.
 - **Discard-changes guard:** leaving a form with unsaved edits — via the header
   ✕, the back chevron, the swipe-back gesture, or Android hardware back — first
   shows the Apple-style "Discard Changes?" action sheet; the exit only proceeds
@@ -155,6 +161,29 @@ and printing. It is also the anchor for the calendar AI assistant.
   time (or manual duration) is saved — the duration as the value, with a "Leave
   by <clock time>" subtitle (start − drive time) on a timed event whose departure
   falls on the same day.
+- **The Location view has one input model at a time** (Apple Calendar-style),
+  not a search field competing with an always-visible Name/Address/Phone form.
+  Three states:
+  - **Empty** — a single Google-Places search field ("Search for a business or
+    address") with a quiet accent-tinted **"Enter an address manually"** link
+    below it (the escape hatch).
+  - **Picked** — selecting a suggestion collapses the search into a read-only
+    **place card**: a static map at the top, then the place **name** and its
+    **address on a separate line with the name stripped** (Google prefixes an
+    establishment's `description`/`formatted_address` with its own name, so the
+    address line would otherwise repeat the title). An **✕** clears the selection
+    and returns to Empty. With no name (a bare address) the address is the title
+    and there is no second line.
+  - **Manual** — the **Name** and **Address** fields for a place Google can't
+    find, reached via the escape hatch, with a **"Search for a place instead"**
+    link back to Empty. A location already on the event but with **no place_id**
+    (typed by hand / legacy) opens straight into Manual so its value is visible.
+  The **business phone** is a first-class **editable** `PhoneField` shown in
+  **all three** states (it's the number Calen dials for Call to Cancel, and is
+  often the very reason the user is on this screen), followed by the hint that
+  Calen uses it to call the business. Saving still stores the single
+  `location` string (`locationString()` — "Name, address", de-duplicated),
+  `placeId`, and `phone`; the state machine is presentation only.
 - **Cancellation via AI call:** when Calen's cancellation call gets a business to
   confirm, the user resolves the outcome **from the event view itself** — the
   event stays on the calendar (faded/struck) until they **delete** it. The event
@@ -296,17 +325,80 @@ a checkmark on the active one and a divider isolating **List**. The choice is
   into the adjacent month (up reveals the start of the next month, down the end of
   the previous), and on release it **snaps to a full month** — past a distance/
   velocity threshold it commits to the adjacent month, otherwise it springs back.
-  Tapping a day fills the list. Entering List **re-centres on today** — the current
-  month with today selected and circled in the primary colour — rather than
-  resuming the last browsed month. This mode **replaced the former standalone
+  Tapping a day fills the list. The **month label above the grid is the same
+  month/year jump-sheet button** as the grid family's sticky header (shared
+  `MonthJumpHeaderButton`, see the unbounded-window section): a pick teleports
+  the carousel straight to that month (re-cursors it — no window mechanics),
+  and the tapped-day selection stays put, exactly as when swiping between
+  months. Switching layers preserves the **viewed month** in both directions
+  (see the crossfade note below): entering List adopts the month the grid was
+  showing — with today selected and circled in the primary colour when that
+  month is today's, otherwise the month's **1st** selected so the day list
+  reflects the visible month. This mode **replaced the former standalone
   "events" agenda view** (a full-screen infinite agenda toggled by a list button),
   which has been removed.
 
+#### The unbounded month window
+
+The grid family (Compact/Stacked/Details) scrolls an **unbounded month
+window** — there is no fixed range and no hard stop in either direction:
+
+- The window opens small — last month through three months ahead
+  (`lib/calendarWindow.initialWindow`) — and **only ever grows**. Scrolling
+  near the top or bottom edge of the built grid extends that edge by six
+  months (`EXTEND_MONTHS`), one extension per edge at a time (the guard
+  resets only when the edge actually moves). Upward growth is anchored by
+  `maintainVisibleContentPosition` so prepended weeks extend the content
+  above the viewport without a visible jump — the same mechanism as the
+  day-view List agenda's earlier-loading.
+- The sticky **"Month Year" header label is a button** (chevron-down
+  affordance): tapping it opens the **month/year jump sheet**
+  (`MonthJumpSheet` — a bottom sheet with a ‹ year › stepper over a 3×4
+  month grid; the currently visible month carries the filled primary disc,
+  today's month the primary-tinted label, and the year is unbounded both
+  ways). Picking a month grows the window to cover it (`ensureCovers`, one
+  month of margin) and snaps **without animation** — a teleport, not a
+  scroll — to the first week whose majority (its Wednesday) falls in that
+  month, updating the sticky label immediately. The label-button + sheet pair
+  is the shared `MonthJumpHeaderButton` (exported from `MonthJumpSheet`),
+  which also heads the **List layer** — there a pick just re-cursors the
+  month carousel. The button owns the sheet's open state (outside the heavy
+  calendar layer) and defers the pick's jump by a frame, so the sheet opens
+  and dismisses instantly rather than waiting on the layer's re-render.
+- The window math and the chunk merge are pure and unit-tested in
+  `lib/calendarWindow.ts`. The former fixed 12-month window (2 past +
+  current + 9 future, inherited from the web's initView) is retired.
+
 Compact/Stacked/Details share one continuously-scrolling grid layer; List is a
 separate layer. The switcher crossfades between the grid family and List; the
-shared floating chrome (avatar, switcher/search/add, Today, Calendars/
-Invitations/Assistant) never moves. The single **Today** button re-centres
-whichever layer is active.
+shared floating chrome never moves. The two layers share one **viewed month**:
+each reports the month it is showing into the host (a ref — scroll-frequency
+writes, no host re-render) and adopts it when it becomes the active layer, so
+switching views never loses the month the user had navigated to (grid→List
+re-cursors the List carousel; List→grid teleports the grid, a no-op when it is
+already showing that month). The chrome is arranged by priority:
+
+- **Top-left** — the profile avatar (conventional account corner). It is the
+  badge anchor for everything that resolves inside Profile, with a precedence
+  rule — security beats inbox: the red **"!"** when encrypted data is locked on
+  this device, otherwise the **pending Invitations count** (9+ cap); never
+  both. The Invitations inbox itself has **no calendar-chrome button** — it is
+  event-driven, not frequency-driven, so it lives as a badged row in Profile
+  and the badge trail cascades: avatar count → Profile's Invitations row
+  (same count, `hooks/useInvitationsCount` — the "New"-tab counting rules) →
+  the inbox.
+- **Top-right** — the utility pill: view switcher, search, add.
+- **Bottom-left** — a labelled **Today | Calendars** pill (hairline divider
+  between). Both are text labels: Calendars is a primary destination, and a
+  calendar glyph inside a calendar app is ambiguous.
+- **Bottom-right** — the standalone **Calen FAB**: the gradient "C" glyph on a
+  56pt surface disc, larger and one shadow step above the pills, alone in the
+  prime thumb corner. It is the screen's single visually-dominant primary
+  action; shown only while AI is enabled. (When the calendar was pushed by an
+  assistant nav chip, this slot shows the "‹ Calen" return pill instead — see
+  [ai-assistant.md](ai-assistant.md).)
+
+The single **Today** button re-centres whichever layer is active.
 
 ### Loading (cache-first, stale-while-revalidate)
 
@@ -337,6 +429,30 @@ launch shows the calendar without waiting on the network.
   post-unlock/account-switch cursor reset — `hasSyncedRecords()`) has an empty
   replica, so `background` falls back to `inline` rather than flash an empty
   calendar.
+- **The month grid splits the load in two**, which is what makes its unbounded
+  window cheap: one **range-independent sources query**
+  (`loadCalendarWindowSources`, `['calendar','sources']` — the replica read
+  plus the custom-calendar access set, the owned add-on set, and the parsed
+  ICS feed masters (`calendarFeeds.loadFeedSources`); the replica holds
+  everything, so sources never depended on the range) feeding a
+  **synchronous per-month expansion** (`expandCalendarRange` — the shared
+  engine plus the chokepoint filters: custom-calendar access, add-on locks,
+  ICS feed injection via the pure `expandFeedSources`). Expansion is
+  **derived data, computed at render and memoized per month** — never
+  fetched through async query state. The consequences are the contract:
+  extending the window expands only the added months (cache hits for the
+  rest, sources never re-read for a bigger range), and a data change (e.g.
+  **saving an event**) refetches the sources and repaints in **one pass with
+  one re-render** — the previous frame stays up until the recompute lands,
+  so the edit simply appears in its cells with **no whole-grid reload, no
+  per-month churn, and no skeleton flash**. The per-month results merge
+  through `lib/calendarWindow.mergeCalendarChunks` (identity dedup — a span
+  crossing a month boundary appears once, a recurring occurrence keys by
+  `_id:startDate`). Every other consumer still calls `loadCalendarData`, now
+  a thin composition of the two halves, so the chokepoint filters stay
+  enforced in one place. The grid's week builder also **buckets items by
+  date once per rebuild** (cells do O(1) lookups), keeping rebuild cost
+  linear in days as the window grows.
 - **Holidays never wait for sync.** Month-grid holiday chips are computed
   on-device from prefs and MUST render as soon as the grid mounts, independent
   of the network-backed data query (the List layer and day views already did).
@@ -363,7 +479,8 @@ pills over whichever mode is active: top-left a **back pill** labelled with
 the anchor's month ("‹ July") returning to the month view; top-right the
 switcher/search/add pill; bottom-left **Today** (re-anchors to today and
 re-centres the active mode); bottom-right month-jump (calendar glyph →
-month view) + the Invitations inbox button. The native back-swipe stays
+month view). The Invitations inbox has no button here either (it lives in
+Profile, badged via the month view's avatar). The native back-swipe stays
 disabled: horizontal swipes page between days.
 
 - **Single Day / Multi Day (the timeline modes)** are one hour-grid surface
@@ -385,9 +502,13 @@ disabled: horizontal swipes page between days.
     *timed* event covering the entire day demotes to the all-day lane.
   - The **all-day lane** (hidden when every visible day is empty) holds
     all-day events, trips, holidays, birthdays, meals, the grocery marker —
-    and **date-only tasks/chores as muted empty-circle chips**: they have no
-    time of day, so the view never invents a slot for them. Capped at three
-    rows per day with "+N more" expanding.
+    and **date-only tasks/chores**: they have no time of day, so the view
+    never invents a slot for them. Chips are badged with a leading
+    MaterialCommunityIcons glyph tinted in the item's colour: **events** a
+    generic calendar glyph, **occasions** their kind icon (`occasionIcon` —
+    cake, heart, ring…), **chores** the chore's own icon. Date-only **tasks**
+    render as muted empty-circle chips (not a colour-badged item). Capped at
+    three rows per day with "+N more" expanding.
   - The **now indicator** renders only when today is visible, in the app
     primary colour: a line with a dot across today's column (dimmer across
     the rest of the row), plus a time badge in the gutter, ticking on the
@@ -404,19 +525,30 @@ disabled: horizontal swipes page between days.
     directional slide; the vertical scroll offset survives day swipes *and*
     the single↔multi switch (one mounted grid). The initial position is the
     now-line for today, just above the first event otherwise, 8 AM when empty.
-- **List** — a continuous agenda of **days with items only**: sticky day
-  headers ("Monday – Jul 27", today's in the app primary colour) with a
-  passive-weather glance (condition icon + high/low) when the Weather
-  calendar is visible and the forecast covers the day; timed events as rows (colour bar, title, location line, stacked
-  start/end times on the right); all-day items marked "all-day"; date-only
-  tasks/chores as **muted empty-circle rows**. The window **starts at the
+- **List** — a continuous agenda of **days with items only** (plus **today**,
+  which always gets a section when it falls in the window — even empty — so its
+  marker anchors the list; an all-empty window drops it and the EmptyState
+  shows): sticky day headers ("Monday – Jul 27") with a passive-weather glance
+  (condition icon + high/low) when the Weather calendar is visible and the
+  forecast covers the day. **Today's** header is preceded by a **"Today"
+  divider marker** (accent lines + label, app primary colour) and its date line
+  is tinted primary — the same today-marker idiom as the Occasions view. Rows
+  are led by a colour-tinted glyph rather than a bare colour bar: timed +
+  all-day **events** a generic calendar glyph, **occasions** their kind icon,
+  **chores** the chore's own icon; date-only **tasks** stay **muted
+  empty-circle rows**. Timed events show title, location line, and stacked
+  start/end times on the right; all-day items are marked "all-day". The window
+  **starts at the
   anchor's day** — the anchor is the top of the list, never a scroll target
   into unrendered sections (SectionList can't reliably `scrollToLocation`
   that far), so a new anchor (day swipe, week-strip tap, **Today**) restarts
   the window at that day. Scrolling to the end extends the window forward;
-  earlier days load behind an explicit **"Load earlier"** control (RN's
-  SectionList can't prepend smoothly under sticky headers). Leaving List
-  keeps the anchor.
+  scrolling back **to the top prepends the previous stretch automatically**
+  (infinite scroll up) — the previously-first day is anchored via
+  `maintainVisibleContentPosition` so the inserted days grow above the viewport
+  without a jump, and a brief spinner shows in the list header while the
+  prepend settles (no explicit "Load earlier" button). Leaving List keeps the
+  anchor.
 
 Resolved-call dimming (see *Resolved events are dimmed on every calendar
 surface*) applies in all three modes. The former day-view **weather card**
@@ -431,7 +563,12 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   through `server/src/routes/calendars.js` (`/api/calendars`) and the mobile
   Calendars / Add-Calendar / Calendar-Colors screens.
 - Custom calendars can be **subscribed** (external ICS feeds) and **holiday**
-  calendars added; see the Subscribe/Holiday screens.
+  calendars added; see the Subscribe/Holiday screens. The Subscribe screen
+  offers an optional **provider helper**: a subscribe link can't be derived
+  from an email, so entering one detects the provider (Gmail/iCloud/Outlook,
+  else a generic guide) and deep-links to that provider's calendar-link
+  settings page with copy-paste steps — the user still pastes the resulting
+  `webcal`/`https` URL into the link field (guidance, not automation).
 - **Holiday calendars know where home is.** Provincial/state holidays are
   opt-in by subdivision (`selectedRegions`), and the home subdivision is
   preselected automatically wherever it can be derived (`lib/homeRegion.ts`:
@@ -469,8 +606,12 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   unknown (first load), the split is kept (the safe reading).
 - Rows are **single-purpose**: tapping a row toggles that calendar's
   visibility (Apple-Calendar semantics; the row is `accessibilityRole:
-  "switch"` with checked state, and a hidden calendar dims its accent bar and
-  name). Tapping a row MUST NOT navigate. The toggle's visual flip on the
+  "switch"` with checked state, and a hidden calendar dims its name). The row's
+  **leading control is an Apple-style on/off circle** (replacing the old accent
+  bar) carrying the calendar's colour — a filled check-circle when shown, an
+  empty outline circle (dimmed) when hidden — so the toggle state and the
+  calendar's colour read from one control at the start of the row. Tapping a row
+  MUST NOT navigate. The toggle's visual flip on the
   manager screen commits urgently; other mounted consumers of the visibility
   store (e.g. the month grid beneath the modal) re-render in a non-urgent
   transition so their cost never delays the tap feedback.
@@ -583,6 +724,66 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   **existing account** additionally gets a push (`notify.pushToUser`, best-effort)
   and sees the invite in its in-app inbox. Same pattern as
   [households-sharing](households-sharing.md) and [trips](trips.md).
+- **The Outside My Household add field autocompletes over the contacts
+  roster** (AddCalendarScreen), same behavior as the household invite field:
+  the decrypted People records matched by name, email, or phone digits via the
+  shared `useRosterSuggestions` hook (behavior specced in
+  [households-sharing](households-sharing.md)); placeholder "Add name, email,
+  or phone…". Tapping a suggestion **stages** the contact's resolved address
+  (primary email, else canonical E.164 phone) in the outside list at View Only
+  — unlike the household invite, nothing sends until the calendar saves — then
+  runs the same lookup-gated outreach as a typed add. Suggestions exclude
+  addresses already in the outside list, household members' emails, and the
+  owner's own email (one exclusion set; the typed path keeps its pointed
+  per-case errors: "That's you", "…is in your household — select them above").
+  The field keeps the keyboard open across adds (a multi-add field), shows a
+  spinner in place of the add button while the account-existence lookup runs,
+  and clears the stale "They're on Calen" note as soon as typing resumes. The
+  input+dropdown pair is scrolled clear of the keyboard by the shared
+  `RevealWrap` (components/ui) — also now used by the event-invitee picker,
+  whose previous direct `useRevealOnOpen` call from the screen component read
+  a null scroll context and silently never revealed.
+- **Shared-lane key loading (the D1 wraps, BOTH sides).** Events on an
+  outside-shared calendar seal under its CalendarKey, so the replica can only
+  decrypt them while that key is held — and sign-out wipes the replica, the
+  sync cursor, and every in-memory key.
+  `lib/calendarKeys.ensureSharedCalendarKeys()` is the device pass that
+  restores them: it loads the **member wrap** for every calendar shared TO
+  this user (`mine:false`, unwrapped with the identity keypair) AND the
+  **household wrap** for the user's OWN calendars that ever minted a
+  CalendarKey (`mine:true` with `calKeyVersion > 0`, unwrapped with the HDK —
+  keyed off `calKeyVersion`, not the outside-share list, so a fully-un-shared
+  calendar whose rows still sit under an old CalendarKey keeps decrypting),
+  then re-pulls the record feed so previously-skipped ciphertext rows decrypt
+  into the replica. It runs from the auth store's keys-ready hook on **every**
+  unlock (fresh login included — `maintainKeyHygiene` alone only covered
+  restored sessions, which let an owner's own shared-calendar events vanish
+  after a sign-out/sign-in), from the viewer shell (mount/focus), and on
+  accepting a calendar invitation. Neither side is covered elsewhere: the
+  owner reconcile pass (`reconcileCalendarKeys`) only touches calendars with
+  PENDING key work, and `openOpaqueRecord` doesn't lazy-load resource keys.
+  Until the owner's next unlocked session wraps the key to a newly accepted
+  collaborator, the shared events are unreadable on the collaborator's device
+  — surfaces show a "waiting for the owner" state, not an error.
+- **View-only enforcement is server-side again (supersedes "moved to the
+  client", 2026-07-31).** The opaque `/records` store enforces calendar-lane
+  write access from the record's plaintext `scope`: POST/PUT/DELETE of a
+  record whose stored or incoming `scope.kind === 'calendar'` require
+  **`full`** effective access on `scope.resource`
+  (`calendarSharing.canWriteCalendarType` via `effectiveCalendarAccess`) and
+  403 otherwise — a `view` collaborator holds a member envelope (they need it
+  to read) but cannot write, and no one can POST records claiming a calendar
+  they have no seat on. The stored scope gates a scope-less update body, so
+  the lane can't be shed by omission. Trips are exempt (trip collaborators
+  are full-access by design); an unknown/deleted calendar key falls back to
+  the household-scope rule. Client-side, the event form recomputes its
+  read-only view from the calendar's `access === 'view'` (the server's old
+  per-event `readOnly` stamp retired with C3b), so the 403 never surfaces as
+  a mystery save error.
+- **Free viewer mode** rides this sharing model: a locked (no app unlock)
+  user with a shared calendar or a pending calendar invitation gets a
+  read-only viewer shell instead of the hard paywall — normative spec in
+  [billing-plans.md](billing-plans.md) ("Free viewer mode").
 
 ### Overlays & output
 
@@ -640,6 +841,20 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   across all three tiers**; only the raindrop count changes. Chosen over a
   custom drop composition (tried and rejected): the tiers must stay
   stylistically identical to the original glyph.
+- **Thunderstorm is the same composite, three-tone**: the solid white cloud
+  over the Ionicons `thunderstorm` glyph's lower band, with **blue** rain drops
+  and a **gold** bolt (blue lower band + a gold centre strip re-colouring just
+  the bolt). Like rain, only the glyph's lower band is ever rendered — its own
+  cloud never shows, so no gold/blue edge peeks above or beside the white
+  cloud. Band and strip positions are **measured from the font**, not
+  eyeballed (glyph advance = exactly 1em, so fractions of `size` are exact;
+  cloud bottoms at y 0.65, bolt x 0.344–0.662, drops x 0.154–0.299 /
+  0.703–0.844), and every clipped inner glyph carries an explicit
+  `width: size` — an RN Text measures at most its parent's width and iOS clips
+  the glyph to the Text's **own** bounds, so inside a narrow clip wrapper an
+  auto-width glyph shows only its leftmost slice regardless of where the
+  wrapper's window sits (the cause of both the original gold right-hand drops
+  and the gold bolt strip silently rendering nothing).
 - **Rain quantity is shown wherever weather is.** Amounts format via
   `formatMm` (one decimal under 1 mm, whole numbers above, hidden under
   0.1 mm): the Weather hero's meta line adds "Rain X mm" when it's currently
@@ -668,7 +883,11 @@ forecast. All of it follows the Weather calendar's visibility toggle.
 - **Holidays** and **occasions** (from People) surface as read-only events (see
   the Occasions calendar below).
 - Events/agenda can be **printed** (`mobile/src/lib/printCalendar.ts`, Print
-  screen).
+  screen). In the month-grid layout an event title **wraps to at most two lines**
+  (a CSS line-clamp) rather than clipping to one — long titles stay legible in a
+  tight cell. Times print in a **compact 12-hour form** by default ("1:00 PM" →
+  "1PM"; ":00" and the space are dropped), and the Print screen's Options offer a
+  **24-hour clock** toggle that renders zero-padded `HH:mm` ("13:00") instead.
 
 ### Occasions calendar (free opt-in add-on, id `birthdays`)
 
@@ -676,8 +895,10 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   annually-recurring events from People. Two sources per contact:
   - the dedicated `Person.birthday` field → a `birthday` occasion; and
   - each `Person.dates[]` entry → an occasion whose **kind comes from the
-    label**: `anniversary`, `marriage`, and `death` are recognised kinds; any
-    other label is a `custom` occasion whose display name is the raw label.
+    label**: `anniversary` and `death` are the selectable recognised kinds (a
+    legacy `marriage` label is still recognised for pre-existing contacts but is
+    no longer offered — `anniversary` is the wedding label); any other label is a
+    `custom` occasion whose display name is the raw label.
   The shared engine (`shared/calendar` `occasionOccurrences` +
   `occasionKindFromLabel`) builds `CalendarData.occasions`
   (`{ id, kind, name, date, personId, label, year? }`); consumers title/icon
@@ -694,11 +915,48 @@ forecast. All of it follows the Weather calendar's visibility toggle.
 - **Per-contact inclusion.** A person may be **excluded** from the Occasions
   calendar via `Person.occasionsHidden` (sealed; default shown) — a
   "Show on Occasions calendar" switch in the Occasion dates section of their card. Hidden
-  contacts contribute no occasions to the grid, day/list, search, print, or
-  reminders (the shared engine skips them). The Occasions list still shows them
-  in a dimmed **"Hidden from calendar"** group so they stay discoverable; tapping
-  any occasion row opens the person **scrolled to the Dates section**
-  (`PersonForm` `focus: 'dates'`) to edit dates or re-include them.
+  contacts contribute no occasions to the grid, day/list, search, print,
+  reminders, **or the Occasions list** — they are **omitted entirely** (the
+  shared engine and the Occasions screen both skip them), re-included only by
+  toggling the switch back on from the person's card. Tapping any (shown)
+  occasion row opens the person **scrolled to the Dates section**
+  (`PersonForm` `focus: 'dates'`) to edit its dates.
+- **Occasions list — a today-anchored timeline.** The list is not a flat
+  forward run; it reads as a timeline centred on today, so it's clear what has
+  just happened vs. what's coming and when it's worth planning ahead.
+  `lib/occasions.collectOccasions(people, now?)` anchors each occasion to the
+  occurrence **nearest today** and returns a signed `offset` in days: a
+  recently-passed occurrence within **`PAST_WINDOW_DAYS` (7)** gets a **negative**
+  offset, today is **0**, otherwise the **next upcoming** occurrence gets a
+  **positive** offset (rolling to next year once this year's date is >7 days
+  past). Entries sort by `offset` (then name), and the screen splits them into:
+  - **Recently observed** (`offset < 0`) — a `SectionHeader` group of dimmed
+    rows for occasions in the last 7 days, so a just-passed occasion doesn't
+    silently teleport to the bottom of the list. These rows carry **no
+    "schedule an e-card" prompt** (a card set now would fire ~a year out); if the
+    occasion's card already sent (`active:false`, `sentAt` set) the row shows a
+    small **"Sent"** pill instead.
+  - a **"Today · `<Mon D>`"** marker row (accent rule + label) anchoring the
+    boundary — shown whenever any occasions exist.
+  - **Coming up** (`0 ≤ offset ≤ COMING_UP_DAYS` (60)) — the highlighted
+    plan-ahead horizon; the primary actionable zone where the e-card envelope
+    (schedule / edit / active-`email-check`) lives. Today's occasions (offset 0)
+    lead this group with the accent outline. When nothing falls in the window an
+    inline "Nothing in the next 60 days." note shows.
+  - **Later this year** (`offset > COMING_UP_DAYS`) — a **collapsed** toggle
+    ("Later this year (N)") for the far-future tail, so dates too distant to plan
+    a card for don't clutter the horizon; auto-expanded when a calendar-tapped
+    `focus` occasion lives there.
+  `whenLabel(offset)` renders the relative cue ("Yesterday" / "3 days ago" /
+  "Today" / "Tomorrow" / "in N days"); "Later" rows drop it and lean on the
+  month/day. The windowing is unit-tested (`lib/__tests__/occasions.test.ts`,
+  injectable `now`). The explanatory `Hint`
+  ("Occasions come from the dates on your contacts' cards — birthdays,
+  anniversaries, and any other dates you add …") shows only when there are
+  occasions to act on. With none shown, an empty state ("No occasions yet")
+  explains that the dates you add to a contact surface here and offers an **Add
+  dates in Contacts** action. The copy treats **birthday as one of the dates**
+  (not a separate thing) and says "contacts", not "People".
 - **Calendar-level alerts.** One alert config for the whole Occasions calendar
   (no per-occasion override) — offsets (days before) + a single time, stored
   device-local (`hc_occasion_alert_prefs`). Defaults: an alert at **noon the day
@@ -753,7 +1011,13 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   card is created; a failed photo upload never loses the card.
   Recipient candidates are scoped to **the occasion's own
   contact plus anyone linked to them** (their `relatedNames` that resolve to a
-  roster person) — not the whole roster. A candidate **missing an email** can
+  roster person) — not the whole roster. To add another recipient, an **"Add a
+  related contact"** row opens the occasion **contact itself** (`PersonForm`,
+  `focus: 'related'` — scrolled to Related names) where the link is managed
+  normally (including its sealed reciprocal back-link); on return the newly
+  linked contact appears as a candidate here automatically, since the recipient
+  list is derived from the occasion contact plus their related names.
+  A candidate **missing an email** can
   have one added **inline**, which is saved to that contact's card (sealed). A
   card goes to **one address per recipient**: a contact with **multiple emails**
   defaults to their primary, switchable via a per-recipient address picker (the
@@ -765,14 +1029,24 @@ forecast. All of it follows the Weather calendar's visibility toggle.
   the **live editable card** (gradient cover + gently bobbing art via
   Reanimated/SVG, heading, then the editable greeting/message/photos/sign-off/
   signature lines, footer) mirroring the email renderer — there is no separate
-  message field. A **scheduled**
+  message field. The editable lines carry a visible **edit affordance** (a
+  "Tap to edit" pencil badge on the card body + a faint dashed underline under
+  each line) so their tappability isn't mistaken for finished card text; tapping
+  the badge focuses the greeting line with the caret at its start. A **scheduled**
   card is marked on its occasion row by a filled-envelope icon; tapping it
-  **re-opens the card to edit or cancel** it. E-cards recur annually. **Deliberate E2EE exception:** the recipient emails,
+  **re-opens the card to edit or cancel** it. **Each card sends once**, on the
+  occasion's **next upcoming** date (this year if it hasn't passed yet, else next
+  year), then **deactivates** (`runECardCheck` clears `active` and stamps
+  `sentAt` after the send) — it does **not** recur annually. A meaningful edit
+  re-arms the card for its next occurrence. The form's send hint reads "Sends
+  once on `<next date>`". **Deliberate E2EE exception:** the recipient emails,
   message/framing lines, and card photos are stored **plaintext** server-side
   (`ECard` model + upload-store files, `POST /api/ecards`) and sent by the
   scheduler (`runECardCheck`) so they fire while
   the app is closed — see [crypto-e2ee.md](../platform/crypto-e2ee.md)
-  "Deliberate plaintext exceptions". Occasions stays a free add-on; e-cards are
+  "Deliberate plaintext exceptions". This plaintext-exception disclosure is shown
+  on the form at **create time only** (the edit view drops it once the card
+  exists). Occasions stays a free add-on; e-cards are
   free.
 
 ## Data & API surface
@@ -828,7 +1102,13 @@ forecast. All of it follows the Weather calendar's visibility toggle.
 - Custom calendars: create/list visibility tiers (private, household-wide,
   member-specific, outsiders excluded), creator-only writes, validation,
   outside-share invitation lifecycle, access levels, feed subscription
-  normalization — `customCalendars.integration.test.js`.
+  normalization, and the free-viewer-mode `viewer` counts on
+  `GET /billing/status` (pending → accepted → revoked; pre-signup email claim)
+  — `customCalendars.integration.test.js`.
+- Calendar-lane write authorization: a seated `view` collaborator reads the
+  resource lane but 403s on POST/PUT/DELETE (including a scope-less update
+  body), a `full` collaborator and the owner write, a non-collaborator can't
+  POST into a foreign calendar scope — `records.integration.test.js`.
 - Per-calendar resource keys: owner-only mint/rotate, wrap-on-approve,
   collaborator-only member wraps, sealed events reaching collaborators as
   ciphertext, revoke → rotation, envelope cleanup on delete —
@@ -840,8 +1120,8 @@ forecast. All of it follows the Weather calendar's visibility toggle.
 - Client-side calendar plumbing (feeds, prefs/density, holidays, recurrence
   helpers, timezone math, printing) — the `mobile/src/lib/__tests__/` units
   listed in `tests:`.
-- Day-view layout math (all-day vs. timed routing incl. midnight clipping and
-  the muted task/chore chips, lane packing, week-strip paging/selection,
+- Day-view layout math (all-day vs. timed routing incl. midnight clipping, the
+  muted task chips + icon-badged chore chips, lane packing, week-strip paging/selection,
   initial-scroll targets, gutter/now-badge labels) —
   `mobile/src/screens/calendar/dayview/__tests__/dayViewLayout.test.ts`.
 - The sealed record store the events persist in is verified under
