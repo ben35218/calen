@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Text,
   TextInput,
@@ -19,6 +19,11 @@ import {
   Dimensions,
   useWindowDimensions,
   LayoutChangeEvent,
+  // RN's own Animated (aliased so it doesn't collide with Reanimated's default
+  // export below). BottomSheet's slide + drag runs on it because pan-to-dismiss
+  // needs PanResponder, and gesture-handler isn't a dependency of this app.
+  Animated as RNAnimated,
+  PanResponder,
 } from 'react-native';
 import { KeyboardAwareScrollView, KeyboardController } from 'react-native-keyboard-controller';
 import type { KeyboardAwareScrollViewRef } from 'react-native-keyboard-controller';
@@ -283,9 +288,10 @@ export function Input(
     containerStyle?: StyleProp<ViewStyle>;
     labelStyle?: StyleProp<TextStyle>;
     clearable?: boolean;
+    clearColor?: string;
   },
 ) {
-  const { label, style, highlight, containerStyle, labelStyle, clearable = true, ...rest } = props;
+  const { label, style, highlight, containerStyle, labelStyle, clearable = true, clearColor, ...rest } = props;
   const [focused, setFocused] = useState(false);
   // Apple-style clear affordance: while the field is being edited and holds
   // text, an ✕ at its right end clears it (cross-platform stand-in for iOS's
@@ -316,15 +322,17 @@ export function Input(
           rest.onBlur?.(e);
         }}
       />
-      {showClear ? <ClearButton onPress={() => rest.onChangeText!('')} /> : null}
+      {showClear ? <ClearButton onPress={() => rest.onChangeText!('')} color={clearColor} /> : null}
     </View>
   );
 }
 
 // The ✕-in-a-disc that clears a text field, bottom-anchored over the standard
 // 46px input row (so the label above doesn't offset it). Kept as its own
-// component so PhoneField's row layout can reuse the glyph inline.
-function ClearButton({ onPress, inline }: { onPress: () => void; inline?: boolean }) {
+// component so PhoneField's row layout can reuse the glyph inline. `color`
+// overrides the muted grey for fields on a non-surface background (the blue
+// pre-auth screens tint it translucent white to match their placeholders).
+function ClearButton({ onPress, inline, color }: { onPress: () => void; inline?: boolean; color?: string }) {
   return (
     <Pressable
       style={inline ? styles.clearBtnInline : styles.clearBtn}
@@ -333,7 +341,7 @@ function ClearButton({ onPress, inline }: { onPress: () => void; inline?: boolea
       accessibilityRole="button"
       accessibilityLabel="Clear text"
     >
-      <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+      <Ionicons name="close-circle" size={18} color={color ?? colors.textMuted} />
     </Pressable>
   );
 }
@@ -509,10 +517,43 @@ export function ScreenTitle({ children, style }: { children: React.ReactNode; st
   return <Text style={[styles.screenTitle, style]}>{children}</Text>;
 }
 
+// Slide + scrim-fade timings. Short enough that the sheet feels instant; the
+// same curve plays in reverse on dismiss.
+const SHEET_IN_MS = 260;
+const SHEET_OUT_MS = 200;
+// A release dismisses (rather than springing back) once the drag has covered
+// this fraction of the sheet's own height, or was flicked at least this fast.
+const SHEET_DISMISS_RATIO = 0.3;
+const SHEET_DISMISS_VELOCITY = 0.6;
+
+// Who asked for the sheet to go away decides whether it slides out:
+//
+//   - The USER dismissed it (scrim tap, grabber drag, Android back) → animate
+//     the slide-down, then report `onClose` to the caller. Nothing else is
+//     competing for the screen, and watching it leave is the point.
+//   - The CALLER dropped `visible` → tear down THIS COMMIT, no animation. A
+//     caller closes a sheet because it is doing something else — the alert
+//     picker's "Custom…" row closes the option list and opens the dual-wheel
+//     sheet from one `onChange`; the Repeat picker's closes it and pushes a
+//     screen. A lingering exit animation is fatal there: iOS presents a Modal
+//     as its own view controller, so a second Modal mounted while the first is
+//     still dismissing never appears, and the first's window stays up
+//     swallowing every touch — the sheet "does nothing" and the form behind it
+//     freezes. Even against a navigation push, the dying Modal would eat the
+//     first 200ms of taps on the new screen.
+//
+// Which is also how the sheet behaved before it animated at all: a commit-time
+// swap. Committing a value should feel instant; only leaving should glide.
+
 // A slide-up modal sheet anchored to the bottom of the screen, dimming the
-// backdrop behind it; tapping the backdrop closes it. The canonical chrome for
-// custom pickers/actions (option lists, wheel pickers, confirm sheets). `style`
-// merges into the sheet (e.g. a `gap` between stacked children).
+// backdrop behind it. The canonical chrome for custom pickers/actions (option
+// lists, wheel pickers, confirm sheets). `style` merges into the sheet (e.g. a
+// `gap` between stacked children).
+//
+// Three ways out, matching a native iOS sheet: tap the scrim, drag the grabber
+// down, or Android back. The drag lives on the grabber/title strip only — a
+// pan responder over the whole sheet would swallow the scroll gesture of the
+// lists these sheets usually hold (options, countries).
 export function BottomSheet({
   visible,
   onClose,
@@ -522,6 +563,9 @@ export function BottomSheet({
   // Wrap the sheet so the keyboard pushes it up instead of covering its inputs.
   // Use for sheets containing text fields.
   avoidKeyboard,
+  // Fired once the sheet has mounted and begun its entrance — the hook for
+  // content that must position itself on open (Select's initial scroll).
+  onShow,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -529,30 +573,130 @@ export function BottomSheet({
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   avoidKeyboard?: boolean;
+  onShow?: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
+  // Stay mounted through the exit animation: `visible` flips false the instant
+  // the caller closes, but the slide-down still needs its frames.
+  const [mounted, setMounted] = useState(visible);
+  const translateY = useRef(new RNAnimated.Value(winH)).current;
+  const scrim = useRef(new RNAnimated.Value(0)).current;
+  // The sheet's measured height — scores a drag against the sheet's own size
+  // and gives the exit an exact distance to travel. Seeded with the window
+  // height so a pre-layout dismiss still ends up off-screen.
+  const sheetH = useRef(winH);
+  const closing = useRef(false);
+
+  // Mount on open. On a CALLER-driven close, unmount immediately (see the note
+  // above the component) — `mounted` is a dependency so a caller that leaves
+  // `visible` true after onClose (i.e. never took the hint) gets the sheet back
+  // rather than an empty screen.
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      return;
+    }
+    if (!mounted) return;
+    closing.current = false;
+    setMounted(false);
+  }, [visible, mounted]);
+
+  // The entrance, once the sheet is actually in the tree.
+  useEffect(() => {
+    if (!mounted || !visible) return;
+    closing.current = false;
+    translateY.setValue(winH);
+    RNAnimated.parallel([
+      RNAnimated.timing(translateY, { toValue: 0, duration: SHEET_IN_MS, useNativeDriver: true }),
+      RNAnimated.timing(scrim, { toValue: 1, duration: SHEET_IN_MS, useNativeDriver: true }),
+    ]).start();
+    onShow?.();
+    // Re-running on `winH` alone would replay the entrance on rotation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, visible]);
+
+  // Dismissal that starts inside the sheet: slide it out, then hand control back
+  // to the caller so its `visible` state catches up. The unmount happens here
+  // rather than waiting for that round-trip, so the Modal is released the frame
+  // the animation ends.
+  const requestClose = useCallback(() => {
+    if (closing.current) return;
+    closing.current = true;
+    RNAnimated.parallel([
+      RNAnimated.timing(translateY, { toValue: sheetH.current, duration: SHEET_OUT_MS, useNativeDriver: true }),
+      RNAnimated.timing(scrim, { toValue: 0, duration: SHEET_OUT_MS, useNativeDriver: true }),
+    ]).start(({ finished }) => {
+      if (!finished) return;
+      closing.current = false;
+      setMounted(false);
+      onClose();
+    });
+  }, [onClose, scrim, translateY]);
+
+  // The pan responder is built once, so it reads the live close handler through
+  // a ref rather than capturing the first render's.
+  const closeRef = useRef(requestClose);
+  closeRef.current = requestClose;
+
+  const pan = useRef(
+    PanResponder.create({
+      // Claim only a deliberate downward drag, so a tap on the title still
+      // falls through and an upward pull does nothing.
+      onMoveShouldSetPanResponder: (_e, g) => g.dy > 4,
+      onPanResponderMove: (_e, g) => {
+        if (g.dy > 0) translateY.setValue(g.dy);
+      },
+      onPanResponderRelease: (_e, g) => {
+        if (g.dy > sheetH.current * SHEET_DISMISS_RATIO || g.vy > SHEET_DISMISS_VELOCITY) {
+          closeRef.current();
+        } else {
+          RNAnimated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        RNAnimated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+      },
+    }),
+  ).current;
+
+  if (!mounted) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible transparent animationType="none" onRequestClose={requestClose} statusBarTranslucent>
       {/* The KeyboardAvoidingView must be the full-screen flex container (not a
           wrapper hugging the sheet) or `behavior:'padding'` mis-measures and the
           sheet floats detached from the keyboard with the scrim showing through.
-          It owns the dim scrim + docks the sheet to the bottom; when the keyboard
-          opens it lifts the sheet to sit flush on top of it. */}
+          It docks the sheet to the bottom; when the keyboard opens it lifts the
+          sheet to sit flush on top of it. */}
       <KeyboardAvoidingView
-        style={styles.modalBackdrop}
+        style={styles.sheetRoot}
         behavior={avoidKeyboard && Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Tap-outside-to-close scrim behind the sheet. */}
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <Pressable
+        {/* Tap-outside-to-close scrim, fading in step with the slide. */}
+        <RNAnimated.View style={[StyleSheet.absoluteFill, styles.sheetScrim, { opacity: scrim }]}>
+          <Pressable testID="sheet-scrim" style={StyleSheet.absoluteFill} onPress={requestClose} />
+        </RNAnimated.View>
+        <RNAnimated.View
+          accessibilityViewIsModal
+          onLayout={(e) => {
+            sheetH.current = e.nativeEvent.layout.height;
+          }}
           // Pad the bottom past the home indicator so the last row (e.g. the
           // label picker's "Add Custom Label…") clears the safe-area inset.
-          style={[styles.modalSheet, { paddingBottom: spacing.md + insets.bottom }, style]}
-          onPress={(e) => e.stopPropagation()}
+          style={[
+            styles.modalSheet,
+            { paddingBottom: spacing.md + insets.bottom, transform: [{ translateY }] },
+            style,
+          ]}
         >
-          {title ? <Text style={styles.modalTitle}>{title}</Text> : null}
+          {/* The drag strip: grabber + title. Everything below it scrolls. */}
+          <View {...pan.panHandlers} style={styles.sheetHandleArea}>
+            <View style={styles.sheetGrabber} />
+            {title ? <Text style={styles.modalTitle}>{title}</Text> : null}
+          </View>
           {children}
-        </Pressable>
+        </RNAnimated.View>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -669,6 +813,66 @@ export function FormError({ children, style }: { children?: React.ReactNode; sty
 // One size (13 / lineHeight 18); replaces the drifting `hint`/`intro` locals.
 export function Hint({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
   return <Text style={[styles.hint, style]}>{children}</Text>;
+}
+
+// A label with its explanation folded away behind an ⓘ toggle (the pattern
+// ContactImportScreen introduced for its import options). Use it when the
+// explanation is genuinely optional — background a curious or stuck user wants,
+// not something everyone must read to act. Keeping prose off the first screen
+// is what makes the ACTIONS legible; a wall of caveats above two buttons reads
+// as a problem rather than a choice.
+//
+// `label` is always visible. `hint` appears only once the user asks for it, and
+// the icon fills in while open so the toggle's state is visible at a glance.
+// The glyph is the ⓘ pair app-wide (never an eye — see mobile/CLAUDE.md): this
+// discloses an explanation, not a masked value.
+export function HintDisclosure({
+  label,
+  hint,
+  labelStyle,
+  hintStyle,
+  accessibilityLabel,
+  style,
+}: {
+  label: React.ReactNode;
+  hint: React.ReactNode;
+  labelStyle?: StyleProp<TextStyle>;
+  hintStyle?: StyleProp<TextStyle>;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={style}>
+      {/* The whole label row toggles, not just the glyph: an 18px icon is well
+          under the 44pt touch target, and a question printed next to an
+          untappable question mark is a trap for exactly the user who needs the
+          answer. */}
+      <TouchableOpacity
+        style={styles.hintDisclosureRow}
+        onPress={() => setOpen((v) => !v)}
+        activeOpacity={0.7}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel || 'More information'}
+        accessibilityState={{ expanded: open }}
+      >
+        {typeof label === 'string'
+          ? <Text style={[styles.hintDisclosureLabel, labelStyle]}>{label}</Text>
+          : label}
+        <Ionicons
+          name={open ? 'information-circle' : 'information-circle-outline'}
+          size={18}
+          color={colors.textMuted}
+        />
+      </TouchableOpacity>
+      {open ? (
+        typeof hint === 'string'
+          ? <Text style={[styles.hint, styles.hintDisclosureHint, hintStyle]}>{hint}</Text>
+          : hint
+      ) : null}
+    </View>
+  );
 }
 
 // A prominent tinted-banner callout (louder than a muted Hint) shown at the top
@@ -1087,59 +1291,61 @@ export function Select<T extends string | number>({
         <Ionicons name={chevronIcon ?? 'chevron-down'} size={18} color={colors.textMuted} style={styles.selectChevron} />
       </TouchableOpacity>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)} onShow={scrollToInitial}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)}>
-          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-            {label || inlineLabel || placeholder ? <Text style={styles.modalTitle}>{label || inlineLabel || placeholder}</Text> : null}
-            <ScrollView ref={listRef} style={styles.modalList}>
-              {clearable && !multiple ? (
-                <TouchableOpacity
-                  style={styles.optionRow}
-                  onPress={() => {
-                    onChange?.(null);
-                    setOpen(false);
-                  }}
-                >
-                  <Text style={[styles.optionText, styles.selectPlaceholder]}>{placeholder}</Text>
-                  {value == null ? <Ionicons name="checkmark" size={18} color={colors.primary} /> : null}
-                </TouchableOpacity>
-              ) : null}
-              {options.map((opt) => {
-                const isSel = multiple ? values?.includes(opt.value) : opt.value === value;
-                return (
-                  <TouchableOpacity
-                    key={String(opt.value)}
-                    style={styles.optionRow}
-                    // Capture the target option's position and scroll it to the
-                    // top — onLayout covers the first open (it fires after
-                    // onShow); onShow covers re-opens (layout doesn't re-fire).
-                    onLayout={
-                      initialScrollValue === opt.value
-                        ? (e) => {
-                            initialScrollY.current = e.nativeEvent.layout.y;
-                            scrollToInitial();
-                          }
-                        : undefined
-                    }
-                    onPress={() => {
-                      if (multiple) {
-                        toggleMulti(opt.value);
-                      } else {
-                        onChange?.(opt.value);
-                        setOpen(false);
+      {/* The option list rides the shared BottomSheet (slide-up, grabber,
+          drag-to-dismiss, home-indicator inset) rather than re-rolling one. */}
+      <BottomSheet
+        visible={open}
+        onClose={() => setOpen(false)}
+        title={label || inlineLabel || placeholder}
+        onShow={scrollToInitial}
+      >
+        <ScrollView ref={listRef} style={styles.modalList}>
+          {clearable && !multiple ? (
+            <TouchableOpacity
+              style={styles.optionRow}
+              onPress={() => {
+                onChange?.(null);
+                setOpen(false);
+              }}
+            >
+              <Text style={[styles.optionText, styles.selectPlaceholder]}>{placeholder}</Text>
+              {value == null ? <Ionicons name="checkmark" size={18} color={colors.primary} /> : null}
+            </TouchableOpacity>
+          ) : null}
+          {options.map((opt) => {
+            const isSel = multiple ? values?.includes(opt.value) : opt.value === value;
+            return (
+              <TouchableOpacity
+                key={String(opt.value)}
+                style={styles.optionRow}
+                // Capture the target option's position and scroll it to the
+                // top — onLayout covers the first open (it fires after
+                // onShow); onShow covers re-opens (layout doesn't re-fire).
+                onLayout={
+                  initialScrollValue === opt.value
+                    ? (e) => {
+                        initialScrollY.current = e.nativeEvent.layout.y;
+                        scrollToInitial();
                       }
-                    }}
-                  >
-                    <Text style={styles.optionText}>{opt.label}</Text>
-                    {isSel ? <Ionicons name="checkmark" size={18} color={colors.primary} /> : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-            {multiple ? <Button title="Done" onPress={() => setOpen(false)} /> : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
+                    : undefined
+                }
+                onPress={() => {
+                  if (multiple) {
+                    toggleMulti(opt.value);
+                  } else {
+                    onChange?.(opt.value);
+                    setOpen(false);
+                  }
+                }}
+              >
+                <Text style={styles.optionText}>{opt.label}</Text>
+                {isSel ? <Ionicons name="checkmark" size={18} color={colors.primary} /> : null}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+        {multiple ? <Button title="Done" onPress={() => setOpen(false)} /> : null}
+      </BottomSheet>
     </View>
   );
 }
@@ -1358,28 +1564,25 @@ function DateTimeField({
       ) : null}
 
       {Platform.OS === 'ios' ? (
-        <Modal visible={open} transparent animationType="fade" onRequestClose={commit}>
-          <Pressable style={styles.modalBackdrop} onPress={commit}>
-            <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-              {label || inlineLabel ? <Text style={styles.modalTitle}>{label || inlineLabel}</Text> : null}
-              <DateTimePicker
-                value={temp}
-                mode={mode}
-                // Apple Calendar-style: a month grid for dates, a wheel for time.
-                display={isDate ? 'inline' : 'spinner'}
-                onChange={(_, d) => d && setTemp(d)}
-                minimumDate={minimumDate}
-                maximumDate={maximumDate}
-                // Force a 12-hour wheel even when the device is set to 24-hour time.
-                locale={isDate ? undefined : 'en_US'}
-                themeVariant="dark"
-                accentColor={colors.primary}
-                style={[styles.iosPicker, isDate && datePickerStyle]}
-              />
-              <Button title="Done" onPress={commit} />
-            </Pressable>
-          </Pressable>
-        </Modal>
+        // Same shared sheet as every other picker — dismissing by scrim tap or
+        // grabber drag commits the wheel's current value, exactly like "Done".
+        <BottomSheet visible={open} onClose={commit} title={label || inlineLabel}>
+          <DateTimePicker
+            value={temp}
+            mode={mode}
+            // Apple Calendar-style: a month grid for dates, a wheel for time.
+            display={isDate ? 'inline' : 'spinner'}
+            onChange={(_, d) => d && setTemp(d)}
+            minimumDate={minimumDate}
+            maximumDate={maximumDate}
+            // Force a 12-hour wheel even when the device is set to 24-hour time.
+            locale={isDate ? undefined : 'en_US'}
+            themeVariant="dark"
+            accentColor={colors.primary}
+            style={[styles.iosPicker, isDate && datePickerStyle]}
+          />
+          <Button title="Done" onPress={commit} />
+        </BottomSheet>
       ) : null}
     </View>
   );
@@ -1553,31 +1756,25 @@ export function PhoneField({
         ) : null}
       </View>
 
-      {/* Dedicated picker modal: the keyboard-avoider is the full-screen root so
-          the sheet is *lifted* clear of the keyboard rather than squeezed, and
-          the list carries its own minimum height so it can never collapse to a
-          sliver that hides the one matching row. */}
-      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={closePicker}>
-        <KeyboardAvoidingView style={styles.phonePickerRoot} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <Pressable style={styles.modalBackdrop} onPress={closePicker}>
-            <Pressable style={styles.phonePickerSheet} onPress={(e) => e.stopPropagation()}>
-              <Text style={styles.modalTitle}>Country</Text>
-              <Input placeholder="Search" value={search} onChangeText={setSearch} autoFocus containerStyle={styles.phoneSearch} />
-              <ScrollView ref={listRef} style={styles.phoneCountryList} keyboardShouldPersistTaps="handled">
-                {filtered.map((c) => (
-                  <TouchableOpacity key={c.code} style={styles.optionRow} onPress={() => pickCountry(c.code)}>
-                    <Text style={styles.phoneCountryName} numberOfLines={1}>
-                      {flagEmoji(c.code)}  {c.name}
-                    </Text>
-                    <Text style={styles.phoneCountryDial}>+{c.callingCode}</Text>
-                  </TouchableOpacity>
-                ))}
-                {filtered.length === 0 ? <Text style={styles.phoneNoMatch}>No matches</Text> : null}
-              </ScrollView>
-            </Pressable>
-          </Pressable>
-        </KeyboardAvoidingView>
-      </Modal>
+      {/* The shared sheet, with `avoidKeyboard` so it is *lifted* clear of the
+          keyboard rather than squeezed, and a definite height (via
+          `phonePickerSheet`) so the title + search stay pinned and the list is
+          what scrolls — it can never collapse to a sliver that hides the one
+          matching row. */}
+      <BottomSheet visible={pickerOpen} onClose={closePicker} title="Country" avoidKeyboard style={styles.phonePickerSheet}>
+        <Input placeholder="Search" value={search} onChangeText={setSearch} autoFocus containerStyle={styles.phoneSearch} />
+        <ScrollView ref={listRef} style={styles.phoneCountryList} keyboardShouldPersistTaps="handled">
+          {filtered.map((c) => (
+            <TouchableOpacity key={c.code} style={styles.optionRow} onPress={() => pickCountry(c.code)}>
+              <Text style={styles.phoneCountryName} numberOfLines={1}>
+                {flagEmoji(c.code)}  {c.name}
+              </Text>
+              <Text style={styles.phoneCountryDial}>+{c.callingCode}</Text>
+            </TouchableOpacity>
+          ))}
+          {filtered.length === 0 ? <Text style={styles.phoneNoMatch}>No matches</Text> : null}
+        </ScrollView>
+      </BottomSheet>
     </View>
   );
 }
@@ -1773,6 +1970,12 @@ const styles = StyleSheet.create({
   skeletonRowText: { flex: 1, marginLeft: spacing.md },
   formError: { color: colors.error, marginVertical: spacing.sm, fontSize: 14 },
   hint: { fontSize: 13, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.md },
+  hintDisclosureRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 6, // pads the row out toward a comfortable touch target
+  },
+  hintDisclosureLabel: { fontSize: 15, color: colors.text, fontWeight: '600' },
+  hintDisclosureHint: { marginTop: 4, marginBottom: 0 },
   // SetupCallout — a tinted fill + border, filled icon disc, bold text (tint
   // colours applied inline from the `accent` prop). Deliberately louder than Hint.
   setupCallout: {
@@ -1850,16 +2053,13 @@ const styles = StyleSheet.create({
   phoneSearch: { marginBottom: spacing.sm },
   // Full-screen keyboard-avoider root: reduces the usable area to *above* the
   // keyboard so the flex-end sheet is lifted clear, not compressed.
-  phonePickerRoot: { flex: 1 },
   // A definite-height sheet (percentage of the above-keyboard area) so the title
   // + search stay pinned at the top and the list — not the sheet — is what fills
   // and scrolls. `overflow: hidden` keeps the rounded top corners clipping rows.
+  // Merged into BottomSheet's own sheet style, so it only carries the overrides.
   phonePickerSheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
-    padding: spacing.md,
     height: '78%',
+    maxHeight: '78%',
     overflow: 'hidden',
   },
   // flex:1 inside the definite-height sheet: fills the space beneath the pinned
@@ -1875,12 +2075,23 @@ const styles = StyleSheet.create({
   iosPicker: { alignSelf: 'stretch' },
   selectValue: { fontSize: 16, color: colors.text, flex: 1 },
   selectPlaceholder: { color: colors.textMuted },
-  modalBackdrop: {
-    flex: 1,
-    // A firmer scrim so a bottom sheet reads as clearly on top of the busy screen
-    // behind it (the label picker over the contact form), not blended into it.
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
+  // The full-screen flex container that docks the sheet to the bottom. The dim
+  // is a sibling layer (sheetScrim) rather than this view's background, so it
+  // can fade in step with the slide.
+  sheetRoot: { flex: 1, justifyContent: 'flex-end' },
+  // A firmer scrim so a bottom sheet reads as clearly on top of the busy screen
+  // behind it (the label picker over the contact form), not blended into it.
+  sheetScrim: { backgroundColor: 'rgba(0,0,0,0.6)' },
+  // The drag strip at the top of every sheet. Its padding is what gives the
+  // grabber a finger-sized target beyond the 4px bar itself.
+  sheetHandleArea: { paddingBottom: spacing.xs },
+  sheetGrabber: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: spacing.sm,
   },
   modalSheet: {
     backgroundColor: colors.surface,

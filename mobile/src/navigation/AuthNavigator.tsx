@@ -7,7 +7,9 @@ import ForgotPasswordScreen from '../screens/auth/ForgotPasswordScreen';
 export type AuthStackParamList = {
   Login: undefined;
   Register: undefined;
-  ForgotPassword: undefined;
+  // Carries the email already typed on the sign-in form so the reset screen
+  // doesn't make the user type it a second time.
+  ForgotPassword: { email?: string } | undefined;
 };
 
 const Stack = createNativeStackNavigator<AuthStackParamList>();

@@ -64,8 +64,19 @@ function normalizeOutsideEntry(o) {
   if (o && o.email) return { email: String(o.email).toLowerCase().trim(), access };
   return { email: String(o).toLowerCase().trim(), access: 'view' };
 }
+// `keyChangedAt` / `reapprovalRequestedAt` are SERVER state (the re-key
+// suppression — see the model), not part of the client's sharing payload, so
+// they ride through untouched. Dropping them here would clear the suppression
+// on any ordinary calendar edit (rename, recolour, add a collaborator), and the
+// owner's next background pass would then silently re-wrap the CalendarKey to a
+// re-keyed collaborator that nobody ever approved.
 function normalizeCollaboratorEntry(c) {
-  if (c && c.userId) return { userId: c.userId, access: c.access === 'full' ? 'full' : 'view' };
+  if (c && c.userId) {
+    const out = { userId: c.userId, access: c.access === 'full' ? 'full' : 'view' };
+    if (c.keyChangedAt) out.keyChangedAt = c.keyChangedAt;
+    if (c.reapprovalRequestedAt) out.reapprovalRequestedAt = c.reapprovalRequestedAt;
+    return out;
+  }
   return { userId: c, access: 'view' };
 }
 

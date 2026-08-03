@@ -42,8 +42,13 @@ export function cacheUnlocked(unlocked: boolean): void {
 }
 
 // Sign-out hygiene: forget the unlock so the next account starts locked.
+// Resets to a KNOWN locked state (false), not null: the RootNavigator gate
+// stays mounted across an account switch and nothing re-runs ensureLoaded()
+// after a clear, so a null state would report `loaded: false` until relaunch
+// and hold the splash (see lib/viewerAccess for the full deadlock). "Cleared"
+// IS the safe default: locked until the next server sighting re-caches.
 export function clearUnlockCache(): void {
-  unlockedState = null;
+  unlockedState = false;
   loadPromise = null;
   AsyncStorage.removeItem(UNLOCK_KEY).catch(() => {});
   subs.forEach((fn) => fn());

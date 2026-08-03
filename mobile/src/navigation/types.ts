@@ -141,6 +141,13 @@ export type RootStackParamList = {
   // holds it — no refetch), plus its calendar's display name/colour.
   ViewerHome: undefined;
   ViewerEvent: { event: ViewerEventSnapshot; calendarName: string; accent: string };
+  // The shell's print sheet, seeded with the month the grid was showing
+  // (absent = today's month).
+  ViewerPrint: { year: number; month: number } | undefined;
+  // The shell's way back in when the viewer's key no longer opens the shared
+  // events (a forgotten-password reset re-wraps nothing): passkey, recovery
+  // code, or re-key + ask each owner to restore access. See crypto-e2ee.md.
+  ViewerUnlock: undefined;
   // The unlock paywall pushed as an upgrade route from the viewer shell (the
   // same screen the RootNavigator gate renders full-screen).
   UnlockPaywall: undefined;

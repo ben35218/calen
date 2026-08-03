@@ -9,6 +9,34 @@ for the same shared primitive instead of re-rolling one. All primitives live in
 Never hard-code colours, spacing, or radii — use `colors`, `spacing`, `radius`
 from the theme.
 
+## Presentation & dismissal — how a view opens and how it closes
+
+The app has exactly **four** ways a view can appear. Pick by what the view *is*,
+never by how important it feels. Adding a fifth, or using one of these outside
+its rule, is drift.
+
+| Idiom | Use it for | Closes by |
+| --- | --- | --- |
+| **Push** (the default) | Going *deeper into content* — a list → its detail → its edit form. Anything with somewhere further to drill. | Back chevron, iOS swipe-back |
+| **Modal** (`presentation: 'modal'`) | A *self-contained task* you complete and dismiss, which returns nothing to a hierarchy: Print, Buy credits, a media preview. | Header **✕**, native swipe-down |
+| **`<BottomSheet>`** | A picker, action list, or confirm attached to the screen *behind* it — the user never leaves the current view. | Scrim tap, grabber drag-down, Android back |
+| **Headerless + floating chrome** | Full-bleed canvases only (`CalendarHome`, `CalendarDay`, `ViewerHome`), where a header bar would cover content. | The screen's own back pill |
+
+- **The push/modal test:** can the user go *further* from here? Calendars drills
+  into Add Calendar / Colours & Order / Print, so it pushes. Print produces a
+  PDF and is done, so it's a modal. When genuinely torn, push — a wrong push
+  costs one extra tap; a wrong modal strands the user at a dead end.
+- **Every modal's ✕ is `<HeaderCloseButton>`** in `headerLeft` — the same button
+  the form chrome installs, so the glyph, tap target, and "Close" label are
+  identical everywhere. Use the `modalTask(title)` helper in
+  [AppNavigator](src/navigation/AppNavigator.tsx); never hand-roll a
+  `TouchableOpacity` + `Ionicons name="close"` in screen options.
+- **Never disable swipe-back** (`gestureEnabled: false`) unless the screen owns
+  the horizontal gesture for its own paging *and* supplies a visible back
+  affordance. `CalendarDay` is the only such screen.
+- **A modal may push inside itself.** Its children are ordinary pushes with back
+  chevrons; only the modal's own root carries the ✕.
+
 ## Screen scaffolding
 
 - **Forms / detail screens** → wrap in `<Screen>` (handles the keyboard-aware
@@ -51,6 +79,18 @@ default those to `colors.primary` inside an accented area.
 | Empty list | `<EmptyState icon/mdiIcon title message actionLabel onAction accent />` | `variant="inline"` inside a populated scroll view; `children` for extra links |
 | Form/validation error | `<FormError>{error}</FormError>` | Renders null when empty |
 | Explainer text above content | `<Hint>…</Hint>` | The muted 13px helper line |
+| Optional explanation | `<HintDisclosure label hint />` | Folded away behind an **ⓘ** toggle until asked for |
+
+**Hints are disclosed with the ⓘ, always.** An explanation that isn't required
+to act belongs behind `HintDisclosure` — the whole label row is the tap target
+(an 18px glyph is well under 44pt, and a question printed beside an untappable
+glyph traps the user who needs the answer), and the glyph is the information
+circle, filling in while open (`information-circle-outline` →
+`information-circle`). Keep the revealed hint to a sentence or two. A screen
+that stacks prose above its buttons reads as broken to a nontechnical user; the
+same screen showing two buttons gets a tap. Any hand-rolled reveal (the
+Import-options switch rows) uses the same ⓘ pair — **never an eye**, which means
+"show a masked value" (a password), not "explain this".
 
 ## Headers, buttons, rows
 
@@ -60,7 +100,12 @@ default those to `colors.primary` inside an accented area.
   screen body (`colors.background`) with no divider. Do **not** tint the header
   bar with a feature accent — the accent lives *in the body* (add button, FAB,
   save check, primary buttons), never on the header chrome. A header whose
-  background differs from its body is drift, not a highlight.
+  background differs from its body is drift, not a highlight. The tint is always
+  `#fff`, never `colors.text`. Two exceptions, both WebView media viewers where
+  the chrome should disappear around the content: `AttachmentPreview` and
+  `PlacePreview` use pure black. A screen that re-declares its header in a
+  layout effect (`TripDetail`) must still be registered with the matching
+  background in the navigator, or the push transition flashes the old colour.
 - **Filled accent disc vs. transparent white — the header-action rule.** A
   header button gets a solid-fill circular disc **only when it carries a feature
   accent** (`useCalendarColors().colors.<area>`). A header action in a
@@ -85,7 +130,21 @@ default those to `colors.primary` inside an accented area.
   - `<SectionTitle>` = the bold in-form heading (add/edit forms).
   - `<SectionHeader>` = the quiet uppercase eyebrow above a group of rows/cards
     (lists & detail screens).
-- **Bottom sheet** (custom picker / action / confirm sheet) → `<BottomSheet visible onClose title? style? avoidKeyboard?>`. `avoidKeyboard` when it holds text inputs. Don't hand-roll a `Modal` + backdrop + slide-up `Pressable`.
+- **Bottom sheet** (custom picker / action / confirm sheet) → `<BottomSheet visible onClose title? style? avoidKeyboard? onShow?>`. `avoidKeyboard` when it holds text inputs; `onShow` to position content on open (Select's initial scroll). Don't hand-roll a `Modal` + backdrop + slide-up `Pressable` — the shared sheet is what supplies the slide-up, the grabber, drag-to-dismiss, the home-indicator inset, and the scrim fade, and a hand-rolled one silently drops all five. `Select`, `DateField`/`TimeField`, and `PhoneField`'s country picker all render through it.
+  - Its drag lives on the **grabber/title strip only**, so a sheet holding a
+    scrolling list keeps its scroll. Content sits below that strip.
+  - **Who closes it decides whether it animates.** A *user* dismissal (scrim,
+    grabber drag, Android back) slides out and then reports `onClose`. The
+    *caller* dropping `visible` tears it down in that commit, with no exit
+    animation — and that asymmetry is load-bearing, not a shortcut. iOS presents
+    a Modal as its own view controller, so a second sheet mounted while the
+    first is still dismissing never appears while the first keeps swallowing
+    touches (the symptom is "the picker closed and did nothing, and now the form
+    is frozen"). Callers close a sheet precisely when something else is taking
+    the screen — the alert picker's "Custom…" opens a second sheet, the Repeat
+    picker's pushes a screen — so a caller-driven close must leave instantly.
+    Anything that opens a sheet or navigates from inside one MUST do it by
+    flipping the caller's `visible`, never by delaying the teardown.
 - **Leading disc on a row** → `<IconAvatar icon/mdiIcon bg size={44} />`
   (`radius` for a rounded-square instead of a circle).
 - **Settings-style tappable row** (inside an InfoCard/GroupCard) → `<ListRow icon title subtitle onPress right />`.
@@ -107,7 +166,10 @@ default those to `colors.primary` inside an accented area.
   `clearable={false}` only for: right-aligned label/value rows (`fs.rowInput` —
   Servings, Airline, Cost…), and fields whose right edge is already occupied
   inside the field box or by an identical adjacent glyph (recipe ingredient
-  cells next to their close-circle remove button). A search pill built from a
+  cells next to their close-circle remove button). On a non-surface background
+  (the blue pre-auth screens) pass `clearColor` so the ✕ matches that screen's
+  placeholder tint instead of the muted grey — `authInputProps` already does.
+  A search pill built from a
   raw `TextInput` (People, Calendar search) hand-rolls the same close-circle,
   with `clearButtonMode="never"` so iOS doesn't double it.
 - **Buttons** → `<Button variant="primary|ghost|danger" color={accent} />`.

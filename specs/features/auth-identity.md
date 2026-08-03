@@ -1,7 +1,7 @@
 ---
 title: Auth & identity
 status: current
-last-verified: df8c7f3+ (2026-07-30); account deletion is now billing-aware — an active Calen AI plan interposes a keep-billing warning (Manage-subscription affordance) before the destructive confirm, the confirm names any forfeited credit balance, `deleteUserAndData` best-effort-purges the RevenueCat subscriber (`REVENUECAT_SECRET_API_KEY`) and flags the account-deleted email with `hadActiveAiPlan`; normative rules live in billing-plans.md "Account deletion × billing" (2026-07-30); password AND email change are biometric-first with a current-password fallback — `PUT /auth/password` and `PUT /auth/email` treat `currentPassword` as optional (bcrypt-verified when present), a fresh device unlock via `reauthWithBiometric()` replaces it when the device key cache is armed; email-change client contract fixed to send `currentPassword` (was mismatched `password`) (2026-07-29); flat Account layout + email above phone, tap-to-reveal email change, location action hidden once address set (2026-07-27); account phone uses shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); AI card (aiEnabled/aiUsePersonalInfo toggles) added to Privacy data controls (2026-07-27); registration now sends a `welcome` email and account deletion sends an `account_deleted` confirmation just before purge (both best-effort via the mailer; lifecycle owned by email-lifecycle.md) (2026-07-29); reminders (master toggle + day-based alert time) moved out of `AccountScreen` into a dedicated `RemindersScreen` off the profile hub (2026-07-29); passkey sign-in is now passwordless-first + usernameless — `POST /auth/passkey/challenge` accepts no email (discoverable-credential challenge, empty `allowCredentials`), `/passkey/login` resolves the user from the asserted credential id (new index on `passkeyCredentials.credentialId`), and the LoginScreen leads with the passkey (usernameless when the email field is empty, username-first single-gesture unlock when typed); usernameless E2EE unlock happens post-auth via the device-key cache then a passkey assertion (2026-07-29); RegisterScreen presentation aligned to the login redesign — Calen wordmark header, passkey-consistent copy ("Create account with a passkey"), and the method-hint text fixed from unreadable gray to white on the blue background (presentation only; the passkey-first mode toggle is unchanged) (2026-07-29); LoginScreen tightened to keep the Register footer above the fold on small devices — dropped the redundant "Sign in to your account" subtitle (the passkey button below is self-describing) and trimmed header/divider/wordmark spacing (presentation only) (2026-07-29); RegisterScreen now warns before sign-up that a one-time recovery-code step follows (heads-up so the mandatory `RecoveryCodeModal` reads as expected, not an ambush), and the passkey-failure alert names the TestFlight/beta limitation — passkeys need the associated-domains entitlement absent on those builds, so it points testers to the password path (copy-only; rollback behavior unchanged) (2026-07-29); AccountScreen gained an "Invites → Email app" row (shown only when 2+ known mail apps are installed) surfacing the device-local invite mail-app preference the chooser sheet remembers — pick an app or "Ask each time", persisted instantly via `lib/shareInvite.setPreferredMailApp` (chooser itself specced in households-sharing.md) (2026-07-29)
+last-verified: 9282d82+ (2026-08-02); **sign-out now also clears the calendar prefs cache** (`resetCalendarPrefs()`) — `hc_custom_calendars` and its siblings hold ACCOUNT state (which calendars exist, their sharing, colours, order, visibility) in unscoped AsyncStorage keys, so a signed-out account's list survived into the next sign-in: a free-viewer signing in was told "No shared calendars yet" (the stale rows were the other account's own `mine:true` calendars and the shell renders only `mine:false`), an owner signing back in saw their built-ins missing, and calendar names + outside-share addresses leaked between accounts on a shared device; new sign-out-teardown section enumerates every store logout must drop, covered by `calendarPrefs.test.ts` (2026-08-02); the F1 reset hold now recognizes a signed-out install — `isKnownDevice` also matches the request's `X-Device-Id` against existing `User.sessions` rows (sign-out is client-local, so the row persists; explicit device removal in Sign-in & Security still revokes recognition), so "previously signed in here, then signed out" resets instantly instead of hitting the 24 h hold (2026-08-02); "Forgot password?" hands the email already typed on the sign-in form to the reset screen via the `ForgotPassword` route param, which seeds its email field — no retyping (2026-08-02); account deletion is now billing-aware — an active Calen AI plan interposes a keep-billing warning (Manage-subscription affordance) before the destructive confirm, the confirm names any forfeited credit balance, `deleteUserAndData` best-effort-purges the RevenueCat subscriber (`REVENUECAT_SECRET_API_KEY`) and flags the account-deleted email with `hadActiveAiPlan`; normative rules live in billing-plans.md "Account deletion × billing" (2026-07-30); password AND email change are biometric-first with a current-password fallback — `PUT /auth/password` and `PUT /auth/email` treat `currentPassword` as optional (bcrypt-verified when present), a fresh device unlock via `reauthWithBiometric()` replaces it when the device key cache is armed; email-change client contract fixed to send `currentPassword` (was mismatched `password`) (2026-07-29); flat Account layout + email above phone, tap-to-reveal email change, location action hidden once address set (2026-07-27); account phone uses shared PhoneField (country picker + as-you-type), stored E.164 (2026-07-27); AI card (aiEnabled/aiUsePersonalInfo toggles) added to Privacy data controls (2026-07-27); registration now sends a `welcome` email and account deletion sends an `account_deleted` confirmation just before purge (both best-effort via the mailer; lifecycle owned by email-lifecycle.md) (2026-07-29); reminders (master toggle + day-based alert time) moved out of `AccountScreen` into a dedicated `RemindersScreen` off the profile hub (2026-07-29); passkey sign-in is now passwordless-first + usernameless — `POST /auth/passkey/challenge` accepts no email (discoverable-credential challenge, empty `allowCredentials`), `/passkey/login` resolves the user from the asserted credential id (new index on `passkeyCredentials.credentialId`), and the LoginScreen leads with the passkey (usernameless when the email field is empty, username-first single-gesture unlock when typed); usernameless E2EE unlock happens post-auth via the device-key cache then a passkey assertion (2026-07-29); RegisterScreen presentation aligned to the login redesign — Calen wordmark header, passkey-consistent copy ("Create account with a passkey"), and the method-hint text fixed from unreadable gray to white on the blue background (presentation only; the passkey-first mode toggle is unchanged) (2026-07-29); LoginScreen tightened to keep the Register footer above the fold on small devices — dropped the redundant "Sign in to your account" subtitle (the passkey button below is self-describing) and trimmed header/divider/wordmark spacing (presentation only) (2026-07-29); RegisterScreen now warns before sign-up that a one-time recovery-code step follows (heads-up so the mandatory `RecoveryCodeModal` reads as expected, not an ambush), and the passkey-failure alert names the TestFlight/beta limitation — passkeys need the associated-domains entitlement absent on those builds, so it points testers to the password path (copy-only; rollback behavior unchanged) (2026-07-29); AccountScreen gained an "Invites → Email app" row (shown only when 2+ known mail apps are installed) surfacing the device-local invite mail-app preference the chooser sheet remembers — pick an app or "Ask each time", persisted instantly via `lib/shareInvite.setPreferredMailApp` (chooser itself specced in households-sharing.md) (2026-07-29); the forgotten-password dead end for a LOCKED viewer is closed — a reset still leaves the password envelope stale, but the viewer shell now offers passkey / recovery code / re-key + owner-approved access request instead of only the paywalled Privacy & data screen (9282d82+, 2026-08-02)
 code:
   - mobile/src/screens/auth/
   - mobile/src/screens/profile/AccountScreen.tsx
@@ -22,6 +22,7 @@ tests:
   - server/src/test/deviceLink.integration.test.js
   - server/src/test/recoveryMandate.integration.test.js
   - mobile/src/lib/__tests__/e2ee.test.ts
+  - mobile/src/screens/auth/__tests__/forgotPasswordEmail.test.tsx
 ---
 
 # Auth & identity
@@ -78,16 +79,67 @@ your private key. The key primitives are in
     (`/auth/passkey/register-options` + `/register`, `@simplewebauthn/server`,
     stored on `User.passkeyCredentials`).
 - **Email-OTP / forgot-password:** `POST /auth/forgot` emails a 6-digit code;
-  `POST /auth/reset` consumes it. A reset deliberately leaves the stale password
+  `POST /auth/reset` consumes it. "Forgot password?" carries the email already
+  typed on the sign-in form into the reset screen (`ForgotPassword` route param
+  `{ email? }`, seeding its email field), so the user never retypes it; the field
+  stays editable until a code is sent. A reset deliberately leaves the stale password
   envelope in place — the client re-wraps the private key after a passkey/recovery
   unlock (it cannot unwrap from a new password alone).
+  - **Say this plainly wherever a reset leaves data locked.** The reset restores
+    sign-in only; signing in again with the new password can never open the old
+    envelope. Any UI that offers "sign in again" as the fix sends the user round
+    a loop that cannot terminate. An unlocked user is steered to Privacy & data;
+    a **locked free viewer** — who has no Privacy & data — gets the shell's
+    `ViewerUnlock` route (passkey / recovery code / re-key + owner approval), see
+    [billing-plans.md](billing-plans.md) "Free viewer mode".
+  - **Last resort:** an account that can open its identity key by no factor at
+    all can mint a new one (`POST /keys/rekey`) and have shared resources
+    re-granted to it. It recovers access, never data — the rules live in
+    [../platform/crypto-e2ee.md](../platform/crypto-e2ee.md) "Re-key".
 
 ### New-device protection
 
 - A password reset from an unrecognized device is **held** (`resetHoldUntil`,
   `RESET_COOLDOWN_HOURS`) and loudly announced to existing devices + email; the
   user can cancel it with `POST /auth/reset/cancel`.
+- A device is **recognized** (the reset applies immediately) when either:
+  - the request carries a valid session token for the same account in the
+    `Authorization` header — "I forgot my password but I'm signed in on my own
+    phone"; or
+  - the request's `X-Device-Id` matches an existing device-session row on
+    `User.sessions` — the install has signed in to this account before and its
+    row was never revoked. Sign-out is client-local (the row stays), so signing
+    out does **not** demote a device back to unrecognized; explicitly removing
+    it in Sign-in & Security (`DELETE /auth/sessions/:sid`) does. The install id
+    is an unguessable keychain-held 128-bit value, but it is client-supplied —
+    a deliberate, *weak* recognition signal that only skips the hold; it never
+    authenticates a session by itself.
 - Auth endpoints are per-IP rate-limited; sessions slide via `X-Refreshed-Token`.
+
+### Sign-out teardown (what a device must forget)
+
+Query keys, the replica, and the on-device pref caches are **not scoped by
+user**, so signing out has to wipe every store that holds ACCOUNT state or the
+next sign-in on that device paints the previous account's data. `logout()`
+drops, in order: the in-memory E2EE key + biometric device-key cache, the token,
+the react-query cache, the app-unlock and viewer-content caches, the record
+replica, the record-sync cursor (its own AsyncStorage key — a wiped replica with
+a live cursor resumes from the old high-water mark and never re-pulls what was
+cleared), the **calendar prefs cache** (`resetCalendarPrefs()`), and the
+**owned add-ons mirror** (`resetOwnedAddons()` — `hc_owned_addons`; left
+behind, a viewer session's empty entitlement set became the next owner
+sign-in's boot state and locked their Occasions/Chores/Meals lanes to empty;
+normative in billing-plans.md).
+
+That last one is account state despite living in device-shaped keys: which
+calendars exist, who they're shared with, their colours, order and visibility.
+Leaving it behind caused two failures. Correctness — the next account renders the
+previous one's calendar list until the server refresh lands, so a free-viewer
+signing in was told **"No shared calendars yet"** (the stale rows were the other
+account's own `mine: true` calendars, and the viewer shell renders only
+`mine: false`), and an owner signing back in saw their built-ins missing for the
+mirror-image reason. Privacy — it leaks calendar names, colours and outside-share
+email addresses from one account to the next on a shared device.
 
 ### Device security (screen capture & app lock)
 
@@ -113,8 +165,10 @@ your private key. The key primitives are in
   - **Install identity:** each app install generates a random UUID on first
     launch, persists it in the keychain (`lib/deviceId.ts`), and sends it as
     `X-Device-Id` on every request (alongside the cosmetic `X-Device-Name` /
-    `X-Device-Platform` labels). Like the name, it is a label/dedup key only —
-    NEVER an auth factor (the revocation key stays the `sid` in the JWT).
+    `X-Device-Platform` labels). Like the name, it is a label/dedup key, never
+    a session-granting auth factor (the revocation key stays the `sid` in the
+    JWT) — with one deliberate exception: a matching session row lets a reset
+    skip the F1 hold (see New-device protection above).
   - **One row per install:** a sign-in whose `X-Device-Id` matches an existing
     session row **replaces** that row (fresh `sid`, updated name/`lastSeenAt`,
     original `createdAt` kept) instead of appending — so the Devices list shows
@@ -252,6 +306,9 @@ per-factor ciphertext and every factor KEK is derived client-side. Config:
 - Forgot/reset lifecycle (no enumeration, hashed short-lived codes, burn-on-guess,
   expiry), passkey challenge/login/register guards, delete-account confirmation,
   and token half-life refresh — `authFlows.integration.test.js`.
+- The sign-in → reset email hand-off (typed email passed as the `ForgotPassword`
+  route param, seeding the reset screen; blank stays blank) —
+  `mobile/src/screens/auth/__tests__/forgotPasswordEmail.test.tsx`.
 - Passwordless registration and the `hasPassword` flag lifecycle —
   `passwordlessRegister.integration.test.js`.
 - Session create/revoke, per-install coalescing (`X-Device-Id` replace + old

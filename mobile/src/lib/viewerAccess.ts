@@ -50,8 +50,16 @@ export function cacheViewerContent(hasContent: boolean): void {
 }
 
 // Sign-out hygiene: forget the viewer content so the next account starts clean.
+// Resets to a KNOWN no-content state (false), not null: RootNavigator and its
+// useViewerContent hook stay mounted across a sign-out → next sign-in, and
+// nothing re-runs ensureLoaded() after a clear — a null state left `loaded`
+// false forever, holding the splash spinner for the next signed-in account
+// (the billing-status fetch that would re-cache the signal lives in useBilling,
+// which only mounts once the gate renders a screen — a deadlock broken only by
+// relaunching the app). "Cleared" and "fresh install" mean the same safe
+// default anyway: no content → paywall → the first status fetch re-caches.
 export function clearViewerContentCache(): void {
-  contentState = null;
+  contentState = false;
   loadPromise = null;
   AsyncStorage.removeItem(VIEWER_KEY).catch(() => {});
   subs.forEach((fn) => fn());

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { invitationsApi, customCalendarsApi, tripsApi, householdApi, callsApi } from '../api';
+import { listAccessRequests } from '../lib/calendarKeys';
 
 // The Invitations inbox's pending count — everything the inbox's "New" tab
 // surfaces: an invitation — event, calendar, trip, or household — awaiting a
@@ -46,6 +47,14 @@ export function useInvitationsCount(): number {
     queryFn: async () => (await callsApi.list()).data,
     staleTime: 60_000,
   });
+  // Re-key access requests on calendars this user owns. Badged like a join
+  // request: only the owner can wrap the key, so an unnoticed request leaves
+  // the person on the other end staring at an empty calendar indefinitely.
+  const accessReqQ = useQuery({
+    queryKey: ['calendarAccessRequests'],
+    queryFn: listAccessRequests,
+    staleTime: 60_000,
+  });
   const countPending = (rows?: { status: string }[]) => (rows ?? []).filter((i) => i.status === 'pending').length;
   const callNotices = (callsQ.data ?? []).filter(
     (c) => (c.status === 'ended' || c.status === 'failed') && c.outcome && !c.acknowledged,
@@ -54,9 +63,10 @@ export function useInvitationsCount(): number {
   // membership notices count until dismissed.
   const joinReqs = (joinReqQ.data ?? []).length;
   const notices = (noticesQ.data ?? []).filter((n) => !n.acknowledgedAt).length;
+  const accessReqs = (accessReqQ.data ?? []).length;
   return (
     countPending(invQ.data) + countPending(calInvQ.data) +
     countPending(tripInvQ.data) + countPending(hhInvQ.data) +
-    joinReqs + notices + callNotices
+    joinReqs + accessReqs + notices + callNotices
   );
 }

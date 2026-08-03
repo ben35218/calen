@@ -11,7 +11,10 @@ import {
   callsApi, PhoneCallRecord,
 } from '../../api';
 import { refreshCustomCalendars } from '../../lib/calendarPrefs';
-import { ensureSharedCalendarKeys } from '../../lib/calendarKeys';
+import {
+  ensureSharedCalendarKeys, listAccessRequests, approveAccessRequest,
+  type CalendarAccessRequest,
+} from '../../lib/calendarKeys';
 import {
   myIdentityPublicKey, openInvitationSnapshot, sealInvitationSnapshot,
   ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint,
@@ -56,6 +59,11 @@ type Row =
   | { kind: 'trip'; inv: TripInvitation }
   | { kind: 'household'; inv: HouseholdInvitation }
   | { kind: 'joinRequest'; inv: JoinRequestForApprover }
+  // A collaborator on one of MY calendars lost every unlock factor, re-keyed,
+  // and is asking me to re-wrap the CalendarKey to their new identity. It lives
+  // here because it is the same shape of decision as a join request — someone's
+  // key changed, and only I can decide whether that's really them.
+  | { kind: 'accessRequest'; inv: CalendarAccessRequest }
   | { kind: 'notice'; inv: HouseholdNotice }
   | { kind: 'call'; inv: PhoneCallRecord };
 
@@ -172,6 +180,14 @@ export default function InvitationsScreen() {
     queryKey: ['calls'],
     queryFn: async () => (await callsApi.list()).data,
   });
+  // Re-key access requests on calendars I own. Only I can wrap the CalendarKey,
+  // so until this is approved the requester sees nothing — worth the same poll
+  // cadence as join requests.
+  const accessReqQ = useQuery({
+    queryKey: ['calendarAccessRequests'],
+    queryFn: listAccessRequests,
+    refetchInterval: 5000,
+  });
 
   // Approving seals the current HDK to the joiner's key, so we need this
   // session's household key ready and its version. Unlock it once on open.
@@ -198,6 +214,33 @@ export default function InvitationsScreen() {
       setFingerprints((cur) => (cur[r._id] === fp ? cur : { ...cur, [r._id]: fp }));
     });
   }, [joinReqQ.data]);
+  // Same out-of-band check for a re-key request — and it matters more here: the
+  // whole point of the approval step is that the key on the other end is a NEW
+  // one, so the code the requester reads out is the only evidence it's them and
+  // not someone who took over their mailbox.
+  useEffect(() => {
+    if (!accessReqQ.data) return;
+    accessReqQ.data.forEach(async (r) => {
+      const id = `${r.calendarKey}:${r.userId}`;
+      const fp = await publicKeyFingerprint(r.identityPublicKey);
+      setFingerprints((cur) => (cur[id] === fp ? cur : { ...cur, [id]: fp }));
+    });
+  }, [accessReqQ.data]);
+
+  // Approving wraps the calendar's CURRENT CalendarKey to the requester's new
+  // identity key on-device and posts the envelope — the only path the server
+  // accepts a wrap for a re-keyed collaborator through.
+  const approveAccess = useMutation({
+    mutationFn: async (r: CalendarAccessRequest) => {
+      const ok = await approveAccessRequest(r);
+      if (!ok) throw new Error('This device doesn’t hold that calendar’s key yet — reopen this screen and try again.');
+    },
+    onSuccess: () => {
+      setError('');
+      qc.invalidateQueries({ queryKey: ['calendarAccessRequests'] });
+    },
+    onError: (e: any) => setError(e.response?.data?.error || e.message || 'Could not approve'),
+  });
 
   const respond = useMutation({
     // C3b: the server can't read the sealed source, so accepting seals our OWN
@@ -342,6 +385,11 @@ export default function InvitationsScreen() {
     const joinReqs: Row[] = wantPending
       ? (joinReqQ.data ?? []).map((inv) => ({ kind: 'joinRequest', inv }))
       : [];
+    // Like join requests, an access request is only ever actionable — it has no
+    // "replied" state to keep (approving simply removes it).
+    const accessReqs: Row[] = wantPending
+      ? (accessReqQ.data ?? []).map((inv) => ({ kind: 'accessRequest', inv }))
+      : [];
     // Membership notices: "New" until dismissed (acknowledged), then history.
     const notices: Row[] = (noticesQ.data ?? [])
       .filter((n) => !n.acknowledgedAt === wantPending)
@@ -363,8 +411,8 @@ export default function InvitationsScreen() {
       .filter((c) => (c.status === 'ended' || c.status === 'failed') && c.outcome)
       .filter((c) => c.acknowledged !== wantPending)
       .map((inv) => ({ kind: 'call', inv }));
-    return [...joinReqs, ...notices, ...calls, ...hh, ...cals, ...trips, ...events];
-  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, joinReqQ.data, noticesQ.data, callsQ.data, tab]);
+    return [...joinReqs, ...accessReqs, ...notices, ...calls, ...hh, ...cals, ...trips, ...events];
+  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, joinReqQ.data, accessReqQ.data, noticesQ.data, callsQ.data, tab]);
 
   // Outcome of a phone call Calen placed (e.g. the event view's Call to
   // Cancel). The notice card has no inline action — tapping it opens the full
@@ -628,6 +676,48 @@ export default function InvitationsScreen() {
     );
   };
 
+  // Someone who lost access to a calendar I own is asking for it back. There is
+  // no "Reject" twin: doing nothing IS the refusal (the request stays pending
+  // and grants nothing), and a reject button on a request that is usually
+  // innocent — a person who forgot their password — invites a punitive tap.
+  const renderAccessRequestItem = (item: CalendarAccessRequest) => {
+    const id = `${item.calendarKey}:${item.userId}`;
+    const display = item.name || 'Someone';
+    const busy = approveAccess.isPending
+      && approveAccess.variables?.calendarKey === item.calendarKey
+      && approveAccess.variables?.userId === item.userId;
+    return (
+      <View style={styles.card}>
+        <Text style={styles.from}>
+          {display}
+          <Text style={styles.fromSub}> lost access to “{item.calendarName}”</Text>
+        </Text>
+        <Text style={styles.meta}>
+          They set up a new encryption key, so their old one can’t read your calendar
+          any more. Approving re-shares it with the new key.
+        </Text>
+        <Text style={styles.meta}>
+          Their security code has changed. Check it matches what they see before
+          approving — if it doesn’t, someone else may be holding their account.
+        </Text>
+        {fingerprints[id] ? (
+          <SecurityCode code={fingerprints[id]} copyable={false} />
+        ) : (
+          <Text style={styles.fingerprint}>…</Text>
+        )}
+        <View style={styles.actions}>
+          <View style={styles.actionBtn}>
+            <Button
+              title="Restore access"
+              loading={busy}
+              onPress={() => approveAccess.mutate(item)}
+            />
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderHouseholdItem = (item: HouseholdInvitation) => {
     const busy = respondHousehold.isPending && respondHousehold.variables?.id === item._id;
     return (
@@ -784,15 +874,20 @@ export default function InvitationsScreen() {
       ) : (
         <FlatList
           data={items}
-          keyExtractor={(row) => `${row.kind}-${row.inv._id}`}
+          // An access request is keyed by (calendar, requester) — it's the only
+          // row kind that isn't a document with an `_id`.
+          keyExtractor={(row) => (row.kind === 'accessRequest'
+            ? `accessRequest-${row.inv.calendarKey}-${row.inv.userId}`
+            : `${row.kind}-${row.inv._id}`)}
           renderItem={({ item }) =>
             item.kind === 'call' ? renderCallItem(item.inv)
               : item.kind === 'calendar' ? renderCalendarItem(item.inv)
                 : item.kind === 'trip' ? renderTripItem(item.inv)
                   : item.kind === 'household' ? renderHouseholdItem(item.inv)
                     : item.kind === 'joinRequest' ? renderJoinRequestItem(item.inv)
-                      : item.kind === 'notice' ? renderNoticeItem(item.inv)
-                        : renderEventItem(item.inv)}
+                      : item.kind === 'accessRequest' ? renderAccessRequestItem(item.inv)
+                        : item.kind === 'notice' ? renderNoticeItem(item.inv)
+                          : renderEventItem(item.inv)}
           contentContainerStyle={styles.list}
         />
       )}

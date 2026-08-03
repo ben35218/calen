@@ -151,6 +151,12 @@ export interface StoredKeyMaterial {
 export const keysApi = {
   me: () => api.get<StoredKeyMaterial>('/keys/me'),
   enroll: (data: { identityPublicKey: string; factors: unknown[] }) => api.post('/keys/enroll', data),
+  // Lost-every-factor recovery: replace the identity keypair outright. Recovers
+  // ACCESS (a calendar owner can re-wrap to the new key), never DATA — anything
+  // sealed to the old identity stays sealed. 409 `confirm_data_loss` when the
+  // account has records of its own; re-send with confirmDataLoss to proceed.
+  rekey: (data: { identityPublicKey: string; factors: unknown[]; confirmDataLoss?: boolean }) =>
+    api.post<{ enrolled: boolean; keyEnrolledAt: string; envelopesCleared: number }>('/keys/rekey', data),
   putFactor: (envelope: unknown) => api.put('/keys/factors', envelope),
   removeFactor: (factor: string, credentialId?: string) =>
     api.delete(`/keys/factors/${factor}`, { params: credentialId ? { credentialId } : {} }),
@@ -1533,6 +1539,14 @@ export interface CustomCalendarRecord {
   calKeyVersion?: number;
   mine: boolean;
   access: CalendarAccess;
+  // THIS requester's own collaborator seat after a re-key (never anyone else's;
+  // the collaborator list itself is never serialized). `keyChangedAt` = their
+  // identity changed, so every automatic CalendarKey wrap is suppressed until
+  // the owner approves; `accessRequestedAt` = they have asked. Together they are
+  // the durable "waiting on the owner" state the viewer shell shows across
+  // sign-outs — see server routes/calendars.js `serialize`.
+  keyChangedAt?: string;
+  accessRequestedAt?: string;
 }
 
 export type CustomCalendarPayload = Omit<CustomCalendarRecord, '_id' | 'userId' | 'mine' | 'access'>;
@@ -1565,11 +1579,24 @@ export interface CalendarKeyEnvelopes {
 // The owner's wrap-on-approve work list (one entry per calendar needing work).
 export interface CalendarKeyPending {
   calendarKey: string;
+  calendarName?: string;
   currentKeyVersion: number;
   needsMint: boolean;
   rotationPending: boolean;
+  // Collaborators the owner may wrap to automatically. Anyone who re-keyed is
+  // held out of this list (and out of `missingMembers`) until approved, so the
+  // background pass can never re-grant on its own.
   collaborators: { userId: string; access: CalendarAccess; identityPublicKey: string }[];
   missingMembers: { userId: string; identityPublicKey: string }[];
+  // The owner's approval queue: collaborators who lost every unlock factor,
+  // re-keyed, and asked for access back. `identityPublicKey` is the NEW key —
+  // its safety number is what the owner checks before approving.
+  reapprovals?: {
+    userId: string;
+    name: string | null;
+    identityPublicKey: string;
+    requestedAt: string;
+  }[];
 }
 
 export const customCalendarsApi = {
@@ -1590,6 +1617,12 @@ export const customCalendarsApi = {
   wrapMembers: (key: string, payload: { keyVersion: number; members: { userId: string; wrappedKey: string }[] }) =>
     api.post<{ ok: boolean; wrapped: number }>(`/calendars/${key}/keys/members`, payload),
   pendingKeys: () => api.get<CalendarKeyPending[]>('/calendars/keys/pending'),
+  // Re-key recovery. A collaborator who re-keyed asks the owner to restore
+  // access; the owner approves by wrapping the CalendarKey to their new key.
+  requestAccess: (key: string) =>
+    api.post<{ ok: boolean; calendarName: string; requestedAt: string }>(`/calendars/${key}/access-request`),
+  approveAccess: (key: string, payload: { userId: string; keyVersion: number; wrappedKey: string }) =>
+    api.post<{ ok: boolean; keyVersion: number }>(`/calendars/${key}/keys/approve`, payload),
 };
 
 // ----- Event invitations (cross-household sharing by email) -------------------

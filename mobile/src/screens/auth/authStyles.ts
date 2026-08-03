@@ -22,11 +22,14 @@ export const authStyles = StyleSheet.create({
   },
 });
 
-// Common props for an <Input> on the blue auth background.
+// Common props for an <Input> on the blue auth background. The clear ✕ is
+// tinted the same translucent white as the placeholder — the app's muted grey
+// reads as a dirty smudge against the brand blue.
 export const authInputProps = {
   labelStyle: authStyles.inputLabel,
   style: authStyles.inputField,
   placeholderTextColor: 'rgba(255,255,255,0.6)',
+  clearColor: 'rgba(255,255,255,0.55)',
 } as const;
 
 // The primary CTA sits on the blue background, so tint its fill darker to keep

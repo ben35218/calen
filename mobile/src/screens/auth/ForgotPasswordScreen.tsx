@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { authApi } from '../../api';
 import { useAuth } from '../../store/auth';
@@ -22,8 +22,11 @@ import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 // reset can't unlock data that was wrapped under the old password.
 export default function ForgotPasswordScreen() {
   const nav = useNavigation<NativeStackNavigationProp<AuthStackParamList>>();
+  const route = useRoute<RouteProp<AuthStackParamList, 'ForgotPassword'>>();
   const { resetPassword } = useAuth();
-  const [email, setEmail] = useState('');
+  // Seeded with whatever was typed on the sign-in form — arriving here from
+  // "Forgot password?" shouldn't cost the user a second round of typing.
+  const [email, setEmail] = useState(route.params?.email ?? '');
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');

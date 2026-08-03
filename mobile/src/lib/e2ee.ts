@@ -160,7 +160,38 @@ export function lock() {
   hdkHouseholdId = null;
   bornEncryptedActivated = false;
   recoveryResurfaced = false;
+  sessionPassword = null;
   clearCalendarKeys();
+}
+
+// ── The session's account password, in memory only ──────────────────────────
+//
+// A password reset changes the LOGIN password and re-wraps nothing, so the user
+// lands signed-in-but-locked holding a password the server has just accepted
+// and the envelope provably cannot open. Re-keying then needs a password to
+// wrap the NEW private key under (`enroll` → `createPasswordFactor`) — and
+// asking for the one they typed a minute ago, on a screen that exists because
+// they lost access, is friction with no security value: the server already
+// verified it, and the private key sitting in memory beside it is strictly more
+// sensitive than the password.
+//
+// So the two places that verify a password and STILL end up locked hand it here
+// (`resetPassword` in store/auth, `ensureEnrolledOnLogin` below), and
+// `rekeyIdentity` uses it instead of prompting. Memory only: never persisted,
+// never written to the keychain, and dropped by `lock()` — which sign-out
+// calls, and which `rekeyIdentity` itself calls once the new key lands.
+let sessionPassword: string | null = null;
+
+// Called by the reset flow, which verifies a password server-side and then
+// discovers the E2EE envelope is stale.
+export function rememberSessionPassword(password: string) {
+  sessionPassword = password || null;
+}
+
+// Whether a re-key can proceed without asking. Callers use this to decide
+// between firing straight away and putting up a password sheet.
+export function hasSessionPassword(): boolean {
+  return sessionPassword != null;
 }
 
 // ── Biometric device-key cache (Face ID relaunch, no password) ───────────────
@@ -849,8 +880,75 @@ export async function ensureEnrolledOnLogin(
     return 'unlocked';
   } catch {
     setKeyPair(null);
+    // Sign-in succeeded but the envelope didn't open — the post-reset case.
+    // Hold the password so a re-key doesn't have to ask for it again.
+    sessionPassword = password;
     return 'locked';
   }
+}
+
+// ── Lost-every-factor recovery: mint a NEW identity ─────────────────────────
+//
+// The escape hatch behind the viewer shell's "Request access" button (see
+// specs/platform/crypto-e2ee.md "Re-key" and billing-plans.md "Free viewer
+// mode"). Generates a fresh identity keypair — wrapped under the CURRENT
+// password, plus a fresh one-time recovery code — and replaces the account's
+// key material outright.
+//
+// It recovers ACCESS, never DATA. Everything sealed to the old identity stays
+// sealed forever; there is still no server-side override. That costs a viewer
+// nothing (the shared events belong to the calendar's owner, who re-wraps the
+// CalendarKey to the new key once they approve), and costs an account with
+// records of its own all of them — hence the server's `confirm_data_loss` gate,
+// surfaced here as a `needsConfirm` result rather than a thrown error so the
+// caller can put the real numbers in front of the user before retrying.
+//
+// Re-keying grants nothing by itself: it makes every collaboration pending the
+// owner's approval.
+//
+// The password is the WRAPPING KEY for the new private half, not a checkpoint —
+// pass `null` to use the one this session already verified at sign-in (see
+// `sessionPassword` above), which is what spares a user who just reset their
+// password from typing it again. With neither, there is nothing to wrap under
+// and the call fails loudly rather than minting an identity nobody can open.
+export type RekeyResult =
+  | { ok: true }
+  | { ok: false; needsConfirm: true; recordCount: number; recoverableByHousehold: boolean };
+
+export async function rekeyIdentity(
+  password: string | null,
+  opts: { confirmDataLoss?: boolean } = {},
+): Promise<RekeyResult> {
+  const secret = password || sessionPassword;
+  if (!secret) throw new Error('Enter your password to set this phone up again.');
+  const enroll = await getEnrollment();
+  const result = enroll.enroll(secret);
+  try {
+    await keysApi.rekey({ ...result.payload, confirmDataLoss: opts.confirmDataLoss });
+  } catch (e) {
+    const res = (e as { response?: { status?: number; data?: Record<string, unknown> } }).response;
+    if (res?.status === 409 && res.data?.code === 'confirm_data_loss') {
+      return {
+        ok: false,
+        needsConfirm: true,
+        recordCount: Number(res.data.recordCount) || 0,
+        recoverableByHousehold: !!res.data.recoverableByHousehold,
+      };
+    }
+    throw e;
+  }
+  // Every key this session held was wrapped to the identity we just abandoned —
+  // the HDK, the CalendarKeys, the biometric cache. Drop them all before the new
+  // keypair lands so nothing stale is mistaken for readable.
+  lock();
+  await clearDeviceKey().catch(() => {});
+  setKeyPair(result.keyPair);
+  await cacheKeyPairToDevice();
+  // The account has no confirmed recovery factor again — surface the new
+  // one-time code through the same mandatory modal registration uses.
+  pendingRecoveryCode = result.recoveryCodeDisplay;
+  emit();
+  return { ok: true };
 }
 
 // Unlock a locked session with the account password (e.g. after a relaunch

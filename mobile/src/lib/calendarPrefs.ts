@@ -124,6 +124,11 @@ export interface CustomCalendar {
   mine: boolean;
   // This user's effective event permission (owner → 'full').
   access: CalendarAccess;
+  // Set when this user re-keyed and is waiting on the owner to re-share (see
+  // CustomCalendarRecord). The viewer shell reads these to keep showing
+  // "Request sent" instead of an empty calendar after a sign-out.
+  keyChangedAt?: string;
+  accessRequestedAt?: string;
 }
 
 function fromRecord(r: CustomCalendarRecord): CustomCalendar {
@@ -146,6 +151,8 @@ function fromRecord(r: CustomCalendarRecord): CustomCalendar {
       : undefined,
     mine: !!r.mine,
     access: r.access === 'view' ? 'view' : 'full',
+    keyChangedAt: r.keyChangedAt || undefined,
+    accessRequestedAt: r.accessRequestedAt || undefined,
   };
 }
 
@@ -265,6 +272,9 @@ let freshHolidaySeed = false;
 let colorOverrideState: ColorMap = {}; // sparse — only user overrides
 let orderState: string[] | null = null; // sparse — ids the user reordered
 let customState: CustomCalendar[] | null = null;
+// Whether refreshCustomCalendars() has completed once since sign-in — the only
+// point at which an empty list means "none" rather than "not loaded yet".
+let customServerLoaded = false;
 let deletedDefaultsState: string[] | null = null;
 let defaultAlertsOffState: string[] | null = null;
 let densityState: MonthDensity | null = null;
@@ -384,6 +394,53 @@ async function migrateVacationsToTrips() {
   } catch {
     // Best-effort; leave the flag unset so the next launch retries.
   }
+}
+
+// Everything here is ACCOUNT state cached on the device, not device state:
+// which calendars exist, who they're shared with, their colours/order/
+// visibility. None of it is scoped by user, so signing out must drop it — two
+// bugs otherwise, both seen in the wild:
+//   - the next account paints the PREVIOUS one's calendars from cache until the
+//     server refresh lands (a viewer signing in saw "No shared calendars yet",
+//     because the stale rows were the other account's own `mine: true`
+//     calendars and the shell only shows `mine: false`; an owner signing back
+//     in saw their built-ins missing for the same reason, inverted);
+//   - it leaks calendar names, colours and the outside-share addresses of one
+//     account to the next on a shared device.
+// Mirrors the replica/cursor wipe in the auth store's logout, and is called
+// from it. Marking `loaded = false` re-arms ensureLoaded for the next session.
+const ACCOUNT_KEYS = [
+  VIS_KEY, HOL_KEY, HOL_DISABLED_KEY, HOL_COUNTRY_KEY, HOL_CALS_KEY, HOL_MIGRATED_KEY,
+  COLORS_KEY, ORDER_KEY, CUSTOM_KEY, CUSTOM_SYNCED_KEY, DELETED_DEFAULTS_KEY,
+  DEFAULT_ALERTS_OFF_KEY, DENSITY_KEY, DAY_VIEW_KEY, OCCASION_ALERTS_KEY,
+];
+
+export async function resetCalendarPrefs(): Promise<void> {
+  loaded = false;
+  customState = null;
+  customServerLoaded = false;
+  visState = null;
+  colorOverrideState = {};
+  orderState = null;
+  deletedDefaultsState = null;
+  defaultAlertsOffState = null;
+  densityState = null;
+  dayViewState = null;
+  occasionAlertState = null;
+  pendingLocalHolidayCals = [];
+  freshHolidaySeed = false;
+  // Repaint every subscriber against the cleared state, so nothing keeps
+  // rendering the signed-out account's calendars.
+  visSubs.forEach((fn) => fn());
+  colorSubs.forEach((fn) => fn());
+  orderSubs.forEach((fn) => fn());
+  customSubs.forEach((fn) => fn());
+  deletedSubs.forEach((fn) => fn());
+  defaultAlertsSubs.forEach((fn) => fn());
+  densitySubs.forEach((fn) => fn());
+  dayViewSubs.forEach((fn) => fn());
+  occasionAlertSubs.forEach((fn) => fn());
+  await AsyncStorage.multiRemove(ACCOUNT_KEYS).catch(() => {});
 }
 
 async function ensureLoaded() {
@@ -551,11 +608,27 @@ async function ensureLoaded() {
 
 // Persist + broadcast a new custom-calendar list (cache and colour plumbing).
 function commitCustom(next: CustomCalendar[]) {
+  const changed = JSON.stringify(customState) !== JSON.stringify(next);
   customState = next;
   AsyncStorage.setItem(CUSTOM_KEY, JSON.stringify(next)).catch(() => {});
   syncColorOverrides();
   customSubs.forEach((fn) => fn());
   colorSubs.forEach((fn) => fn());
+  // The assembled calendar EMBEDS this list: loadCalendarWindowSources
+  // snapshots `accessibleCustomIds` into the ['calendar','sources'] /
+  // ['viewer','sources'] results and the expansion chokepoint filters
+  // custom-calendar events from that snapshot. A sources fetch that ran before
+  // this session's server refresh landed therefore dropped EVERY custom
+  // calendar's events (and hooks re-rendering against the same snapshot can't
+  // restore them) — refetch on a real change so the grid repaints itself
+  // instead of waiting for an unrelated invalidation. No-change commits (the
+  // steady-state refresh echo) skip it, which also keeps the
+  // invalidate → refetch → revalidate path from cycling.
+  if (changed) {
+    const { queryClient } = require('./queryClient') as typeof import('./queryClient');
+    queryClient.invalidateQueries({ queryKey: ['calendar'] });
+    queryClient.invalidateQueries({ queryKey: ['viewer'] });
+  }
 }
 
 // Replace the cached list with the server's. One-time migration: calendars
@@ -626,6 +699,12 @@ export async function refreshCustomCalendars(): Promise<void> {
       if (visChanged) visSubs.forEach((fn) => fn());
     }
     commitCustom(data.map(fromRecord));
+    // The server list has landed at least once this session: only now is an
+    // empty list the TRUTH rather than "not fetched yet". Surfaces that render
+    // a definitive "nothing here" (the free-viewer shell) gate on this, so a
+    // cold start shows a loading state instead of a wrong verdict.
+    customServerLoaded = true;
+    customSubs.forEach((fn) => fn());
     // Fresh install (first run): the seed above added the detected country's
     // holiday calendar bare — now preselect the home province/state when the
     // saved address already makes it derivable (usually the address comes
@@ -991,9 +1070,17 @@ export function useCalendarOrder() {
 // ── Custom calendars hook ───────────────────────────────────────────────────
 export function useCustomCalendars() {
   const [calendars, setCalendars] = useState<CustomCalendar[]>(customState ?? []);
+  // `loaded` = the SERVER list has landed this session, so an empty `calendars`
+  // is a real "none" and not "still fetching". Surfaces that render a
+  // definitive empty verdict must gate on it; ones that just list what they
+  // have can ignore it.
+  const [loaded, setLoaded] = useState<boolean>(customServerLoaded);
 
   useEffect(() => {
-    const sub = () => setCalendars([...(customState ?? [])]);
+    const sub = () => {
+      setCalendars([...(customState ?? [])]);
+      setLoaded(customServerLoaded);
+    };
     customSubs.add(sub);
     ensureLoaded().then(sub);
     return () => {
@@ -1026,7 +1113,7 @@ export function useCustomCalendars() {
     }
   }
 
-  return { calendars, addCalendar, updateCalendar, removeCalendar };
+  return { calendars, loaded, addCalendar, updateCalendar, removeCalendar };
 }
 
 // ── Deleted default calendars hook ──────────────────────────────────────────

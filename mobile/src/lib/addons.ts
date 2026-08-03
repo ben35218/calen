@@ -60,12 +60,45 @@ function ensureLoaded(): Promise<void> {
   return loadPromise;
 }
 
+const sameSet = (a: Set<string>, b: Set<string>) =>
+  a.size === b.size && [...a].every((x) => b.has(x));
+
 // Record the server-reported owned set (called from useBilling's queryFn and the
 // post-purchase activation poll — the two places /billing/status lands).
 export function cacheOwnedAddons(addons: string[]): void {
-  ownedState = new Set((addons ?? []).filter((id) => isAddonCalendar(id)));
-  AsyncStorage.setItem(OWNED_KEY, JSON.stringify([...ownedState])).catch(() => {});
+  const next = new Set((addons ?? []).filter((id) => isAddonCalendar(id)));
+  const prev = ownedState;
+  ownedState = next;
+  AsyncStorage.setItem(OWNED_KEY, JSON.stringify([...next])).catch(() => {});
   subs.forEach((fn) => fn());
+  // The assembled calendar EMBEDS this set: loadCalendarWindowSources snapshots
+  // it into the ['calendar','sources'] / ['viewer','sources'] query results and
+  // applyAddonLocks runs from that snapshot — so when the set changes, those
+  // queries must refetch or the stale verdict sticks until some unrelated
+  // invalidation (the observed failure: an account whose add-on lanes stayed
+  // locked-empty until the user happened to save an event). Subscribers alone
+  // can't fix that — they re-render, but against the same snapshot.
+  if (prev === null || !sameSet(prev, next)) {
+    // Lazy require (matches calendarPrefs): several screen suites mock
+    // react-query without a QueryClient constructor, so the instance must not
+    // be built at this module's import time.
+    const { queryClient } = require('./queryClient') as typeof import('./queryClient');
+    queryClient.invalidateQueries({ queryKey: ['calendar'] });
+    queryClient.invalidateQueries({ queryKey: ['viewer'] });
+  }
+}
+
+// Sign-out teardown: the owned set is ACCOUNT state mirrored into an unscoped
+// device key, so it must not survive into the next session — a locked viewer
+// account signing in after an unlocked owner (or vice versa) would inherit the
+// other's entitlements as its boot state. Cleared alongside the replica and
+// the calendar prefs (store/auth logout); `null` restores the safe default
+// (locked) and re-arming loadPromise makes the next session re-read storage.
+export async function resetOwnedAddons(): Promise<void> {
+  ownedState = null;
+  loadPromise = null;
+  subs.forEach((fn) => fn());
+  await AsyncStorage.removeItem(OWNED_KEY).catch(() => {});
 }
 
 // True when the calendar id is usable: non-add-on calendars are always

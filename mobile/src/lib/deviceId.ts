@@ -5,7 +5,9 @@ import * as SecureStore from 'expo-secure-store';
 // so the server can key session rows by INSTALL rather than by the spoofable,
 // non-unique device name ("iPhone") — one Devices row per physical install, and
 // the new-device alert keys on an unguessable 128-bit value instead of a name.
-// Like the name header it is a label/dedup key only, NEVER an auth factor.
+// Like the name header it is a label/dedup key that never grants a session; its
+// one security role is letting a previously-signed-in (now signed-out) install
+// skip the F1 password-reset hold (server routes/auth isKnownDevice).
 const DEVICE_ID_KEY = 'hc_device_id';
 
 let loadPromise: Promise<string> | null = null;

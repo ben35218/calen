@@ -1,13 +1,12 @@
 import React from 'react';
-import { TouchableOpacity, View, StyleSheet } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { View, StyleSheet } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
-import { HeaderIconButton } from '../components/ui';
+import { HeaderIconButton, HeaderCloseButton } from '../components/ui';
 import { colors } from '../theme';
 import { ASSISTANT_NAME } from '../config';
-import { useCalendarColors } from '../lib/calendarPrefs';
 import { useSyncTimezone } from '../lib/useSyncTimezone';
+import { useBilling } from '../hooks/useBilling';
 
 // Calendar
 import CalendarScreen from '../screens/calendar/CalendarScreen';
@@ -95,9 +94,11 @@ import BuyCreditsSheet from '../screens/plan/BuyCreditsSheet';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-// A header is tinted with its calendar's primary colour (Trips purple,
-// Maintenance blue, Chores orange, Meals teal, Holidays red, Weather blue);
-// calendar-family screens use black.
+// Every header bar takes the body background (`colors.background`) with no
+// shadow, so it blends seamlessly into the screen beneath it — the feature
+// accent lives in the body (add button, FAB, save check), never on header
+// chrome. The one exception is the two WebView media viewers, which keep pure
+// black so the chrome disappears around the content.
 const BLACK = '#000';
 const hdr = (bg: string) => ({ headerStyle: { backgroundColor: bg }, headerTintColor: '#fff' as const });
 
@@ -110,23 +111,45 @@ const featureCalendarHome = (title: string) => ({
   title,
 });
 
-// Assistant chat screens open full screen. (They were briefly a resizable form
-// sheet, but react-native-screens doesn't give a form sheet's JS content a stable
-// height across detent drags, which broke the chat layout — full screen is the
-// reliable presentation.)
-const assistantSheet = (title: string) => ({
+// Assistant chat screens open full screen, as an ordinary push. (They were
+// briefly a resizable form sheet, but react-native-screens doesn't give a form
+// sheet's JS content a stable height across detent drags, which broke the chat
+// layout — a full-screen push is the reliable presentation. The name says
+// "screen", not "sheet", so the next edit doesn't reintroduce the sheet.)
+const assistantScreen = (title: string) => ({
   ...hdr(colors.background),
   headerShadowVisible: false,
   title,
 });
 
+// A self-contained task presented modally: it slides up, is dismissed with a ✕
+// (or the native swipe-down), and returns nothing to a hierarchy. Contrast with
+// a push, which is how the app navigates *deeper into content* — see the
+// presentation rules in specs/features/*.md and mobile/CLAUDE.md.
+const modalTask = (title: string, bg: string = colors.background) =>
+  ({ navigation }: { navigation: { goBack: () => void } }) => ({
+    ...hdr(bg),
+    headerShadowVisible: false,
+    presentation: 'modal' as const,
+    title,
+    headerLeft: () => <HeaderCloseButton onPress={() => navigation.goBack()} />,
+  });
+
 // One flat stack rooted at the calendar (web's `/` → `/calendar`). The calendar
 // home + events list hide the native header and render their own black top bar.
 export default function AppNavigator() {
-  // Subscribe so per-flow header colours update when the user recolours a calendar.
-  const { colors: cal } = useCalendarColors();
   // Keep the stored timezone aligned with this device (drives 9am alert timing).
   useSyncTimezone();
+  // Mounted for its cache side effect, like the viewer shell and the paywall:
+  // the status fetch re-mirrors the owned add-ons / unlock / viewer-content
+  // caches on entry to the unlocked app. Sign-out clears `hc_owned_addons`
+  // (account state), so a fresh session boots locked-by-default — without a
+  // root-level fetch the month grid stayed locked until the user happened to
+  // visit a screen that mounts useBilling (Calendars, Profile…), which is
+  // exactly the "add-on lanes empty until I open Calendars" bug. Mounting it
+  // here bounds that window to one status round-trip, and cacheOwnedAddons'
+  // changed-set invalidation repaints the grid when it lands.
+  useBilling();
   return (
     <View style={styles.root}>
       <Stack.Navigator
@@ -147,21 +170,15 @@ export default function AppNavigator() {
           between days instead of popping to the month. */}
       <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ headerShown: false, gestureEnabled: false }} />
       <Stack.Screen name="EventDetail" component={EventDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
-      {/* In-app attachment preview (WebView: images + PDFs). Dark modal; the
-          title is the file name, a Share button sits in the header. */}
+      {/* In-app attachment preview (WebView: images + PDFs). Dark modal — a
+          media viewer keeps the pure-black chrome rather than the app
+          background. The title is the file name; a Share button sits in the
+          header. */}
       <Stack.Screen
         name="AttachmentPreview"
         component={AttachmentPreviewScreen}
-        options={({ navigation, route }) => ({
-          ...hdr(BLACK),
-          headerShadowVisible: false,
-          presentation: 'modal',
-          title: route.params?.title || 'Attachment',
-          headerLeft: () => (
-            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
-              <Ionicons name="close" size={26} color="#fff" />
-            </TouchableOpacity>
-          ),
+        options={(props) => ({
+          ...modalTask(props.route.params?.title || 'Attachment', BLACK)(props),
         })}
       />
       {/* In-app place preview (WebView on the Google Maps lookup) for places
@@ -169,36 +186,25 @@ export default function AppNavigator() {
       <Stack.Screen
         name="PlacePreview"
         component={PlacePreviewScreen}
-        options={({ navigation, route }) => ({
-          ...hdr(BLACK),
-          headerShadowVisible: false,
-          presentation: 'modal',
-          title: route.params?.title || 'Place',
-          headerLeft: () => (
-            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
-              <Ionicons name="close" size={26} color="#fff" />
-            </TouchableOpacity>
-          ),
+        options={(props) => ({
+          ...modalTask(props.route.params?.title || 'Place', BLACK)(props),
         })}
       />
       <Stack.Screen name="EventForm" component={EventFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
       {/* Unified assistant: Calendar / Chores / Task Plan swap in place inside one
           view; header stays "Calen". Entry points pass `initial` to pick a body. */}
-      <Stack.Screen name="Assistant" component={AssistantScreen} options={assistantSheet(ASSISTANT_NAME)} />
-      <Stack.Screen name="CalendarSearch" component={CalendarSearchScreen} options={{ ...hdr(BLACK), title: 'Search' }} />
+      <Stack.Screen name="Assistant" component={AssistantScreen} options={assistantScreen(ASSISTANT_NAME)} />
+      <Stack.Screen name="CalendarSearch" component={CalendarSearchScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Search' }} />
+      {/* A push, not a modal: Calendars is browsable hierarchy — it drills into
+          Add Calendar, Colours & Order, Print — rather than a task you finish
+          and dismiss. */}
       <Stack.Screen
         name="Calendars"
         component={CalendarsScreen}
         options={({ navigation }) => ({
           ...hdr(colors.background),
           headerShadowVisible: false,
-          presentation: 'modal',
           title: 'Calendars',
-          headerLeft: () => (
-            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
-              <Ionicons name="close" size={26} color="#fff" />
-            </TouchableOpacity>
-          ),
           // The list's primary add action lives in the header (app convention),
           // opening the Add Calendar chooser (new / subscribe / holiday / restore).
           headerRight: () => (
@@ -211,21 +217,8 @@ export default function AppNavigator() {
           ),
         })}
       />
-      <Stack.Screen
-        name="Invitations"
-        component={InvitationsScreen}
-        options={({ navigation }) => ({
-          ...hdr(colors.background),
-          headerShadowVisible: false,
-          presentation: 'modal',
-          title: 'Invitations',
-          headerLeft: () => (
-            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
-              <Ionicons name="close" size={26} color="#fff" />
-            </TouchableOpacity>
-          ),
-        })}
-      />
+      {/* A push, like the other Profile inboxes (Household, Contacts). */}
+      <Stack.Screen name="Invitations" component={InvitationsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Invitations' }} />
       <Stack.Screen name="EventInvitees" component={EventInviteesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Invitees' }} />
       <Stack.Screen name="EventTravelTime" component={EventTravelTimeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Travel Time' }} />
       <Stack.Screen name="EventRepeat" component={EventRepeatScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Repeat' }} />
@@ -237,7 +230,9 @@ export default function AppNavigator() {
       <Stack.Screen name="SubscribeCalendar" component={SubscribeCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Subscribe' }} />
       <Stack.Screen name="AddHolidayCalendar" component={AddHolidayCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add Holidays' }} />
       <Stack.Screen name="CalendarColors" component={CalendarColorsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Colours & Order' }} />
-      <Stack.Screen name="PrintCalendar" component={PrintCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Print' }} />
+      {/* A modal: pick a range, produce a PDF, dismiss — a finish-and-dismiss
+          task, not a place in the calendar hierarchy. */}
+      <Stack.Screen name="PrintCalendar" component={PrintCalendarScreen} options={modalTask('Print')} />
       {/* Title is set by the screen itself from the selected holiday calendar. */}
       <Stack.Screen name="Holidays" component={HolidaysScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Holidays', headerTitleAlign: 'center' }} />
       {/* Route name stays "Birthdays" (the add-on key + deep-links are keyed to
@@ -268,7 +263,7 @@ export default function AppNavigator() {
       <Stack.Screen name="TaskTemplateReview" component={TaskTemplateReviewScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link Items' }} />
       <Stack.Screen name="ItemDetail" component={ItemDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Item' }} />
       <Stack.Screen name="ItemForm" component={ItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Item' }} />
-      <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={assistantSheet(`${ASSISTANT_NAME} · Maintenance`)} />
+      <Stack.Screen name="MaintenanceChat" component={MaintenanceChatScreen} options={assistantScreen(`${ASSISTANT_NAME} · Maintenance`)} />
 
       {/* Chores (orange) */}
       <Stack.Screen name="ChoresHome" component={ChoresScreen} options={featureCalendarHome('Chores')} />
@@ -285,16 +280,19 @@ export default function AppNavigator() {
       <Stack.Screen name="RecipeForm" component={RecipeFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recipe' }} />
       <Stack.Screen name="CookingMode" component={CookingModeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Cooking' }} />
       <Stack.Screen name="RecipeAssistant" component={FindRecipesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Recipes` }} />
-      <Stack.Screen name="MealPlannerSettings" component={MealPlannerSettingsScreen} options={{ ...hdr(cal.recipes), title: 'Grocery Sections' }} />
-      <Stack.Screen name="AddMeal" component={AddMealScreen} options={{ headerStyle: { backgroundColor: colors.background }, headerTintColor: colors.text, headerShadowVisible: false, title: '' }} />
+      <Stack.Screen name="MealPlannerSettings" component={MealPlannerSettingsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Grocery Sections' }} />
+      <Stack.Screen name="AddMeal" component={AddMealScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: '' }} />
 
       {/* Trips (purple) */}
       <Stack.Screen name="Trips" component={TripsScreen} options={featureCalendarHome('Trips')} />
       <Stack.Screen name="TripForm" component={TripFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Trip' }} />
-      <Stack.Screen name="TripDetail" component={TripDetailScreen} options={{ ...hdr(cal.trips), title: 'Trip' }} />
+      {/* TripDetail re-declares its header in a layout effect (the status badge
+          + pencil title); the background must already match there, or the push
+          transition flashes a differently-coloured bar first. */}
+      <Stack.Screen name="TripDetail" component={TripDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Trip' }} />
       <Stack.Screen name="TripItemForm" component={TripItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Booking' }} />
-      <Stack.Screen name="TripSettle" component={TripSettleScreen} options={{ ...hdr(cal.trips), title: 'Settle Up' }} />
-      <Stack.Screen name="TripAssistant" component={TripAssistantScreen} options={assistantSheet(`${ASSISTANT_NAME} · Trips`)} />
+      <Stack.Screen name="TripSettle" component={TripSettleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Settle Up' }} />
+      <Stack.Screen name="TripAssistant" component={TripAssistantScreen} options={assistantScreen(`${ASSISTANT_NAME} · Trips`)} />
 
       {/* Profile (app primary) */}
       <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Profile' }} />
@@ -317,21 +315,8 @@ export default function AppNavigator() {
       <Stack.Screen name="AddOns" component={AddOnsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add-ons' }} />
       <Stack.Screen name="Credits" component={CreditsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI credits' }} />
       <Stack.Screen name="CreditHistory" component={CreditHistoryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Credit history' }} />
-      <Stack.Screen
-        name="BuyCredits"
-        component={BuyCreditsSheet}
-        options={({ navigation }) => ({
-          ...hdr(colors.background),
-          headerShadowVisible: false,
-          presentation: 'modal',
-          title: 'Buy credits',
-          headerLeft: () => (
-            <TouchableOpacity onPress={() => navigation.goBack()} style={{ paddingHorizontal: 4 }}>
-              <Ionicons name="close" size={26} color="#fff" />
-            </TouchableOpacity>
-          ),
-        })}
-      />
+      {/* A modal: buy a pack and dismiss, back to whatever nudged the top-up. */}
+      <Stack.Screen name="BuyCredits" component={BuyCreditsSheet} options={modalTask('Buy credits')} />
       </Stack.Navigator>
     </View>
   );

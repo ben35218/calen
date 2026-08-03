@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29); documented the recovery-code confirmation gate (dual-stored until `recoverySetupAt`) and the soft re-surface of a freshly minted one-time code on the next unlock when recovery is still unconfirmed — the recovery from force-quitting the modal before saving the code (71f3baf, 2026-07-30)
+last-verified: 9282d82+ (2026-08-02); **re-key no longer prompts for a password it already has** — new memory-only `sessionPassword` in mobile/src/lib/e2ee.ts (`rememberSessionPassword` / `hasSessionPassword`, cleared by `lock()`, so sign-out and the re-key itself drop it; never persisted, never in the keychain), fed by the two paths that verify a password server-side and STILL end up locked (`resetPassword` in store/auth, `ensureEnrolledOnLogin`'s failed-unlock branch), and `rekeyIdentity(password: string | null)` falls back to it — throwing when neither exists rather than minting an identity with no password factor. The password remains load-bearing (it is what `createPasswordFactor` seals the new private half under, and dropping it would leave a recovery-code-only identity that re-locks on the next relaunch); what changed is only WHO supplies it. Documented tradeoff: a re-key no longer re-authenticates the holder of an already-unlocked phone (2026-08-02); 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29); documented the recovery-code confirmation gate (dual-stored until `recoverySetupAt`) and the soft re-surface of a freshly minted one-time code on the next unlock when recovery is still unconfirmed — the recovery from force-quitting the modal before saving the code (71f3baf, 2026-07-30); **`POST /keys/rekey`** added — the narrow, audited exception to "keys are never replaced": a new identity keypair for an account that can no longer open its old one, recovering ACCESS (what a calendar owner can re-share) and never DATA (anything sealed to the abandoned identity stays sealed). Guarded by a `409 confirm_data_loss` when the caller's household holds records, it deletes the caller's dead HDK/resource envelopes, clears `recoverySetupAt` + any armed guardian, and stamps every calendar collaboration `keyChangedAt` so the owner's automatic re-wrap is SUPPRESSED until they approve — closing the mailbox-takeover → reset → re-key path into someone else's calendar (9282d82+, 2026-08-02)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -17,7 +17,9 @@ tests:
   - server/src/test/drop.integration.test.js
   - server/src/test/reDrop.integration.test.js
   - server/src/services/e2eePolicy.test.js
+  - server/src/test/rekeyRecovery.integration.test.js
   - mobile/src/lib/__tests__/e2ee.test.ts
+  - mobile/src/screens/viewer/__tests__/ViewerUnlockScreen.test.tsx
 ---
 
 # Cryptography & E2EE
@@ -41,6 +43,71 @@ client-held means: another household member re-seals the HDK to a fresh identity
 key, or — if the user opted in beforehand — a nominated guardian assists a
 dual-control recovery ([features/guardian-recovery.md](../features/guardian-recovery.md)).
 Absent those, the data is unrecoverable, by design.
+
+### Re-key: recovering ACCESS without recovering DATA
+
+The one exception to "keys are never replaced", and it is deliberately narrow:
+`POST /keys/rekey` mints a **new identity keypair** for an account that can no
+longer open its old one, wrapped under the caller's current password plus a
+fresh one-time recovery code. It recovers **access to what others can re-share**,
+never data: everything sealed to the abandoned identity stays sealed forever, so
+the paragraph above still holds — there is no override and no backdoor.
+
+It exists for the **free viewer** ([features/billing-plans.md](../features/billing-plans.md)
+"Free viewer mode"): someone a calendar was shared with, who reset a forgotten
+password. `POST /auth/reset` changes only the login password, so their identity
+key — and with it the CalendarKey envelope their shared events are sealed to —
+stays shut. Re-wrapping to their *existing* public key would achieve nothing
+(the lost half is the private one), so the only route back is a new identity for
+the owner to wrap to. A viewer loses nothing by taking it: the events belong to
+the calendar's owner.
+
+Rules, all enforced server-side:
+
+- **The data-loss guard.** With any un-tombstoned `Record` in the caller's
+  household, the endpoint answers `409 confirm_data_loss` (carrying
+  `recordCount` and whether the household has other members who could re-seal)
+  until the client repeats the call with `confirmDataLoss: true`. Re-keying is
+  never a silent side effect of asking for access.
+- **It grants nothing by itself.** The caller's `HouseholdKeyEnvelope` and
+  member `ResourceKeyEnvelope` rows are deleted (they are undecryptable noise),
+  and every calendar collaboration is stamped `keyChangedAt`. That stamp
+  **suppresses the owner's automatic wrap-on-approve pass** — without it, the
+  deletion would drop the caller straight back into `missingMembers` and the
+  owner's next unlock would re-grant silently, making *take over the mailbox →
+  reset the password → re-key* a way to inherit someone else's calendar. Access
+  returns only via the request → approve pair in
+  [features/households-sharing.md](../features/households-sharing.md).
+- **Recovery is unconfirmed again.** `recoverySetupAt` is cleared and any armed
+  guardian dropped (it was armed against the old identity and can never open the
+  new one), so the mandatory recovery-code modal re-runs and the born-encrypted
+  gate below re-applies.
+- **It is loud.** `key_rekeyed` is audited and the household is alerted that the
+  member's safety number changed — the event safety numbers exist for.
+
+**The password is the wrapping key, not a checkpoint.** Client-side,
+`rekeyIdentity` → `enroll(password)` → `crypto.createPasswordFactor` seals the
+new private half under that password, and the resulting envelope IS the password
+factor every later unlock opens. It therefore cannot be dropped to save a tap:
+an identity minted without one carries only the recovery-code factor, so the
+viewer gets their calendar back and is locked out again on the next relaunch
+with a password that opens nothing — the very dead end the flow exists to end.
+
+What it does NOT have to be is *typed on the recovery screen*. Both paths that
+verify a password server-side and still end up locked — `POST /auth/reset` (the
+reset changes the login password and re-wraps nothing) and
+`ensureEnrolledOnLogin`'s failed-unlock branch — hand it to
+`rememberSessionPassword`, and `rekeyIdentity(null)` uses that. Making someone
+retype a password the app is already holding, on the screen they reached
+*because* they lost access, is friction with no security value: the server has
+just verified it, and the identity private key sitting in memory beside it is
+strictly more sensitive. The hold is **memory only** — never persisted, never
+written to the keychain, and dropped by `lock()`, which both sign-out and
+`rekeyIdentity` itself call. When nothing is held (a later relaunch restores the
+token but no password was typed), the client falls back to asking; with neither,
+`rekeyIdentity` throws rather than minting an identity nobody can open. The
+tradeoff accepted here is explicit: re-keying no longer re-authenticates the
+person holding an already-unlocked phone.
 
 ### Recovery-code confirmation gate
 

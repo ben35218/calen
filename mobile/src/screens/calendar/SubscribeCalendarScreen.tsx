@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -289,6 +289,9 @@ export default function SubscribeCalendarScreen() {
               onChangeText={setName}
               placeholder="Calendar Name"
               returnKeyType="done"
+              // Same as New Calendar: Done ends the only typed step on the
+              // screen, so dismiss rather than trusting blur-on-submit.
+              onSubmitEditing={() => Keyboard.dismiss()}
               containerStyle={fs.headField}
               style={fs.headInput}
             />

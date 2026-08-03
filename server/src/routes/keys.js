@@ -10,6 +10,10 @@ const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const DeviceLink = require('../models/DeviceLink');
 const GuardianRecoveryRequest = require('../models/GuardianRecoveryRequest');
+const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
+const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
+const CustomCalendar = require('../models/CustomCalendar');
+const Record = require('../models/Record');
 const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const {
@@ -40,6 +44,15 @@ const keyLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,
   message: 'Too many key-management requests. Please wait a minute and try again.',
+});
+
+// Re-keying is destructive and is reached from a "I've lost everything" screen —
+// a real user does it once. A tight cap makes scripted abuse of the escape hatch
+// (churning a victim's identity key to force approval prompts) pointless.
+const rekeyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  message: 'Too many recovery attempts. Please wait an hour and try again.',
 });
 
 // Tighter cap on starting a recovery: the online defence against hammering the
@@ -108,6 +121,121 @@ router.post('/enroll', keyLimiter, async (req, res) => {
 
     await AuditLog.create({ userId: user._id, householdId: user.householdId, event: 'key_enrolled' });
     res.status(201).json({ enrolled: true, keyEnrolledAt: user.keyEnrolledAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Re-key: a fresh identity for an account that lost every unlock factor ────
+//
+// The escape hatch for a locked FREE VIEWER (billing-plans.md "Free viewer
+// mode"): someone a calendar was shared with, who reset their forgotten
+// password and therefore can no longer unwrap the identity key their
+// CalendarKey envelope is sealed to. Re-wrapping to their EXISTING public key
+// would be useless — what they lost is the private half — so getting them back
+// in has to mint a NEW identity keypair for the owner to wrap to.
+//
+// This is a deliberate, narrow hole in the "no re-key" invariant
+// (specs/platform/crypto-e2ee.md): it recovers ACCESS, never DATA. Everything
+// sealed to the old identity stays sealed forever — there is still no
+// server-side override and no backdoor. That costs a viewer nothing (the events
+// belong to the calendar's owner, who re-wraps) and costs an account with
+// records of its own everything, which is what the guard below is for.
+//
+// Re-keying deliberately grants NOTHING by itself. It clears the caller's now-
+// dead envelopes and stamps `keyChangedAt` on every collaboration, which
+// SUPPRESSES the owner's automatic wrap-on-approve pass. Access returns only
+// when the owner approves the request (POST /calendars/:key/access-request →
+// the owner's prompt → POST /calendars/:key/keys/approve). Without that
+// suppression, deleting the envelopes here would drop the caller straight back
+// into `missingMembers` and the owner's next unlock would silently re-grant —
+// turning mailbox takeover → password reset → re-key into a way to inherit
+// someone else's calendar without them ever seeing it.
+router.post('/rekey', rekeyLimiter, async (req, res) => {
+  try {
+    const err = validateEnrollment(req.body);
+    if (err) return res.status(400).json({ error: err });
+
+    const user = await User.findById(req.user._id);
+    if (!user.identityPublicKey) {
+      return res.status(409).json({ error: 'Enroll keys before re-keying' });
+    }
+    // A re-key that reuses the old public key would clear every envelope and
+    // grant nothing back — almost certainly a client bug, never a useful call.
+    if (req.body.identityPublicKey === user.identityPublicKey) {
+      return res.status(400).json({ error: 'Re-keying requires a new identity key' });
+    }
+
+    // Data-loss guard. The caller's household records are sealed under an HDK
+    // this re-key abandons: in a solo household they become unreadable by
+    // anyone, forever; with other members they survive, but only a member
+    // re-sealing the HDK to the new identity brings the caller back. Either way
+    // it must be a decision, never a side effect — so the client has to say it
+    // understands before this proceeds. A pure viewer has no records and never
+    // sees this.
+    const [recordCount, householdMembers] = await Promise.all([
+      Record.countDocuments({ householdId: user.householdId, deleted: false }),
+      User.countDocuments({ householdId: user.householdId }),
+    ]);
+    if (recordCount > 0 && req.body.confirmDataLoss !== true) {
+      return res.status(409).json({
+        error: 'Re-keying abandons the data this account has already encrypted',
+        code: 'confirm_data_loss',
+        recordCount,
+        recoverableByHousehold: householdMembers > 1,
+      });
+    }
+
+    user.identityPublicKey = req.body.identityPublicKey;
+    user.wrappedPrivateKey = req.body.factors.map(pickEnvelope);
+    user.keyEnrolledAt = new Date();
+    user.keySchemaVersion = 1;
+    // The new factor set wraps under the CURRENT password, so the post-reset
+    // stale flag is spent. The fresh recovery code minted alongside it is
+    // unconfirmed until the client's one-time modal is completed again, which
+    // is what re-arms the born-encrypted drop gate.
+    user.e2eePasswordStale = false;
+    user.recoverySetupAt = undefined;
+    // A guardian armed against the OLD identity can never open the new one.
+    // Drop it rather than leave a dead backstop that still reads as armed.
+    user.guardianRecovery = undefined;
+    await user.save();
+
+    // Every envelope sealed to the old identity is undecryptable noise now.
+    const [hdk, resource] = await Promise.all([
+      HouseholdKeyEnvelope.deleteMany({ userId: user._id }),
+      ResourceKeyEnvelope.deleteMany({ recipient: 'member', userId: user._id }),
+    ]);
+
+    // Suppress every owner's automatic re-wrap until they approve (see above).
+    // Matches the collaborator SUBDOC shape only; legacy plain-ObjectId rows
+    // (pre-access-levels) carry no per-collaborator fields to stamp and are
+    // rewritten to the subdoc shape on their next save, at which point the
+    // owner's reconcile treats them normally.
+    await CustomCalendar.updateMany(
+      { 'collaborators.userId': user._id },
+      { $set: { 'collaborators.$[c].keyChangedAt': new Date() } },
+      { arrayFilters: [{ 'c.userId': user._id }] },
+    );
+
+    await AuditLog.create({
+      userId: user._id, householdId: user.householdId, event: 'key_rekeyed',
+      meta: { recordCount, envelopesCleared: hdk.deletedCount + resource.deletedCount },
+    });
+    // Loud by design: a changed identity key is exactly the event safety numbers
+    // exist to surface. The caller is excluded — they just did this on purpose.
+    securityAlert(alertHousehold(user.householdId, {
+      title: 'Security change',
+      body: `${user.firstName} re-enrolled with a new encryption key, so their security code has changed. Compare the new code with them before trusting it.`,
+      tag: `rekey-${user._id}`,
+      excludeUserId: user._id,
+    }));
+
+    res.status(201).json({
+      enrolled: true,
+      keyEnrolledAt: user.keyEnrolledAt,
+      envelopesCleared: hdk.deletedCount + resource.deletedCount,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

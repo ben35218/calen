@@ -13,11 +13,12 @@ const { sendNewDeviceAlert } = require('./mailer');
 const MAX_SESSIONS = 20;
 
 // Device identity comes from client-sent headers (the mobile api client sets
-// them). Spoofable — fine: they only label/key the rows and tune alert noise;
-// they are never an auth factor (revocation keys on the JWT `sid`). The
-// known-device check for F1 uses the sid. `deviceId` is the install's stable
-// random UUID — unlike the name it is unique per install and unguessable, so
-// it can safely key row coalescing and the familiar-device check.
+// them). Spoofable — fine: they label/key the rows and tune alert noise; they
+// never grant a session (revocation keys on the JWT `sid`). `deviceId` is the
+// install's stable random UUID — unlike the name it is unique per install and
+// unguessable, so it can safely key row coalescing, the familiar-device check,
+// and (routes/auth isKnownDevice) the F1 reset-hold skip for an install that
+// signed in before but has since signed out.
 function deviceFromReq(req) {
   return {
     deviceId: (req.get('x-device-id') || '').slice(0, 64) || undefined,

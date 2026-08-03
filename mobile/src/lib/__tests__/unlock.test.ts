@@ -26,11 +26,18 @@ describe('app-unlock cache', () => {
   });
 
   it('a persisted unlock survives a cold start (offline relaunch)', async () => {
-    await AsyncStorage.setItem('hc_app_unlocked', 'true');
-    // Fresh module state (clearUnlockCache in afterEach resets loadPromise), so
-    // this read comes from storage, not memory… but clear also wipes storage —
-    // simulate the cold start by re-seeding storage first.
-    expect(await getUnlockedCached()).toBe(true);
+    // A real cold start gets fresh module state — load an isolated copy of the
+    // module (and the AsyncStorage instance it sees) so its first read comes
+    // from storage, not memory.
+    let freshStorage: typeof AsyncStorage;
+    let freshUnlock: typeof import('../unlock');
+    jest.isolateModules(() => {
+      const storageModule = require('@react-native-async-storage/async-storage');
+      freshStorage = storageModule.default ?? storageModule;
+      freshUnlock = require('../unlock');
+    });
+    await freshStorage!.setItem('hc_app_unlocked', 'true');
+    expect(await freshUnlock!.getUnlockedCached()).toBe(true);
   });
 
   it('sign-out clears the cache so the next account starts locked', async () => {

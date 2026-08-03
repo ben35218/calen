@@ -51,6 +51,16 @@ jest.mock('../../api', () => ({
     },
     recoveryComplete: async () => ({ data: { ok: true } }),
     putFactor: async () => ({ data: { ok: true } }),
+    // Lost-every-factor recovery. The real endpoint also deletes the caller's
+    // envelopes; this fake mirrors that so the test can prove the old HDK
+    // envelope stops opening anything under the new identity.
+    rekey: async (payload: { identityPublicKey: string; factors: unknown[] }) => {
+      mockServer.enrollment = { identityPublicKey: payload.identityPublicKey, factors: payload.factors };
+      mockServer.hdkEnvelopes = [];
+      mockServer.currentKeyVersion = 0;
+      mockServer.recoverySetupAt = null;
+      return { data: { enrolled: true, envelopesCleared: 1 } };
+    },
   },
   householdApi: {
     getKey: async () => ({
@@ -93,10 +103,11 @@ jest.mock('../../api', () => ({
 import { loadHouseholdCrypto } from '@household/crypto/adapters/web';
 import {
   ensureEnrolledOnLogin, ensureHouseholdKey, isUnlocked, lock,
+  rememberSessionPassword, hasSessionPassword,
   unlockWithPassword, unlockWithRecoveryCode, getPendingRecoveryCode, clearRecoveryCode,
   sealNew, openRecord, openOpaqueRecord, decryptRecord,
   mintResourceKey, wrapResourceKeyForCollaborator, sealForResource, decryptResourceRecord,
-  publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady,
+  publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady, rekeyIdentity,
 } from '../e2ee';
 
 const PASSWORD = 'correct horse battery staple';
@@ -286,5 +297,107 @@ describe('recovery-code re-surface on next unlock', () => {
     expect(await ensureHouseholdKey()).toBe('ready');
     await flush();
     expect(getPendingRecoveryCode()).toBeNull(); // no modal — recovery is durable
+  });
+});
+
+// Deliberately LAST in the file: re-keying abandons the identity every test
+// above built on, so anything after it would be testing a different account.
+describe('re-key (lost every unlock factor)', () => {
+  test('mints a new identity, orphans the old data, and re-arms the recovery modal', async () => {
+    expect(await unlockWithPassword(PASSWORD)).toBe(true);
+    const oldPublicKey = mockServer.enrollment!.identityPublicKey;
+    // A record sealed under the identity we're about to abandon.
+    const doomed = await sealNew('CalendarEvent', { title: 'Old world', startDate: '2026-08-01' });
+
+    clearRecoveryCode();
+    const result = await rekeyIdentity(PASSWORD);
+    expect(result.ok).toBe(true);
+
+    // A genuinely new identity — not a re-wrap of the old private key.
+    expect(mockServer.enrollment!.identityPublicKey).not.toBe(oldPublicKey);
+    // Unlocked immediately (the caller just proved the password), but holding
+    // nothing yet: the old HDK envelope was sealed to a key that no longer
+    // exists, so what it protected is gone for good. This is the whole point —
+    // re-keying recovers ACCESS to what others re-share, never DATA.
+    expect(isUnlocked()).toBe(true);
+    expect(
+      await decryptRecord('CalendarEvent', String(doomed._id), 1, doomed.enc as never),
+    ).toBeNull();
+
+    // Recovery is unconfirmed again, so the one-time code is surfaced for the
+    // mandatory modal — a fresh one, never the old account's.
+    const fresh = getPendingRecoveryCode();
+    expect(fresh).toMatch(/^[0-9A-Z]{5}(-[0-9A-Z]{1,5})+$/);
+    expect(fresh).not.toBe(recoveryCode);
+    // And the NEW code is what opens the new identity from a locked session.
+    lock();
+    expect(await unlockWithRecoveryCode(fresh!)).toBe(true);
+  });
+
+  test('surfaces the server’s data-loss guard instead of throwing', async () => {
+    const { keysApi } = require('../../api');
+    const real = keysApi.rekey;
+    keysApi.rekey = async () => {
+      const err: any = new Error('Request failed with status code 409');
+      err.response = { status: 409, data: { code: 'confirm_data_loss', recordCount: 7, recoverableByHousehold: true } };
+      throw err;
+    };
+    try {
+      const result = await rekeyIdentity(PASSWORD);
+      // A recoverable result, not an exception: the caller has to be able to
+      // put the real numbers in front of the user before retrying.
+      expect(result).toEqual({
+        ok: false, needsConfirm: true, recordCount: 7, recoverableByHousehold: true,
+      });
+    } finally {
+      keysApi.rekey = real;
+    }
+  });
+});
+
+// The memory-only hold that lets a re-key skip the password prompt
+// (platform/crypto-e2ee.md "Re-key"). A reset changes the login password and
+// re-wraps nothing, so the user lands signed-in-but-locked holding a password
+// the server has just verified — asking them to retype it on the screen they
+// reached BECAUSE they lost access is friction with no security value. The
+// password stays load-bearing either way: it is what the new private half gets
+// sealed under, so with nothing held the call must fail rather than mint an
+// identity carrying no password factor.
+describe('the session password held for re-key', () => {
+  afterEach(() => { lock(); });
+
+  test('a failed unlock at sign-in holds the password; lock drops it', async () => {
+    lock();
+    expect(hasSessionPassword()).toBe(false);
+
+    // Right password → unlocked, nothing to hold (the re-key path is moot).
+    expect(await ensureEnrolledOnLogin(PASSWORD)).toBe('unlocked');
+    expect(hasSessionPassword()).toBe(false);
+
+    // Sign-in the server accepted, envelope that won't open — the post-reset
+    // shape. THIS is what gets held.
+    lock();
+    expect(await ensureEnrolledOnLogin('the-new-password')).toBe('locked');
+    expect(hasSessionPassword()).toBe(true);
+
+    // Sign-out calls lock(), so the password never outlives the session.
+    lock();
+    expect(hasSessionPassword()).toBe(false);
+  });
+
+  test('rekeyIdentity(null) uses the held password, and refuses without one', async () => {
+    lock();
+    // Nothing held: minting an identity with no password factor would re-lock
+    // the user on their next relaunch, so this fails loudly instead.
+    await expect(rekeyIdentity(null)).rejects.toThrow(/password/i);
+
+    rememberSessionPassword('reset-me-123');
+    clearRecoveryCode();
+    expect((await rekeyIdentity(null)).ok).toBe(true);
+
+    // The held password really is the new wrapping key: it opens the new
+    // identity from a cold, locked session.
+    lock();
+    expect(await unlockWithPassword('reset-me-123')).toBe(true);
   });
 });

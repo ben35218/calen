@@ -3,8 +3,10 @@ const CustomCalendar = require('../models/CustomCalendar');
 const CalendarInvitation = require('../models/CalendarInvitation');
 const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
 const User = require('../models/User');
+const AuditLog = require('../models/AuditLog');
 const { requireAuth } = require('../middleware/auth');
 const { pushToUser } = require('../services/notify');
+const { alertUser, securityAlert } = require('../services/securityAlerts');
 const { normalizePhone } = require('../services/phone');
 const {
   normalizeMemberEntry,
@@ -84,6 +86,16 @@ function serialize(cal, req) {
   const obj = normalizeShared(cal.toObject ? cal.toObject() : cal);
   const mine = String(obj.userId) === String(req.user._id);
   const access = mine ? 'full' : effectiveCalendarAccess(obj, req.user._id, req.scopeIds) || 'view';
+  // The requester's OWN seat state, and never anyone else's — the collaborator
+  // list itself stays private below. `keyChangedAt` says they re-keyed, so every
+  // automatic wrap is suppressed until the owner approves; `accessRequestedAt`
+  // says they've asked. This pair is the ONLY durable record that the wait is
+  // real: the viewer shell's "Request sent" screen is otherwise local component
+  // state, so signing out and back in dropped the user onto an empty calendar
+  // with no sign their request existed.
+  const seat = mine
+    ? null
+    : (obj.collaborators || []).find((c) => String((c && c.userId) || c) === String(req.user._id));
   if (!mine) {
     obj.sharedWithOutside = [];
     const sameHousehold = req.scopeIds.some((id) => String(id) === String(obj.userId));
@@ -93,7 +105,13 @@ function serialize(cal, req) {
     }
   }
   delete obj.collaborators;
-  return { ...obj, mine, access };
+  return {
+    ...obj,
+    mine,
+    access,
+    ...(seat && seat.keyChangedAt ? { keyChangedAt: seat.keyChangedAt } : {}),
+    ...(seat && seat.reapprovalRequestedAt ? { accessRequestedAt: seat.reapprovalRequestedAt } : {}),
+  };
 }
 
 // Reconcile `sharedWithOutside` edits with their invitations: new emails get a
@@ -226,14 +244,34 @@ router.post('/invitations/:id/accept', async (req, res) => {
     invitation.status = 'accepted';
     invitation.respondedAt = new Date();
     await invitation.save();
-    // Re-seat the collaborator at the invitation's current access level.
+    // Re-seat the collaborator at the invitation's current access level. The
+    // re-key suppression (`keyChangedAt`/`reapprovalRequestedAt`) is carried
+    // across the pull/push: accepting is the COLLABORATOR's action, so letting
+    // it reset those flags would hand a re-keyed account a silent re-grant on
+    // the owner's next unlock — and the viewer shell auto-accepts pending
+    // shares on every focus, so it would happen without anyone tapping a thing.
+    const prior = await CustomCalendar.findOne(
+      { key: invitation.calendarKey }, 'collaborators',
+    ).lean();
+    const priorSeat = (prior?.collaborators || [])
+      .find((c) => String(c.userId || c) === String(req.user._id));
     await CustomCalendar.updateOne(
       { key: invitation.calendarKey },
       { $pull: { collaborators: { userId: req.user._id } } },
     );
     const cal = await CustomCalendar.findOneAndUpdate(
       { key: invitation.calendarKey },
-      { $push: { collaborators: { userId: req.user._id, access: invitation.access === 'full' ? 'full' : 'view' } } },
+      {
+        $push: {
+          collaborators: {
+            userId: req.user._id,
+            access: invitation.access === 'full' ? 'full' : 'view',
+            ...(priorSeat?.keyChangedAt ? { keyChangedAt: priorSeat.keyChangedAt } : {}),
+            ...(priorSeat?.reapprovalRequestedAt
+              ? { reapprovalRequestedAt: priorSeat.reapprovalRequestedAt } : {}),
+          },
+        },
+      },
       { new: true },
     ).lean();
     if (!cal) return res.status(404).json({ error: 'Calendar no longer exists' });
@@ -377,16 +415,127 @@ router.post('/:key/keys/members', async (req, res) => {
   }
 });
 
+// ── Re-key recovery: request → approve ──────────────────────────────────────
+//
+// A collaborator who lost every unlock factor and re-keyed (POST /keys/rekey)
+// holds a new identity key and no CalendarKey envelope. Their access comes back
+// only through this pair: they ASK here, the owner sees who is asking and what
+// their new safety number is, and the owner APPROVES below. Nothing about a
+// re-key re-grants on its own — see the suppression note on writeMemberWraps.
+
+// The collaborator asks the calendar's owner to restore their access.
+router.post('/:key/access-request', async (req, res) => {
+  try {
+    const cal = await CustomCalendar.findOne({ key: req.params.key }).lean();
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    const seat = (cal.collaborators || [])
+      .find((c) => String(c.userId || c) === String(req.user._id));
+    // Not a collaborator → the same 404 an unshared calendar gives, so this
+    // can't be used to probe which calendar keys exist.
+    if (!seat) return res.status(404).json({ error: 'Calendar not found' });
+    // Nothing to approve unless their key actually changed: a collaborator who
+    // still holds a working envelope needs an unlock, not a re-grant.
+    if (!seat.keyChangedAt) {
+      return res.status(409).json({ error: 'This calendar has no access request to make' });
+    }
+
+    const requestedAt = seat.reapprovalRequestedAt || new Date();
+    await CustomCalendar.updateOne(
+      { key: cal.key },
+      { $set: { 'collaborators.$[c].reapprovalRequestedAt': requestedAt } },
+      { arrayFilters: [{ 'c.userId': req.user._id }] },
+    );
+
+    // Nudge the owner — the wrap needs their unlocked device, so until they
+    // open Calen nothing can happen. Best-effort; the request stands regardless
+    // and surfaces in their pending list on the next unlock either way.
+    const owner = await User.findById(cal.userId);
+    if (owner) {
+      const who = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email;
+      pushToUser(owner, {
+        title: 'Access request',
+        body: `${who} lost access to ${cal.name ? `“${cal.name}”` : 'a calendar'} and is asking you to restore it.`,
+        data: { type: 'calendar_access_request', calendarKey: cal.key },
+        tag: `calendar-access-${cal.key}-${req.user._id}`,
+      }).catch(() => {});
+    }
+    res.json({ ok: true, calendarName: cal.name, requestedAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The owner approves one request, wrapping the current CalendarKey to the
+// requester's NEW identity key. This is the ONLY path that writes a wrap for a
+// suppressed collaborator, and it clears the suppression once the wrap lands.
+router.post('/:key/keys/approve', async (req, res) => {
+  try {
+    const cal = await CustomCalendar.findOne({ key: req.params.key }).lean();
+    if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+    if (String(cal.userId) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Only the calendar owner manages its key' });
+    }
+    const { userId, keyVersion, wrappedKey } = req.body || {};
+    if (!userId || !isWrappedKey(wrappedKey)) {
+      return res.status(400).json({ error: 'userId and wrappedKey are required' });
+    }
+    if (keyVersion !== (cal.calKeyVersion || 0)) {
+      return res.status(409).json({ error: 'Key version moved — please retry', currentKeyVersion: cal.calKeyVersion || 0 });
+    }
+    const seat = (cal.collaborators || [])
+      .find((c) => String(c.userId || c) === String(userId));
+    if (!seat || !seat.keyChangedAt) {
+      return res.status(409).json({ error: 'No pending access request for that person' });
+    }
+
+    const n = await writeMemberWraps(cal.key, keyVersion, [{ userId, wrappedKey }], req.user._id, userId);
+    if (!n) return res.status(500).json({ error: 'Could not store the key wrap' });
+
+    // Suppression lifted only now the wrap actually exists, so a failed write
+    // leaves the request standing rather than silently dropping it.
+    await CustomCalendar.updateOne(
+      { key: cal.key },
+      { $unset: { 'collaborators.$[c].keyChangedAt': 1, 'collaborators.$[c].reapprovalRequestedAt': 1 } },
+      { arrayFilters: [{ 'c.userId': userId }] },
+    );
+    await AuditLog.create({
+      userId: req.user._id, householdId: req.user.householdId,
+      event: 'calendar_access_reapproved', meta: { calendarKey: cal.key, collaboratorId: String(userId) },
+    });
+    securityAlert(alertUser(userId, {
+      title: 'Access restored',
+      body: `You can read ${cal.name ? `“${cal.name}”` : 'the shared calendar'} again.`,
+      tag: `calendar-access-${cal.key}`,
+    }));
+    res.json({ ok: true, keyVersion });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Persist a batch of collaborator wraps for one CalendarKey version. Only seats
 // wraps for users who are actually collaborators on the calendar (defense in
 // depth: the owner can't hand the key to an arbitrary account). Returns the count.
-async function writeMemberWraps(calendarKey, keyVersion, members, wrappedByUserId) {
+//
+// A collaborator carrying `keyChangedAt` (they re-keyed — POST /keys/rekey) is
+// SKIPPED unless `approveUserId` names them. This is the server-side half of the
+// approval gate: the client's reconcile is expected to leave them out of every
+// wrap batch, but a stale or hostile client that includes them anyway must not
+// be able to complete a re-grant the owner never saw. Only the deliberate
+// POST /:key/keys/approve passes `approveUserId`, and it clears the flags.
+async function writeMemberWraps(calendarKey, keyVersion, members, wrappedByUserId, approveUserId) {
   if (!Array.isArray(members) || !members.length) return 0;
   const cal = await CustomCalendar.findOne({ key: calendarKey }, 'collaborators').lean();
-  const collabIds = new Set((cal?.collaborators || []).map((c) => String(c.userId || c)));
+  const seats = new Map(
+    (cal?.collaborators || []).map((c) => [String(c.userId || c), c]),
+  );
   let n = 0;
   for (const m of members) {
-    if (!m || !isWrappedKey(m.wrappedKey) || !collabIds.has(String(m.userId))) continue;
+    if (!m || !isWrappedKey(m.wrappedKey)) continue;
+    const seat = seats.get(String(m.userId));
+    if (!seat) continue;
+    const suppressed = !!seat.keyChangedAt && String(m.userId) !== String(approveUserId || '');
+    if (suppressed) continue;
     await ResourceKeyEnvelope.updateOne(
       { resourceType: 'calendar', resourceKey: calendarKey, keyVersion, recipient: 'member', userId: m.userId },
       { $set: { wrappedKey: m.wrappedKey, wrappedByUserId } },
@@ -417,28 +566,59 @@ router.get('/keys/pending', async (req, res) => {
             resourceType: 'calendar', resourceKey: cal.key, keyVersion: version, recipient: 'member',
           }).distinct('userId')).map(String))
         : new Set();
-      const missing = collabIds.filter((id) => !wrapped.has(String(id)));
+      // Collaborators who re-keyed are held back from EVERY automatic wrap path
+      // — steady-state, mint and rotation alike — until the owner approves them
+      // (see writeMemberWraps). Excluding them from `collaborators` as well as
+      // `missingMembers` matters: the mint/rotate arms seal to the whole
+      // collaborator list, so leaving them in would re-grant on the next
+      // rotation even though the steady-state arm skipped them.
+      const suppressed = new Set(
+        (cal.collaborators || [])
+          .filter((c) => c && c.keyChangedAt)
+          .map((c) => String(c.userId || c)),
+      );
+      const missing = collabIds.filter(
+        (id) => !wrapped.has(String(id)) && !suppressed.has(String(id)),
+      );
       const needsMint = version === 0; // never provisioned — mint v1 first
-      if (!needsMint && !missing.length && !cal.calKeyRotationPending) continue;
+      // Someone waiting on the owner keeps this calendar on the work list even
+      // when there's nothing to wrap yet — that IS the pending item.
+      const awaitingApproval = (cal.collaborators || [])
+        .filter((c) => c && c.keyChangedAt && c.reapprovalRequestedAt);
+      if (!needsMint && !missing.length && !cal.calKeyRotationPending && !awaitingApproval.length) continue;
       // Every collaborator's public key (a rotation re-wraps to ALL of them); the
       // client picks who to seal to (all on mint/rotate, `missing` in steady state).
       const users = await User.find(
         { _id: { $in: collabIds }, identityPublicKey: { $exists: true, $ne: null } },
-        '_id identityPublicKey',
+        '_id identityPublicKey firstName lastName',
       ).lean();
       const byId = new Map(users.map((u) => [String(u._id), u.identityPublicKey]));
+      const nameById = new Map(users.map((u) => [String(u._id), [u.firstName, u.lastName].filter(Boolean).join(' ')]));
       const missingSet = new Set(missing.map(String));
       out.push({
         calendarKey: cal.key,
+        calendarName: cal.name,
         currentKeyVersion: version,
         needsMint,
         rotationPending: !!cal.calKeyRotationPending,
         collaborators: (cal.collaborators || [])
           .map((c) => ({ userId: c.userId || c, access: c.access || 'view', identityPublicKey: byId.get(String(c.userId || c)) || null }))
-          .filter((c) => c.identityPublicKey),
+          .filter((c) => c.identityPublicKey && !suppressed.has(String(c.userId))),
         missingMembers: users
           .filter((u) => missingSet.has(String(u._id)))
           .map((u) => ({ userId: u._id, identityPublicKey: u.identityPublicKey })),
+        // The owner's approval queue: re-keyed collaborators who asked for
+        // access back. `identityPublicKey` is the NEW one — the owner's device
+        // shows its safety number so the person approving can check they're
+        // re-granting to who they think they are.
+        reapprovals: awaitingApproval
+          .filter((c) => byId.get(String(c.userId)))
+          .map((c) => ({
+            userId: c.userId,
+            name: nameById.get(String(c.userId)) || null,
+            identityPublicKey: byId.get(String(c.userId)),
+            requestedAt: c.reapprovalRequestedAt,
+          })),
       });
     }
     res.json(out);

@@ -11,7 +11,7 @@ import { openRecord } from '../../lib/e2ee';
 import { getOwnedAddonIds } from '../../lib/addons';
 import {
   WeatherSource, getWeatherSource, setWeatherSource, sourceLabel,
-  loadSourceForecast, loadSourceOutlook, LiveLocationError,
+  loadSourceForecast, loadSourceOutlook, LiveLocationError, isMissingHomeAddressError,
 } from '../../lib/weatherSource';
 import { formatMm } from '../../lib/weatherSummary';
 import { Card, Button, BottomSheet } from '../../components/ui';
@@ -117,6 +117,10 @@ export default function WeatherScreen() {
   }, [outlookQ.data]);
 
   const w = weatherQ.data;
+  // The home source with nothing saved yet: the screen becomes the "Where's
+  // home?" prompt alone — the outlook (and anything else needing a location)
+  // would only stack its own failure under a card already asking for the fix.
+  const needsHomeAddress = weatherQ.isError && isMissingHomeAddressError(weatherQ.error);
   // Solid card fill/border tracks the current conditions so the panels read as
   // part of the same sky as the gradient behind them.
   const cardTheme = weatherCardColors(w?.current?.weatherCode);
@@ -172,9 +176,10 @@ export default function WeatherScreen() {
               <Button title="Use home address" variant="ghost" onPress={() => pickSource({ kind: 'home' })} />
             </View>
           </Card>
-        ) : /home address/i.test((weatherQ.error as any)?.response?.data?.error ?? (weatherQ.error as any)?.message ?? '') ? (
-          // Missing address is actionable — jump straight to the Account field —
-          // while other failures (offline, provider down) just state themselves.
+        ) : needsHomeAddress ? (
+          // Missing address is actionable — jump straight to the Account field
+          // (`promptField` highlights it) — while other failures (offline,
+          // provider down) just state themselves.
           <Card style={styles.card}>
             <Text style={styles.emptyTitle}>Where's home?</Text>
             <Text style={styles.muted}>
@@ -182,7 +187,7 @@ export default function WeatherScreen() {
               the calendar and mowing-day suggestions.
             </Text>
             <View style={styles.emptyBtn}>
-              <Button title="Set home address" onPress={() => nav.navigate('Account')} />
+              <Button title="Set home address" onPress={() => nav.navigate('Account', { promptField: 'homeAddress' })} />
             </View>
           </Card>
         ) : (
@@ -293,6 +298,7 @@ export default function WeatherScreen() {
         );
       })() : null}
 
+      {needsHomeAddress ? null : (
       <Card style={[styles.card, solidCard]}>
         <Text style={styles.outlookTitle}>90-Day Seasonal Outlook</Text>
         <View style={styles.outlookDivider} />
@@ -323,6 +329,7 @@ export default function WeatherScreen() {
           ))
         )}
       </Card>
+      )}
       </ScrollView>
 
       {/* Source picker: live location / home address / a typed place. */}

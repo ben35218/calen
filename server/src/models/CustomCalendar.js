@@ -57,6 +57,19 @@ const customCalendarSchema = new mongoose.Schema({
     _id: false,
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     access: { type: String, enum: ACCESS, default: 'view' },
+    // Set by POST /keys/rekey when this collaborator mints a NEW identity key
+    // (the lost-every-factor recovery). Their old CalendarKey envelope was
+    // deleted with it, so they'd otherwise reappear as a missing member and the
+    // owner's background pass would re-wrap to the new key on its own. That
+    // would make "take over the mailbox, reset the password, re-key" a silent
+    // route into someone else's calendar — so while this is set the automatic
+    // wrap is SUPPRESSED and only an explicit owner approval
+    // (POST /:key/keys/approve) re-grants. Cleared by that approval.
+    keyChangedAt: { type: Date },
+    // Set when the re-keyed collaborator asks for access back
+    // (POST /:key/access-request). Drives the owner's approval prompt; without
+    // it a key change stays suppressed but silent. Cleared by the approval.
+    reapprovalRequestedAt: { type: Date },
   }],
   // Signal-parity D1: the current CalendarKey version for this outside-shared
   // calendar. 0/undefined = no CalendarKey yet (never outside-shared, or an old

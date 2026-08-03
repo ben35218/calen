@@ -47,6 +47,18 @@ export class LiveLocationError extends Error {
   }
 }
 
+// The home source's "no address saved yet" failure, however it surfaced: the
+// client-direct path throws it (lib/weather), the server path returns it as an
+// API error body. The Weather screen turns this one failure into the actionable
+// "Where's home?" prompt — and suppresses the cards that can't render without a
+// location — so it must be recognized identically everywhere.
+export function isMissingHomeAddressError(err: unknown): boolean {
+  if (err instanceof LiveLocationError) return false;
+  const e = err as { response?: { data?: { error?: unknown } }; message?: unknown } | null;
+  const msg = e?.response?.data?.error ?? e?.message ?? '';
+  return /home address/i.test(String(msg));
+}
+
 // One GPS fix per minute: the forecast and outlook queries both need coords,
 // and a second prompt-and-fix within seconds is pure waste.
 let cachedFix: { at: number; p: Promise<{ lat: number; lon: number }> } | null = null;

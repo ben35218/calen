@@ -128,7 +128,11 @@ export default function LoginScreen() {
         color={hasPasskeys ? AUTH_GHOST_BTN_COLOR : AUTH_PRIMARY_BTN_COLOR}
       />
 
-      <Text style={[authStyles.link, styles.forgot]} onPress={() => nav.navigate('ForgotPassword')}>
+      {/* Hand the typed email across so the reset screen starts pre-filled. */}
+      <Text
+        style={[authStyles.link, styles.forgot]}
+        onPress={() => nav.navigate('ForgotPassword', { email: email.trim() || undefined })}
+      >
         Forgot password?
       </Text>
 

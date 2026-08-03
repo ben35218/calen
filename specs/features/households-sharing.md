@@ -1,7 +1,7 @@
 ---
 title: Households & sharing
 status: current
-last-verified: df8c7f3+ (2026-07-31); the invite-from-contacts autocomplete was extracted to the shared `hooks/useRosterSuggestions` (pure `matchRoster` + the decrypted-roster query) and now also backs the calendar outside-share field — HouseholdScreen behavior unchanged; its local RevealWrap moved to `components/ui.RevealWrap` (2026-07-30); membership visibility pass — removal now files a persisted `HouseholdNotice` (`GET/POST /household/notices`) so the removed user gets an in-app explanation in the Invitations inbox; a pending invite to another household now also shows on `HouseholdScreen` (Accept/Decline card); the joiner sees their OWN safety code while awaiting approval and the approver prompt points there (2026-07-29); phone invites now canonicalize the typed number to E.164 (`classifyRecipient` → `toE164FromTyped`) so a locally-typed number matches the recipient's saved account phone (2026-07-29); the approve-on-device safety code is now rendered by a shared `components/SecurityCode` (centered monospace group-grid that never splits a group across a line, one-tap copy) on both the joiner's waiting card and the approver surfaces (2026-07-29); rejecting a join request now refreshes the inviter's sent-invitations list so the retired (declined) invite is revoked from the member card immediately (2026-07-29); approving a join request now notifies the joiner (dedicated `alertUser` push + a persisted `HouseholdNotice` `kind:'approved'` in their inbox) and excludes them from the household-wide "new member" alert; `HouseholdNotice.formerHouseholdId` generalized to `householdId` (2026-07-29); removal now also pushes the removed user directly (`alertUser`), and the floating Invitations button badge now counts membership notices + pending join-requests (was missing them) so it mirrors the inbox "New" tab (2026-07-29); outreach is now composer-only-for-non-accounts across ALL four sharing flows (household/trip/calendar/event) — an account-holder recipient gets the server push + in-app inbox with NO composer opening (household reads `userExists` off its POST; trips/calendars/events check `GET /invitations/lookup`, now accepting `phone` for existence-only lookups, failing open on error), the event `event_invitation` server email is retired (device-composed .ics-link email for non-account invitees via `sendInvitations` + `useEmailComposer`; recipient push added to `POST /invitations`), and every pending-invite row gained a paper-plane Remind action that re-opens the composer on demand regardless of account status (2026-07-29); `HouseholdScreen` accepts a **`promptInvite`** route param — a Calen assistant "Set up your household" setup chip (`setup_household`, see ai-assistant.md) deep-links here when the user wanted to share/assign but has no other members, showing a `SetupCallout` above the invite section (df8c7f3+, 2026-07-31); the Invitations inbox's entry point moved out of the calendar's floating chrome into **Profile** — a badged Invitations row (in the **"Personal"** group, second after Account's conventional identity lead: every feed behind the inbox is per-user — invites are addressed to the individual, and members never see each other's inboxes — while the household-scoped join-requests-to-approve keep their shared surface on HouseholdScreen), with the pending count also overlaid on the calendar's profile avatar (the E2EE-locked "!" takes precedence) so the badge trail leads avatar → Profile row → inbox; the floating `InvitationsButton` was deleted and its "New"-tab counting rules extracted to `hooks/useInvitationsCount` (unchanged: pending event/calendar/trip/household invites + join requests + undismissed membership notices + unacknowledged call outcomes) (df8c7f3+, 2026-07-31)
+last-verified: 9282d82+ (2026-08-03); `GET /calendars` now serializes the CALLER'S OWN re-key seat stamps (`keyChangedAt` / `accessRequestedAt`) onto each calendar — never anyone else's, the `collaborators` array is still stripped — so the requester can see their own pending access request; without it the viewer shell's "Request sent" screen was local component state that a sign-out erased, dropping the user onto a blank calendar with no sign the request existed (2026-08-03); df8c7f3+ (2026-07-31); the invite-from-contacts autocomplete was extracted to the shared `hooks/useRosterSuggestions` (pure `matchRoster` + the decrypted-roster query) and now also backs the calendar outside-share field — HouseholdScreen behavior unchanged; its local RevealWrap moved to `components/ui.RevealWrap` (2026-07-30); membership visibility pass — removal now files a persisted `HouseholdNotice` (`GET/POST /household/notices`) so the removed user gets an in-app explanation in the Invitations inbox; a pending invite to another household now also shows on `HouseholdScreen` (Accept/Decline card); the joiner sees their OWN safety code while awaiting approval and the approver prompt points there (2026-07-29); phone invites now canonicalize the typed number to E.164 (`classifyRecipient` → `toE164FromTyped`) so a locally-typed number matches the recipient's saved account phone (2026-07-29); the approve-on-device safety code is now rendered by a shared `components/SecurityCode` (centered monospace group-grid that never splits a group across a line, one-tap copy) on both the joiner's waiting card and the approver surfaces (2026-07-29); rejecting a join request now refreshes the inviter's sent-invitations list so the retired (declined) invite is revoked from the member card immediately (2026-07-29); approving a join request now notifies the joiner (dedicated `alertUser` push + a persisted `HouseholdNotice` `kind:'approved'` in their inbox) and excludes them from the household-wide "new member" alert; `HouseholdNotice.formerHouseholdId` generalized to `householdId` (2026-07-29); removal now also pushes the removed user directly (`alertUser`), and the floating Invitations button badge now counts membership notices + pending join-requests (was missing them) so it mirrors the inbox "New" tab (2026-07-29); outreach is now composer-only-for-non-accounts across ALL four sharing flows (household/trip/calendar/event) — an account-holder recipient gets the server push + in-app inbox with NO composer opening (household reads `userExists` off its POST; trips/calendars/events check `GET /invitations/lookup`, now accepting `phone` for existence-only lookups, failing open on error), the event `event_invitation` server email is retired (device-composed .ics-link email for non-account invitees via `sendInvitations` + `useEmailComposer`; recipient push added to `POST /invitations`), and every pending-invite row gained a paper-plane Remind action that re-opens the composer on demand regardless of account status (2026-07-29); `HouseholdScreen` accepts a **`promptInvite`** route param — a Calen assistant "Set up your household" setup chip (`setup_household`, see ai-assistant.md) deep-links here when the user wanted to share/assign but has no other members, showing a `SetupCallout` above the invite section (df8c7f3+, 2026-07-31); the Invitations inbox's entry point moved out of the calendar's floating chrome into **Profile** — a badged Invitations row (in the **"Personal"** group, second after Account's conventional identity lead: every feed behind the inbox is per-user — invites are addressed to the individual, and members never see each other's inboxes — while the household-scoped join-requests-to-approve keep their shared surface on HouseholdScreen), with the pending count also overlaid on the calendar's profile avatar (the E2EE-locked "!" takes precedence) so the badge trail leads avatar → Profile row → inbox; the floating `InvitationsButton` was deleted and its "New"-tab counting rules extracted to `hooks/useInvitationsCount` (unchanged: pending event/calendar/trip/household invites + join requests + undismissed membership notices + unacknowledged call outcomes) (df8c7f3+, 2026-07-31); **re-key access requests** — a collaborator who lost every unlock factor and re-keyed is held out of `missingMembers` AND the mint/rotate collaborator list until the owner approves: `POST /calendars/:key/access-request` queues them (pushing the owner, who is otherwise never told), `GET /calendars/keys/pending` returns them under `reapprovals` with their NEW `identityPublicKey`, and `POST /calendars/:key/keys/approve` is the only path that writes a wrap for a suppressed collaborator (server-enforced in `writeMemberWraps`, so a stale client can't complete an unseen re-grant). Accepting an invitation carries the suppression across the collaborator re-seat — the viewer shell auto-accepts on every focus, which would otherwise clear it (9282d82+, 2026-08-02)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - mobile/src/screens/calendar/InvitationsScreen.tsx
@@ -294,6 +294,54 @@ verification. The cryptographic mechanics are in
   `/household`-adjacent and `/trips/:id/keys`, `/calendars/:key/keys`), so a
   collaborator reads just that resource without holding the HDK. See
   [calendar.md](calendar.md) and [trips.md](trips.md).
+
+### Re-key access requests (owner approval)
+
+A collaborator who lost every unlock factor and re-keyed
+([platform/crypto-e2ee.md](../platform/crypto-e2ee.md) "Re-key") holds a new
+identity key and no CalendarKey envelope. Their access returns **only** through
+an explicit owner approval — never automatically, because a re-key is exactly
+what a mailbox takeover would produce, and the owner's device is the only party
+that can judge it.
+
+- **Suppression.** Every collaborator seat the re-key touched carries
+  `keyChangedAt`. While set, that person is excluded from `missingMembers`
+  **and** from the `collaborators` list `GET /calendars/keys/pending` returns —
+  both, because the mint/rotate arms seal to the whole collaborator list, so
+  excluding them from only the steady-state arm would re-grant on the next
+  rotation. `writeMemberWraps` enforces the same rule server-side: a stale or
+  hostile client that posts the wrap anyway is refused, so the gate is never
+  merely advisory.
+- **Requesting.** `POST /calendars/:key/access-request` stamps
+  `reapprovalRequestedAt` and pushes the owner. The nudge matters: accepting a
+  share notifies the owner of nothing today, and the wrap needs their unlocked
+  device, so without it the requester waits on someone who was never told.
+- **Approving.** The request surfaces under `reapprovals` on
+  `GET /calendars/keys/pending`, carrying the requester's **new**
+  `identityPublicKey` so the owner compares its safety number before granting —
+  the same out-of-band check as a join request, and the only evidence that the
+  new key belongs to the same person. `POST /calendars/:key/keys/approve` is the
+  sole path that writes a wrap for a suppressed collaborator; it clears both
+  flags **after** the envelope lands, so a failed write leaves the request
+  standing rather than silently dropping it. There is no "reject" — doing
+  nothing already grants nothing.
+- **The requester can see their own wait.** `GET /calendars` serializes the
+  caller's **own** seat stamps (`keyChangedAt`, `accessRequestedAt`) onto each
+  calendar — and only their own: the `collaborators` array itself is still
+  stripped, so this discloses nothing about anyone else. It exists because the
+  requester's side of this exchange is otherwise invisible to them: the viewer
+  shell's "Request sent" screen was local component state, so a sign-out dropped
+  them onto a blank calendar with no sign the request had ever been made. These
+  stamps are the durable record of the wait, and clearing them on approve is
+  what tells the client the wait is over (see
+  [billing-plans.md](billing-plans.md) "Free viewer mode").
+- **Accepting an invitation preserves the suppression.** The collaborator
+  re-seat on accept carries `keyChangedAt`/`reapprovalRequestedAt` across its
+  pull/push. Accepting is the *collaborator's* action, and the viewer shell
+  auto-accepts pending shares on every focus — so without this a re-keyed
+  account would clear its own suppression without anyone tapping anything.
+- **Surfaced** in the owner's `InvitationsScreen` inbox (and its badge count),
+  beside household join requests.
 
 ## Data & API surface
 

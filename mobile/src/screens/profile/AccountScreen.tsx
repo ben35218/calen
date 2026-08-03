@@ -14,7 +14,7 @@ import { getHDK, sealUpdate, openRecord, reauthWithBiometric } from '../../lib/e
 import { isDeviceKeyEnabled } from '../../lib/deviceKey';
 import { invalidatePlaceBias } from '../../lib/placeBias';
 import { detectHomeRegion } from '../../lib/homeRegion';
-import { detectHomeCity } from '../../lib/homeCity';
+import { detectHomeCity, shouldDeriveHomeCity } from '../../lib/homeCity';
 import { autoSelectHolidayRegion } from '../../lib/calendarPrefs';
 import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { resolveCurrentAddress } from '../../lib/currentLocation';
@@ -96,6 +96,10 @@ export default function AccountScreen() {
   // Last-loaded address, to detect a real change at save time (which re-derives
   // the household's default timezone from the new location).
   const loadedAddress = useRef('');
+  // The address the shown home area corresponds to, so the automatic city
+  // derivation below only fires on a real address change (seeded with the loaded
+  // address, which the saved area already matches).
+  const cityFromAddress = useRef('');
 
   useEffect(() => {
     if (!settings) return;
@@ -108,6 +112,7 @@ export default function AccountScreen() {
       homeCity: settings.homeCity ?? '',
     });
     loadedAddress.current = settings.homeAddress ?? '';
+    cityFromAddress.current = settings.homeAddress ?? '';
     // Decrypt the sealed home location over the plaintext (§9.1 P5); dormant
     // without an HDK. Post-drop this is the only source of the address.
     if (settings.enc && getHDK() && settings.householdId) {
@@ -116,6 +121,7 @@ export default function AccountScreen() {
           decryptedHH.current = { name: dec.name, homeAddress: dec.homeAddress };
           if (dec.homeAddress) {
             loadedAddress.current = dec.homeAddress;
+            cityFromAddress.current = dec.homeAddress;
             setForm((f) => ({ ...f, homeAddress: dec.homeAddress }));
           }
         })
@@ -132,15 +138,17 @@ export default function AccountScreen() {
 
   // ── Home area (city) ─────────────────────────────────────────────────────────
   // A coarse "city or general area" label the calendar assistant grounds local
-  // suggestions in (never the street address). Auto-derived from the address
-  // when the user picks/fills one, but overridable by hand — a manual edit sets
-  // cityEdited so a later address change doesn't clobber it.
+  // suggestions in (never the street address). Setting the home address ANY way
+  // — picking a suggestion, filling from GPS, or typing one and leaving the
+  // field — fills the area automatically, exactly as the "Fill from home
+  // address" button would; the field stays editable to override by hand.
   const cityEdited = useRef(false);
   const [derivingCity, setDerivingCity] = useState(false);
   const setCity = (v: string) => { cityEdited.current = true; setForm((f) => ({ ...f, homeCity: v })); };
   async function deriveCity(address: string) {
     const addr = (address || '').trim();
     if (!addr) return;
+    cityFromAddress.current = addr;
     setDerivingCity(true);
     try {
       const label = await detectHomeCity(addr);
@@ -148,6 +156,12 @@ export default function AccountScreen() {
     } catch { /* keep whatever's there */ } finally {
       setDerivingCity(false);
     }
+  }
+  // Automatic path: only when the address actually changed (an idle blur, or
+  // re-picking the same place, must not re-geocode). The manual button calls
+  // deriveCity directly, so it always re-fills on demand.
+  function autoDeriveCity(address: string) {
+    if (shouldDeriveHomeCity(address, cityFromAddress.current)) void deriveCity(address);
   }
 
   async function save() {
@@ -182,6 +196,14 @@ export default function AccountScreen() {
       const newAddress = form.homeAddress.trim();
       if (newAddress && newAddress !== loadedAddress.current) {
         loadedAddress.current = newAddress;
+        // Everything keyed off the address is now stale — including screens
+        // still mounted behind this one. Without this, a user who came from
+        // the Weather screen's "Where's home?" prompt lands right back on it
+        // (its forecast/outlook queries keep their cached "no home address"
+        // error), as does the calendar's forecast strip and the travel-time
+        // screen's Home shortcut.
+        qc.invalidateQueries({ queryKey: ['weather'] });
+        qc.invalidateQueries({ queryKey: ['homeAddress'] });
         void locationTimezone(newAddress).then((tz) =>
           tz ? settingsApi.update({ householdTimezone: tz }) : null,
         ).catch(() => {});
@@ -234,7 +256,12 @@ export default function AccountScreen() {
     setLocating(true);
     try {
       const res = await resolveCurrentAddress();
-      if (res.ok) { setForm((f) => ({ ...f, homeAddress: res.address })); return; }
+      if (res.ok) {
+        setForm((f) => ({ ...f, homeAddress: res.address }));
+        // Same as picking a suggestion: the address is now set, so fill the area.
+        autoDeriveCity(res.address);
+        return;
+      }
       if (res.reason === 'unavailable') {
         Alert.alert('App update needed', 'This build doesn’t include location support yet. Rebuild/reinstall the app to use this — or just type your address.');
       } else if (res.reason === 'denied') {
@@ -475,7 +502,10 @@ export default function AccountScreen() {
         <PlacesAutocomplete
           value={form.homeAddress}
           onChangeText={set('homeAddress')}
-          onSelect={(p) => deriveCity(p.description)}
+          onSelect={(p) => autoDeriveCity(p.description)}
+          // A hand-typed address never fires onSelect — leaving the field is the
+          // "done entering it" moment, so fill the area from it there too.
+          onBlur={autoDeriveCity}
           placeholder="Home address"
           type="address"
           containerStyle={fs.headField}

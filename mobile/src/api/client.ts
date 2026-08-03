@@ -8,7 +8,8 @@ import { getDeviceId } from '../lib/deviceId';
 // Device identity headers (Signal-parity F2/F3): X-Device-Id is the stable
 // per-install UUID the server keys session rows by (one Devices row per
 // install); name/platform label the row so the list is readable and new-device
-// alerts say WHICH device. All labels — never an auth factor.
+// alerts say WHICH device. None grant a session; the id's one security role is
+// skipping the F1 reset hold for an install that has signed in before.
 const DEVICE_NAME = Device.deviceName || Device.modelName || 'Unknown device';
 const DEVICE_PLATFORM = Platform.OS;
 

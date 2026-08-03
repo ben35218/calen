@@ -15,6 +15,7 @@ export default function PlacesAutocomplete({
   value,
   onChangeText,
   onSelect,
+  onBlur,
   placeholder,
   type,
   highlight,
@@ -25,6 +26,10 @@ export default function PlacesAutocomplete({
   value: string;
   onChangeText: (text: string) => void;
   onSelect?: (p: PlacePrediction) => void;
+  // Fires when the field loses focus, with the text it holds — the "the user is
+  // done entering this address" signal for a hand-typed entry that never went
+  // through `onSelect` (e.g. the Account screen deriving the home area from it).
+  onBlur?: (text: string) => void;
   placeholder?: string;
   type?: string;
   highlight?: boolean;
@@ -89,6 +94,7 @@ export default function PlacesAutocomplete({
         label={label}
         value={value}
         onChangeText={handleChange}
+        onBlur={() => onBlur?.(value)}
         placeholder={placeholder}
         autoCapitalize="none"
         highlight={highlight}

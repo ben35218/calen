@@ -18,3 +18,17 @@ export async function detectHomeCity(address?: string | null): Promise<string | 
     return null;
   }
 }
+
+// Whether setting the home address should auto-derive the home area. Setting an
+// address (picking a suggestion, filling from GPS, or typing one and leaving the
+// field) fills the area exactly as the "Fill from home address" button would —
+// but only when the address really changed from the one the current area came
+// from, so an idle focus/blur or re-picking the same place never re-geocodes or
+// clobbers a hand-set area.
+export function shouldDeriveHomeCity(
+  address?: string | null,
+  derivedFrom?: string | null,
+): boolean {
+  const addr = (address ?? '').trim();
+  return !!addr && addr !== (derivedFrom ?? '').trim();
+}

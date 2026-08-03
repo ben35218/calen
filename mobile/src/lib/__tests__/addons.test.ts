@@ -2,6 +2,9 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
 
+const mockInvalidate = jest.fn();
+jest.mock('../queryClient', () => ({ queryClient: { invalidateQueries: (...a: unknown[]) => mockInvalidate(...a) } }));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { CalendarData } from '../../api';
 import {
@@ -9,6 +12,7 @@ import {
   isAddonCalendar,
   cacheOwnedAddons,
   getOwnedAddonIds,
+  resetOwnedAddons,
   applyAddonLocks,
 } from '../addons';
 
@@ -49,6 +53,36 @@ describe('owned-addon cache', () => {
     cacheOwnedAddons([]);
     const owned = await getOwnedAddonIds();
     expect(owned.size).toBe(0);
+  });
+
+  // The assembled calendar embeds the owned set (applyAddonLocks runs from the
+  // ['calendar','sources'] snapshot), so a change must refetch those queries —
+  // without it, an account whose lanes were locked by a stale cache stayed
+  // locked until an unrelated invalidation (observed: until an event save).
+  it('a CHANGED owned set invalidates the calendar/viewer queries; an identical one does not', () => {
+    cacheOwnedAddons(['recipes']);
+    mockInvalidate.mockClear();
+
+    cacheOwnedAddons(['recipes']); // steady-state echo — same set
+    expect(mockInvalidate).not.toHaveBeenCalled();
+
+    cacheOwnedAddons(['recipes', 'chores']); // entitlements actually changed
+    expect(mockInvalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] });
+    expect(mockInvalidate).toHaveBeenCalledWith({ queryKey: ['viewer'] });
+  });
+
+  // Sign-out teardown: the owned set is the ACCOUNT's entitlement mirror in an
+  // unscoped device key. Surviving logout, a viewer session's empty set became
+  // the owner's boot state — Occasions/Chores/Meals data locked to empty on
+  // their next sign-in until billing refetched AND something repainted.
+  it('resetOwnedAddons clears the cache and storage so the next account starts locked-by-default', async () => {
+    cacheOwnedAddons(['recipes', 'birthdays', 'chores']);
+
+    await resetOwnedAddons();
+
+    expect(await AsyncStorage.getItem('hc_owned_addons')).toBeNull();
+    const owned = await getOwnedAddonIds();
+    expect(owned.size).toBe(0); // safe default: locked until the session's own status lands
   });
 });
 

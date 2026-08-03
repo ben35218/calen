@@ -9,7 +9,7 @@ import {
   unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
   unlockFromDeviceCache, forgetDeviceKey, generateAccountSecret, addPasskeyFactor,
   holdRecoveryCode, releaseRecoveryCode, clearRecoveryCode, setSealAuthor,
-  subscribeKeysReady,
+  subscribeKeysReady, rememberSessionPassword,
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
 import { maintainKeyHygiene } from '../lib/dropMigration';
@@ -17,6 +17,8 @@ import { ensureSharedCalendarKeys } from '../lib/calendarKeys';
 import { queryClient } from '../lib/queryClient';
 import { clearAll as clearReplica } from '../lib/replica';
 import { resetRecordCursor, syncRecords } from '../lib/records';
+import { resetCalendarPrefs } from '../lib/calendarPrefs';
+import { resetOwnedAddons } from '../lib/addons';
 import { cacheUnlocked, clearUnlockCache } from '../lib/unlock';
 import { clearViewerContentCache } from '../lib/viewerAccess';
 
@@ -97,6 +99,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // cleared — the whole household's content silently vanishes until a full
     // pull happens by chance. Reset → the next syncRecords() does a full pull.
     await resetRecordCursor().catch(() => {});
+    // The calendar prefs cache is ACCOUNT state (which calendars exist, their
+    // sharing, colours, order, visibility) held in unscoped AsyncStorage keys,
+    // so it has to go the same way as the replica: without this the next
+    // sign-in paints the previous account's calendar list until the server
+    // refresh lands — which is why a viewer saw "No shared calendars yet"
+    // (the stale rows were the other account's `mine: true` calendars, and the
+    // shell renders only `mine: false`) and an owner signing back in saw their
+    // built-ins missing. It also leaks calendar names and outside-share
+    // addresses between accounts on a shared device.
+    await resetCalendarPrefs().catch(() => {});
+    // Same doctrine for the owned add-ons mirror (`hc_owned_addons`): it's the
+    // previous ACCOUNT's entitlement set, and every session's billing fetch
+    // overwrites it — so a viewer session (owns nothing) followed by the
+    // owner signing back in booted the owner with all add-on lanes locked:
+    // Occasions/Chores/Meals data zeroed by applyAddonLocks until the next
+    // billing fetch AND a calendar refetch. Cleared → the next session starts
+    // from the safe default (locked) and repaints when its own status lands.
+    await resetOwnedAddons().catch(() => {});
   }, []);
 
   // Restore a stored token on launch and verify it against /auth/me.
@@ -116,13 +136,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const unlocked =
               (await unlockFromDeviceCache()) ||
               (passkeysSupported() && (await unlockWithPasskey()));
-            if (unlocked) {
-              await ensureHouseholdKey();
-              // B1/B3 key hygiene: re-seal any old-version records + retire
-              // drained envelopes in the background (rotation may have just
-              // self-healed inside ensureHouseholdKey). Best-effort.
-              void maintainKeyHygiene();
-            }
+            // Key hygiene (B1/B3 + the D1/D2 owner reconcile) runs from the
+            // keys-ready hook below — ensureHouseholdKey fires it.
+            if (unlocked) await ensureHouseholdKey();
           } catch {
             // canceled / unavailable — stay locked
           }
@@ -163,6 +179,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // collaborator's shared calendar) comes back empty after re-login.
       try { await ensureSharedCalendarKeys(); } catch { /* offline — retried on the next unlock */ }
       queryClient.invalidateQueries();
+      // Key hygiene + the D1/D2 owner reconcile (wrap CalendarKeys/TripKeys to
+      // newly accepted collaborators, rotate on revoke). MUST run on EVERY
+      // unlock — the restore-path-only call it replaces meant an owner who
+      // signed out and back in never wrapped the key for a new collaborator,
+      // leaving the collaborator's "waiting for the owner" state permanent.
+      // Best-effort background pass; cheap no-op when nothing is pending.
+      void maintainKeyHygiene();
     })();
   }), []);
 
@@ -241,6 +264,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         // canceled / PRF unavailable — stay locked
       }
+      // Locked, but this password is verified and current. Hold it in memory so
+      // the way back in (a re-key, from the viewer shell's "Request access" or
+      // Profile → Privacy & data) doesn't make the user retype what they set
+      // sixty seconds ago. Dropped on lock/sign-out; see e2ee.sessionPassword.
+      rememberSessionPassword(payload.newPassword);
       return 'locked' as const;
     },
     []

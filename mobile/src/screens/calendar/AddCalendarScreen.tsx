@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -497,6 +497,11 @@ export default function AddCalendarScreen() {
           placeholder={isHoliday ? 'Holiday Calendar Name' : 'Calendar Name (e.g. School, Soccer)'}
           autoFocus={!calendarId}
           returnKeyType="done"
+          // The name is the only thing typed here (everything below is tapped),
+          // so Done means "finished typing" — dismiss explicitly rather than
+          // leaning on the platform's blur-on-submit default, which leaves the
+          // keyboard up over the sharing/colour rows.
+          onSubmitEditing={() => Keyboard.dismiss()}
           editable={!readOnly && !isDefault}
           containerStyle={fs.headField}
           style={fs.headInput}

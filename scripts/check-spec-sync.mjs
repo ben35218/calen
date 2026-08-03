@@ -45,11 +45,11 @@ const RULES = [
 
   // Features.
   { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|server\/src\/services\/sessions\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/api\/client\.ts|mobile\/src\/lib\/(passkeys|secureToken|deviceId|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
-    tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/lib\/__tests__\/(passkeys|deviceKey|deviceLink)\.)/ },
+    tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/(lib\/__tests__\/(passkeys|deviceKey|deviceLink)\.|screens\/auth\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/(safetyNumbers|shareInvite)\.ts|mobile\/src\/hooks\/useRosterSuggestions\.ts|mobile\/src\/components\/EmailAppSheet\.tsx)/, specs: ['specs/features/households-sharing.md'],
-    tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|keyHygiene|recoveryMandate)\.|mobile\/src\/(lib\/__tests__\/(safetyNumbers|guardianRecovery|shareInvite)|hooks\/__tests__\/useRosterSuggestions)\.)/ },
+    tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|keyHygiene|recoveryMandate|rekeyRecovery)\.|mobile\/src\/(lib\/__tests__\/(safetyNumbers|guardianRecovery|shareInvite)|hooks\/__tests__\/useRosterSuggestions)\.)/ },
   { re: /^(server\/src\/routes\/(calendars|calendarChat|eventAttachments|invitations)\.js|mobile\/src\/screens\/calendar\/|mobile\/src\/lib\/(calendar|calendarData|eventRepeat|calendarKeys|holidays)\.ts|shared\/calendar\/)/, specs: ['specs/features/calendar.md'],
-    tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/(lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat|addons)\.|screens\/calendar\/__tests__\/))/ },
+    tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/(lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat|weatherSource|addons)\.|screens\/calendar\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(recipes|recipeSchedule)\.js|mobile\/src\/screens\/kitchen\/|mobile\/src\/lib\/grocery)/, specs: ['specs/features/kitchen.md'],
     tests: /^(server\/src\/test\/kitchen\.|mobile\/src\/(lib\/__tests__\/(groceryList|groceryAggregate|recipeIconTarget|addons)\.|screens\/kitchen\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(items|tasks|chores|odometer|manuals|taskTemplates|choreTemplates)\.js|mobile\/src\/screens\/maintenance\/|server\/src\/services\/recurrence\.js|shared\/seed\/)/, specs: ['specs/features/maintenance.md'],

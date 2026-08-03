@@ -128,6 +128,39 @@ test('protected account: unknown-device reset is held; known device is immediate
   assert.equal(newLogin.status, 200);
 });
 
+test('protected account: a signed-out install with a remembered device row skips the hold; a revoked row does not', async () => {
+  const u = await registerUser({ firstName: 'Ida', password: 'test-password-1' });
+  await enrollKeys(u.auth);
+  await request().post('/api/keys/recovery-complete').set('Authorization', u.auth);
+
+  // Sign in once from the install so a session row remembers its device id.
+  const login = await request().post('/api/auth/login')
+    .set('X-Device-Name', 'My iPhone').set('X-Device-Platform', 'ios').set('X-Device-Id', 'install-cccc')
+    .send({ email: u.user.email, password: 'test-password-1' });
+  assert.equal(login.status, 200);
+
+  // Reset with NO Authorization (the install signed out — sign-out is client-
+  // local, the row persists) but the same X-Device-Id: applies immediately.
+  let code = await requestResetCode(u.user.email);
+  const res = await request().post('/api/auth/reset')
+    .set('X-Device-Name', 'My iPhone').set('X-Device-Platform', 'ios').set('X-Device-Id', 'install-cccc')
+    .send({ email: u.user.email, code, newPassword: 'fresh-pass-55' });
+  assert.equal(res.status, 200, 'a remembered install must skip the hold');
+  assert.ok(res.body.token);
+
+  // Explicitly removing the device row revokes recognition: the same install
+  // id now opens a hold like any stranger.
+  const list = await request().get('/api/auth/sessions').set('Authorization', u.auth);
+  const row = list.body.sessions.find((s) => s.deviceName === 'My iPhone');
+  assert.ok(row, 'the install row must exist before revocation');
+  await request().delete(`/api/auth/sessions/${row._id}`).set('Authorization', u.auth);
+  code = await requestResetCode(u.user.email);
+  const held = await request().post('/api/auth/reset')
+    .set('X-Device-Id', 'install-cccc')
+    .send({ email: u.user.email, code, newPassword: 'thief-pass-66' });
+  assert.equal(held.status, 202, 'a revoked install must be held again');
+});
+
 test('held reset completes after the window elapses', async () => {
   const u = await registerUser({ firstName: 'Gil', password: 'test-password-1' });
   await enrollKeys(u.auth);

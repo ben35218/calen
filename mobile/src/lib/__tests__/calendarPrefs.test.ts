@@ -2,6 +2,9 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
 
+const mockInvalidate = jest.fn();
+jest.mock('../queryClient', () => ({ queryClient: { invalidateQueries: (...a: unknown[]) => mockInvalidate(...a) } }));
+
 // Importing the module at all guards against module-scope evaluation errors
 // (calendarPrefs computes ALL_HOLIDAY_IDS from lib/holidays at load time).
 import {
@@ -160,5 +163,71 @@ describe('fresh-install holiday seed', () => {
     const cals = await getHolidayCalendars();
     expect(cals).toHaveLength(1);
     expect(cals[0].country).toBe(created.holiday.country);
+  });
+});
+
+// Signing out must drop the cached calendar list. These keys are ACCOUNT state
+// in unscoped AsyncStorage, so leaving them behind made the next sign-in paint
+// the previous account's calendars: a free-viewer signing in was told "No
+// shared calendars yet" (the stale rows were the other account's own
+// `mine: true` calendars, and the shell shows only `mine: false`), and an owner
+// signing back in saw their built-ins missing. It also leaked calendar names
+// and outside-share addresses between accounts on a shared device.
+describe('resetCalendarPrefs (sign-out teardown)', () => {
+  it('drops the cached calendar list and re-arms the loader for the next account', async () => {
+    const { refreshCustomCalendars, resetCalendarPrefs, getAccessibleCustomCalendarIds } =
+      require('../calendarPrefs') as typeof import('../calendarPrefs');
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+
+    listMock.mockResolvedValue({
+      data: [{
+        key: 'custom-a', name: "Darwin's Calendar", color: '#123456', mine: true, access: 'full',
+        sharedWithOutside: [{ email: 'someone@example.com', access: 'view' }],
+      }],
+    });
+    await refreshCustomCalendars();
+    expect((await getAccessibleCustomCalendarIds()).has('custom-a')).toBe(true);
+    expect(await AsyncStorage.getItem('hc_custom_calendars')).toBeTruthy();
+
+    await resetCalendarPrefs();
+
+    expect((await getAccessibleCustomCalendarIds()).has('custom-a')).toBe(false);
+    // Nothing left on disk for the next account to inherit — names and the
+    // outside-share address included.
+    expect(await AsyncStorage.getItem('hc_custom_calendars')).toBeNull();
+    expect(await AsyncStorage.getItem('hc_calendar_visibility')).toBeNull();
+    expect(await AsyncStorage.getItem('hc_calendar_colors')).toBeNull();
+  });
+});
+
+
+// The ['calendar','sources'] / ['viewer','sources'] queries snapshot
+// `accessibleCustomIds` from this list, so a commit that actually changes it
+// must refetch them — a sources fetch that raced ahead of the session's server
+// refresh dropped every custom calendar's events and nothing repainted until
+// an unrelated invalidation (observed: until an event save).
+describe('commitCustom → calendar query invalidation', () => {
+  it('invalidates on a real list change and stays quiet on the steady-state echo', async () => {
+    const { refreshCustomCalendars } = require('../calendarPrefs') as typeof import('../calendarPrefs');
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    // Skip the one-time local-upload migrations — steady-state device.
+    await AsyncStorage.setItem('hc_custom_calendars_synced', '1');
+    await AsyncStorage.setItem('hc_holiday_cals_migrated', '1');
+
+    const row = {
+      key: 'custom-x', name: 'X', color: '#123456', alertsEnabled: true,
+      sharedWithHousehold: false, householdAccess: 'full',
+      sharedWith: [], sharedWithOutside: [], mine: true, access: 'full',
+    };
+    listMock.mockResolvedValue({ data: [row] });
+    mockInvalidate.mockClear();
+    await refreshCustomCalendars();
+    expect(mockInvalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] });
+    expect(mockInvalidate).toHaveBeenCalledWith({ queryKey: ['viewer'] });
+
+    // The same list again — no churn, no invalidate → no refetch cycle.
+    mockInvalidate.mockClear();
+    await refreshCustomCalendars();
+    expect(mockInvalidate).not.toHaveBeenCalled();
   });
 });

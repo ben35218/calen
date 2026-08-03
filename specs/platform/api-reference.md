@@ -73,7 +73,9 @@ See `app.js` for exact paths. Grouped for orientation:
 
 - **Auth & identity:** `/api/auth` (register, login, forgot/reset + reset-cancel,
   sessions, me, email/password change, delete account), `/api/keys` (E2EE factor
-  enrollment, recovery, factor add/remove, device-link, public keys). Passkeys
+  enrollment, recovery, factor add/remove, device-link, public keys, and
+  `rekey` — the guarded lost-every-factor identity replacement, see
+  [crypto-e2ee.md](crypto-e2ee.md) "Re-key"). Passkeys
   are under `/api/auth` too (`register-options`, `register`, `challenge`,
   `login`). See [features/auth-identity.md](../features/auth-identity.md).
 - **Household, membership & E2EE:** `/api/household` (get/update, invitations,
@@ -81,7 +83,9 @@ See `app.js` for exact paths. Grouped for orientation:
   `e2ee/activate`, `e2ee/readiness`, `e2ee/stragglers`+`seal`, reseal,
   `client-version`). See [features/households-sharing.md](../features/households-sharing.md).
 - **Calendar:** `/api/calendars` (custom calendars + per-calendar key envelopes +
-  calendar invitations), `/api/calendar` (event attachments), `/api/invitations`
+  calendar invitations + the re-key `access-request` / `keys/approve` pair —
+  see [features/households-sharing.md](../features/households-sharing.md)),
+  `/api/calendar` (event attachments), `/api/invitations`
   (event invitations incl. public `ics` + `lookup`). See
   [features/calendar.md](../features/calendar.md).
 - **Maintenance & home:** `/api/items`, `/api/tasks`, `/api/task-templates`,

@@ -25,6 +25,7 @@ import { loadForecast } from '../weather';
 import {
   getWeatherSource, setWeatherSource, sourceLabel,
   loadSourceForecast, loadSourceOutlook, loadPassiveForecast, LiveLocationError,
+  isMissingHomeAddressError,
 } from '../weatherSource';
 
 const permMock = Location.requestForegroundPermissionsAsync as jest.Mock;
@@ -90,6 +91,21 @@ describe('loadSourceForecast / loadSourceOutlook', () => {
     (loadWeatherForAddress as jest.Mock).mockResolvedValue({ current: {}, forecast: [] });
     await loadSourceForecast({ kind: 'custom', place: 'Banff, AB, Canada' });
     expect(loadWeatherForAddress).toHaveBeenCalledWith('Banff, AB, Canada', { geocoder: geocodePlace });
+  });
+});
+
+describe('isMissingHomeAddressError', () => {
+  it('recognizes the client-direct throw and the server error body', () => {
+    expect(isMissingHomeAddressError(new Error('No home address configured. Add one in Settings.'))).toBe(true);
+    expect(isMissingHomeAddressError({ response: { data: { error: 'No home address set' } } })).toBe(true);
+  });
+
+  it('rejects every other failure — those get the generic retry message', () => {
+    expect(isMissingHomeAddressError(new Error('Network Error'))).toBe(false);
+    expect(isMissingHomeAddressError(new LiveLocationError('denied'))).toBe(false);
+    expect(isMissingHomeAddressError({ response: { data: { error: 'Geocoding failed' } } })).toBe(false);
+    expect(isMissingHomeAddressError(undefined)).toBe(false);
+    expect(isMissingHomeAddressError(null)).toBe(false);
   });
 });
 

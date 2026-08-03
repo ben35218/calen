@@ -193,13 +193,18 @@ export async function maintainKeyHygiene(): Promise<void> {
   // them to accepted collaborators, and re-seal the records — the owner-device
   // half of the approve-on-device sharing flow.
   try {
-    const { reconcileCalendarKeys } = await import('./calendarKeys');
+    const { reconcileCalendarKeys, repairCalendarLaneEvents } = await import('./calendarKeys');
     await reconcileCalendarKeys();
+    // Separate call, not folded into the reconcile: that pass early-returns
+    // when the server reports no pending key work, which is exactly the state
+    // a calendar damaged by the old truncating re-seal sits in.
+    await repairCalendarLaneEvents();
   } catch { /* offline / locked / nothing to do — retried on a later unlock */ }
-  // (Shared-lane CalendarKey loading — ensureSharedCalendarKeys — runs from the
-  // auth store's keys-ready hook instead: this pass only runs on restored
-  // sessions, and the keys must load on EVERY unlock, a fresh login included,
-  // or cal-scoped rows re-pulled into a wiped replica stay undecryptable.)
+  // (Shared-lane CalendarKey loading — ensureSharedCalendarKeys — runs directly
+  // from the auth store's keys-ready hook, ordered BEFORE this pass so the
+  // replica decrypts first; this whole pass also runs from that hook, on every
+  // unlock — fresh login included — so a newly accepted collaborator gets their
+  // wrap the next time the owner opens Calen, however the owner signed in.)
   try {
     const { reconcileTripKeys } = await import('./tripKeys');
     await reconcileTripKeys();

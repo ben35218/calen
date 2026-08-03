@@ -217,22 +217,33 @@ router.post('/reset', resetLimiter, async (req, res) => {
   }
 });
 
-// A valid session token for THIS user in the Authorization header = a known
-// device (F1). The reset flow can run while signed in — "I forgot my password
-// but I'm on my own phone" — and skips the hold window.
+// Known device (F1) — the reset skips the hold window when either:
+//  - the Authorization header carries a valid session token for THIS user
+//    ("I forgot my password but I'm signed in on my own phone"); or
+//  - the request's X-Device-Id matches an existing device-session row: the
+//    install signed in to this account before and was never revoked. Sign-out
+//    is client-local (the row persists), so signing out alone doesn't demote a
+//    device — explicitly removing it in Sign-in & Security does. The id is an
+//    unguessable keychain-held 128-bit value, but it IS client-supplied: a
+//    deliberate, weak recognition signal that only skips the hold; it never
+//    authenticates a session by itself.
 async function isKnownDevice(req, user) {
   const header = req.headers.authorization;
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return false;
-  try {
-    const jwt = require('jsonwebtoken');
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    if (String(payload.userId) !== String(user._id)) return false;
-    // Sid-carrying tokens must still be live sessions; legacy sid-less tokens
-    // count as known (they'll be upgraded by the sliding refresh).
-    if (payload.sid) return (user.sessions || []).some((s) => String(s._id) === String(payload.sid));
-    return true;
-  } catch { return false; }
+  if (token) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const payload = jwt.verify(token, process.env.JWT_SECRET);
+      if (String(payload.userId) === String(user._id)) {
+        // Sid-carrying tokens must still be live sessions; legacy sid-less
+        // tokens count as known (they'll be upgraded by the sliding refresh).
+        if (!payload.sid) return true;
+        if ((user.sessions || []).some((s) => String(s._id) === String(payload.sid))) return true;
+      }
+    } catch { /* fall through to the device-id check */ }
+  }
+  const { deviceId } = deviceFromReq(req);
+  return Boolean(deviceId) && (user.sessions || []).some((s) => s.deviceId === deviceId);
 }
 
 // Cancel a pending held reset (F1) from any signed-in device — the "that

@@ -6,6 +6,14 @@ const mongoose = require('mongoose');
 // from the admin web app's routes. See docs/E2EE-SYNC-PLAN.md §4.5.
 const AUDIT_EVENTS = [
   'hdk_minted', 'member_approved', 'member_removed', 'hdk_rotated', 'hdk_retired', 'key_enrolled',
+  // Lost-every-factor recovery (specs/platform/crypto-e2ee.md "Re-key"): the
+  // account abandoned its identity key for a fresh one. Meta carries how many
+  // of its own records were left unreadable and how many envelopes were
+  // cleared — never content.
+  'key_rekeyed',
+  // A calendar owner re-wrapped their CalendarKey to a re-keyed collaborator's
+  // NEW identity. The deliberate, human-approved half of that recovery.
+  'calendar_access_reapproved',
   'factor_added', 'factor_removed', // unlock-factor envelope changes (Signal-parity A1)
   'passkey_signin_added',           // a WebAuthn sign-in credential was registered
   'session_created', 'session_revoked', // device sign-in lifecycle (Signal-parity F2/F3)
