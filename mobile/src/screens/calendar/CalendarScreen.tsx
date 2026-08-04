@@ -11,6 +11,7 @@ import {
   MonthWindow, YearMonth, initialWindow, extendPast, extendFuture, ensureCovers,
   monthsIn, monthRange, ymKey, mergeCalendarChunks,
 } from '../../lib/calendarWindow';
+import { monthBlockWeeks, clipBars, weekLayout, type WeekCoreMetrics } from '../../lib/monthGrid';
 import { MonthJumpHeaderButton } from './MonthJumpSheet';
 import { loadPassiveForecast } from '../../lib/weatherSource';
 import WeatherIcon from '../../components/WeatherIcon';
@@ -50,6 +51,7 @@ const HEADER_MONTH_H = 40; // sticky "Month Year" row in the fixed header
 // Layout metrics. Week rows are sized to their content, clamped to [MIN,MAX].
 const WEEKDAY_ROW_H = 26;
 const DAY_NUM_H = 26;     // centered date number
+const MONTH_LABEL_H = 16; // the "Aug" marker above the 1st (month-start rows only)
 const BAR_H = 17;         // one spanning-bar lane
 const CHIP_H1 = 20;       // one-line chip slot (incl. margin)
 const CHIP_H2 = 34;       // two-line chip slot (incl. margin)
@@ -104,10 +106,43 @@ let autoOpenedTrip = false;
 
 type Chip = { key: string; label: string; color: string; time?: string; eventId?: string; cancelled?: boolean; reschedulePending?: boolean };
 type CellContent = { chips: Chip[]; tasks: Task[]; chores: Chore[]; recipes: RecipeCell[]; grocery: boolean; occasions: CalendarOccasion[] };
-type RenderCell = { date: string; day: number; isToday: boolean; content: CellContent };
+// `outside` = a day of the neighbouring month inside a boundary week. It renders
+// as a blank spacer (no number, nothing tappable) — that blankness is what
+// separates one month block from the next. See lib/monthGrid.
+type RenderCell = { date: string; day: number; isToday: boolean; outside: boolean; content: CellContent };
 // The 7-day forecast strip's slice through one week (see the weather lane below).
 type WeekWeather = { startCol: number; endCol: number; days: { col: number; code: number; tempMax: number }[] };
-type RenderWeek = { key: string; cells: RenderCell[]; bars: WeekBar[]; weather: WeekWeather | null; height: number; headerH: number; monthLabel: string };
+type RenderWeek = {
+  key: string; ym: YearMonth; cells: RenderCell[]; bars: WeekBar[]; weather: WeekWeather | null;
+  height: number; headerH: number; monthLabel: string;
+  // The block's first row: carries the month abbreviation over the 1st (at
+  // firstCol) and the primary-tinted rule marking the month boundary.
+  isMonthStart: boolean; abbrev: string; firstCol: number;
+};
+
+// One week's density-independent half: what every density draws, plus the
+// per-column measurements weekLayout turns into a height (see the cache below).
+type WeekCore = {
+  cells: RenderCell[];
+  bars: WeekBar[];
+  wxDays: { col: number; code: number; tempMax: number }[];
+  metrics: WeekCoreMetrics;
+};
+
+const EMPTY_CONTENT: CellContent = { chips: [], tasks: [], chores: [], recipes: [], grocery: false, occasions: [] };
+
+// The grid's layout constants, handed to the pure weekLayout pass.
+const WEEK_LAYOUT = {
+  dayNumH: DAY_NUM_H,
+  monthLabelH: MONTH_LABEL_H,
+  barH: BAR_H,
+  vpad: VPAD,
+  compactWeek: COMPACT_WEEK,
+  stackBarH: STACK_BAR_H,
+  minStackWeek: MIN_STACK_WEEK,
+  minWeek: MIN_WEEK,
+  maxWeek: MAX_WEEK,
+};
 
 // The scrolling month grid plus its fixed header rows (sticky Month Year +
 // weekday labels). A content layer inside CalendarScreen's view toggle: the
@@ -151,24 +186,12 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
     return { fromDate: first, toDate: last };
   }, [win]);
 
-  // Continuous (Sunday-first) week grid spanning the whole window: gridStart is
-  // the Sunday on/before the first day, rangeEnd the last day of the last month.
-  const grid = useMemo(() => {
-    const gridStart = new Date(range.fromDate);
-    gridStart.setDate(1 - range.fromDate.getDay());
-    return { gridStart, rangeEnd: range.toDate };
-  }, [range]);
-
-  // Open on the week that contains today. Round the day count first so a DST
-  // hour shift between gridStart and today can't tip the floor across a week.
-  const initialWeekIndex = useMemo(() => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const days = Math.round((+today - +grid.gridStart) / 86400000);
-    return Math.max(0, Math.floor(days / 7));
-  }, [grid]);
-
-  const [curIdx, setCurIdx] = useState(initialWeekIndex);
+  // The window's weeks, month block by month block (lib/monthGrid): each month
+  // renders its own Sunday-first grid and blanks the neighbouring month's days,
+  // so a boundary week appears in BOTH blocks — the layout Apple Calendar uses,
+  // and what puts real whitespace between months instead of running them
+  // together. `curIdx`/`initialScrollIndex` are seeded from the built rows below.
+  const blocks = useMemo(() => monthBlockWeeks(win), [win]);
 
   // background sync: paint instantly from the local replica; the server pull
   // runs behind it and invalidates ['calendar'] only when something changed.
@@ -266,21 +289,34 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
     };
   }, [data, visibility]);
 
-  // Per-week row cache: growing the window (edge scroll or a month/year jump)
-  // gives the derived data/holidaysByDate objects new identities, but the
-  // content of already-built weeks is unchanged — so validity keys on the
-  // underlying INPUTS, and unchanged weeks are reused by object identity
-  // (which also lets the memoized WeekRow rows bail out of re-rendering).
-  const weekRowCache = useRef<{ sig: unknown[]; map: Map<string, RenderWeek> }>({ sig: [], map: new Map() });
-  const { weeks, offsets, todayWeekOffset } = useMemo(() => {
+  // Per-week caches, in two layers. Growing the window (edge scroll or a
+  // month/year jump) gives the derived data/holidaysByDate objects new
+  // identities, but the content of already-built weeks is unchanged — so
+  // validity keys on the underlying INPUTS, and unchanged weeks are reused by
+  // object identity (which also lets the memoized WeekRow rows bail out of
+  // re-rendering).
+  //
+  // `cores` holds the DENSITY-INDEPENDENT half: the cells' content and the
+  // week's spanning bars, which are identical in all three densities and are
+  // the expensive half (weekBars scans every event and trip, per row). `rows`
+  // holds the finished RenderWeek per density (keyed `<density>:<week>`), whose
+  // only extra work is the arithmetic in weekLayout. Density is therefore NOT
+  // in the signature: switching Compact/Stacked/Details re-runs no expansion
+  // and no event scan, and switching back is a straight cache hit. Both maps
+  // flush together when the data signature changes.
+  const weekRowCache = useRef<{ sig: unknown[]; cores: Map<string, WeekCore>; rows: Map<string, RenderWeek> }>(
+    { sig: [], cores: new Map(), rows: new Map() },
+  );
+  const { weeks, offsets, todayWeekOffset, todayIndex } = useMemo(() => {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 
-    const sig: unknown[] = [srcQ.data, holidayCals, visibility, calColors, callStatus, forecastByDate, charsPerLine, density, todayStr];
+    const sig: unknown[] = [srcQ.data, holidayCals, visibility, calColors, callStatus, forecastByDate, charsPerLine, todayStr];
     const cache = weekRowCache.current;
     if (cache.sig.length !== sig.length || sig.some((v, i) => v !== cache.sig[i])) {
       cache.sig = sig;
-      cache.map.clear();
+      cache.cores.clear();
+      cache.rows.clear();
     }
 
     // Bucket every dated item once, so each cell is an O(1) lookup instead of
@@ -359,80 +395,97 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
       );
 
     const weeksR: RenderWeek[] = [];
-    const cursor = new Date(grid.gridStart);
-    while (cursor <= grid.rangeEnd) {
-      const wkKey = ymd(cursor);
-      const hit = cache.map.get(wkKey);
+    for (const blk of blocks) {
+      const rowKey = `${density}:${blk.key}`;
+      const hit = cache.rows.get(rowKey);
       if (hit) {
         weeksR.push(hit);
-        cursor.setDate(cursor.getDate() + 7);
         continue;
       }
-      const cells: RenderCell[] = [];
-      let monthLabel = '';
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(cursor);
-        d.setDate(cursor.getDate() + i);
-        const dateStr = ymd(d);
-        // A week spans at most two months; its Wednesday (index 3) always falls
-        // in the majority month, so use it for the sticky-header label.
-        if (i === 3) monthLabel = d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-        cells.push({
-          date: dateStr,
-          day: d.getDate(),
-          isToday: dateStr === todayStr,
-          content: content(dateStr),
+
+      // ── The density-independent core (built once per week, shared by all
+      // three densities). This is the expensive half; the density switch below
+      // never re-enters it.
+      let core = cache.cores.get(blk.key);
+      if (!core) {
+        // Only this block's own days carry content; the neighbouring month's
+        // days in a boundary week are blank spacers (and belong to the OTHER
+        // block's copy of this week, where they are the ones that render).
+        const cells: RenderCell[] = blk.dates.map((dateStr, col) => {
+          const outside = col < blk.firstCol || col > blk.lastCol;
+          return {
+            date: dateStr,
+            day: blk.days[col],
+            isToday: !outside && dateStr === todayStr,
+            outside,
+            content: outside ? EMPTY_CONTENT : content(dateStr),
+          };
         });
-      }
-      const weekDates = cells.map((c) => c.date);
-      const bars = weekBars(visData, weekDates);
-      // The forecast strip's slice through this week (contiguous by
-      // construction — the forecast is a run of consecutive days). Compact
-      // hides all spans, the weather lane included.
-      const wxDays = cells
-        .flatMap((c, col) => {
-          const wx = forecastByDate[c.date];
+        // Spans are laid out across the whole week (so lanes agree between the
+        // two copies of a boundary week) and then clipped to this block's
+        // columns — a trip crossing the boundary draws as two clipped bars.
+        const bars = clipBars(weekBars(visData, blk.dates), blk.firstCol, blk.lastCol);
+        // The forecast strip's slice through this week (contiguous by
+        // construction — the forecast is a run of consecutive days).
+        const wxDays = cells.flatMap((c, col) => {
+          const wx = c.outside ? undefined : forecastByDate[c.date];
           return wx ? [{ col, code: wx.code, tempMax: wx.tempMax }] : [];
         });
-      const weather: WeekWeather | null =
-        density !== 'compact' && wxDays.length
-          ? { startCol: wxDays[0].col, endCol: wxDays[wxDays.length - 1].col, days: wxDays }
-          : null;
-      const weatherPad = weather ? BAR_H : 0;
-      const headerH = DAY_NUM_H;
-      // How many bar lanes actually cover a given column (0 if none).
-      const lanesAt = (col: number) =>
-        bars.reduce((max, b) => (col >= b.startCol && col <= b.endCol ? Math.max(max, b.lane + 1) : max), 0);
-      // Size the week by its single tallest cell: that cell's own bar lanes
-      // plus its own items. Adding the week-wide max of each separately would
-      // over-allocate when the deepest bar and the tallest item stack live in
-      // different cells, leaving a spurious gap above the next week.
-      let height: number;
-      if (density === 'compact') {
-        // Uniform short rows — no spans, just the dots strip.
-        height = COMPACT_WEEK;
-      } else if (density === 'stacked') {
-        const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + stackBarCount(c.content) * STACK_BAR_H));
-        height = Math.min(MAX_WEEK, Math.max(MIN_STACK_WEEK, headerH + weatherPad + maxCell + VPAD));
-      } else {
-        const maxCell = Math.max(0, ...cells.map((c, col) => lanesAt(col) * BAR_H + cellItemsHeight(c.content)));
-        height = Math.min(MAX_WEEK, Math.max(MIN_WEEK, headerH + weatherPad + maxCell + VPAD));
+        // Per-column measurements the layout pass needs: how many bar lanes
+        // actually cover the column, and how tall its items stack in each of
+        // the two text densities.
+        const lanes = cells.map((_, col) =>
+          bars.reduce((max, b) => (col >= b.startCol && col <= b.endCol ? Math.max(max, b.lane + 1) : max), 0),
+        );
+        core = {
+          cells,
+          bars,
+          wxDays,
+          metrics: {
+            isMonthStart: blk.isMonthStart,
+            hasWeather: wxDays.length > 0,
+            lanes,
+            itemsH: cells.map((c) => cellItemsHeight(c.content)),
+            stackN: cells.map((c) => stackBarCount(c.content)),
+          },
+        };
+        cache.cores.set(blk.key, core);
       }
-      const row: RenderWeek = { key: wkKey, cells, bars, weather, height, headerH, monthLabel };
-      cache.map.set(wkKey, row);
+
+      // ── The density layer: pure arithmetic over the core.
+      const lay = weekLayout(density, core.metrics, WEEK_LAYOUT);
+      const weather: WeekWeather | null =
+        lay.weather && core.wxDays.length
+          ? { startCol: core.wxDays[0].col, endCol: core.wxDays[core.wxDays.length - 1].col, days: core.wxDays }
+          : null;
+      const row: RenderWeek = {
+        key: blk.key, ym: blk.ym, cells: core.cells, bars: core.bars, weather,
+        height: lay.height, headerH: lay.headerH,
+        monthLabel: blk.monthLabel, isMonthStart: blk.isMonthStart, abbrev: blk.abbrev, firstCol: blk.firstCol,
+      };
+      cache.rows.set(rowKey, row);
       weeksR.push(row);
-      cursor.setDate(cursor.getDate() + 7);
     }
 
     const offs: number[] = [];
     let acc = 0;
     for (const w of weeksR) { offs.push(acc); acc += w.height; }
 
-    const tIdx = weeksR.findIndex((w) => w.cells.some((c) => c.date === todayStr));
+    // Today's row is the one where today is one of the block's OWN days — a
+    // boundary week's other copy holds the same date as a blank spacer.
+    const tIdx = weeksR.findIndex((w) => w.cells.some((c) => c.isToday));
     const twOff = tIdx >= 0 ? offs[tIdx] : 0;
 
-    return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff };
-  }, [srcQ.data, holidayCals, data, visData, holidaysByDate, visibility, grid, charsPerLine, calColors, callStatus, density, forecastByDate]);
+    return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff, todayIndex: Math.max(0, tIdx) };
+  }, [srcQ.data, holidayCals, data, visData, holidaysByDate, visibility, blocks, charsPerLine, calColors, callStatus, density, forecastByDate]);
+
+  // The row the grid opens on (today's), captured once — the list's
+  // initialScrollIndex must not change identity as the window grows.
+  const initialIdxRef = useRef(-1);
+  if (initialIdxRef.current < 0) initialIdxRef.current = todayIndex;
+  // Which row sits under the sticky header. Seeded from today's row so the
+  // first frame's label matches where initialScrollIndex puts the grid.
+  const [curIdx, setCurIdx] = useState(() => todayIndex);
 
   // Place today's week at the top of the viewport, just below the sticky header.
   const goToday = (animated = true) =>
@@ -441,17 +494,35 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
       animated,
     });
 
-  useImperativeHandle(ref, () => ({ scrollToToday: (animated = true) => goToday(animated) }));
+  // Whether the grid is still anchored to today (see the re-snap effect below).
+  const pinnedToToday = useRef(true);
+  const unpin = useCallback(() => { pinnedToToday.current = false; }, []);
 
-  // initialScrollIndex positions the list using pre-data week heights (all
-  // MIN_WEEK); once real data lands the earlier weeks grow and today's week
-  // shifts down, so snap back to it with the final offsets.
-  const snappedToToday = useRef(false);
+  // Tapping Today re-pins as well as scrolls, so a repaint landing right after
+  // the tap can't slide today back off the top.
+  useImperativeHandle(ref, () => ({
+    scrollToToday: (animated = true) => {
+      pinnedToToday.current = true;
+      goToday(animated);
+    },
+  }));
+
+  // The grid OPENS ON TODAY and STAYS on today until the user moves it — as if
+  // they had tapped Today the moment it appeared. initialScrollIndex only
+  // positions the first frame, using pre-data week heights (all MIN_WEEK), and
+  // a cold launch resolves its inputs in stages *after* that frame: the prefs
+  // read (visibility, colours, the fresh-install holiday-calendar seed), the
+  // replica/inline sync, refreshCustomCalendars' ['calendar'] invalidation, the
+  // owned-add-on cache, the weather strip. Every one of those re-measures the
+  // week rows, so today's week slides down offsets that a single snap on the
+  // first `data` frame has already used and thrown away — which is why a
+  // freshly registered account (nothing cached, so ALL of it lands late) opened
+  // on the window's first month instead of today. Re-snap on every offset
+  // change until the user takes the grid somewhere themselves.
   useEffect(() => {
-    if (snappedToToday.current || !data) return;
-    snappedToToday.current = true;
-    goToday(false);
-  }, [data, todayWeekOffset]);
+    if (pinnedToToday.current) goToday(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayWeekOffset, topPad, headerH]);
 
   // Track which week sits at the top of the viewport so the sticky header can
   // show that week's "Month Year" label. offsets[i] is week i's top within the content.
@@ -495,26 +566,31 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
   const pendingJump = useRef<YearMonth | null>(null);
   const [jumpSeq, setJumpSeq] = useState(0);
   const jumpTo = useCallback((target: YearMonth) => {
+    // A deliberate destination — stop re-anchoring to today (see the pin above).
+    unpin();
     pendingJump.current = target;
     setWin((w) => ensureCovers(w, target));
     setJumpSeq((s) => s + 1);
-  }, []);
+  }, [unpin]);
   useEffect(() => {
     const t = pendingJump.current;
     if (!t) return;
-    const prefix = `${t.year}-${pad(t.month + 1)}`;
-    const idx = weeks.findIndex((w) => w.cells[3].date.startsWith(prefix));
+    // The block's first row — months own their rows now, so this is exact
+    // (it used to guess the month from the week's Wednesday).
+    const idx = weeks.findIndex((w) => w.ym.year === t.year && w.ym.month === t.month);
     if (idx < 0) return;
     pendingJump.current = null;
     setCurIdx(idx);
     listRef.current?.scrollToOffset({ offset: Math.max(0, topPad + offsets[idx] - headerH), animated: false });
   }, [jumpSeq, weeks, offsets]);
 
-  // The month under the sticky header right now, for the sheet's highlight.
+  // The month under the sticky header right now, for the sheet's highlight —
+  // the row's own block month, not an inference from its middle day.
   const curYm: YearMonth = useMemo(() => {
-    const wed = weeks[curIdx]?.cells[3]?.date;
-    const d = wed ? new Date(wed + 'T12:00:00') : new Date();
-    return { year: d.getFullYear(), month: d.getMonth() };
+    const ym = weeks[curIdx]?.ym;
+    if (ym) return ym;
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
   }, [weeks, curIdx]);
 
   // Cross-layer month continuity: report the month under the sticky header so
@@ -551,12 +627,19 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
         data={weeks}
         keyExtractor={(w) => w.key}
         renderItem={renderWeek}
-        initialScrollIndex={initialWeekIndex}
+        initialScrollIndex={initialIdxRef.current}
         getItemLayout={(_, index) => ({ length: weeks[index].height, offset: offsets[index], index })}
         contentContainerStyle={[styles.content, { paddingTop: topPad }]}
         onScrollToIndexFailed={() => {}}
         onScroll={onScroll}
         scrollEventThrottle={16}
+        // The user's own drag is what releases the today anchor — a
+        // programmatic scroll (the snap itself, an edge extension) must not.
+        onScrollBeginDrag={unpin}
+        // The last word on "the rows just re-measured": week heights settle a
+        // beat after the data that caused them, and the offsets effect can run
+        // before the list has laid the new heights out.
+        onContentSizeChange={() => { if (pinnedToToday.current) goToday(false); }}
         onStartReached={onStartReached}
         onStartReachedThreshold={0.5}
         onEndReached={onEndReached}
@@ -614,8 +697,13 @@ const WeekRow = React.memo(function WeekRow({
   // rows stay aligned across the week.
   const weatherPad = week.weather ? BAR_H : 0;
   return (
-    <View style={[styles.weekRow, { height: week.height }]}>
+    <View style={[styles.weekRow, week.isMonthStart && styles.monthStartRow, { height: week.height }]}>
       {week.cells.map((cell, col) => {
+        // A neighbouring month's day inside a boundary week: blank, inert. The
+        // gap it leaves is the separation between one month block and the next.
+        if (cell.outside) {
+          return <View key={cell.date} style={[styles.dayCell, { width: cellSize, height: week.height }]} />;
+        }
         const c = cell.content;
         // Reserve only the bar lanes that actually cover this cell, so days
         // without a spanning event don't inherit blank space from days that do.
@@ -653,7 +741,7 @@ const WeekRow = React.memo(function WeekRow({
         return (
           <TouchableOpacity
             key={cell.date}
-            style={[styles.dayCell, { width: cellSize, height: week.height }]}
+            style={[styles.dayCell, week.isMonthStart && styles.monthStartCell, { width: cellSize, height: week.height }]}
             activeOpacity={0.7}
             onPress={() => navigation.navigate('CalendarDay', { date: cell.date })}
             // Short-press an (empty part of a) day to start a new event on it.
@@ -661,6 +749,14 @@ const WeekRow = React.memo(function WeekRow({
             delayLongPress={LONG_PRESS_MS}
           >
             <View style={[styles.dayHeader, { height: week.headerH }]}>
+              {/* The month marker, on the 1st only — the abbreviated month name
+                  above the day number. The slot is reserved in every cell of
+                  the row so all the numbers stay on one line. */}
+              {week.isMonthStart ? (
+                <View style={styles.monthLabelSlot}>
+                  {col === week.firstCol ? <Text style={styles.monthAbbrev}>{week.abbrev}</Text> : null}
+                </View>
+              ) : null}
               <View style={[styles.dayNumWrap, cell.isToday && styles.todayWrap]}>
                 <Text style={[styles.dayNum, cell.isToday && styles.todayNum]}>{cell.day}</Text>
               </View>
@@ -980,7 +1076,12 @@ export default function CalendarScreen() {
         active: density === m.key,
         dividerBefore: m.dividerBefore,
         icon: <MaterialCommunityIcons name={m.icon as any} size={20} color={colors.text} />,
-        onPress: () => setDensity(m.key),
+        // Defer the switch a frame: batched with the menu's dismissal, the
+        // popover couldn't commit its close until the grid's re-render for the
+        // new density had finished, so the menu visibly hung. This way the
+        // close paints first and the layer catches up behind it — the same
+        // rule the month/year jump sheet follows.
+        onPress: () => requestAnimationFrame(() => setDensity(m.key)),
       })),
     [density],
   );
@@ -1159,8 +1260,16 @@ const styles = StyleSheet.create({
   weekdayCell: { alignItems: 'center', paddingVertical: 4 },
   weekdayText: { fontSize: 13, color: colors.textMuted, fontWeight: '600' },
   weekRow: { flexDirection: 'row', position: 'relative', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  // The month boundary reads as an ordinary week rule, but only over the days
+  // the month actually owns: the row-wide border comes off, and each own-month
+  // cell draws the same hairline itself, so no line hangs over the blank cells
+  // that lead into the 1st.
+  monthStartRow: { borderTopWidth: 0 },
+  monthStartCell: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   dayCell: { paddingTop: 2, paddingHorizontal: 2, overflow: 'hidden' },
   dayHeader: { alignItems: 'center', justifyContent: 'flex-start' },
+  monthLabelSlot: { height: MONTH_LABEL_H, justifyContent: 'center' },
+  monthAbbrev: { fontSize: 12, lineHeight: 14, fontWeight: '700', color: colors.primary },
   dayNumWrap: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
   todayWrap: { backgroundColor: colors.primary },
   dayNum: { fontSize: 15, color: colors.text, fontWeight: '600' },

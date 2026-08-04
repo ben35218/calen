@@ -56,6 +56,12 @@ const DAY_VIEW_KEY = 'hc_day_view_mode';
 // Device-local; on-device reminders (lib/notifications) read it. Defaults: an
 // alert at NOON the day of the occasion AND one 2 weeks (14 days) before.
 const OCCASION_ALERTS_KEY = 'hc_occasion_alert_prefs';
+// Alert config shared by EVERY holiday calendar the user has (one config, not
+// one per country — a person who wants a heads-up for holidays wants it for all
+// of them). Device-local, same shape as the occasion prefs. Defaults to OFF:
+// holidays are numerous, and silently filling the rolling reminder window with
+// them would crowd out the user's own events.
+const HOLIDAY_ALERTS_KEY = 'hc_holiday_alert_prefs';
 
 // The built-in calendars the user may delete from the Calendars view (and add
 // back via Add Calendar) — every default, including the "Other" group
@@ -259,6 +265,13 @@ const DAY_VIEWS: DayViewMode[] = ['single', 'multi', 'list'];
 export interface OccasionAlertPrefs { offsets: number[]; time: string }
 const DEFAULT_OCCASION_ALERTS: OccasionAlertPrefs = { offsets: [0, 14], time: '12:00' };
 
+// Calendar-level alert config shared by every holiday calendar. Same shape and
+// slots as the occasion prefs; defaults to no alerts at all (see the key's note
+// above), with 9am — the app's day-based default — as the time a first alert
+// lands on.
+export interface HolidayAlertPrefs { offsets: number[]; time: string }
+const DEFAULT_HOLIDAY_ALERTS: HolidayAlertPrefs = { offsets: [], time: '09:00' };
+
 // ── In-memory state + subscribers ───────────────────────────────────────────
 let visState: VisMap | null = null;
 // Device-local holiday calendars found at load, awaiting one-time upload to the
@@ -280,6 +293,7 @@ let defaultAlertsOffState: string[] | null = null;
 let densityState: MonthDensity | null = null;
 let dayViewState: DayViewMode | null = null;
 let occasionAlertState: OccasionAlertPrefs | null = null;
+let holidayAlertState: HolidayAlertPrefs | null = null;
 const visSubs = new Set<() => void>();
 const colorSubs = new Set<() => void>();
 const orderSubs = new Set<() => void>();
@@ -289,6 +303,7 @@ const defaultAlertsSubs = new Set<() => void>();
 const densitySubs = new Set<() => void>();
 const dayViewSubs = new Set<() => void>();
 const occasionAlertSubs = new Set<() => void>();
+const holidayAlertSubs = new Set<() => void>();
 let loaded = false;
 
 // Best-effort country from the device locale (e.g. "en-CA" → CA). Only used
@@ -413,6 +428,7 @@ const ACCOUNT_KEYS = [
   VIS_KEY, HOL_KEY, HOL_DISABLED_KEY, HOL_COUNTRY_KEY, HOL_CALS_KEY, HOL_MIGRATED_KEY,
   COLORS_KEY, ORDER_KEY, CUSTOM_KEY, CUSTOM_SYNCED_KEY, DELETED_DEFAULTS_KEY,
   DEFAULT_ALERTS_OFF_KEY, DENSITY_KEY, DAY_VIEW_KEY, OCCASION_ALERTS_KEY,
+  HOLIDAY_ALERTS_KEY,
 ];
 
 export async function resetCalendarPrefs(): Promise<void> {
@@ -427,6 +443,7 @@ export async function resetCalendarPrefs(): Promise<void> {
   densityState = null;
   dayViewState = null;
   occasionAlertState = null;
+  holidayAlertState = null;
   pendingLocalHolidayCals = [];
   freshHolidaySeed = false;
   // Repaint every subscriber against the cleared state, so nothing keeps
@@ -440,6 +457,7 @@ export async function resetCalendarPrefs(): Promise<void> {
   densitySubs.forEach((fn) => fn());
   dayViewSubs.forEach((fn) => fn());
   occasionAlertSubs.forEach((fn) => fn());
+  holidayAlertSubs.forEach((fn) => fn());
   await AsyncStorage.multiRemove(ACCOUNT_KEYS).catch(() => {});
 }
 
@@ -558,6 +576,15 @@ async function ensureLoaded() {
     occasionAlertState = { ...DEFAULT_OCCASION_ALERTS };
   }
   try {
+    const rawHol = await AsyncStorage.getItem(HOLIDAY_ALERTS_KEY);
+    const parsedHol = rawHol ? JSON.parse(rawHol) : null;
+    holidayAlertState = parsedHol && Array.isArray(parsedHol.offsets) && typeof parsedHol.time === 'string'
+      ? { offsets: parsedHol.offsets.filter((n: unknown) => typeof n === 'number'), time: parsedHol.time }
+      : { ...DEFAULT_HOLIDAY_ALERTS };
+  } catch {
+    holidayAlertState = { ...DEFAULT_HOLIDAY_ALERTS };
+  }
+  try {
     const rawCustom = await AsyncStorage.getItem(CUSTOM_KEY);
     const parsed = rawCustom ? JSON.parse(rawCustom) : [];
     // Older caches predate household/outside sharing, server backing, and
@@ -601,6 +628,7 @@ async function ensureLoaded() {
   densitySubs.forEach((fn) => fn());
   dayViewSubs.forEach((fn) => fn());
   occasionAlertSubs.forEach((fn) => fn());
+  holidayAlertSubs.forEach((fn) => fn());
   // The cache painted instantly; now pull the server truth (incl. calendars
   // housemates shared with us) in the background.
   void refreshCustomCalendars();
@@ -798,6 +826,13 @@ export async function getAlertMutedCalendarIds(): Promise<Set<string>> {
 export async function getOccasionAlertPrefs(): Promise<OccasionAlertPrefs> {
   await ensureLoaded();
   return occasionAlertState ?? { ...DEFAULT_OCCASION_ALERTS };
+}
+
+// The alert config shared by every holiday calendar. lib/notifications reads
+// this to schedule on-device holiday reminders (off unless the user picks one).
+export async function getHolidayAlertPrefs(): Promise<HolidayAlertPrefs> {
+  await ensureLoaded();
+  return holidayAlertState ?? { ...DEFAULT_HOLIDAY_ALERTS };
 }
 
 // Custom-calendar ids this user can access. Events referencing a custom id
@@ -1206,4 +1241,31 @@ export function useOccasionAlertPrefs() {
   }
 
   return { prefs, setOccasionAlertPrefs };
+}
+
+// ── Holiday calendars' shared alert prefs hook ──────────────────────────────
+// One config for every holiday calendar, so the Holiday Alerts screen reached
+// from any country's holidays editor edits the same settings.
+export function useHolidayAlertPrefs() {
+  const [prefs, setPrefs] = useState<HolidayAlertPrefs>(holidayAlertState ?? { ...DEFAULT_HOLIDAY_ALERTS });
+
+  useEffect(() => {
+    const sub = () => setPrefs({ ...(holidayAlertState ?? { ...DEFAULT_HOLIDAY_ALERTS }) });
+    holidayAlertSubs.add(sub);
+    ensureLoaded().then(sub);
+    return () => {
+      holidayAlertSubs.delete(sub);
+    };
+  }, []);
+
+  function setHolidayAlertPrefs(next: HolidayAlertPrefs) {
+    // Normalise: unique, sorted offsets; keep a valid HH:mm time.
+    const offsets = [...new Set(next.offsets.filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b);
+    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(next.time) ? next.time : DEFAULT_HOLIDAY_ALERTS.time;
+    holidayAlertState = { offsets, time };
+    AsyncStorage.setItem(HOLIDAY_ALERTS_KEY, JSON.stringify(holidayAlertState)).catch(() => {});
+    holidayAlertSubs.forEach((fn) => fn());
+  }
+
+  return { prefs, setHolidayAlertPrefs };
 }

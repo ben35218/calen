@@ -25,6 +25,7 @@ import AddHolidayCalendarScreen from '../screens/calendar/AddHolidayCalendarScre
 import CalendarColorsScreen from '../screens/calendar/CalendarColorsScreen';
 import PrintCalendarScreen from '../screens/calendar/PrintCalendarScreen';
 import HolidaysScreen from '../screens/calendar/HolidaysScreen';
+import HolidayAlertsScreen from '../screens/calendar/HolidayAlertsScreen';
 import OccasionsScreen from '../screens/calendar/OccasionsScreen';
 import ECardFormScreen from '../screens/calendar/ECardFormScreen';
 import OccasionAlertsScreen from '../screens/calendar/OccasionAlertsScreen';
@@ -235,6 +236,7 @@ export default function AppNavigator() {
       <Stack.Screen name="PrintCalendar" component={PrintCalendarScreen} options={modalTask('Print')} />
       {/* Title is set by the screen itself from the selected holiday calendar. */}
       <Stack.Screen name="Holidays" component={HolidaysScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Holidays', headerTitleAlign: 'center' }} />
+      <Stack.Screen name="HolidayAlerts" component={HolidayAlertsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Holiday Alerts' }} />
       {/* Route name stays "Birthdays" (the add-on key + deep-links are keyed to
           it); only the visible title becomes "Occasions". */}
       <Stack.Screen name="Birthdays" component={OccasionsScreen} options={featureCalendarHome('Occasions')} />

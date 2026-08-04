@@ -21,7 +21,7 @@ import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
-import { EVENT_CALENDAR_TYPES, ymd } from '../../lib/calendar';
+import { EVENT_CALENDAR_TYPES, ymd, eventWhenFromStored, eventStoredFromWhen } from '../../lib/calendar';
 import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
@@ -714,16 +714,15 @@ export default function EventFormScreen() {
       // E2EE dual-write: prefer decrypted content, falling back to plaintext.
       const e = await openRecord('CalendarEvent', eventQ.data);
       if (cancelled) return;
-      const start = new Date(e.startDate);
-      const pad = (n: number) => String(n).padStart(2, '0');
       set({
         title: e.title ?? '',
         calendarType: e.calendarType ?? 'activities',
-        date: e.startDate.slice(0, 10),
-        endDate: e.endDate ? e.endDate.slice(0, 10) : '',
-        allDay: e.allDay ?? true,
-        startTime: e.allDay ? '09:00' : `${pad(start.getHours())}:${pad(start.getMinutes())}`,
-        endTime: e.endDate && !e.allDay ? `${pad(new Date(e.endDate).getHours())}:${pad(new Date(e.endDate).getMinutes())}` : '10:00',
+        // Timed events must be read back in the device's local zone (date AND
+        // clock), all-day ones in UTC — `eventWhenFromStored` is the inverse of
+        // the `eventStoredFromWhen` the save runs through, so reopening a saved
+        // event is a fixed point. Slicing the ISO date instead would read the
+        // UTC day and step an 11:05pm event forward one day per edit.
+        ...eventWhenFromStored(e),
         description: e.description ?? '',
         location: e.location ?? '',
         placeId: (e as { placeId?: string }).placeId ?? '',
@@ -764,22 +763,9 @@ export default function EventFormScreen() {
     return () => { cancelled = true; };
   }, [eventQ.data]);
 
-  // Form date/time state → the ISO instants the API stores (all-day at noon UTC).
-  const buildStartEnd = () => {
-    const allDay = form.allDay;
-    const startDate = allDay
-      ? `${form.date}T12:00:00.000Z`
-      : new Date(`${form.date}T${form.startTime}:00`).toISOString();
-    const endPart = form.endDate || form.date;
-    const endDate = allDay
-      ? form.endDate
-        ? `${form.endDate}T12:00:00.000Z`
-        : undefined
-      : form.endTime
-      ? new Date(`${endPart}T${form.endTime}:00`).toISOString()
-      : undefined;
-    return { startDate, endDate };
-  };
+  // Form date/time state → the ISO instants the API stores (all-day at noon UTC,
+  // timed events as the local wall clock's real instant).
+  const buildStartEnd = () => eventStoredFromWhen(form);
 
   // The decrypted event content an invitation carries (email + .ics + the
   // recipient's copy) — the server can't read an E2EE event's own fields.

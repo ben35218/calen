@@ -1,7 +1,7 @@
 ---
 title: Release & build
 status: current
-last-verified: d96d6b3 (2026-07-27)
+last-verified: d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
 code:
   - mobile/RELEASE.md
   - mobile/eas.json
@@ -92,6 +92,28 @@ run before its prerequisite (see the headers of
    decision pending).
 7. **E3 — third-party crypto audit** (ops/comms engagement; schedule near
    launch against the final surface — see `docs/SIGNAL-PARITY-PLAN.md`).
+
+## Pre-launch checklist — remove development-only surfaces
+
+Affordances kept deliberately through TestFlight to diagnose problems on real
+devices, which are **not** meant to ship to the store. Add an entry the moment
+such a surface goes in, naming what to cut *and what must survive the cut* — the
+list is only useful if it is written while the context is fresh rather than
+reconstructed at launch.
+
+**Nothing outstanding.** Cleared 2026-08-04:
+
+- **Reminders → "Delivery" card** (pending/next-reminder status rows + *Send a
+  test notification*), added 2026-08-03 to diagnose the silent on-device reminder
+  outage — **removed**, along with the now-orphaned `getReminderDiagnostics()`
+  and `sendTestNotification()`. The Reminders screen keeps only its `denied`
+  banner + Open Settings row, which is a permission fix the user can act on
+  rather than diagnostics. The **run log stays** (`recordRun`,
+  `hc_reminder_run_log`, the stage tagging, the `console.warn`): nothing renders
+  it, it costs nothing, and it is the only record of an on-device E2EE failure.
+  Removing the card does re-open one gap — a user hitting this in production has
+  no way to report the cause — tracked in
+  [notifications.md](../features/notifications.md).
 
 ## Deliberately NOT in scope
 

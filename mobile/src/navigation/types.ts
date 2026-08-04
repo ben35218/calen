@@ -107,6 +107,10 @@ export type RootStackParamList = {
   PrintCalendar: undefined;
   // Edit one country's holiday calendar (its national/regional/cultural toggles).
   Holidays: { calendarId: string };
+  // Alert settings shared by every holiday calendar (offsets + time). The
+  // `calendarId` is only the calendar it was opened from — it tints the screen;
+  // the settings themselves are not per-calendar.
+  HolidayAlerts: { calendarId?: string } | undefined;
   // The Occasions calendar home (route id stays `Birthdays` for add-on/deep-link
   // continuity; the screen and title are "Occasions"). `focus` (from tapping an
   // occasion on the calendar) scrolls the list to that occasion and highlights it.

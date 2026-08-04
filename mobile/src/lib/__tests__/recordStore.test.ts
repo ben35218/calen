@@ -1,0 +1,71 @@
+// The CRUD chokepoint over the unified opaque store (lib/recordStore). The
+// mirror-into-the-replica half is covered by the sync suite; this pins the
+// CACHE half: the calendar assembles from the replica, so a write that changes
+// what the calendar shows must also invalidate the ['calendar'] queries —
+// otherwise an edit lands on device but the month grid keeps painting the
+// pre-edit sources (the contact-dates bug: Occasions repainted, the grid didn't).
+
+jest.mock('../queryClient', () => ({ queryClient: { invalidateQueries: jest.fn() } }));
+jest.mock('../replica', () => ({ getAll: jest.fn(async () => []), upsert: jest.fn(), remove: jest.fn() }));
+jest.mock('../records', () => ({ syncRecords: jest.fn(async () => ({})) }));
+jest.mock('../../api', () => ({
+  recordsApi: {
+    create: jest.fn(async (body: any) => ({ data: { _id: body._id ?? 'new-id', updatedAt: 't1' } })),
+    update: jest.fn(async () => ({ data: { updatedAt: 't2' } })),
+    remove: jest.fn(async () => ({ data: {} })),
+  },
+}));
+
+let store: typeof import('../recordStore');
+let queryClient: { invalidateQueries: jest.Mock };
+let replica: { getAll: jest.Mock; upsert: jest.Mock; remove: jest.Mock };
+
+// The invalidation is coalesced on a timer (a bulk import writes one record per
+// contact), so the suite drives fake timers to observe it.
+beforeEach(() => {
+  jest.resetModules();
+  jest.clearAllMocks();
+  jest.useFakeTimers();
+  queryClient = require('../queryClient').queryClient;
+  replica = require('../replica');
+  store = require('../recordStore');
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+const SEALED = { _id: 'p1', name: 'Sam', dates: [{ label: 'anniversary', value: '1998-06-12' }], enc: 'ct', keyVersion: 1 };
+
+test('editing a person invalidates the calendar queries after the replica write', async () => {
+  await store.update('Person', 'p1', SEALED);
+  expect(replica.upsert).toHaveBeenCalledWith('Person', [expect.objectContaining({ _id: 'p1', name: 'Sam' })]);
+  jest.runAllTimers();
+  expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['calendar'] });
+});
+
+test('creating and deleting a calendar-bearing record invalidate too', async () => {
+  await store.create('CalendarEvent', { _id: 'e1', enc: 'ct', keyVersion: 1, title: 'Dentist' });
+  jest.runAllTimers();
+  expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(1);
+
+  await store.remove('Chore', 'c1');
+  jest.runAllTimers();
+  expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
+});
+
+test('a burst of writes coalesces into one invalidation', async () => {
+  await Promise.all([
+    store.create('Person', { _id: 'a', enc: 'ct', keyVersion: 1 }),
+    store.create('Person', { _id: 'b', enc: 'ct', keyVersion: 1 }),
+    store.create('Person', { _id: 'c', enc: 'ct', keyVersion: 1 }),
+  ]);
+  jest.runAllTimers();
+  expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(1);
+});
+
+test('a collection the calendar never expands does not invalidate it', async () => {
+  await store.update('Category', 'cat1', { enc: 'ct', keyVersion: 1, name: 'Plumbing' });
+  jest.runAllTimers();
+  expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+});

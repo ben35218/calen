@@ -205,6 +205,32 @@ test('interval task expands forward within range', () => {
   assert.deepEqual(out.map(o => ymd(o.nextDueDate)), ['2026-01-01', '2026-02-01', '2026-03-01']);
 });
 
+// The consumer contract, pinned: `nextDueDate` comes back as TWO types, and the
+// difference is invisible to every assertion that reads it through ymd()/new
+// Date(). A consumer that assumed the string form (`.slice(0, 10)`) threw on
+// every recurring item and silently killed all on-device reminders.
+test('expanded nextDueDate is a Date for recurring items, passthrough for one-time', () => {
+  const recurring = expandRecurringTaskChore(
+    { nextDueDate: '2026-01-01T12:00:00.000Z', recurrence: { type: 'interval', intervalUnit: 'days', intervalValue: 5 } },
+    new Date('2026-01-01'), new Date('2026-01-20'),
+  );
+  assert.ok(recurring.length > 1);
+  for (const inst of recurring) assert.ok(inst.nextDueDate instanceof Date, 'recurring instances carry a Date');
+
+  const calendarType = expandRecurringTaskChore(
+    { recurrence: { type: 'calendar', months: [3], dayOfMonth: 15 } },
+    new Date('2026-01-01'), new Date('2026-12-31'),
+  );
+  assert.ok(calendarType[0].nextDueDate instanceof Date);
+
+  // One-time is NOT normalized — it keeps whatever the record held.
+  const oneTime = expandRecurringTaskChore(
+    { nextDueDate: '2026-02-01T12:00:00.000Z', recurrence: { type: 'one-time' } },
+    new Date('2026-01-01'), new Date('2026-12-31'),
+  );
+  assert.equal(typeof oneTime[0].nextDueDate, 'string');
+});
+
 test('calendar-type task fires in listed months only', () => {
   const task = {
     recurrence: { type: 'calendar', months: [3, 9], dayOfMonth: 15 },

@@ -339,6 +339,12 @@ function toLocalNoon(d) {
   return new Date(y, mo - 1, day, 12, 0, 0);
 }
 
+// NOTE for consumers: the `nextDueDate` on the returned instances is NOT one
+// type. A one-time item is passed through untouched (an ISO string off the
+// record), while every generated instance below carries a **Date object**. Read
+// it through `new Date(...)` or a shape-tolerant helper — never `.slice(0, 10)`,
+// which throws on the Date form. (That exact call in the mobile reminder
+// scheduler silently killed every on-device notification.)
 function expandRecurringTaskChore(item, fromDate, toDate) {
   const r = item.recurrence;
 

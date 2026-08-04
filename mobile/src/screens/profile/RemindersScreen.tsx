@@ -55,8 +55,9 @@ export default function RemindersScreen() {
     setPref('remindersEnabled', v);
     if (v) {
       await ensureNotificationPermission();
-      refreshPermission();
+      await rescheduleReminders().catch(() => 0);
     }
+    refreshPermission();
   }
 
   // Save the day-based alert time immediately (empty = reset to the 9am default),

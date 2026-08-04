@@ -24,6 +24,36 @@ type StoredRec = Rec & { _id: string };
 const recordsApi = () => require('../api').recordsApi;
 const runSync = () => require('./records').syncRecords as () => Promise<unknown>;
 
+// ── Calendar cache invalidation ──────────────────────────────────────────────
+// The calendar views assemble from the REPLICA (lib/calendarData), not from a
+// per-screen query — so a write mirrored below is already the new truth on
+// device, and the only thing standing between it and the grid is the cached
+// ['calendar'] query data (30s staleTime, no refetch-on-focus; the grid is a
+// mounted tab, so nothing re-runs on its own). Invalidating here, at the one
+// CRUD chokepoint, is what keeps a contact/chore/event editor from having to
+// remember it: editing a contact's occasion dates repainted the Occasions list
+// (it reads ['people']) but left the month grid showing the old dates until the
+// next sync pass, because the person form only invalidated ['people'].
+const CALENDAR_COLLECTIONS = new Set([
+  'CalendarEvent', 'MaintenanceTask', 'Chore', 'Person', 'RecipeSchedule',
+]);
+
+// Coalesce bursts (a bulk contact import writes one record per contact) into a
+// single invalidation rather than a refetch per row.
+let calendarInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
+
+function invalidateCalendar(collection: string): void {
+  if (!CALENDAR_COLLECTIONS.has(collection) || calendarInvalidateTimer) return;
+  calendarInvalidateTimer = setTimeout(() => {
+    calendarInvalidateTimer = null;
+    try {
+      require('./queryClient').queryClient.invalidateQueries({ queryKey: ['calendar'] });
+    } catch {
+      // no query client in this context (scripts/tests) — nothing to refresh
+    }
+  }, 50);
+}
+
 // A screen-built sealed payload carries BOTH the plaintext content (for the local
 // replica copy) and the ciphertext. Split them: only the ciphertext + routing
 // (`enc`/`keyVersion`/`scope`) may reach the opaque store; everything else is the
@@ -82,6 +112,7 @@ export async function create<T = Rec>(collection: string, sealed: Rec): Promise<
   const { data: row } = await recordsApi().create({ _id: sealed._id, ...wire });
   const full: StoredRec = { ...plain, _id: row._id, updatedAt: row.updatedAt };
   await replica.upsert(collection, [full]);
+  invalidateCalendar(collection);
   return { data: full as T };
 }
 
@@ -94,6 +125,7 @@ export async function update<T = Rec>(collection: string, id: string, sealed: Re
   const existing = (await replica.getAll<Rec>(collection)).find((r) => r._id === id) ?? {};
   const full: StoredRec = { ...existing, ...plain, _id: id, updatedAt: row.updatedAt };
   await replica.upsert(collection, [full]);
+  invalidateCalendar(collection);
   return { data: full as T };
 }
 
@@ -102,5 +134,6 @@ export async function update<T = Rec>(collection: string, id: string, sealed: Re
 export async function remove(collection: string, id: string): Promise<{ data: { message: string } }> {
   await recordsApi().remove(id);
   await replica.remove(collection, id);
+  invalidateCalendar(collection);
   return { data: { message: 'Deleted' } };
 }

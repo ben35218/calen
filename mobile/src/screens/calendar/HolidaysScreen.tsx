@@ -5,7 +5,8 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { getHolidays, getHolidayDefs, regionalHolidaysLabel, HolidayDef } from '../../lib/holidays';
 import { useHolidayCalendars, useCustomCalendars } from '../../lib/calendarPrefs';
-import { Card, Hint } from '../../components/ui';
+import { colorOf } from '../../lib/calendar';
+import { Card, Hint, HeaderIconButton } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import type { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 
@@ -29,8 +30,22 @@ export default function HolidaysScreen() {
   useEffect(() => {
     if (!cal) return;
     // No header pencil — the Calendars view's per-row edit button is the
-    // single path to a calendar's name/colour/sharing form.
-    nav.setOptions({ title: cal.name });
+    // single path to a calendar's name/colour/sharing form. The one header
+    // action is the alarm bell (same as the Occasions view): holiday alerts,
+    // which are device-local, so a housemate reading a shared calendar sets
+    // their own.
+    nav.setOptions({
+      title: cal.name,
+      headerRight: () => (
+        <HeaderIconButton
+          icon="notifications-outline"
+          size={26}
+          color={colorOf(cal.id)}
+          accessibilityLabel="Holiday alert settings"
+          onPress={() => nav.navigate('HolidayAlerts', { calendarId: cal.id })}
+        />
+      ),
+    });
   }, [cal, nav]);
 
   const defs = useMemo(() => (cal ? getHolidayDefs(cal.country) : []), [cal]);

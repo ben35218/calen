@@ -52,6 +52,62 @@ function eventDate(e: CalendarEvent, iso: string): string {
   return e.allDay ? localDate(iso) : ymd(new Date(iso));
 }
 
+// ── Event form ⇄ stored instants ────────────────────────────────────────────
+// The two directions below are exact inverses, and every event form goes
+// through them so a load→save round-trip is a fixed point.
+//
+// The rule they encode: an **all-day** event stores its endpoints at noon UTC,
+// so its calendar date is timezone-stable and MUST be read in UTC. A **timed**
+// event stores real instants, so its date and its clock time must BOTH be read
+// in the device's local zone. Mixing the two — reading a timed event's clock
+// locally but slicing its date off the UTC string — is what walks a late-
+// evening event forward one day per edit west of UTC, where 11:05pm on Aug 3
+// is already Aug 4 in UTC.
+
+export interface EventWhen {
+  allDay: boolean;
+  date: string; // yyyy-MM-dd, local for timed events
+  startTime: string; // HH:MM, ignored when allDay
+  endDate: string; // yyyy-MM-dd; '' means "same day as `date`"
+  endTime: string; // HH:MM, ignored when allDay
+}
+
+type StoredWhen = { startDate: string; endDate?: string | null; allDay?: boolean };
+
+// Stored instants → the event form's date/time fields.
+export function eventWhenFromStored(e: StoredWhen): EventWhen {
+  const allDay = e.allDay ?? true;
+  const start = new Date(e.startDate);
+  const end = e.endDate ? new Date(e.endDate) : null;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const date = allDay ? localDate(e.startDate) : ymd(start);
+  const endDay = end ? (allDay ? localDate(String(e.endDate)) : ymd(end)) : '';
+  return {
+    allDay,
+    date,
+    // A same-day end stays unset — the invariant the End date row and the
+    // start/end drag helpers assume.
+    endDate: endDay && endDay !== date ? endDay : '',
+    startTime: allDay ? '09:00' : `${pad(start.getHours())}:${pad(start.getMinutes())}`,
+    endTime: end && !allDay ? `${pad(end.getHours())}:${pad(end.getMinutes())}` : '10:00',
+  };
+}
+
+// The event form's date/time fields → the instants the API stores.
+export function eventStoredFromWhen(w: EventWhen): { startDate: string; endDate?: string } {
+  if (w.allDay) {
+    return {
+      startDate: `${w.date}T12:00:00.000Z`,
+      endDate: w.endDate ? `${w.endDate}T12:00:00.000Z` : undefined,
+    };
+  }
+  const endPart = w.endDate || w.date;
+  return {
+    startDate: new Date(`${w.date}T${w.startTime}:00`).toISOString(),
+    endDate: w.endTime ? new Date(`${endPart}T${w.endTime}:00`).toISOString() : undefined,
+  };
+}
+
 export interface DayItems {
   events: CalendarEvent[];
   tasks: Task[];
