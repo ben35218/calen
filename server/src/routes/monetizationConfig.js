@@ -138,10 +138,10 @@ router.put('/', async (req, res) => {
 // household anymore).
 router.get('/households', async (_req, res) => {
   try {
-    const households = await Household.find({}, 'name ownerId e2eeActive addons createdAt').lean();
+    const households = await Household.find({}, 'name ownerId e2eeActive createdAt').lean();
     const members = await User.find(
       { householdId: { $in: households.map((h) => h._id) } },
-      'email firstName lastName role householdId appUnlocked creditBalanceMc'
+      'email firstName lastName role householdId appUnlocked creditBalanceMc addons'
     ).lean();
     const byHh = {};
     for (const m of members) (byHh[String(m.householdId)] ||= []).push(m);
@@ -155,7 +155,10 @@ router.get('/households', async (_req, res) => {
           name: h.name || null,
           ownerEmail: owner?.email || null,
           e2eeActive: !!h.e2eeActive,
-          addons: h.addons || [],
+          // What this household can USE: ownership is per-member (User.addons),
+          // and any one member's purchase unlocks the lane for everyone — so the
+          // household's effective set is the union, exactly as the app computes it.
+          addons: [...new Set(hhMembers.flatMap((m) => m.addons || []))],
           createdAt: h.createdAt,
           memberCount: hhMembers.length,
           members: hhMembers.map((m) => ({
@@ -166,6 +169,9 @@ router.get('/households', async (_req, res) => {
             isOwner: String(m._id) === String(h.ownerId),
             appUnlocked: !!m.appUnlocked,
             creditBalance: Math.floor((m.creditBalanceMc || 0) / credits.MC_PER_CREDIT),
+            // Which member actually paid — the household row above shows the
+            // union, this shows who it came from.
+            addons: m.addons || [],
           })),
         };
       })
@@ -177,14 +183,14 @@ router.get('/households', async (_req, res) => {
 
 // Per-user monetization state for the admin billing table: app-unlock status,
 // credit balance, and how the state got there (webhook-linked vs manual).
-// Add-ons are owned household-wide (Household.addons), so each user carries
-// their household's owned set — "which users have which add-ons".
+// `addons` is what this user OWNS — since ownership moved to User.addons this
+// column finally answers "who actually paid for what", where it previously
+// mirrored the household's set onto every member and so couldn't distinguish a
+// buyer from someone who merely lives with one. (The household-wide set they can
+// USE is the union, shown on the /households rows.)
 router.get('/users', async (_req, res) => {
   try {
-    const users = await User.find({}, 'email firstName lastName householdId role appUnlocked appUnlockedAt creditBalanceMc revenueCatId createdAt').lean();
-    const hhIds = [...new Set(users.filter((u) => u.householdId).map((u) => String(u.householdId)))];
-    const hhAddons = await Household.find({ _id: { $in: hhIds } }, 'addons').lean();
-    const addonsByHh = Object.fromEntries(hhAddons.map((h) => [String(h._id), h.addons || []]));
+    const users = await User.find({}, 'email firstName lastName householdId role appUnlocked appUnlockedAt creditBalanceMc revenueCatId addons createdAt').lean();
     res.json(users.map((u) => ({
       _id: u._id,
       name: [u.firstName, u.lastName].filter(Boolean).join(' '),
@@ -193,7 +199,7 @@ router.get('/users', async (_req, res) => {
       householdId: u.householdId || null,
       appUnlocked: !!u.appUnlocked,
       appUnlockedAt: u.appUnlockedAt || null,
-      addons: u.householdId ? addonsByHh[String(u.householdId)] || [] : [],
+      addons: u.addons || [],
       creditBalance: Math.floor((u.creditBalanceMc || 0) / credits.MC_PER_CREDIT),
       revenueCatId: u.revenueCatId || null,
       // Billing source: a RevenueCat mapping means store purchases drive the

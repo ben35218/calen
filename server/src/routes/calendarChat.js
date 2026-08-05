@@ -130,7 +130,7 @@ Each day's status is 'free' (nothing committed), 'partial' (some open gaps + the
         endTime:      { type: 'string', description: 'End time in HH:MM 24-hour format, e.g. "14:30". Required when allDay is false.' },
         recurrFreq:      { type: 'string', enum: ['daily', 'weekly', 'monthly', 'yearly'], description: 'Repeat frequency if the event recurs' },
         recurrInterval:  { type: 'number', description: 'For custom repeats like "every 2 weeks": recurrFreq is the unit (weekly) and this is N (2). Omit for simple repeats.' },
-        reminderMinutes: { type: 'number', description: 'Alert before event: 0=at event time, 15, 30, 60, 120, 1440 (1 day), 2880 (2 days). Omit for no alert.' },
+        reminderMinutes: { type: 'number', description: 'Alert before the event, in minutes. On a TIMED event (allDay false): 0=at event time, 15, 30, 60, 120, 1440 (1 day). On an ALL-DAY event there is no start time to count back from, so use whole days only — 0 (on the day itself), 1440 (1 day before), 2880 (2 days), 10080 (1 week) — and it is delivered at the user\'s day-alert time. Omit for no alert.' },
         phone:           { type: 'string', description: 'Business phone number for the place in location (for appointments; used to dial for cancel/reschedule). Keep it out of description.' },
       },
       required: ['calendarType', 'title', 'date'],

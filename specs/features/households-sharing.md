@@ -1,7 +1,7 @@
 ---
 title: Households & sharing
 status: current
-last-verified: 9282d82+ (2026-08-03); `GET /calendars` now serializes the CALLER'S OWN re-key seat stamps (`keyChangedAt` / `accessRequestedAt`) onto each calendar — never anyone else's, the `collaborators` array is still stripped — so the requester can see their own pending access request; without it the viewer shell's "Request sent" screen was local component state that a sign-out erased, dropping the user onto a blank calendar with no sign the request existed (2026-08-03); df8c7f3+ (2026-07-31); the invite-from-contacts autocomplete was extracted to the shared `hooks/useRosterSuggestions` (pure `matchRoster` + the decrypted-roster query) and now also backs the calendar outside-share field — HouseholdScreen behavior unchanged; its local RevealWrap moved to `components/ui.RevealWrap` (2026-07-30); membership visibility pass — removal now files a persisted `HouseholdNotice` (`GET/POST /household/notices`) so the removed user gets an in-app explanation in the Invitations inbox; a pending invite to another household now also shows on `HouseholdScreen` (Accept/Decline card); the joiner sees their OWN safety code while awaiting approval and the approver prompt points there (2026-07-29); phone invites now canonicalize the typed number to E.164 (`classifyRecipient` → `toE164FromTyped`) so a locally-typed number matches the recipient's saved account phone (2026-07-29); the approve-on-device safety code is now rendered by a shared `components/SecurityCode` (centered monospace group-grid that never splits a group across a line, one-tap copy) on both the joiner's waiting card and the approver surfaces (2026-07-29); rejecting a join request now refreshes the inviter's sent-invitations list so the retired (declined) invite is revoked from the member card immediately (2026-07-29); approving a join request now notifies the joiner (dedicated `alertUser` push + a persisted `HouseholdNotice` `kind:'approved'` in their inbox) and excludes them from the household-wide "new member" alert; `HouseholdNotice.formerHouseholdId` generalized to `householdId` (2026-07-29); removal now also pushes the removed user directly (`alertUser`), and the floating Invitations button badge now counts membership notices + pending join-requests (was missing them) so it mirrors the inbox "New" tab (2026-07-29); outreach is now composer-only-for-non-accounts across ALL four sharing flows (household/trip/calendar/event) — an account-holder recipient gets the server push + in-app inbox with NO composer opening (household reads `userExists` off its POST; trips/calendars/events check `GET /invitations/lookup`, now accepting `phone` for existence-only lookups, failing open on error), the event `event_invitation` server email is retired (device-composed .ics-link email for non-account invitees via `sendInvitations` + `useEmailComposer`; recipient push added to `POST /invitations`), and every pending-invite row gained a paper-plane Remind action that re-opens the composer on demand regardless of account status (2026-07-29); `HouseholdScreen` accepts a **`promptInvite`** route param — a Calen assistant "Set up your household" setup chip (`setup_household`, see ai-assistant.md) deep-links here when the user wanted to share/assign but has no other members, showing a `SetupCallout` above the invite section (df8c7f3+, 2026-07-31); the Invitations inbox's entry point moved out of the calendar's floating chrome into **Profile** — a badged Invitations row (in the **"Personal"** group, second after Account's conventional identity lead: every feed behind the inbox is per-user — invites are addressed to the individual, and members never see each other's inboxes — while the household-scoped join-requests-to-approve keep their shared surface on HouseholdScreen), with the pending count also overlaid on the calendar's profile avatar (the E2EE-locked "!" takes precedence) so the badge trail leads avatar → Profile row → inbox; the floating `InvitationsButton` was deleted and its "New"-tab counting rules extracted to `hooks/useInvitationsCount` (unchanged: pending event/calendar/trip/household invites + join requests + undismissed membership notices + unacknowledged call outcomes) (df8c7f3+, 2026-07-31); **re-key access requests** — a collaborator who lost every unlock factor and re-keyed is held out of `missingMembers` AND the mint/rotate collaborator list until the owner approves: `POST /calendars/:key/access-request` queues them (pushing the owner, who is otherwise never told), `GET /calendars/keys/pending` returns them under `reapprovals` with their NEW `identityPublicKey`, and `POST /calendars/:key/keys/approve` is the only path that writes a wrap for a suppressed collaborator (server-enforced in `writeMemberWraps`, so a stale client can't complete an unseen re-grant). Accepting an invitation carries the suppression across the collaborator re-seat — the viewer shell auto-accepts on every focus, which would otherwise clear it (9282d82+, 2026-08-02)
+last-verified: c2d18c0+ (2026-08-04); **join carry-over** — approving a join moved membership but left the joiner's DATA behind: under C4 their records keep the old `householdId` and lose the plaintext `userId`, so they matched neither branch of the read scope and stayed sealed under a key the destination household doesn't hold. The joiner's unlocked device now merges them (`lib/joinCarryover` from `maintainKeyHygiene`, before the other key-hygiene passes): `GET /household/carryover` serves the stranded rows plus the old household's envelopes (authorized by envelope-holding, not membership), the device decrypts under the old HDK and re-seals under the new one, `PUT /household/carryover/:id` re-stamps the row IN PLACE (same `_id`, so attachments/invitations survive), and `POST /household/carryover/complete` drains the tombstones and reaps the emptied household + its key material. Resource-scoped (D1/D2) rows are excluded — they already route by `scope.resource` — and keep their household alive. Add-ons need no carry-over at all: ownership moved to `User.addons` (union across members for the household-wide effect), so purchases travel with the buyer through join, leave, and removal — see billing-plans.md. **A household change now also evicts the device's household-scoped caches**: `ensureHouseholdKey` raises `subscribeHouseholdChanged` when the household moves under a live session (never on the first read after sign-in) and the app root wipes the replica, resets the record cursor with it, and clears the calendar-prefs + owned-add-on caches. That is a privacy fix — the replica is a FLAT store of decrypted rows with no `householdId` column and sync only removes rows on tombstones the departed household will never send, so a leaver kept its calendar/meals/tasks readable on their phone indefinitely while the leave dialog promised the opposite; the cursor reset is equally required in the JOIN direction, since the joined household's records are all older than the stale high-water mark. Paired client fix: `lib/records.syncRecords` no longer parks its cursor on an undecryptable row from ANOTHER household (served by the scope's `userId ∈ scopeIds` branch) — that wedged both members' replicas at the moment of the join, which is why a joined household could show each member only their own data (2026-08-04); 9282d82+ (2026-08-03); `GET /calendars` now serializes the CALLER'S OWN re-key seat stamps (`keyChangedAt` / `accessRequestedAt`) onto each calendar — never anyone else's, the `collaborators` array is still stripped — so the requester can see their own pending access request; without it the viewer shell's "Request sent" screen was local component state that a sign-out erased, dropping the user onto a blank calendar with no sign the request existed (2026-08-03); df8c7f3+ (2026-07-31); the invite-from-contacts autocomplete was extracted to the shared `hooks/useRosterSuggestions` (pure `matchRoster` + the decrypted-roster query) and now also backs the calendar outside-share field — HouseholdScreen behavior unchanged; its local RevealWrap moved to `components/ui.RevealWrap` (2026-07-30); membership visibility pass — removal now files a persisted `HouseholdNotice` (`GET/POST /household/notices`) so the removed user gets an in-app explanation in the Invitations inbox; a pending invite to another household now also shows on `HouseholdScreen` (Accept/Decline card); the joiner sees their OWN safety code while awaiting approval and the approver prompt points there (2026-07-29); phone invites now canonicalize the typed number to E.164 (`classifyRecipient` → `toE164FromTyped`) so a locally-typed number matches the recipient's saved account phone (2026-07-29); the approve-on-device safety code is now rendered by a shared `components/SecurityCode` (centered monospace group-grid that never splits a group across a line, one-tap copy) on both the joiner's waiting card and the approver surfaces (2026-07-29); rejecting a join request now refreshes the inviter's sent-invitations list so the retired (declined) invite is revoked from the member card immediately (2026-07-29); approving a join request now notifies the joiner (dedicated `alertUser` push + a persisted `HouseholdNotice` `kind:'approved'` in their inbox) and excludes them from the household-wide "new member" alert; `HouseholdNotice.formerHouseholdId` generalized to `householdId` (2026-07-29); removal now also pushes the removed user directly (`alertUser`), and the floating Invitations button badge now counts membership notices + pending join-requests (was missing them) so it mirrors the inbox "New" tab (2026-07-29); outreach is now composer-only-for-non-accounts across ALL four sharing flows (household/trip/calendar/event) — an account-holder recipient gets the server push + in-app inbox with NO composer opening (household reads `userExists` off its POST; trips/calendars/events check `GET /invitations/lookup`, now accepting `phone` for existence-only lookups, failing open on error), the event `event_invitation` server email is retired (device-composed .ics-link email for non-account invitees via `sendInvitations` + `useEmailComposer`; recipient push added to `POST /invitations`), and every pending-invite row gained a paper-plane Remind action that re-opens the composer on demand regardless of account status (2026-07-29); `HouseholdScreen` accepts a **`promptInvite`** route param — a Calen assistant "Set up your household" setup chip (`setup_household`, see ai-assistant.md) deep-links here when the user wanted to share/assign but has no other members, showing a `SetupCallout` above the invite section (df8c7f3+, 2026-07-31); the Invitations inbox's entry point moved out of the calendar's floating chrome into **Profile** — a badged Invitations row (in the **"Personal"** group, second after Account's conventional identity lead: every feed behind the inbox is per-user — invites are addressed to the individual, and members never see each other's inboxes — while the household-scoped join-requests-to-approve keep their shared surface on HouseholdScreen), with the pending count also overlaid on the calendar's profile avatar (the E2EE-locked "!" takes precedence) so the badge trail leads avatar → Profile row → inbox; the floating `InvitationsButton` was deleted and its "New"-tab counting rules extracted to `hooks/useInvitationsCount` (unchanged: pending event/calendar/trip/household invites + join requests + undismissed membership notices + unacknowledged call outcomes) (df8c7f3+, 2026-07-31); **re-key access requests** — a collaborator who lost every unlock factor and re-keyed is held out of `missingMembers` AND the mint/rotate collaborator list until the owner approves: `POST /calendars/:key/access-request` queues them (pushing the owner, who is otherwise never told), `GET /calendars/keys/pending` returns them under `reapprovals` with their NEW `identityPublicKey`, and `POST /calendars/:key/keys/approve` is the only path that writes a wrap for a suppressed collaborator (server-enforced in `writeMemberWraps`, so a stale client can't complete an unseen re-grant). Accepting an invitation carries the suppression across the collaborator re-seat — the viewer shell auto-accepts on every focus, which would otherwise clear it (9282d82+, 2026-08-02)
 code:
   - mobile/src/screens/profile/HouseholdScreen.tsx
   - mobile/src/screens/calendar/InvitationsScreen.tsx
@@ -12,6 +12,9 @@ code:
   - server/src/services/{householdKey,keyEnvelope,securityAlerts,e2eePolicy}.js
   - server/src/services/notify.js
   - server/src/models/{Household,HouseholdInvitation,JoinRequest,HouseholdKeyEnvelope,ResourceKeyEnvelope,HouseholdNotice}.js
+  - mobile/src/lib/joinCarryover.ts
+  - mobile/src/lib/records.ts
+  - mobile/src/lib/dropMigration.ts
   - mobile/src/lib/safetyNumbers.ts
   - mobile/src/lib/shareInvite.ts
   - mobile/src/hooks/useRosterSuggestions.ts
@@ -20,6 +23,8 @@ tests:
   - server/src/test/householdInvitations.integration.test.js
   - server/src/test/householdKey.integration.test.js
   - server/src/test/householdLeave.integration.test.js
+  - server/src/test/householdCarryover.integration.test.js
+  - mobile/src/lib/__tests__/records.test.ts
   - server/src/test/keyHygiene.integration.test.js
   - server/src/test/securityAlerts.integration.test.js
   - server/src/services/householdKey.test.js
@@ -253,6 +258,74 @@ verification. The cryptographic mechanics are in
 - **Reap invariant.** `handleDeparture` never deletes a memberless household's
   key envelope while any `Record` still references that household; key material
   is destroyed only once the ciphertext that needs it is gone.
+- **A household change evicts the device's caches.** Joining, leaving, or being
+  removed fires `subscribeHouseholdChanged` (raised by `ensureHouseholdKey` when
+  the household moves under a live session — never on the first read after
+  sign-in), and the app root runs the household-scoped half of the sign-out
+  teardown: wipe the replica, reset the record-sync cursor with it, and reset the
+  calendar-prefs and owned-add-on caches. The identity half is untouched — the
+  user is still signed in and their per-user unlock is unaffected.
+
+  This is a **privacy** requirement, not only a correctness one. The replica is a
+  flat store of decrypted rows with **no `householdId` column**, and record sync
+  removes a row only on a tombstone — which the household just left will never
+  send again. Without the wipe, a departing or removed member keeps that
+  household's calendar, meals, and tasks readable on their device indefinitely,
+  while the leave dialog promises *"anything shared here stays with the other
+  members."* Server-side the eviction is already complete (`handleDeparture`
+  deletes their key envelope and flags rotation, and the carry-over below is gated
+  on holding an envelope, so leaving can never pull the household's data out with
+  them); this is the device half of it. Resetting the cursor alongside the replica
+  is mandatory in the join direction too: the records of the household just joined
+  are all older than the stale high-water mark and would otherwise never land.
+
+### Join carry-over (a joiner's data follows them)
+
+Approving a join changes `User.householdId` and nothing else. **A member's records
+do not travel with that flip**, and this is a crypto fact, not an oversight: under
+C4 an `e2eeActive` household stamps its own `householdId` on every record and drops
+the plaintext `userId`, so after the move the joiner's records match neither branch
+of the read scope and are sealed under an HDK the destination household doesn't
+hold. The server cannot fix this — it never holds a key, so it cannot re-seal.
+
+- **The joiner's unlocked device performs the merge**, from `maintainKeyHygiene` on
+  every unlock (`mobile/src/lib/joinCarryover.ts`). It runs **before** the other
+  key-hygiene passes, which all work in current-household key versions and would
+  otherwise skip the stranded rows entirely.
+- **Authorization is envelope-holding, not membership.** `GET /household/carryover`
+  serves records from any household the caller still holds a `HouseholdKeyEnvelope`
+  for but is no longer a member of, together with that household's envelopes. This
+  discloses nothing: the caller already possesses the key that opens them. A caller
+  without the envelope gets nothing and is refused on write (403).
+- **Records MOVE, keeping their `_id`.** `PUT /household/carryover/:id` takes the
+  re-sealed blob and re-stamps `householdId` in place, so attachments, invitations,
+  and every other reference by event/task id survive the merge. It is idempotent
+  (`moved: false` for a row already carried over) and resumable — a row that fails
+  is simply retried on the next unlock.
+- **Resource-scoped records (`enc.ks` `cal`/`trip`) are excluded.** They route to
+  collaborators in *any* household by `scope.resource`, so they are already
+  reachable after the move; re-stamping one would corrupt the owner-side rotation
+  accounting. A household still holding them is therefore never reaped.
+- **Drain then reap.** `POST /household/carryover/complete` deletes the emptied
+  household's tombstones (content-free, and the only thing left blocking the
+  `handleDeparture` reap invariant) and retires the household with its key
+  material — but only once it has no members and no live records.
+- **Add-ons need no carry-over.** Ownership is per user (`User.addons`) and takes
+  effect as the union across household members, so a joiner's purchases travel
+  with them automatically and are not surrendered to the household they leave.
+  See [billing-plans.md](billing-plans.md).
+
+**Sync must not block on a foreign row.** The record scope's `userId ∈ scopeIds`
+branch serves *both* households' devices any stranded record that still carries a
+plaintext `userId`, sealed under a key neither session holds. The replica's cursor
+normally parks on an undecryptable row (correctly — "the key isn't ready yet"), but
+for a foreign row that is permanent: the cursor wedges and **every** later row,
+including the device's own, stops reconciling. Both members then see only what
+their replica cached before the join — the household looks merged while neither
+calendar ever converges. So `lib/records.syncRecords` classifies a live row from
+another household (and not on the D1/D2 resource lane) as permanently unreadable
+and skips it without blocking, exactly like a reaped tombstone. Rows in our *own*
+household still block, or the original key-not-ready data-loss regression returns.
 
 ### Key lifecycle
 
@@ -349,9 +422,12 @@ that can judge it.
   `HouseholdKeyEnvelope` (HDK sealed per member × version), `ResourceKeyEnvelope`,
   `HouseholdNotice` (per-user membership notice, e.g. removal).
 - **Endpoints:** `server/src/routes/household.js` (membership, invitations,
-  join-requests, notices, key lifecycle, e2ee activation/readiness) and
-  `server/src/routes/keys.js` (identity factors + public keys — see
-  [auth-identity.md](auth-identity.md)).
+  join-requests, notices, key lifecycle, e2ee activation/readiness, join
+  carry-over) and `server/src/routes/keys.js` (identity factors + public keys —
+  see [auth-identity.md](auth-identity.md)).
+  - Carry-over: `GET /household/carryover` (stranded records + the old
+    household's envelopes), `PUT /household/carryover/:id` (re-stamp one
+    re-sealed record), `POST /household/carryover/complete` (drain + reap).
 - **Client:** `HouseholdScreen` (members, invite, remove, safety numbers, own
   safety code while awaiting approval, incoming-invite card, an always-on
   "end-to-end encrypted" indicator, and the "Create new household" leave action)
@@ -375,6 +451,18 @@ server-visible by necessity. The household **name and home address are sealed**
   (envelope mechanics unit-tested in `services/{householdKey,keyEnvelope}.test.js`).
 - Old-version retirement refuses until drained; periodic rotation flags only
   stale households — `keyHygiene.integration.test.js`.
+- Join carry-over: a joiner's records are stranded by the move and listed for
+  carry-over; the move re-stamps in place (same `_id`, no duplicate) and the other
+  member's sync then returns it; a repeat move is a no-op; a caller without the
+  old household's envelope is refused (403) and sees an empty listing; the caller's
+  current household is never listed; resource-scoped rows are excluded and block
+  the reap; purchased add-ons follow the joiner —
+  `householdCarryover.integration.test.js`.
+- Foreign-row sync safety (client-side): a live row from another household is
+  skipped WITHOUT parking the cursor, so the feed can't wedge at the moment of a
+  join; a row in our own household still blocks (key-not-ready); a D1/D2
+  resource-scoped row stays retryable; nothing is foreign before we know our own
+  household — `mobile/src/lib/__tests__/records.test.ts`.
 - Security-alert audit events for enrollment and factor add/remove —
   `securityAlerts.integration.test.js`.
 - Safety numbers (client-side): real-fingerprint lifecycle — unverified →

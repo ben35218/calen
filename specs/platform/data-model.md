@@ -1,7 +1,7 @@
 ---
 title: Data model
 status: current
-last-verified: 71f3baf+ (2026-07-30); `User` gains `usageWebSearches` (weekly {count, costMc} chat web-search counters) and `MonetizationConfig` gains `credits.actionCosts.webSearch` + `credits.webSearchRatePerSearch` (backfilled in getSingleton) — behavior owned by billing-plans.md / ai-assistant.md (2026-07-30); `User` gains `aiPlanActive`/`aiPlanExpiresAt` (monthly Calen AI plan) + provider-cost estimate counters, `CreditLedger` now records per-action usage debits (kinds + `action`), `MonetizationConfig` gains `credits.actionCosts` (flat per-action prices) + `aiPlan` (2026-07-30); added plaintext `Feedback` model (in-app questions/bugs/ideas + captured device diagnostics; support content, not sealed) and the `feedback_status_changed` audit event — see [feedback](../features/feedback.md) (2026-07-29); phone fields stored E.164 via shared PhoneField (2026-07-27); added plaintext `ECard` model (scheduled occasion e-cards) + occasion derivation from `Person.dates[]` (2026-07-28); ECard gains font + framing-line overrides + plaintext photo rows (2026-07-28); `Person` gains structured `firstName`/`lastName` (sealed content; `name` stays the composed source of truth) (2026-07-28); `EmailLog` upgraded to a delivery ledger + transient retry outbox, added `EmailLifecycleConfig` + `EmailSuppression` operational models (email-lifecycle.md) (2026-07-29); documented client record-sync cursor safety (never advance past an unreconciled row; reset the cursor whenever the replica is wiped) after a sign-out/sign-in content-loss bug (2026-07-29); activation straggler gate now counts author-hidden content from the `Record` store (not legacy tables) so an orphaned/un-migrated legacy plaintext row can't deadlock born-encrypted activation (2026-07-29); added personal `User.dayAlertTime` (`HH:mm`, null=9am) — the configurable day-based alert default (2026-07-29); record-sync now re-pulls + refetches the replica-backed views when the HDK first lands (`subscribeKeysReady` → auth-store subscriber), fixing first-login calendar/people showing only weather+holidays until a manual mutation (2026-07-29); added `PhoneCall.dncCaptured` (set when the recipient asked, on that call, not to be called again) so the call outcome view can surface an explicit do-not-call notice (2026-07-29); added plaintext `HouseholdNotice` model (per-user membership notice, `kind` removed|approved, `householdId` + actor first name) surfaced in the Invitations inbox (2026-07-29); `CustomCalendar` collaborator seats gained the re-key suppression pair (`keyChangedAt` / `reapprovalRequestedAt` — server state that withholds the owner's automatic CalendarKey re-wrap until they approve, preserved across normalization and the accept re-seat), and `AuditLog` gained `key_rekeyed` + `calendar_access_reapproved` (9282d82+, 2026-08-02)
+last-verified: c2d18c0+ (2026-08-04); **`User.addons` added; `Household.addons` retired to LEGACY** — feature-calendar add-on ownership moved onto the user who actually bought it (RevenueCat keys purchases to `app_user_id` = user id), with the household-wide effect derived as the union across members at read time; storing it on the household detached the entitlement from the buyer, so leaving or being removed silently dropped add-ons they had paid for. The Household field is read by nothing and kept only for `scripts/backfillUserAddons.js` + rollback (2026-08-04); c2d18c0+ (2026-08-04); **a local write left its replica row decrypting to the PREVIOUS content** — `splitSealed` moves `enc`/`keyVersion` into the wire body, so `recordStore.update`'s `{ ...existing, ...plain }` merge kept the pre-write ciphertext, and since `openRecord` spreads decrypted fields over the plaintext every reader saw stale content until a background sync happened to replace the row; the fix carries the fresh ciphertext into the replica on create and update (reported as "I have to click Resume twice" and an ended chore staying in the chores list) (2026-08-04); all three repeating collections now carry their per-occurrence exceptions inside the record (`CalendarEvent.exceptionDates` + `recurrence.until`; `MaintenanceTask`/`Chore` `recurrence.skipDates` + `recurrence.until`, nested so the existing enc subsets seal them), since a server that can't read sealed content can't maintain a side table (2026-08-04); `User` gains `calendarPrefs` (the user's calendar arrangement: sparse `colors`/`order`/`hidden`/`deletedDefaults`/`alertsOff`; plaintext, like the `CustomCalendar` records its ids point at) so the arrangement survives the sign-out wipe of the client's device cache — behavior owned by [calendar](../features/calendar.md) (2026-08-04); `User` gains `usageWebSearches` (weekly {count, costMc} chat web-search counters) and `MonetizationConfig` gains `credits.actionCosts.webSearch` + `credits.webSearchRatePerSearch` (backfilled in getSingleton) — behavior owned by billing-plans.md / ai-assistant.md (2026-07-30); `User` gains `aiPlanActive`/`aiPlanExpiresAt` (monthly Calen AI plan) + provider-cost estimate counters, `CreditLedger` now records per-action usage debits (kinds + `action`), `MonetizationConfig` gains `credits.actionCosts` (flat per-action prices) + `aiPlan` (2026-07-30); added plaintext `Feedback` model (in-app questions/bugs/ideas + captured device diagnostics; support content, not sealed) and the `feedback_status_changed` audit event — see [feedback](../features/feedback.md) (2026-07-29); phone fields stored E.164 via shared PhoneField (2026-07-27); added plaintext `ECard` model (scheduled occasion e-cards) + occasion derivation from `Person.dates[]` (2026-07-28); ECard gains font + framing-line overrides + plaintext photo rows (2026-07-28); `Person` gains structured `firstName`/`lastName` (sealed content; `name` stays the composed source of truth) (2026-07-28); `EmailLog` upgraded to a delivery ledger + transient retry outbox, added `EmailLifecycleConfig` + `EmailSuppression` operational models (email-lifecycle.md) (2026-07-29); documented client record-sync cursor safety (never advance past an unreconciled row; reset the cursor whenever the replica is wiped) after a sign-out/sign-in content-loss bug (2026-07-29); activation straggler gate now counts author-hidden content from the `Record` store (not legacy tables) so an orphaned/un-migrated legacy plaintext row can't deadlock born-encrypted activation (2026-07-29); added personal `User.dayAlertTime` (`HH:mm`, null=9am) — the configurable day-based alert default (2026-07-29); record-sync now re-pulls + refetches the replica-backed views when the HDK first lands (`subscribeKeysReady` → auth-store subscriber), fixing first-login calendar/people showing only weather+holidays until a manual mutation (2026-07-29); added `PhoneCall.dncCaptured` (set when the recipient asked, on that call, not to be called again) so the call outcome view can surface an explicit do-not-call notice (2026-07-29); added plaintext `HouseholdNotice` model (per-user membership notice, `kind` removed|approved, `householdId` + actor first name) surfaced in the Invitations inbox (2026-07-29); `CustomCalendar` collaborator seats gained the re-key suppression pair (`keyChangedAt` / `reapprovalRequestedAt` — server state that withholds the owner's automatic CalendarKey re-wrap until they approve, preserved across normalization and the accept re-seat), and `AuditLog` gained `key_rekeyed` + `calendar_access_reapproved` (9282d82+, 2026-08-02); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04)
 code:
   - server/src/models/Record.js        # the live opaque content store
   - server/src/models/encFields.js
@@ -43,6 +43,15 @@ v2 envelope — the collection tag was moved out of the AAD and into the payload
 The server **never reads `enc`** — it only stores and serves it, scoped by the
 routing above. Reached only through `/api/records` (see
 [api-reference.md](api-reference.md)).
+
+**A local write's replica row must decrypt to what it displays.** `recordStore`
+mirrors every create/update into the decrypted replica, and the ciphertext has to
+travel with the plaintext: `splitSealed` moves `enc`/`keyVersion` into the wire
+body, so a row merged as `{ ...existing, ...plain }` would keep the ciphertext it
+held *before* the write. `openRecord` spreads decrypted fields **over** the
+plaintext, so such a row renders its previous content — an edit that lands on the
+server but silently doesn't take on device until a background sync replaces the
+whole row. The user-visible symptom is having to perform the same action twice.
 
 **Client cursor safety (`lib/records.syncRecords`).** `GET /records/sync?since=`
 is exclusive (`updatedAt > since`), ascending. The client keeps its own cursor
@@ -99,6 +108,20 @@ The per-collection schemas — `CalendarEvent`, `Person`, `MaintenanceTask`,
 define the **decrypted shape** of what gets sealed into a Record's `enc`. The
 client seals `{ collection, ...fields }`; those field definitions are the schema.
 
+**Recurrence carries its own exceptions.** All three repeating collections keep
+per-occurrence scoping *inside* the record rather than in a side table, because the
+server can't read sealed content and so can't maintain one. `CalendarEvent` uses a
+top-level `exceptionDates: [String]` (YYYY-MM-DD) plus `recurrence.until`;
+`MaintenanceTask` and `Chore` use `recurrence.skipDates: [String]` plus
+`recurrence.until`, nested so the existing `TASK_ENC`/`CHORE_ENC` subsets seal them
+with the rule they belong to. A task/chore copy created by "Save for This … Only"
+additionally carries `detachedFrom` (the series' id) + `detachedDate` (the day it
+stands in for), sealed like the rest — the link is what lets "Resume schedule"
+leave an already-covered day skipped instead of double-booking it. All three are honoured by the shared expansion engine
+and are what "delete/save this occurrence only" and "…all future" write. See
+[calendar.md](../features/calendar.md) and
+[maintenance.md](../features/maintenance.md).
+
 Phone-number fields (`Person.phone`, `TripItem.phone`, `CalendarEvent.phone`, and
 the account phone on settings) are captured by the mobile `PhoneField` control and
 persisted as canonical **E.164** (`+15551234567`) so stored values are dial-ready
@@ -130,11 +153,24 @@ versioned (`DROP_FIELDS_VERSION`); notable additions over time: `nextDueDate`,
   (tasks/chores/birthdays with no per-item time) fire at, `null` = the 9am
   default; the hourly reminder cron honors its hour, the on-device scheduler its
   full time — see [features/notifications.md](../features/notifications.md);
+  `occasionAlerts` / `holidayAlerts` — the calendar-level alert configs
+  (`{ offsets: [days before], time: "HH:mm" }`) for the Occasions calendar and
+  for all holiday calendars, `null` = never configured; they live on the account
+  because the client's copy is a device cache wiped at sign-out;
+  `calendarPrefs` — how the user arranged their calendars
+  (`colors` id→hex, `order`, `hidden`, `deletedDefaults`, `alertsOff`), on the
+  account for the same reason; every field is sparse (deviations from the
+  defaults only) and independently optional, `null` = never configured. Stored
+  in plaintext like the `CustomCalendar` records its ids point at — it is
+  arrangement, not content;
   `sessions[]` device-session rows keyed by the install's random `deviceId` —
   an opaque label/dedup value, never an auth factor — see
   [features/auth-identity.md](../features/auth-identity.md); monetization
   state — `revenueCatId` (RC app_user_id = user id), `appUnlocked(+At)` /
-  `unlockProductId` (the per-user $4.99 unlock), `creditBalanceMc` (prepaid
+  `unlockProductId` (the per-user $4.99 unlock), `addons: [String]` (the
+  feature-calendar add-ons this user OWNS — the effect is household-wide, read as
+  the union across members, so a purchase survives joining/leaving/removal),
+  `creditBalanceMc` (prepaid
   AI-credit balance in millicredits), `aiPlanActive` / `aiPlanExpiresAt` (the
   optional monthly Calen AI plan) and per-user usage analytics counters (incl.
   the margin-free `costMc` provider-cost estimates reconciliation reads) —
@@ -143,13 +179,15 @@ versioned (`DROP_FIELDS_VERSION`); notable additions over time: `nextDueDate`,
   (calendar/trip keys for cross-household sharing), `DeviceLink`.
 - **Household/membership:** `Household` — **name + `homeAddress`/`lat`/`lon` are
   sealed** into `Household.enc` (Signal-parity C2/P5), nulled at the drop; owner,
-  key version, `addons: [String]` (the feature-calendar add-on keys owned
-  household-wide — purchased or free-claimed, see
-  [features/billing-plans.md](../features/billing-plans.md)), feature-`activity`
+  key version, feature-`activity`
   counters, and grocery/timezone settings stay plaintext (the subscription-era
   `plan*` fields are gone). The household `usage*` AI counters are **frozen
   legacy** — AI usage/tokens/call-seconds are written per-USER only
-  (`User.usage*`) since the per-user billing restructure. `HouseholdInvitation`,
+  (`User.usage*`) since the per-user billing restructure — and `Household.addons`
+  joined them: add-on ownership moved to `User.addons` so it stays with the person
+  who paid rather than a container they can leave (see
+  [features/billing-plans.md](../features/billing-plans.md)); the field is read by
+  nothing and kept only for `scripts/backfillUserAddons.js` and rollback. `HouseholdInvitation`,
   `JoinRequest`, `HouseholdNotice` (a plaintext per-user membership notice —
   `kind: 'removed'` or `'approved'` with the actor's first name, `householdId`,
   and `acknowledgedAt`; never the sealed household name — surfaced in the

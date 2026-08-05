@@ -108,6 +108,29 @@ describe('mergeCalendarChunks', () => {
     expect(merged.events.map((e) => e.startDate)).toEqual(['2026-08-25T15:00:00Z', '2026-09-01T15:00:00Z']);
   });
 
+  it('keeps distinct occurrences of a recurring chore/task (same _id, different due date)', () => {
+    // The shared engine expands a recurring chore into one instance per due
+    // date, stamped with _instanceDate and a Date-typed nextDueDate. Keying on
+    // _id alone collapsed them, so the grid showed a monthly chore once.
+    const occ = (day: string) =>
+      ({ _id: 'c1', title: 'Vacuum', nextDueDate: new Date(`${day}T12:00:00`), _instanceDate: day }) as any;
+    const merged = mergeCalendarChunks([
+      { ...empty, chores: [occ('2026-08-05')], tasks: [occ('2026-08-05')] },
+      { ...empty, chores: [occ('2026-08-05'), occ('2026-09-05')], tasks: [occ('2026-09-05')] },
+    ]);
+    expect(merged.chores.map((c: any) => c._instanceDate)).toEqual(['2026-08-05', '2026-09-05']);
+    expect(merged.tasks).toHaveLength(2);
+  });
+
+  it('falls back to nextDueDate when the engine stamped no _instanceDate', () => {
+    const occ = (due: string) => ({ _id: 'c2', title: 'Filters', nextDueDate: due }) as any;
+    const merged = mergeCalendarChunks([
+      { ...empty, chores: [occ('2026-08-05T12:00:00.000Z')] },
+      { ...empty, chores: [occ('2026-08-05T12:00:00.000Z'), occ('2026-09-05T12:00:00.000Z')] },
+    ]);
+    expect(merged.chores).toHaveLength(2);
+  });
+
   it('dedups occasions per date and recipes per schedule', () => {
     const merged = mergeCalendarChunks([
       { ...empty, occasions: [{ id: 'o1', kind: 'birthday', name: 'Ann', label: 'Birthday', date: '2026-08-20T12:00:00Z', personId: 'p1' } as any], recipes: [{ _id: 's1', scheduledDate: '2026-08-20T12:00:00Z', recipeId: 'rec1' }] },

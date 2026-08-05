@@ -69,3 +69,30 @@ test('a collection the calendar never expands does not invalidate it', async () 
   jest.runAllTimers();
   expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
 });
+
+// The ciphertext must travel into the replica with the plaintext.
+//
+// `splitSealed` moves `enc`/`keyVersion` out of the content payload and into the
+// wire body, so a row merged as `{ ...existing, ...plain }` keeps whatever
+// ciphertext it already had. `openRecord` decrypts that and spreads the result
+// OVER the plaintext, so the row displays its PREVIOUS content — an edit that
+// silently doesn't take until a background sync replaces the whole row, which
+// reads to the user as "I had to do it twice".
+test('a local update leaves the replica row decrypting to the NEW content', async () => {
+  replica.getAll.mockResolvedValueOnce([{ _id: 'p1', name: 'Sam', enc: 'stale-ct', keyVersion: 1 }]);
+
+  await store.update('Person', 'p1', { _id: 'p1', name: 'Sammy', enc: 'fresh-ct', keyVersion: 2 });
+
+  const [, [row]] = replica.upsert.mock.calls[0];
+  expect(row.name).toBe('Sammy');
+  expect(row.enc).toBe('fresh-ct');
+  expect(row.keyVersion).toBe(2);
+});
+
+test('a created row carries its own ciphertext too', async () => {
+  await store.create('Person', { _id: 'p2', name: 'Alex', enc: 'ct2', keyVersion: 3 });
+
+  const [, [row]] = replica.upsert.mock.calls[0];
+  expect(row.enc).toBe('ct2');
+  expect(row.keyVersion).toBe(3);
+});

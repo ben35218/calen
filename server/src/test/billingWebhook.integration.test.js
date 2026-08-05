@@ -8,7 +8,6 @@ process.env.REVENUECAT_WEBHOOK_SECRET = 'test-rc-secret';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { startDb, stopDb, request, registerUser } = require('./harness');
-const Household = require('../models/Household');
 const User = require('../models/User');
 const CreditLedger = require('../models/CreditLedger');
 const { grantStarterCredits } = require('../services/credits');
@@ -278,11 +277,14 @@ test('the ledger endpoint with ?grants=1 excludes usage debits (the History surf
 
 // --- Feature-calendar add-ons ---
 // The webhook's app_user_id is the USER id (the mobile app logs the RC SDK in
-// as the signed-in user); add-ons resolve user → household and land there.
+// as the signed-in user), and add-ons now land on that USER: ownership belongs to
+// whoever paid, not to a household they could later leave. The household-wide
+// EFFECT is derived as the union across members at read time — so these tests
+// assert ownership via `addonsOf(userId)` and effect via GET /billing/status.
 
-async function addonsOf(householdId) {
-  const hh = await Household.findById(householdId).lean();
-  return (hh.addons || []).sort();
+async function addonsOf(userId) {
+  const u = await User.findById(userId).lean();
+  return (u.addons || []).sort();
 }
 
 test('add-on purchase grants the household key; repeat delivery is idempotent', async () => {
@@ -291,11 +293,11 @@ test('add-on purchase grants the household key; repeat delivery is idempotent', 
 
   const buy = await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_meals'] });
   assert.equal(buy.status, 200);
-  assert.deepEqual(await addonsOf(user.householdId), ['recipes']);
+  assert.deepEqual(await addonsOf(user._id), ['recipes']);
 
   // Duplicate delivery (RC retries) must not duplicate the key.
   await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_meals'] });
-  assert.deepEqual(await addonsOf(user.householdId), ['recipes']);
+  assert.deepEqual(await addonsOf(user._id), ['recipes']);
 });
 
 test('bundle purchase grants all three add-ons in one event', async () => {
@@ -305,7 +307,7 @@ test('bundle purchase grants all three add-ons in one event', async () => {
     app_user_id: String(user._id),
     entitlement_ids: ['addon_meals', 'addon_maintenance', 'addon_trips'],
   });
-  assert.deepEqual(await addonsOf(user.householdId), ['maintenance', 'recipes', 'trips']);
+  assert.deepEqual(await addonsOf(user._id), ['maintenance', 'recipes', 'trips']);
 });
 
 test('an add-on refund revokes exactly that add-on', async () => {
@@ -313,7 +315,7 @@ test('an add-on refund revokes exactly that add-on', async () => {
   const uid = String(user._id);
   await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_trips'] });
   await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: uid, entitlement_ids: ['addon_meals'] });
-  assert.deepEqual(await addonsOf(user.householdId), ['recipes', 'trips']);
+  assert.deepEqual(await addonsOf(user._id), ['recipes', 'trips']);
 
   const refund = await post({
     type: 'CANCELLATION',
@@ -322,7 +324,7 @@ test('an add-on refund revokes exactly that add-on', async () => {
     entitlement_ids: ['addon_trips'],
   });
   assert.equal(refund.status, 200);
-  assert.deepEqual(await addonsOf(user.householdId), ['recipes']);
+  assert.deepEqual(await addonsOf(user._id), ['recipes']);
 });
 
 test('retired addon_birthdays entitlement is ignored (Birthdays ships free)', async () => {
@@ -334,7 +336,7 @@ test('retired addon_birthdays entitlement is ignored (Birthdays ships free)', as
   });
   assert.equal(res.status, 200);
   assert.equal(res.body.ignored, 'NON_RENEWING_PURCHASE');
-  assert.deepEqual(await addonsOf(user.householdId), []);
+  assert.deepEqual(await addonsOf(user._id), []);
 });
 
 test('billing status reports owned add-ons and the catalog (3 paid + 2 free)', async () => {
@@ -360,17 +362,17 @@ test('any member can claim a FREE add-on; paid keys are rejected', async () => {
   const { user, auth } = await registerUser();
 
   // Free add-ons are opt-in: nothing granted by default.
-  assert.deepEqual(await addonsOf(user.householdId), []);
+  assert.deepEqual(await addonsOf(user._id), []);
 
   const claim = await request().post('/api/billing/addons/claim')
     .set('Authorization', auth).send({ addon: 'birthdays' });
   assert.equal(claim.status, 200);
-  assert.deepEqual(await addonsOf(user.householdId), ['birthdays']);
+  assert.deepEqual(await addonsOf(user._id), ['birthdays']);
 
   // Claiming again is idempotent.
   await request().post('/api/billing/addons/claim')
     .set('Authorization', auth).send({ addon: 'birthdays' });
-  assert.deepEqual(await addonsOf(user.householdId), ['birthdays']);
+  assert.deepEqual(await addonsOf(user._id), ['birthdays']);
 
   // A paid key can never be claimed for free; garbage keys likewise.
   for (const addon of ['recipes', 'maintenance', 'trips', 'not-a-key', undefined]) {
@@ -378,7 +380,79 @@ test('any member can claim a FREE add-on; paid keys are rejected', async () => {
       .set('Authorization', auth).send({ addon });
     assert.equal(res.status, 400, String(addon));
   }
-  assert.deepEqual(await addonsOf(user.householdId), ['birthdays']);
+  assert.deepEqual(await addonsOf(user._id), ['birthdays']);
+});
+
+// The purchase lands on the user with no household lookup, so a buy made before
+// joining one no longer has to be deferred until the buyer taps Restore (the old
+// path acked with `addons: false` and waited, because there was nowhere to grant).
+test('an add-on bought with no household still lands on the buyer', async () => {
+  const { user, auth } = await registerUser();
+  await User.updateOne({ _id: user._id }, { $unset: { householdId: 1 } });
+
+  const buy = await post({
+    type: 'NON_RENEWING_PURCHASE', app_user_id: String(user._id), entitlement_ids: ['addon_meals'],
+  });
+  assert.equal(buy.status, 200);
+  assert.deepEqual(await addonsOf(user._id), ['recipes']);
+
+  // And a householdless user reads back their own set, not an empty one.
+  const status = await request().get('/api/billing/status').set('Authorization', auth);
+  assert.deepEqual(status.body.addons, ['recipes']);
+});
+
+// Household-wide EFFECT from per-user ownership: status returns the union across
+// members, which is what lets one purchase serve a whole family.
+test('billing status unions add-ons across household members', async () => {
+  const a = await registerUser();
+  const b = await registerUser();
+  // Put both in one household without going through the full join/approve dance.
+  await User.updateOne({ _id: b.user._id }, { $set: { householdId: a.user.householdId } });
+
+  await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: String(a.user._id), entitlement_ids: ['addon_meals'] });
+  await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: String(b.user._id), entitlement_ids: ['addon_trips'] });
+
+  for (const who of [a, b]) {
+    const res = await request().get('/api/billing/status').set('Authorization', who.auth);
+    assert.deepEqual(res.body.addons.sort(), ['recipes', 'trips'], 'both members see both add-ons');
+  }
+  // Ownership stayed split — only the effect is shared.
+  assert.deepEqual(await addonsOf(a.user._id), ['recipes']);
+  assert.deepEqual(await addonsOf(b.user._id), ['trips']);
+});
+
+// A refund revokes only the refunding user's ownership; a co-member who bought
+// the same add-on independently keeps the lane lit for the household.
+test('a refund by one member does not revoke another member\'s purchase', async () => {
+  const a = await registerUser();
+  const b = await registerUser();
+  await User.updateOne({ _id: b.user._id }, { $set: { householdId: a.user.householdId } });
+  for (const who of [a, b]) {
+    await post({ type: 'NON_RENEWING_PURCHASE', app_user_id: String(who.user._id), entitlement_ids: ['addon_meals'] });
+  }
+
+  await post({
+    type: 'CANCELLATION', app_user_id: String(a.user._id),
+    cancel_reason: 'CUSTOMER_SUPPORT', entitlement_ids: ['addon_meals'],
+  });
+
+  assert.deepEqual(await addonsOf(a.user._id), [], 'the refunder loses theirs');
+  assert.deepEqual(await addonsOf(b.user._id), ['recipes'], 'the co-member keeps theirs');
+  const res = await request().get('/api/billing/status').set('Authorization', a.auth);
+  assert.deepEqual(res.body.addons, ['recipes'], 'the household lane stays lit');
+});
+
+// Claims land on the claimer, so they no longer require a household — a solo user
+// is as entitled to a free add-on as a member of a shared one.
+test('a free add-on can be claimed with no household', async () => {
+  const { user, auth } = await registerUser();
+  await User.updateOne({ _id: user._id }, { $unset: { householdId: 1 } });
+
+  const claim = await request().post('/api/billing/addons/claim')
+    .set('Authorization', auth).send({ addon: 'chores' });
+  assert.equal(claim.status, 200);
+  assert.deepEqual(claim.body.addons, ['chores']);
+  assert.deepEqual(await addonsOf(user._id), ['chores']);
 });
 
 test('admin add-on override validates keys and requires admin', async () => {
@@ -399,7 +473,7 @@ test('admin add-on override validates keys and requires admin', async () => {
   const ok = await request().post('/api/billing/addons')
     .set('Authorization', auth).send({ addons: ['recipes', 'trips'] });
   assert.equal(ok.status, 200);
-  assert.deepEqual(await addonsOf(user.householdId), ['recipes', 'trips']);
+  assert.deepEqual(await addonsOf(user._id), ['recipes', 'trips']);
 });
 
 // --- Calen AI plan (monthly subscription → per-period credit grants) ---

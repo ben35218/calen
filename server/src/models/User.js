@@ -44,6 +44,39 @@ const passkeyCredentialSchema = new mongoose.Schema({
   transports:   { type: [String], default: [] },
 }, { _id: false, timestamps: true });
 
+// A calendar-level alert config: `offsets` = whole days before the date (0 =
+// the day of), `time` = the wall-clock `HH:mm` every one of them fires at. Used
+// by the Occasions calendar and by the holiday calendars (one config shared by
+// all of them) — see `occasionAlerts` / `holidayAlerts` below.
+const alertPrefsSchema = new mongoose.Schema({
+  offsets: { type: [Number], default: [] },
+  time:    { type: String, default: '09:00' },
+}, { _id: false });
+
+// How the user has arranged their calendars: which colour each one wears, what
+// order they list in, which are hidden, which built-ins they deleted, and which
+// have event alerts muted. See `calendarPrefs` below for why this is account
+// state. Every field is SPARSE — it records only deviations from the app's
+// defaults, so a calendar the user never touched simply isn't mentioned, and
+// calendars added later (or on another device) pick up the defaults.
+const calendarPrefsSchema = new mongoose.Schema({
+  // calendar id → hex colour, for calendars whose colour the user overrode.
+  // Custom calendars carry their own colour on their CustomCalendar record; an
+  // entry here still wins, which is what the colour editor writes.
+  colors:          { type: Map, of: String, default: undefined },
+  // The user's display order, as calendar ids. Sparse: ids not listed sort
+  // after the listed ones in natural order.
+  order:           { type: [String], default: undefined },
+  // Calendars toggled OFF in the Calendars view. Visible is the default, so
+  // only the hidden ones are stored.
+  hidden:          { type: [String], default: undefined },
+  // Built-in calendars the user deleted from the Calendars view (restorable
+  // via Add Calendar).
+  deletedDefaults: { type: [String], default: undefined },
+  // Calendars whose "Event Alerts" switch is off.
+  alertsOff:       { type: [String], default: undefined },
+}, { _id: false });
+
 const userSchema = new mongoose.Schema({
   email:             { type: String, required: true, unique: true, lowercase: true },
   passwordHash:      { type: String, required: true },
@@ -131,6 +164,19 @@ const userSchema = new mongoose.Schema({
   appUnlocked:       { type: Boolean, default: false },
   appUnlockedAt:     { type: Date },
   unlockProductId:   { type: String },
+  // Feature-calendar add-ons this user OWNS (calendar ids: 'recipes' |
+  // 'maintenance' | 'trips'). Ownership is per-USER because that is who buys:
+  // RevenueCat keys the purchase to `app_user_id` = this user's id, so the
+  // entitlement belongs to a person, not to a household they might leave.
+  // The EFFECT is still household-wide — GET /billing/status returns the UNION
+  // across household members, so one member's purchase unlocks the lane for
+  // everyone (the records these add-ons surface live in the shared household
+  // store, so per-user gating of them would be incoherent as well as
+  // unenforceable). Split this way, a purchase survives joining, leaving, and
+  // being removed. Granted/revoked only by the RevenueCat webhook
+  // (`addonUpdateForEvent`), the free-claim route, or the admin override
+  // POST /billing/addons. See specs/features/billing-plans.md.
+  addons:            { type: [String], default: [] },
   // Prepaid AI-credit balance in integer MILLICREDITS (1 credit = $0.01 retail =
   // 1000 Mc). Grants go through CreditLedger.grant (ledgered, idempotent); usage
   // debits are fire-and-forget but ALSO ledgered (CreditLedger.debit via
@@ -166,6 +212,32 @@ const userSchema = new mongoose.Schema({
   // the HOUR of this value; the on-device scheduler honors the full HH:mm. Set
   // from the Account screen (personal, like `timezone`).
   dayAlertTime:      { type: String, default: null },
+  // Calendar-level alert configs for the two calendars whose items are computed
+  // on-device rather than stored as event rows: the Occasions calendar
+  // (birthdays + labeled contact dates) and the holiday calendars (ONE config
+  // shared by every holiday calendar the user has). These are ACCOUNT settings,
+  // not device settings — the device keeps them in AsyncStorage for an instant
+  // read, but that cache is account state wiped at sign-out, so without a
+  // server copy a user's alerts silently reverted to the defaults on their next
+  // sign-in (and never followed them to a second device). null = never
+  // configured, so the client's own defaults apply (occasions: noon day-of +
+  // 2 weeks before; holidays: off). An empty `offsets` is a real value meaning
+  // the user turned that calendar's alerts OFF, and must not be read as unset.
+  occasionAlerts:    { type: alertPrefsSchema, default: null },
+  holidayAlerts:     { type: alertPrefsSchema, default: null },
+  // How the user arranged their calendars (colours, order, hidden, deleted
+  // built-ins, muted alerts). Account state for the same reason as the alert
+  // configs above: the device holds it in AsyncStorage for an instant read, but
+  // that cache is wiped at sign-out (it's one account's calendar names and
+  // colours, which must not survive into the next account on a shared device),
+  // so with no server copy every one of these choices silently reverted to the
+  // defaults on the next sign-in. null = never configured; each field within is
+  // independently optional, and an EMPTY list/map is a real value ("nothing
+  // hidden", "no overrides") that must not be read as unset.
+  //
+  // Stored in plaintext, like the CustomCalendar records these ids point at —
+  // it's arrangement, not content. Names, times and places stay sealed.
+  calendarPrefs:     { type: calendarPrefsSchema, default: null },
   // Server-side mirror of the device's AI consent toggle (synced via /settings).
   // middleware/aiConsent.js refuses AI routes when false, so a bypassed client
   // can't ship content to the model for a user who turned AI off.

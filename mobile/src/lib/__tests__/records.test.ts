@@ -7,10 +7,15 @@
 //     the last reconciled row before it, so it's re-pulled next pass rather than
 //     stranded out of the replica while it still lives on the server;
 //   - the `since` cursor is threaded through and, when nothing is blocked, updated
-//     to serverTime so the pull stays incremental.
+//     to serverTime so the pull stays incremental;
+//   - a FOREIGN undecryptable row (another household's, reaching us through the
+//     record scope's `userId ∈ scopeIds` branch after a join) is skipped WITHOUT
+//     blocking — we never hold that key, so blocking would wedge the feed forever.
 
 import { syncRecords, RecordSyncDeps } from '../records';
 import { RecordRow } from '../../api';
+
+const MY_HOUSEHOLD = 'hh-mine';
 
 function makeDeps(records: RecordRow[], serverTime = '2026-07-19T00:00:05.000Z') {
   const buckets: Record<string, Record<string, unknown>[]> = {};
@@ -25,6 +30,7 @@ function makeDeps(records: RecordRow[], serverTime = '2026-07-19T00:00:05.000Z')
     remove: async (collection, id) => { removed.push({ collection, id }); },
     getCursor: async () => cursor,
     setCursor: async (c) => { cursor = c; },
+    myHouseholdId: () => MY_HOUSEHOLD,
   };
   return { deps, buckets, removed, getCursor: () => cursor, getSentSince: () => sentSince };
 }
@@ -93,6 +99,65 @@ test('every content row blocked → cursor is left untouched for a full retry', 
   ], '2026-07-19T09:00:00.000Z');
   await syncRecords(deps);
   expect(getCursor()).toBeNull(); // never advanced past the wiped-and-locked window
+});
+
+// The join regression: after a member joins, the record scope's `userId ∈ scopeIds`
+// branch starts serving BOTH devices the joiner's records still stamped to the
+// household they left, sealed under an HDK neither session holds. Treating those
+// as "key not ready" parks the cursor on them permanently — every later row,
+// including our own, stops reconciling and the replica silently freezes at the
+// moment of the join. That is the "we joined households but can't see each other's
+// data" failure. A foreign row must skip like a reaped tombstone.
+test('a foreign undecryptable row does NOT hold the cursor back', async () => {
+  const { deps, getCursor, buckets } = makeDeps([
+    { _id: 'mine', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    { _id: 'stranded', householdId: 'hh-theirs', updatedAt: 't2' } as any, // their old household's key
+    { _id: 'later', householdId: MY_HOUSEHOLD, updatedAt: 't3', __dec: { collection: 'Person', record: { name: 'Bo' } } } as any,
+  ], '2026-07-19T09:00:00.000Z');
+  const res = await syncRecords(deps);
+  expect(res.skipped).toBe(1);
+  // The rows AFTER the foreign one still reconcile — the feed isn't wedged.
+  expect(buckets.Person.map((r) => r._id)).toEqual(['mine', 'later']);
+  expect(getCursor()).toBe('2026-07-19T09:00:00.000Z'); // fully caught up
+});
+
+// The narrowness matters: an undecryptable row in OUR OWN household is still the
+// key-not-ready case and must keep blocking, or the original data-loss regression
+// (a sync racing ahead of unlock) comes straight back.
+test('an undecryptable row in our own household still blocks the cursor', async () => {
+  const { deps, getCursor } = makeDeps([
+    { _id: 'good', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    { _id: 'locked', householdId: MY_HOUSEHOLD, updatedAt: 't2' } as any,
+  ], '2026-07-19T09:00:00.000Z');
+  await syncRecords(deps);
+  expect(getCursor()).toBe('t1');
+});
+
+// A shared-lane row (D1/D2) legitimately carries the OWNER's householdId while
+// being readable via its resource key — which may simply not be loaded yet. It
+// must stay retryable, not be written off as foreign.
+test('a resource-scoped row from another household stays retryable', async () => {
+  const { deps, getCursor } = makeDeps([
+    { _id: 'good', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    {
+      _id: 'sharedcal', householdId: 'hh-owner', updatedAt: 't2',
+      enc: { alg: 'x', nonce: 'n', ct: 'c', ks: 'cal' },
+      scope: { kind: 'calendar', resource: 'custom-book-club', version: 1 },
+    } as any,
+  ], '2026-07-19T09:00:00.000Z');
+  await syncRecords(deps);
+  expect(getCursor()).toBe('t1'); // blocked, so the calendar key can arrive later
+});
+
+// Before the first unlock we don't know our own household; nothing may be
+// classified as foreign then, or a pre-unlock sync would skip real rows for good.
+test('with no known household, nothing is treated as foreign', async () => {
+  const { deps, getCursor } = makeDeps([
+    { _id: 'locked', householdId: 'hh-whoever', updatedAt: 't1' } as any,
+  ], '2026-07-19T09:00:00.000Z');
+  deps.myHouseholdId = () => null;
+  await syncRecords(deps);
+  expect(getCursor()).toBeNull(); // full retry once unlocked
 });
 
 test('a tombstone whose ciphertext is gone does NOT hold the cursor back', async () => {

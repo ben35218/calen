@@ -178,6 +178,15 @@ export async function reencryptOldVersions(
 // to retire the drained envelopes. The retire call 409s harmlessly while
 // anything (records or attachment file keys) still needs an old version.
 export async function maintainKeyHygiene(): Promise<void> {
+  // Join carry-over FIRST: records stranded in a household we left are sealed
+  // under its old HDK, so every pass below (which works in current-household key
+  // versions) would only skip them. Moving them in first means they're ordinary
+  // current-household records by the time key hygiene runs. Repairs joins that
+  // already happened, not just new ones — see lib/joinCarryover.
+  try {
+    const { carryOverStrandedRecords } = await import('./joinCarryover');
+    await carryOverStrandedRecords();
+  } catch { /* offline / locked / nothing stranded — retried on a later unlock */ }
   try {
     const res = await reencryptOldVersions();
     if (res.failed === 0) await householdApi.retireKey().catch(() => {});

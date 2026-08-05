@@ -6,13 +6,18 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 jest.mock('../calendarData', () => ({ loadCalendarData: jest.fn() }));
 
 import type { CalendarData, CalendarOccasion } from '../../api';
-import { computeReminders } from '../notifications';
+import { computeReminders, leadPhrase, dayLeadPhrase } from '../notifications';
 
 // yyyy-mm-dd for `days` from local midnight today.
 function dayStr(days: number): string {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// A reminder's local calendar day, in the same yyyy-mm-dd shape as dayStr.
+function fmtLocal(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -148,6 +153,65 @@ describe('computeReminders — day-based default (dayAlertTime)', () => {
   });
 });
 
+// An all-day event has no start time, so its alerts count back from its own
+// date at the day-alert hour — NOT from the noon-UTC instant it stores, which
+// lands at a different local hour for every UTC offset (5am in Los Angeles, 8am
+// in New York, 2pm in Berlin). See lib/calendar `eventAlertAnchor`.
+describe('computeReminders — all-day events', () => {
+  const allDayEvent = (over: Record<string, unknown> = {}) => ({
+    _id: 'e1', title: 'Trip departs', calendarType: 'activities', allDay: true,
+    startDate: `${dayStr(5)}T12:00:00.000Z`, reminderMinutes: 0, alert2Minutes: null, ...over,
+  });
+  const eventsData = (events: any[]): CalendarData =>
+    ({ tasks: [], chores: [], events, occasions: [], recipes: [], groceryShopping: [], trips: [] } as any);
+
+  it('fires "on the day" at 9am local when no day-alert default is set', () => {
+    const reminders = computeReminders(eventsData([allDayEvent()]), new Set(), undefined, null);
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].at.getHours()).toBe(9);
+    expect(reminders[0].at.getMinutes()).toBe(0);
+    expect(fmtLocal(reminders[0].at)).toBe(dayStr(5)); // the event's own day
+  });
+
+  it('honors the account-level dayAlertTime', () => {
+    const reminders = computeReminders(eventsData([allDayEvent()]), new Set(), undefined, '07:30');
+    expect([reminders[0].at.getHours(), reminders[0].at.getMinutes()]).toEqual([7, 30]);
+  });
+
+  it('places a whole-day offset on the earlier day at that same hour', () => {
+    const reminders = computeReminders(
+      eventsData([allDayEvent({ startDate: `${dayStr(10)}T12:00:00.000Z`, reminderMinutes: 1440, alert2Minutes: 10080 })]),
+      new Set(), undefined, '09:00',
+    );
+    const byDay = reminders.map((r) => `${fmtLocal(r.at)}@${r.at.getHours()}`);
+    expect(byDay).toContain(`${dayStr(9)}@9`); // 1 day before
+    expect(byDay).toContain(`${dayStr(3)}@9`); // 1 week before
+  });
+
+  it('phrases the body in days, never minutes', () => {
+    const bodies = computeReminders(
+      eventsData([allDayEvent({ reminderMinutes: 0, alert2Minutes: 1440 })]),
+      new Set(), undefined, null,
+    ).map((r) => r.body);
+    expect(bodies.sort()).toEqual(['Today', 'Tomorrow']);
+  });
+
+  // A timed event on the same data must keep counting from its own start.
+  it('leaves timed events anchored on their start instant', () => {
+    const start = new Date(Date.now() + 3 * 3600_000);
+    const reminders = computeReminders(
+      eventsData([{ _id: 'e2', title: 'Dentist', calendarType: 'activities', allDay: false, startDate: start.toISOString(), reminderMinutes: 30 }]),
+      new Set(), undefined, '09:00',
+    );
+    expect(reminders[0].at.getTime()).toBe(start.getTime() - 30 * 60000);
+    expect(reminders[0].body).toBe('30 minutes');
+  });
+
+  it('is suppressed when the event\'s calendar is muted', () => {
+    expect(computeReminders(eventsData([allDayEvent()]), new Set(['activities']), undefined, null)).toHaveLength(0);
+  });
+});
+
 // The fixtures above hand-build tasks with STRING nextDueDates, which is only
 // one of the two shapes the real engine produces — expandRecurringTaskChore sets
 // a Date object on every instance it generates for recurring items. Feeding it
@@ -205,5 +269,61 @@ describe('computeReminders — over real engine output', () => {
     const titles = computeReminders(data, new Set(), undefined, null).map((r) => r.title);
     expect(titles).toContain('Dentist');
     expect(titles).toContain('Water plants');
+  });
+});
+
+// The notification title is already the item's name, so the body is the lead
+// time and nothing else — bare "15 minutes"/"Tomorrow", no verb phrase and no
+// record-kind label, both of which spent the line on words the banner already
+// implies.
+describe('reminder lead-time wording', () => {
+  it('phrases minute offsets up through days', () => {
+    expect(leadPhrase(0)).toBe('Now');
+    expect(leadPhrase(1)).toBe('1 minute');
+    expect(leadPhrase(15)).toBe('15 minutes');
+    expect(leadPhrase(60)).toBe('1 hour');
+    expect(leadPhrase(120)).toBe('2 hours');
+    expect(leadPhrase(1440)).toBe('Tomorrow');
+    expect(leadPhrase(2880)).toBe('2 days');
+    expect(leadPhrase(10080)).toBe('1 week');
+  });
+
+  it('phrases whole-day offsets, collapsing multiples of a week', () => {
+    expect(dayLeadPhrase(0)).toBe('Today');
+    expect(dayLeadPhrase(1)).toBe('Tomorrow');
+    expect(dayLeadPhrase(3)).toBe('3 days');
+    expect(dayLeadPhrase(7)).toBe('1 week');
+    expect(dayLeadPhrase(14)).toBe('2 weeks');
+  });
+
+  const data = (over: Partial<CalendarData>): CalendarData =>
+    ({ tasks: [], chores: [], events: [], occasions: [], recipes: [], groceryShopping: [], trips: [], ...over } as any);
+
+  it('tells an event how long until it starts, and nothing more', () => {
+    const start = new Date(Date.now() + 3 * 3600_000);
+    const reminders = computeReminders(
+      data({ events: [{ _id: 'e1', title: 'Dentist', startDate: start.toISOString(), reminderMinutes: 15, alert2Minutes: 60, calendarType: 'personal' }] as any }),
+      new Set(), undefined, null,
+    );
+    expect(reminders.map((r) => r.body)).toEqual(['1 hour', '15 minutes']);
+  });
+
+  it('gives day-based alerts their own lead time per offset', () => {
+    const tasks = [{ id: 't1', title: 'Furnace filter', nextDueDate: `${dayStr(10)}T12:00:00Z`, reminderDaysBefore: 0, alert2DaysBefore: 7, reminderTime: null }];
+    const chores = [{ id: 'c1', title: 'Water plants', nextDueDate: `${dayStr(2)}T12:00:00Z`, reminderDaysBefore: 1, alert2DaysBefore: null, reminderTime: null }];
+    const bodies = computeReminders(data({ tasks, chores } as any), new Set(), undefined, null).map((r) => r.body);
+    expect(bodies).toContain('Today');    // task, on the due date
+    expect(bodies).toContain('1 week');   // task, second alert
+    expect(bodies).toContain('Tomorrow'); // chore, one day before
+  });
+
+  it('gives occasions and holidays the same bare lead time', () => {
+    const occasions = computeReminders(baseData([occ()]), new Set(), { offsets: [0, 14], time: '12:00' });
+    expect(occasions.map((r) => r.body).sort()).toEqual(['2 weeks', 'Today']);
+
+    const holidays = computeReminders(baseData([]), new Set(), undefined, null, {
+      prefs: { offsets: [0, 7], time: '09:00' }, items: [{ calendarId: 'hol-ca', date: dayStr(10), name: 'Canada Day' }],
+    });
+    expect(holidays.map((r) => r.body).sort()).toEqual(['1 week', 'Today']);
   });
 });

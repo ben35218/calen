@@ -1,7 +1,7 @@
 ---
 title: Trips
 status: current
-last-verified: 55bfc65+ (2026-07-30); the trip assistant gained chat web search (server-side web_search tool + "Searching the web…" activity label) — behavior and pricing owned by ai-assistant.md / billing-plans.md (2026-07-30); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29); the trip and trip-item add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); trip-share email invites now compose via the shared mail-app chooser (`useEmailComposer`/EmailAppSheet — behavior specced in households-sharing.md) instead of a bare `mailto:` (2026-07-29); the Starts/Ends duration-keeping rule is now symmetric — editing the **start** (date/time) to at/after the end pushes the **end** forward via the shared `lib/datetime.endKeepingDuration`, mirroring the existing end→start drag, on the trip date range, the booking start/end, and the journey Departs/Arrives, so the end is never left before the start (2026-07-29); trip-share outreach is now composer-only-for-non-accounts — an account-holder recipient gets the server push + in-app inbox with no composer (lookup-gated via `GET /invitations/lookup`, fail-open, "they're on Calen" note), and not-yet-joined recipient rows gained a paper-plane Remind that composes on demand (households-sharing.md policy) (2026-07-29)
+last-verified: c2d18c0+ (2026-08-04); nothing in trips repeats — neither `Trip` nor `TripItem` carries a recurrence field and itinerary items never reach the calendar, so the occurrence-scope prompts events/chores/tasks answer deliberately don't apply here; a repeating event on the Trips calendar is an ordinary calendar event and follows the event rules (recorded so the absence reads as a data-model property, not a gap) (2026-08-04); the trip assistant gained chat web search (server-side web_search tool + "Searching the web…" activity label) — behavior and pricing owned by ai-assistant.md / billing-plans.md (2026-07-30); trip-item phone uses shared PhoneField, stored E.164 (2026-07-27); editing an end (trip range / booking start-end / journey Departs-Arrives) before the start drags the start back to preserve the span via shared lib/datetime.startKeepingDuration (2026-07-29); the trip and trip-item add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); trip-share email invites now compose via the shared mail-app chooser (`useEmailComposer`/EmailAppSheet — behavior specced in households-sharing.md) instead of a bare `mailto:` (2026-07-29); the Starts/Ends duration-keeping rule is now symmetric — editing the **start** (date/time) to at/after the end pushes the **end** forward via the shared `lib/datetime.endKeepingDuration`, mirroring the existing end→start drag, on the trip date range, the booking start/end, and the journey Departs/Arrives, so the end is never left before the start (2026-07-29); trip-share outreach is now composer-only-for-non-accounts — an account-holder recipient gets the server push + in-app inbox with no composer (lookup-gated via `GET /invitations/lookup`, fail-open, "they're on Calen" note), and not-yet-joined recipient rows gained a paper-plane Remind that composes on demand (households-sharing.md policy) (2026-07-29)
 code:
   - mobile/src/screens/trips/
   - server/src/routes/trips.js
@@ -61,6 +61,15 @@ participating households, and share a trip with people outside your household.
   `POST /trips/:id/items/from-confirmation` parses a booking; per-item
   `attachments` upload/download/delete endpoints exist.
 - `TravelLeg` caches computed travel between locations (mode/minutes/distance).
+- **Nothing in trips repeats.** Neither `Trip` nor `TripItem` carries a recurrence
+  field, and itinerary items never reach the calendar at all — a trip contributes
+  only its date range (or its `candidateRanges` while planning) as a spanning
+  overlay. So the Apple-style "This Occurrence Only / All Future" scoping that
+  events, chores, and maintenance tasks answer on save and delete **does not apply
+  here**, and its absence is a property of the data model rather than a gap in the
+  UI. A repeating **event** whose `calendarType` is `trips` is an ordinary calendar
+  event and is scoped by the event rules in [calendar.md](calendar.md);
+  `calendarType` is just a field, so every calendar gets that behaviour uniformly.
 
 ### Expenses & settlement
 

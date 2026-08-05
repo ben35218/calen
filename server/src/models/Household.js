@@ -57,14 +57,15 @@ const householdSchema = new mongoose.Schema({
   grocerySections:    { type: [String], default: () => ['Produce', 'Deli', 'Bakery', 'Meat & Seafood', 'Dairy', 'Frozen', 'Pantry', 'Other'] },
   reminderLeadDays:   { type: Number, default: 7 },
 
-  // --- Monetization (add-ons are per-household; the app unlock and prepaid
-  // credits are per-USER — see User.js) ---
-  // One-time feature-calendar add-ons owned household-wide. Values are calendar
-  // ids ('recipes' | 'maintenance' | 'trips'). Absent/empty =
-  // locked (no grandfathering). Granted/revoked only by the RevenueCat webhook
-  // ($addToSet / $pull) or the admin override POST /billing/addons. Enforcement
-  // is client-side (the record store is opaque); this array is the source of
-  // truth surfaced via GET /billing/status.
+  // --- Monetization (all per-USER now — see User.js) ---
+  // LEGACY (no longer written): add-on ownership before it moved to User.addons.
+  // Storing it here detached the entitlement from the person who bought it — a
+  // household is a container you can leave, and leaving minted a fresh one with
+  // an empty set, silently dropping add-ons the departing member had paid for
+  // themselves (recoverable only by tapping Restore). Ownership now lives on
+  // User.addons and the household-wide EFFECT is derived as the union across
+  // members. Kept only as the source for scripts/backfillUserAddons.js and as a
+  // rollback path; nothing reads it. See specs/features/billing-plans.md.
   addons: { type: [String], default: [] },
   // LEGACY (no longer written): household-level AI usage counters from before
   // the per-user billing restructure. AI usage, calls, and credits are per-USER

@@ -1,7 +1,7 @@
 ---
 title: API reference
 status: current
-last-verified: df8c7f3+ (2026-07-31); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30)
+last-verified: c2d18c0+ (2026-08-04); `PUT/GET /settings` accepts/echoes `calendarPrefs` — the user's calendar arrangement (colours / order / hidden / deleted built-ins / muted alerts), merged field-by-field so a partial payload can't blank the rest, validated (hex colours, string ids, 500-entry cap) with 400 on malformed input, `null` = never configured (2026-08-04); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
@@ -150,6 +150,31 @@ See `app.js` for exact paths. Grouped for orientation:
     echoed by `GET /settings`. An empty string clears it back to the 9am default
     (`null`); a non-empty value must be a valid 24h `HH:mm` (400 otherwise). See
     [features/notifications.md](../features/notifications.md).
+  - `PUT/GET /settings` also carry `occasionAlerts` and `holidayAlerts` — the
+    calendar-level alert configs for the two calendars whose items are computed
+    on-device (Occasions; all holiday calendars share one config), stored on
+    `User.occasionAlerts` / `User.holidayAlerts`. Shape:
+    `{ offsets: number[], time: "HH:mm" }`, where `offsets` are whole days
+    before the date (`0` = the day of). The server dedupes and sorts `offsets`
+    and rejects a malformed config with 400 rather than storing it. `null`
+    means **never configured** (the client applies its own defaults) and may be
+    written to clear one; an **empty `offsets` list is a stored value** meaning
+    that calendar's alerts are off. These are account settings precisely so they
+    survive a sign-out, which wipes the client's device cache of them — see
+    [features/notifications.md](../features/notifications.md).
+  - `PUT/GET /settings` also carry `calendarPrefs` — how the user arranged their
+    calendars, stored on `User.calendarPrefs`. Shape:
+    `{ colors: { [calendarId]: "#RRGGBB" }, order: string[], hidden: string[],
+    deletedDefaults: string[], alertsOff: string[] }`, every field optional and
+    sparse (only deviations from the app defaults). A PUT **merges field by
+    field** over what's stored, so a payload carrying one field can't blank the
+    rest. The server rejects a malformed arrangement with 400 rather than
+    storing it (non-hex colours, non-string ids, over 500 entries). `null` means
+    **never configured** — the client's own arrangement stands and seeds the
+    account — and may be written to clear one; a field that is **present but
+    empty is a stored value** meaning the user cleared it, which the client must
+    adopt rather than re-seed. Account state precisely so it survives a
+    sign-out — see [features/calendar.md](../features/calendar.md).
 - **Admin app surfaces:** `/api/monetization-config` (config CRUD;
   `households` — usage analytics; `users` — per-user unlock + credit balance;
   `unlock` — grant/revoke a user's app unlock; `credits` — ledgered balance

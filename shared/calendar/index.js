@@ -348,10 +348,25 @@ function toLocalNoon(d) {
 function expandRecurringTaskChore(item, fromDate, toDate) {
   const r = item.recurrence;
 
+  // Per-occurrence scoping (mirrors CalendarEvent's exceptionDates + until).
+  // `skipDates` are keyed on `_instanceDate` — the SAME string each branch below
+  // stamps on the instance it emits — so a skip can never miss by a day the way
+  // it would if it were compared against a re-derived date.
+  const skips = new Set((r && r.skipDates) || []);
+  const untilTime = r && r.until ? new Date(r.until).getTime() : null;
+  const past = (d) => untilTime != null && d.getTime() > untilTime;
+  const emit = (instances, d, extra) => {
+    const key = d.toISOString().slice(0, 10);
+    if (skips.has(key) || past(d)) return;
+    instances.push({ ...item, ...extra, _instanceDate: key });
+  };
+
   if (!r || r.type === 'one-time') {
     const d = item.nextDueDate ? new Date(item.nextDueDate) : null;
     if (d && d >= fromDate && d <= toDate) {
-      return [{ ...item, _instanceDate: d.toISOString().slice(0, 10) }];
+      const instances = [];
+      emit(instances, d, {});
+      return instances;
     }
     return [];
   }
@@ -366,9 +381,7 @@ function expandRecurringTaskChore(item, fromDate, toDate) {
       for (const m of months) {
         const base = new Date(year, m - 1, 1);
         const d = setDate(base, Math.min(day, getDaysInMonth(base)));
-        if (d >= fromDate && d <= toDate) {
-          instances.push({ ...item, nextDueDate: d, _instanceDate: d.toISOString().slice(0, 10) });
-        }
+        if (d >= fromDate && d <= toDate) emit(instances, d, { nextDueDate: d });
       }
     }
     return instances.sort((a, b) => new Date(a.nextDueDate) - new Date(b.nextDueDate));
@@ -393,9 +406,10 @@ function expandRecurringTaskChore(item, fromDate, toDate) {
   safety = 0;
   while (cursor <= toDate && safety < 500) {
     safety++;
-    if (cursor >= fromDate) {
-      instances.push({ ...item, nextDueDate: new Date(cursor), _instanceDate: cursor.toISOString().slice(0, 10) });
-    }
+    // Past `until` there is nothing further to walk to — stop rather than spin
+    // out the remaining safety budget filtering every step.
+    if (past(cursor)) break;
+    if (cursor >= fromDate) emit(instances, cursor, { nextDueDate: new Date(cursor) });
     const next = computeNextDueDate(item, cursor);
     if (!next) break;
     const nextNoon = toLocalNoon(next);

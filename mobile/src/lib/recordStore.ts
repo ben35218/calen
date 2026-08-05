@@ -110,7 +110,9 @@ export async function get<T = Rec>(collection: string, id: string): Promise<{ da
 export async function create<T = Rec>(collection: string, sealed: Rec): Promise<{ data: T }> {
   const { wire, plain } = splitSealed(sealed);
   const { data: row } = await recordsApi().create({ _id: sealed._id, ...wire });
-  const full: StoredRec = { ...plain, _id: row._id, updatedAt: row.updatedAt };
+  // Ciphertext included for the same reason as `update` below: the replica row
+  // must decrypt to what it displays, not to whatever it held before.
+  const full: StoredRec = { ...plain, ...wire, _id: row._id, updatedAt: row.updatedAt };
   await replica.upsert(collection, [full]);
   invalidateCalendar(collection);
   return { data: full as T };
@@ -119,11 +121,20 @@ export async function create<T = Rec>(collection: string, sealed: Rec): Promise<
 // Update: PUT the re-sealed ciphertext to /records/:id, then merge the decrypted
 // copy over the replica row (sealUpdate already merged the decrypted record under
 // the update, so `plain` is the full new content).
+//
+// The **ciphertext must travel with it**. `splitSealed` moves `enc`/`keyVersion`
+// into the wire payload, so `plain` carries none — and merging over `existing`
+// would therefore leave the row holding fresh plaintext beside the PREVIOUS
+// ciphertext. That row decrypts to the old content, and `openRecord` spreads the
+// decrypted fields *over* the plaintext, so every reader saw the pre-update
+// record until a background sync happened to replace the whole row. The symptom
+// is an edit that "doesn't take" until you do it a second time (reported against
+// Resume schedule, and against an ended chore staying in the chores list).
 export async function update<T = Rec>(collection: string, id: string, sealed: Rec): Promise<{ data: T }> {
   const { wire, plain } = splitSealed(sealed);
   const { data: row } = await recordsApi().update(id, wire);
   const existing = (await replica.getAll<Rec>(collection)).find((r) => r._id === id) ?? {};
-  const full: StoredRec = { ...existing, ...plain, _id: id, updatedAt: row.updatedAt };
+  const full: StoredRec = { ...existing, ...plain, ...wire, _id: id, updatedAt: row.updatedAt };
   await replica.upsert(collection, [full]);
   invalidateCalendar(collection);
   return { data: full as T };

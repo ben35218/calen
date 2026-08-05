@@ -64,6 +64,23 @@ function notifyKeysReady(): void {
   for (const cb of keysReadyListeners) { try { cb(); } catch { /* listener isolation */ } }
 }
 
+// Fired when the signed-in user's household changes UNDER an existing session —
+// they joined one, left one, or were removed from one. Never on the first read of
+// a session (signing in is not a change), so a subscriber can safely treat it as
+// "everything household-scoped on this device is now the wrong household's".
+// That teardown can't live here: this module is the crypto boundary and knows
+// nothing about the replica, the calendar-prefs cache, or the add-on mirror — so
+// it announces the change and the app root (store/auth) does the clearing, the
+// same shape as subscribeKeysReady.
+const householdChangedListeners = new Set<() => void>();
+export function subscribeHouseholdChanged(cb: () => void): () => void {
+  householdChangedListeners.add(cb);
+  return () => householdChangedListeners.delete(cb);
+}
+function notifyHouseholdChanged(): void {
+  for (const cb of householdChangedListeners) { try { cb(); } catch { /* listener isolation */ } }
+}
+
 function currentHDK(): Uint8Array | null {
   return hdks.get(hdkVersion) ?? null;
 }
@@ -152,6 +169,14 @@ export function currentUserId(): string | null {
 }
 export function getHDK(): Uint8Array | null {
   return currentHDK();
+}
+// The household this session's HDK belongs to (null when signed out / keyless).
+// Exposed so the sync loop can tell "a row I can't decrypt YET" (mine, key not
+// ready — retry) from "a row I will NEVER decrypt" (another household's, reaching
+// me through the `userId ∈ scopeIds` branch of the record scope) — see
+// lib/records.syncRecords, which must not park its cursor on the latter.
+export function currentHouseholdId(): string | null {
+  return hdkHouseholdId ? String(hdkHouseholdId) : null;
 }
 export function lock() {
   setKeyPair(null);
@@ -274,6 +299,13 @@ export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pendin
   // created by "leave household") is born unencrypted — without this reset the
   // latch from the previous household would suppress its auto-activation, leaving
   // it plaintext until the user manually turned encryption on.
+  // A change UNDER a live session (joined / left / removed) — as opposed to the
+  // first read after signing in, where the previous value is simply null. Only
+  // the former invalidates the device's household-scoped caches. The signal is
+  // raised at the END of this function, never here: subscribers wipe the replica
+  // and re-sync, and at THIS point `hdks` has just been emptied, so an immediate
+  // re-sync would decrypt nothing and leave the device with an empty replica.
+  const switched = hdkHouseholdId !== null && hdkHouseholdId !== householdId;
   if (hdkHouseholdId !== householdId) {
     hdks.clear();
     hdkVersion = 0;
@@ -303,6 +335,7 @@ export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pendin
     // + refetch the replica-backed views, whose first sync raced ahead of unlock.
     if (!hadCurrentHDK) notifyKeysReady();
     void maybeActivateBornEncrypted(); // fire-and-forget: drop plaintext if still pending
+    if (switched) notifyHouseholdChanged();
     return 'ready';
   }
   if (current === 0 && data.isOwner) {
@@ -312,8 +345,14 @@ export async function ensureHouseholdKey(): Promise<'locked' | 'ready' | 'pendin
     hdkVersion = 1;
     notifyKeysReady(); // fresh owner key minted — records are now sealable/readable
     void maybeActivateBornEncrypted(); // fresh owner: finalize born-encrypted state
+    if (switched) notifyHouseholdChanged();
     return 'ready';
   }
+  // Pending approval: no key at all yet. The caches still MUST be dropped (we
+  // can no longer be allowed to read the household we left), but there is
+  // nothing to refill with — subscribeKeysReady drives the refill once a member
+  // wraps the key to us.
+  if (switched) notifyHouseholdChanged();
   return 'pending';
 }
 
@@ -730,6 +769,53 @@ export async function openOpaqueRecord<T extends Rec = Rec>(
     const loc = { collection: '', id: row._id, householdId: String(hdkHouseholdId ?? ''), keyVersion: version };
     const { collection, record } = crypto.decryptRecordTagged<T>(hdk, loc, row.enc as RecordEnvelope);
     return { collection, record: { ...(row as Rec), ...(record as Rec) } as T };
+  } catch {
+    return null;
+  }
+}
+
+// ── Join carry-over: reading a household we've already left ──────────────────
+// After moving households, `ensureHouseholdKey` clears `hdks` and only unwraps
+// envelopes for the household we're now in — so records left behind in the old
+// one become unreadable even though we still hold their envelope server-side.
+// These two helpers open that door for the carry-over migration ONLY: they take
+// the old household's key material explicitly instead of reading the session
+// globals, because the record AAD binds `householdId` and the session's is now
+// the destination's. See lib/joinCarryover.
+
+// Unwrap a foreign household's envelopes with our identity key → version → HDK.
+// Bad/undecryptable envelopes are skipped rather than thrown (mirrors
+// ensureHouseholdKey), so one damaged version can't sink the whole pass.
+export async function unwrapForeignHDKs(
+  envelopes: { keyVersion: number; wrappedHDK: string }[],
+): Promise<Map<number, Uint8Array>> {
+  const out = new Map<number, Uint8Array>();
+  if (!keyPair) return out;
+  const crypto = await loadHouseholdCrypto();
+  for (const e of envelopes) {
+    try { out.set(e.keyVersion, crypto.unwrapHDK(e.wrappedHDK, keyPair)); } catch { /* skip */ }
+  }
+  return out;
+}
+
+// Opaque-decrypt one row from a foreign household. Same shape as
+// openOpaqueRecord, but with `householdId` + the version→HDK map passed in.
+// Resource-sealed rows are not handled here — they never need carrying over
+// (they route by `scope.resource`, not householdId).
+export async function openForeignRecord<T extends Rec = Rec>(
+  row: { _id: string; keyVersion?: number; enc?: { alg: string; nonce: string; ct: string; ks?: string } },
+  householdId: string,
+  hdksByVersion: Map<number, Uint8Array>,
+): Promise<{ collection: string; record: T } | null> {
+  if (!row?.enc || row.enc.ks === 'cal' || row.enc.ks === 'trip') return null;
+  const version = row.keyVersion ?? 0;
+  const hdk = hdksByVersion.get(version);
+  if (!hdk) return null;
+  const crypto = await loadHouseholdCrypto();
+  try {
+    const loc = { collection: '', id: row._id, householdId, keyVersion: version };
+    const { collection, record } = crypto.decryptRecordTagged<T>(hdk, loc, row.enc as RecordEnvelope);
+    return { collection, record };
   } catch {
     return null;
   }

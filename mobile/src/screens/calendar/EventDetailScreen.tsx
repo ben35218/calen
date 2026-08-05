@@ -7,18 +7,21 @@ import * as Sharing from 'expo-sharing';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, useFocusEffect, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, callsApi, invitationsApi, eventAttachmentsApi, EventAttachment, CalendarEvent, PhoneCallRecord } from '../../api';
+import { calendarApi, callsApi, invitationsApi, eventAttachmentsApi, settingsApi, EventAttachment, CalendarEvent, PhoneCallRecord } from '../../api';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { decryptDownloadedFile } from '../../lib/attachments';
 import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar } from '../../components/ui';
-import { EVENT_CALENDAR_TYPES } from '../../lib/calendar';
+import {
+  EVENT_CALENDAR_TYPES, eventWhenFromStored, eventStoredFromWhen, shiftEventWhen, occurrenceShiftDays,
+  DEFAULT_DAY_ALERT_TIME, allDayAlertLabel,
+} from '../../lib/calendar';
 import { useCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { formatDuration } from '../../lib/format';
 import { RepeatRule, repeatSummary } from '../../lib/eventRepeat';
-import { eventDeletePrompt } from '../../lib/eventDelete';
+import { promptEventDelete } from '../../lib/eventDelete';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -457,13 +460,25 @@ export default function EventDetailScreen() {
   // time of day). A non-recurring event uses its stored values unchanged.
   const eventRecurs = !!event?.recurrence?.freq;
   const occurrenceDate = eventRecurs && date ? date : undefined;
-  const occurrenceStart = useMemo(() => {
-    if (!event) return undefined;
-    if (!eventRecurs || !date) return event.startDate;
-    if (event.allDay) return `${date}T12:00:00.000Z`;
-    const s = new Date(event.startDate);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return new Date(`${date}T${pad(s.getHours())}:${pad(s.getMinutes())}:00`).toISOString();
+  // These also drive what the screen DISPLAYS. A repeating event's record holds
+  // the series' first day, so reading `event.startDate` straight would title
+  // every occurrence with the series start — open the Aug 20 one and the page
+  // says Aug 6. Routed through the same lib/calendar helpers the edit form
+  // uses, so both screens agree on which day an occurrence lands and on how a
+  // shift crosses a DST boundary (wall clock preserved for a timed event, noon
+  // UTC preserved for an all-day one).
+  const { occurrenceStart, occurrenceEnd } = useMemo(() => {
+    if (!event) return { occurrenceStart: undefined, occurrenceEnd: undefined };
+    const when = eventWhenFromStored(event);
+    const shift = occurrenceShiftDays(when, date, eventRecurs);
+    if (!shift) return { occurrenceStart: event.startDate, occurrenceEnd: event.endDate };
+    const moved = eventStoredFromWhen(shiftEventWhen(when, shift));
+    return {
+      occurrenceStart: moved.startDate,
+      // A same-day end round-trips to undefined (the form's "" convention), so
+      // fall back to the shifted start rather than dropping the end entirely.
+      occurrenceEnd: event.endDate ? moved.endDate ?? moved.startDate : event.endDate,
+    };
   }, [event, eventRecurs, date]);
 
   const calName =
@@ -553,22 +568,28 @@ export default function EventDetailScreen() {
     const fmtDay = (d: Date) =>
       d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     const fmtTime = (d: Date) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
-    const start = new Date(event.startDate);
-    const end = event.endDate ? new Date(event.endDate) : null;
+    const start = new Date(occurrenceStart ?? event.startDate);
+    const end = occurrenceEnd ? new Date(occurrenceEnd) : null;
     if (event.allDay) {
       const endDay = end && end.toDateString() !== start.toDateString();
       return endDay ? `All-day from ${fmtDay(start)}\nto ${fmtDay(end!)}` : `All-day · ${fmtDay(start)}`;
     }
     return `${fmtDay(start)}, ${fmtTime(start)}${end ? ` – ${fmtTime(end)}` : ''}`;
-  }, [event]);
+  }, [event, occurrenceStart, occurrenceEnd]);
 
+  // An all-day event's alerts are whole days off the day-alert hour, so they
+  // read the way the form offers them ("1 day before (9:00 AM)") rather than as
+  // minutes before a start time the event doesn't have.
+  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
+  const dayAlertTime = settingsQ.data?.dayAlertTime || DEFAULT_DAY_ALERT_TIME;
   const fmtAlert = (m: number | null | undefined) => {
     if (m == null) return null;
+    if (event?.allDay) return allDayAlertLabel(m, dayAlertTime);
     if (m <= 0) return 'At time of event';
     return `${formatDuration(m)} before`;
   };
-  const alertLabel = useMemo(() => fmtAlert(event?.reminderMinutes) ?? 'None', [event]);
-  const alert2Label = useMemo(() => fmtAlert(event?.alert2Minutes), [event]);
+  const alertLabel = useMemo(() => fmtAlert(event?.reminderMinutes) ?? 'None', [event, dayAlertTime]);
+  const alert2Label = useMemo(() => fmtAlert(event?.alert2Minutes), [event, dayAlertTime]);
 
   // "Repeats weekly" / "Repeats every 2 weeks on Monday until Jul 29, 2027" —
   // the recurrence summary, mirroring the form's Repeat + End Repeat rows.
@@ -597,7 +618,7 @@ export default function EventDetailScreen() {
   // drive time) when the event is timed and the departure lands on the same day.
   const travelLabel = useMemo(() => {
     if (event?.travelMinutes == null) return null;
-    const start = new Date(event.startDate);
+    const start = new Date(occurrenceStart ?? event.startDate);
     let leaveBy: string | null = null;
     if (event.allDay === false) {
       const dep = new Date(start.getTime() - event.travelMinutes * 60000);
@@ -606,7 +627,7 @@ export default function EventDetailScreen() {
       }
     }
     return { duration: formatDuration(event.travelMinutes), leaveBy };
-  }, [event]);
+  }, [event, occurrenceStart]);
 
   const openInMaps = () => {
     if (!event?.location) return;
@@ -615,16 +636,7 @@ export default function EventDetailScreen() {
 
   const confirmDelete = () => {
     if (!event) return;
-    const { title, message, choices } = eventDeletePrompt(event, date);
-    Alert.alert(
-      title,
-      message,
-      choices.map((c) => ({
-        text: c.text,
-        style: c.style,
-        onPress: c.perform ? () => del.mutate(c.perform!) : undefined,
-      })),
-    );
+    promptEventDelete(event, date, (perform) => del.mutate(perform));
   };
 
   if (eventQ.isLoading || (!event && !eventQ.isError)) {

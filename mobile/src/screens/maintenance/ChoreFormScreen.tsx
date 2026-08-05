@@ -1,22 +1,24 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { computeNextDueDate } from '@household/calendar';
-import { choresApi, peopleApi, settingsApi, FormAssistField, Chore } from '../../api';
+import { seedDueDate } from '@household/calendar';
+import { choresApi, householdApi, peopleApi, settingsApi, FormAssistField, Chore } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 import { CHORE_ENC } from '../../lib/encSubsets';
 import { useAuth } from '../../store/auth';
-import { Input, Select, Screen, DateField, TimeField, NavField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
+import { Input, Select, Screen, DateField, TimeField, NavField, useHeaderCheckButton, FormError, CenteredLoader, Button, Hint } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import IconPicker from '../../components/IconPicker';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import {
+  formatCalendarDate,
   recurrenceToRule,
   ruleToRecurrence,
+  dueDateForRule,
   recurrenceAssistFields,
   recurrenceAssistCurrent,
   patchTouchesRecurrence,
@@ -29,6 +31,12 @@ import {
 import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { choreAssigneeOptions } from '../../lib/choreAssignees';
+import { ymd, addDays, daysBetween } from '../../lib/calendar';
+import {
+  ItemScope, itemSaveScopeDecision, isFirstItemOccurrence, promptItemSaveScope, itemRepeats, promptItemDelete,
+} from '../../lib/repeatingItemScope';
+import { rebindDetailBelow, popPastDetail } from '../../navigation/rebindDetailBelow';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 
 type Nav = NativeStackNavigationProp<MaintenanceStackParamList, 'ChoreForm'>;
@@ -82,7 +90,7 @@ const EMPTY: ChoreFormState = {
 export default function ChoreFormScreen() {
   const navigation = useNavigation<Nav>();
   const accent = useCalendarColors().colors.chores;
-  const { id } = useRoute<Rt>().params || {};
+  const { id, date } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -101,10 +109,26 @@ export default function ChoreFormScreen() {
     navigation.setOptions({ title: isEdit ? 'Edit Chore' : 'Add Chore' });
   }, [navigation, isEdit]);
 
+  // A repeat change reseeds Next Due Date from the new rule — the date the old
+  // cadence produced has no meaning under the new one (client-owned due-date
+  // lifecycle, Signal-parity D4). "Does not repeat" implies no date, so turning
+  // the repeat off leaves the picked date alone.
+  const dueDateFor = (rule: RepeatRule): string | null => {
+    const d = dueDateForRule(rule);
+    return d ? ymd(d) : null;
+  };
+
   // Edits made on the pushed Repeat screen sync back live via the draft store.
   const repeatDraft = useRepeatDraft();
   useEffect(() => {
-    if (repeatDraft) setRepeatRule(repeatDraft);
+    if (!repeatDraft) return;
+    setRepeatRule(repeatDraft);
+    const due = dueDateFor(repeatDraft);
+    if (due) {
+      setForm((f) => (f.nextDueDate === due ? f : { ...f, nextDueDate: due }));
+      assist.clear(['nextDueDate']);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repeatDraft]);
   useEffect(() => () => clearRepeatDraft(), []);
 
@@ -121,14 +145,17 @@ export default function ChoreFormScreen() {
   });
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
   const memberCount = settingsQ.data?.householdMemberCount ?? 1;
+  const householdQ = useQuery({ queryKey: ['household'], queryFn: async () => (await householdApi.get()).data });
 
   const myId = String(user?._id ?? '');
-  const familyOptions = (peopleQ.data ?? [])
-    .filter((p) => p.type === 'family')
-    .map((p) => ({
-      value: p._id,
-      label: p.accountId && String(p.accountId) === myId ? `${p.name} (You)` : p.name,
-    }));
+  const memberIds = (householdQ.data?.members ?? []).map((m) => String(m._id));
+  // Household members only — a chore belongs to someone who lives here, not to a
+  // contact. The picker also carries an existing non-member assignee; the
+  // assistant's option list never does, so it can't assign one.
+  const memberOptions = choreAssigneeOptions({ people: peopleQ.data ?? [], memberIds, myId });
+  const assigneeOptions = choreAssigneeOptions({
+    people: peopleQ.data ?? [], memberIds, myId, currentAssigneeId: form.assignedTo,
+  });
 
   const alertOptions = ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }));
   const assistFields: FormAssistField[] = [
@@ -141,7 +168,7 @@ export default function ChoreFormScreen() {
       description: 'The most fitting glyph for the chore',
       options: CHORE_ICONS.map((n) => ({ label: n, value: `mdi-${n}` })),
     },
-    { name: 'assignedTo', type: 'select', label: 'Assigned to', options: familyOptions },
+    { name: 'assignedTo', type: 'select', label: 'Assigned to', options: memberOptions },
     { name: 'nextDueDate', type: 'date', label: 'Next due date' },
     ...recurrenceAssistFields(),
     { name: 'reminderDaysBefore', type: 'select', label: 'Alert', description: 'When to send the first reminder', options: alertOptions },
@@ -153,8 +180,16 @@ export default function ChoreFormScreen() {
     const next: Partial<ChoreFormState> = {};
     const changedKeys: string[] = [];
     if (patchTouchesRecurrence(patch)) {
-      setRepeatRule((prev) => applyRecurrenceAssistPatch(prev, patch));
+      const rule = applyRecurrenceAssistPatch(repeatRule, patch);
+      setRepeatRule(rule);
       changedKeys.push('recurrence');
+      // Same reset as the Repeat screen — unless the assistant named a due date
+      // itself, in which case the field loop below wins.
+      const due = dueDateFor(rule);
+      if (due && patch.nextDueDate == null) {
+        next.nextDueDate = due;
+        changedKeys.push('nextDueDate');
+      }
     }
     for (const [k, v] of Object.entries(patch)) {
       if (!(k in EMPTY)) continue;
@@ -176,6 +211,13 @@ export default function ChoreFormScreen() {
   // The decrypted record backing an edit — spread under the update at seal time
   // so content fields the form doesn't edit survive the shared CHORE_ENC subset.
   const decryptedChore = React.useRef<Chore | null>(null);
+  // The series' own anchor day, kept aside because the form displays the
+  // OCCURRENCE the user tapped instead. A whole-series save shifts back by the
+  // difference; without that, saving from the third occurrence would drag the
+  // whole chore's anchor onto that day.
+  const seriesAnchorRef = React.useRef<string>('');
+  // Mirrors `dirty`, which is computed below the save handler.
+  const dirtyRef = React.useRef(false);
 
   useEffect(() => {
     if (!choreQ.data) return;
@@ -184,6 +226,10 @@ export default function ChoreFormScreen() {
     const c = await openRecord('Chore', choreQ.data); // decrypt content over plaintext
     if (cancelled) return;
     decryptedChore.current = c;
+    const anchor = c.nextDueDate ? c.nextDueDate.slice(0, 10) : '';
+    seriesAnchorRef.current = anchor;
+    const repeats = !!c.recurrence?.type && c.recurrence.type !== 'one-time';
+    const occurrenceDue = repeats && date ? date : anchor;
     const assignedTo =
       typeof c.assignedTo === 'object' && c.assignedTo ? c.assignedTo._id ?? null : (c.assignedTo as string) ?? null;
     setForm({
@@ -191,7 +237,9 @@ export default function ChoreFormScreen() {
       instructions: c.instructions ?? c.description ?? '',
       icon: c.icon || 'mdi-broom',
       assignedTo,
-      nextDueDate: c.nextDueDate ? c.nextDueDate.slice(0, 10) : '',
+      // The occurrence the user opened, not the series anchor (Apple shows the
+      // day you tapped). `date` is only passed from a calendar cell.
+      nextDueDate: occurrenceDue,
       reminderDaysBefore: c.reminderDaysBefore ?? 0,
       alert2DaysBefore: c.alert2DaysBefore ?? null,
       reminderTime: c.reminderTime ?? '',
@@ -210,39 +258,137 @@ export default function ChoreFormScreen() {
     if (isEdit || !prefill) return;
     if (prefill.title != null) set({ title: String(prefill.title) });
     if (prefill.instructions != null) set({ instructions: String(prefill.instructions) });
-    if (prefill.recurrence) setRepeatRule(recurrenceToRule(prefill.recurrence));
+    if (prefill.recurrence) {
+      const rule = recurrenceToRule(prefill.recurrence);
+      setRepeatRule(rule);
+      // Show the due date the drafted cadence produces rather than a blank field
+      // the save path would fill in silently.
+      const due = dueDateFor(rule);
+      if (due) set({ nextDueDate: due });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Everything the form knows, in one frame. 'occurrence' is the day the form
+  // literally shows — where a detached one-off or a forked series begins;
+  // 'series' shifts the due date back onto the record's own anchor.
+  // Opened from a calendar cell, the date field holds the OCCURRENCE the user
+  // tapped, not the series' anchor — so "Next Due Date" would name the wrong
+  // thing (the next due date may be months behind what's shown). Call it what
+  // it is in that frame, and say which occurrence is being edited, since that
+  // is what the scope sheet will act on when they save.
+  const editingOccurrence = isEdit && !!date && itemRepeats(decryptedChore.current);
+  const dueDateLabel = editingOccurrence ? 'Date' : 'Next Due Date';
+
+  const buildPayload = (frame: 'occurrence' | 'series'): Record<string, unknown> => {
+    const recurrence = ruleToRecurrence(repeatRule);
+    const payload: Record<string, unknown> = {
+      title: form.title,
+      instructions: form.instructions,
+      icon: form.icon,
+      assignedTo: form.assignedTo || null,
+      reminderDaysBefore: form.reminderDaysBefore,
+      alert2DaysBefore: form.reminderDaysBefore == null ? null : form.alert2DaysBefore,
+      reminderTime: form.reminderDaysBefore == null ? null : (form.reminderTime || null),
+      alertAudience: form.alertAudience,
+      recurrence,
+    };
+    const due =
+      frame === 'series' && seriesAnchorRef.current && date
+        ? addDays(seriesAnchorRef.current, daysBetween(date, form.nextDueDate || date))
+        : form.nextDueDate;
+    if (due) payload.nextDueDate = due;
+    // Client-owned due-date lifecycle (Signal-parity D4): seed the first due
+    // date from the recurrence when the user didn't pick one.
+    if (!isEdit && !payload.nextDueDate && recurrence.type !== 'one-time') {
+      const d = seedDueDate(recurrence, new Date());
+      if (d) payload.nextDueDate = new Date(d).toISOString();
+    }
+    return payload;
+  };
+
+  const writeChore = async (payload: Record<string, unknown>, targetId?: string) =>
+    targetId
+      ? choresApi.update(targetId, await sealUpdate('Chore', targetId, payload, CHORE_ENC({ ...decryptedChore.current, ...payload })))
+      : choresApi.create(await sealNew('Chore', payload, CHORE_ENC(payload)));
+
   const save = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, unknown> = {
-        title: form.title,
-        instructions: form.instructions,
-        icon: form.icon,
-        assignedTo: form.assignedTo || null,
-        reminderDaysBefore: form.reminderDaysBefore,
-        alert2DaysBefore: form.reminderDaysBefore == null ? null : form.alert2DaysBefore,
-        reminderTime: form.reminderDaysBefore == null ? null : (form.reminderTime || null),
-        alertAudience: form.alertAudience,
-        recurrence: ruleToRecurrence(repeatRule),
-      };
-      if (form.nextDueDate) payload.nextDueDate = form.nextDueDate;
-      // Client-owned due-date lifecycle (Signal-parity D4): seed the first due
-      // date from the recurrence when the user didn't pick one.
-      if (!isEdit && !payload.nextDueDate && (payload.recurrence as { type?: string } | undefined)?.type !== 'one-time') {
-        const d = computeNextDueDate({ recurrence: payload.recurrence }, new Date());
-        if (d) payload.nextDueDate = d.toISOString();
+    // The scope picked in the save sheet. A create, a one-time chore, and an
+    // edit made from the series' first occurrence all arrive as 'series'.
+    mutationFn: async (scope: ItemScope = 'series') => {
+      const editing = decryptedChore.current;
+      // "Save for Future" chosen ON the series' first occurrence has nothing
+      // behind it to preserve: truncating would leave an empty husk beside the
+      // fork. The whole-series rewrite IS that outcome, so the choice resolves
+      // to it here — the sheet still asked, because the user is applying a
+      // change to every future occurrence either way.
+      const futureIsWholeSeries =
+        scope === 'future' && !!editing && isFirstItemOccurrence(editing, date);
+      if (!isEdit || scope === 'series' || futureIsWholeSeries) {
+        return writeChore(buildPayload('series'), isEdit ? id! : undefined);
       }
-      return isEdit
-        ? choresApi.update(id!, await sealUpdate('Chore', id!, payload, CHORE_ENC({ ...decryptedChore.current, ...payload })))
-        : choresApi.create(await sealNew('Chore', payload, CHORE_ENC(payload)));
+
+      const occDay = date || seriesAnchorRef.current;
+      const payload = buildPayload('occurrence');
+
+      if (scope === 'occurrence') {
+        // "Save for This Chore Only": a standalone one-time chore on this day,
+        // and the day struck out of the series. A detached override doesn't
+        // repeat, so it carries no rule and no skips of its own.
+        payload.recurrence = { type: 'one-time' };
+        // Link back to the series so "Resume schedule" can tell this day already
+        // has a standalone copy and leave it skipped rather than double-booking it.
+        payload.detachedFrom = id!;
+        payload.detachedDate = occDay;
+        const created = await writeChore(payload);
+        try {
+          await choresApi.skipOccurrence(id!, occDay);
+        } catch (e) {
+          // The override exists but the series still shows this day — two chores
+          // on one cell. Undo the half that landed.
+          await choresApi.delete(created.data._id).catch(() => {});
+          throw e;
+        }
+        return created;
+      }
+
+      // "Save for Future Chores": end the old series the day before this
+      // occurrence and start a new one here carrying the edits. Skips from here
+      // on ride along, moved by however far the occurrence was dragged.
+      const rec = (payload.recurrence as Record<string, unknown>) ?? {};
+      const oldSkips = ((decryptedChore.current?.recurrence as { skipDates?: string[] } | undefined)?.skipDates) ?? [];
+      const delta = daysBetween(occDay, form.nextDueDate || occDay);
+      payload.recurrence = {
+        ...rec,
+        skipDates: oldSkips.filter((d) => d >= occDay).map((d) => addDays(d, delta)),
+      };
+      const created = await writeChore(payload);
+      try {
+        await choresApi.truncateSeries(id!, occDay);
+      } catch (e) {
+        // Without the truncation the old series still covers these days, so the
+        // fork would double every remaining occurrence.
+        await choresApi.delete(created.data._id).catch(() => {});
+        throw e;
+      }
+      return created;
     },
-    onSuccess: () => {
+    onSuccess: (res, scope) => {
       qc.invalidateQueries({ queryKey: ['chores'] });
       qc.invalidateQueries({ queryKey: ['calendar'] });
       allowLeave();
-      navigation.goBack();
+      // An occurrence override or a series fork wrote a NEW record and left the
+      // original skipped/truncated, so the detail screen under this form is still
+      // bound to the old id and day — going straight back would show the unedited
+      // chore (and, after an override, a day the series no longer has). Rebind it
+      // to what was just saved.
+      // Keyed on the id actually written rather than the chosen scope, since
+      // "future" from the first occurrence rewrites in place and creates nothing.
+      if (isEdit && res?.data?._id && res.data._id !== id) {
+        rebindDetailBelow(navigation, 'ChoreDetail', { id: res.data._id, date: form.nextDueDate });
+      } else {
+        navigation.goBack();
+      }
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Save failed'),
   });
@@ -253,7 +399,43 @@ export default function ChoreFormScreen() {
       return;
     }
     setError('');
-    save.mutate();
+    const original = decryptedChore.current;
+    if (!isEdit || !original || !dirtyRef.current) {
+      save.mutate('series');
+      return;
+    }
+    const decision = itemSaveScopeDecision(original, buildPayload('series'));
+    if (decision.kind === 'none') {
+      save.mutate('series');
+      return;
+    }
+    // Cancel resolves to null: stay on the form with the edits intact.
+    promptItemSaveScope('chore', decision, (scope) => {
+      if (scope) save.mutate(scope);
+    });
+  };
+
+  // Delete from the edit form — the same control the chore's detail page carries,
+  // so the user who opened the form to change something and decided to bin it
+  // instead doesn't have to back out first. A one-time chore confirms once; a
+  // repeating one offers the "this chore" / "all future" choices against the
+  // occurrence the form is showing. The chosen action is the mutation's argument,
+  // so Delete keeps its pending state whichever scope is picked.
+  const del = useMutation({
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['chores'] });
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+      allowLeave();
+      // Past the detail below, which is bound to what was just deleted.
+      popPastDetail(navigation, 'ChoreDetail');
+    },
+    onError: (e: any) => Alert.alert("Couldn't delete chore", e?.response?.data?.error || 'Delete failed'),
+  });
+
+  const onDelete = () => {
+    if (!decryptedChore.current) return;
+    promptItemDelete('chore', decryptedChore.current, date, (perform) => del.mutate(perform));
   };
 
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
@@ -267,6 +449,9 @@ export default function ChoreFormScreen() {
   }, [seeded, snapshot]);
   const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
+  // `onSave` is declared above but only runs from a tap, by which point this
+  // holds the current render's value.
+  dirtyRef.current = dirty;
 
   // Tapping the Repeat field opens the shared Repeat screen directly.
   const openRepeatScreen = () =>
@@ -310,7 +495,7 @@ export default function ChoreFormScreen() {
 
       <GroupCard>
         <DateField
-          inlineLabel="Next Due Date"
+          inlineLabel={dueDateLabel}
           clearable
           placeholder="None"
           value={form.nextDueDate}
@@ -332,6 +517,12 @@ export default function ChoreFormScreen() {
           valueStyle={fs.dtValue}
         />
       </GroupCard>
+      {/* Names the occurrence being edited. Without it the form looks like the
+          whole chore, and the save sheet's "This … Only" choice has no
+          visible referent. */}
+      {editingOccurrence ? (
+        <Hint>{`Editing the ${formatCalendarDate(form.nextDueDate)} chore in this repeating series.`}</Hint>
+      ) : null}
 
       <GroupCard>
         <Select
@@ -339,7 +530,7 @@ export default function ChoreFormScreen() {
           clearable
           placeholder="Unassigned"
           value={form.assignedTo ?? undefined}
-          options={familyOptions}
+          options={assigneeOptions}
           onChange={(v) => set({ assignedTo: (v as string) ?? null })}
           highlight={assist.changed.has('assignedTo')}
           containerStyle={fs.dtFieldWrap}
@@ -431,6 +622,12 @@ export default function ChoreFormScreen() {
       />
 
       <FormError>{error}</FormError>
+
+      {isEdit ? (
+        <View style={fs.footer}>
+          <Button title="Delete Chore" variant="danger" loading={del.isPending} onPress={onDelete} />
+        </View>
+      ) : null}
     </Screen>
   );
 }

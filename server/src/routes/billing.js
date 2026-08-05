@@ -1,21 +1,23 @@
 // Monetization endpoints: the per-user $4.99 app unlock, the prepaid AI-credit
-// balance (packs + the optional monthly Calen AI plan), and the household's
-// one-time feature-calendar add-ons.
+// balance (packs + the optional monthly Calen AI plan), and one-time
+// feature-calendar add-ons.
 //   GET  /api/billing/status          → unlock state, credit balance, packs, usage, add-ons (any user)
 //   GET  /api/billing/credits/ledger  → the caller's credit purchase/grant history
 //   POST /api/billing/webhook         → RevenueCat purchase events (no auth; shared secret)
-//   POST /api/billing/addons/claim    → claim a FREE add-on (price-0 catalog item; any member)
+//   POST /api/billing/addons/claim    → claim a FREE add-on (price-0 catalog item; any user)
 //   POST /api/billing/addons {addons} → manual add-on override (admin only)
 //
 // Real payments flow through native in-app purchase (App Store / Play) →
 // RevenueCat → the webhook below. RevenueCat's app_user_id is the USER id (the
-// mobile app logs the RC SDK in as the signed-in user), so the unlock and
-// credit packs land on the purchasing user; feature-calendar add-ons resolve
-// user → household and stay household-wide.
+// mobile app logs the RC SDK in as the signed-in user), so EVERY entitlement —
+// unlock, credit packs, and feature-calendar add-ons — lands on the purchasing
+// user. Add-ons then take effect household-wide by being UNIONED across members
+// at read time (`ownedAddonsFor`), rather than by being stored on the household:
+// the buyer keeps what they bought across joining, leaving, and removal, while
+// the household still only pays once for a feature its members share.
 
 const express = require('express');
 const mongoose = require('mongoose');
-const Household = require('../models/Household');
 const User = require('../models/User');
 const PhoneCall = require('../models/PhoneCall');
 const CreditLedger = require('../models/CreditLedger');
@@ -36,7 +38,7 @@ const router = express.Router();
 const UNLOCK_ENTITLEMENT = 'app_unlock';
 
 // Map RevenueCat entitlement identifiers → feature-calendar add-on keys
-// (calendar ids, stored in Household.addons). The bundle product is attached to
+// (calendar ids, stored in User.addons). The bundle product is attached to
 // all three entitlements in the RevenueCat dashboard, so a bundle purchase
 // event carries all three ids — the server has no bundle concept of its own.
 // (Birthdays was briefly an add-on pre-release, then made free 2026-07-26.)
@@ -45,6 +47,17 @@ const ENTITLEMENT_TO_ADDON = {
   addon_maintenance: 'maintenance',
   addon_trips: 'trips',
 };
+
+// The add-ons in effect for a user: everything anyone in their household owns.
+// Ownership is per-user (User.addons) but the effect is household-wide, so this
+// union is the ONLY way add-on state should ever be read. A user with no
+// household simply sees their own — which is what makes a purchase survive
+// leaving, and what lets a solo user buy one at all.
+async function ownedAddonsFor(user, householdId) {
+  if (!householdId) return [...new Set(user.addons || [])];
+  const members = await User.find({ householdId }, 'addons').lean();
+  return [...new Set(members.flatMap((m) => m.addons || []))];
+}
 
 // Event types that grant a one-time purchase. Everything else is either a
 // revoke (refund/expiration) or lifecycle noise.
@@ -129,8 +142,8 @@ function planUpdateForEvent(event, config) {
   return { grant: null, active: null, expiresAt: null };
 }
 
-// Decide what a webhook event does to the household's one-time feature-calendar
-// add-ons: `add`/`remove` are Household.addons keys. Add-ons are non-consumable
+// Decide what a webhook event does to the purchasing user's one-time
+// feature-calendar add-ons: `add`/`remove` are User.addons keys. Add-ons are non-consumable
 // (no renewal lifecycle) — a purchase-shaped event grants, a refund revokes
 // (RevenueCat sends CANCELLATION with cancel_reason CUSTOMER_SUPPORT for
 // refunded one-time purchases; EXPIRATION is handled defensively). Pure —
@@ -283,16 +296,15 @@ router.post('/webhook', async (req, res) => {
     }
 
     if (add.length || remove.length) {
-      if (!user.householdId) {
-        // No household to grant into; ack (Restore after joining re-delivers).
-        return res.json({ ok: true, unlocked, addons: false, matched: false });
-      }
+      // Straight onto the purchasing user — no household lookup, and no need to
+      // defer a purchase made before joining one (the old path had to ack-and-
+      // wait for a Restore, because there was no household to grant into yet).
       const update = {};
       // add/remove are mutually exclusive by construction (a single event either
       // grants or revokes), so $addToSet and $pull never conflict on `addons`.
       if (add.length) update.$addToSet = { addons: { $each: add } };
       if (remove.length) update.$pull = { addons: { $in: remove } };
-      await Household.updateOne({ _id: user.householdId }, update);
+      await User.updateOne({ _id: user._id }, update);
     }
 
     res.json({ ok: true, ...(unlocked !== null ? { unlocked } : {}) });
@@ -386,10 +398,13 @@ router.get('/status', async (req, res) => {
       resetsAt: nextPeriodResetAt().toISOString(),
       models: config.models || {},
       hasHousehold: Boolean(req.household),
-      // One-time feature-calendar add-ons owned by this household (calendar-id
-      // keys). Clients gate the feature UIs on this — the record store is
-      // opaque, so the server can't enforce per-feature data access itself.
-      addons: req.household?.addons || [],
+      // One-time feature-calendar add-ons in effect here (calendar-id keys) —
+      // the UNION of what every household member owns, so any one member's
+      // purchase unlocks the lane for all of them. Clients gate the feature UIs
+      // on this; the record store is opaque, so the server can't enforce
+      // per-feature data access itself (which is also why per-user EFFECT would
+      // be incoherent — these records live in the shared household store).
+      addons: await ownedAddonsFor(req.user, req.household?._id),
       // Display catalog for the Add-ons store screen. Prices are USD fallbacks;
       // the store's localized price wins whenever RC packages load.
       addonCatalog: {
@@ -455,11 +470,13 @@ router.post('/addons/claim', async (req, res) => {
     const isFree = MonetizationConfig.ADDON_KEYS.includes(addon)
       && (config.addons?.items?.[addon]?.price ?? 1) === 0;
     if (!isFree) return res.status(400).json({ error: 'Not a free add-on' });
-    if (!req.household) {
-      return res.status(400).json({ error: 'Join or create a household first' });
-    }
-    await Household.updateOne({ _id: req.household._id }, { $addToSet: { addons: addon } });
-    res.json({ addons: [...new Set([...(req.household.addons || []), addon])] });
+    // No household requirement: the claim lands on the claimer, and a solo user
+    // is as entitled to a free add-on as a member of a shared household.
+    await User.updateOne({ _id: req.user._id }, { $addToSet: { addons: addon } });
+    // Echo the resulting household-wide set, matching GET /billing/status. The
+    // write above has landed, so the union re-read below already includes it.
+    const claimed = { addons: [...(req.user.addons || []), addon] };
+    res.json({ addons: await ownedAddonsFor(claimed, req.household?._id) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -467,18 +484,17 @@ router.post('/addons/claim', async (req, res) => {
 
 // Manual add-on override (admin only). Real add-on purchases flow through the
 // RevenueCat webhook; this is the QA/simulator escape hatch (store sandbox not
-// available in dev builds). Replaces the whole owned set.
+// available in dev builds). Replaces the CALLER'S OWN owned set — it can't grant
+// on another member's behalf, since ownership is now per-user. The response is
+// still the household-wide union, so it reads back the way the app sees it.
 router.post('/addons', requireAdmin, async (req, res) => {
   try {
     const { addons } = req.body;
     if (!Array.isArray(addons) || addons.some((a) => !MonetizationConfig.ADDON_KEYS.includes(a))) {
       return res.status(400).json({ error: 'Invalid addons' });
     }
-    if (!req.household) {
-      return res.status(400).json({ error: 'Join or create a household first' });
-    }
-    await Household.updateOne({ _id: req.household._id }, { $set: { addons } });
-    res.json({ addons });
+    await User.updateOne({ _id: req.user._id }, { $set: { addons } });
+    res.json({ addons: await ownedAddonsFor({ addons }, req.household?._id) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

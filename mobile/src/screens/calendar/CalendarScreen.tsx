@@ -857,13 +857,13 @@ const WeekRow = React.memo(function WeekRow({
                     hitSlop={6}
                     onPress={() =>
                       c.tasks.length === 1
-                        ? navigation.navigate('TaskDetail', { id: c.tasks[0]._id })
+                        ? navigation.navigate('TaskDetail', { id: c.tasks[0]._id, date: cell.date })
                         : navigation.navigate('CalendarDay', { date: cell.date })
                     }
                     // Long-press edits the single task; several stacked → day view to pick one.
                     onLongPress={() =>
                       c.tasks.length === 1
-                        ? navigation.navigate('TaskForm', { id: c.tasks[0]._id })
+                        ? navigation.navigate('TaskForm', { id: c.tasks[0]._id, date: cell.date })
                         : navigation.navigate('CalendarDay', { date: cell.date })
                     }
                     delayLongPress={LONG_PRESS_MS}
@@ -883,8 +883,8 @@ const WeekRow = React.memo(function WeekRow({
                   <TouchableOpacity
                     key={`ch-${ch._id}`}
                     hitSlop={6}
-                    onPress={() => navigation.navigate('ChoreDetail', { id: ch._id })}
-                    onLongPress={() => navigation.navigate('ChoreForm', { id: ch._id })}
+                    onPress={() => navigation.navigate('ChoreDetail', { id: ch._id, date: cell.date })}
+                    onLongPress={() => navigation.navigate('ChoreForm', { id: ch._id, date: cell.date })}
                     delayLongPress={LONG_PRESS_MS}
                   >
                     <MaterialCommunityIcons name={mdiName(ch.icon) as any} size={16} color={calColors.chores} />

@@ -9,6 +9,12 @@ const recurrenceSchema = new mongoose.Schema({
   dayOfMonth: Number,    // 1–31 anchor day for monthly/yearly intervals and calendar type
   dayOfWeek: Number,     // 0=Sun … 6=Sat anchor for weekly intervals, or weekday for monthly weekOfMonth
   weekOfMonth: Number,   // 1–4 or -1 (last) — which occurrence of dayOfWeek in the month
+  // Per-occurrence scoping, mirroring CalendarEvent's recurrence. `skipDates`
+  // are YYYY-MM-DD occurrences struck out one at a time ("Delete This Task
+  // Only"); `until` ends the series ("Delete All Future"). Both live INSIDE
+  // recurrence so the existing TASK_ENC subset seals them with the rule.
+  skipDates: [String],
+  until: Date,
 }, { _id: false });
 
 const taskSchema = new mongoose.Schema({
@@ -47,6 +53,11 @@ const taskSchema = new mongoose.Schema({
   intervalKm:    Number,   // e.g. 50000 — service every 50,000 km
   lastServiceKm: Number,   // odometer reading at last completion
   nextDueKm:     Number,   // lastServiceKm + intervalKm
+  // Set on a copy created by "Save for This … Only" (see maintenance.md): the
+  // series this was detached from and the day it stands in for. The link lets
+  // "Resume schedule" leave that day skipped instead of double-booking it.
+  detachedFrom: { type: mongoose.Schema.Types.ObjectId },
+  detachedDate: String,
   // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
   ...encFields,
 }, { timestamps: true });

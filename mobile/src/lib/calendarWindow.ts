@@ -92,19 +92,35 @@ const dedupBy = <T>(rows: T[], key: (r: T) => string): T[] => {
   return out;
 };
 
+// Occurrence key for an expanded task/chore. The engine expands a recurring
+// task/chore into one instance per due date — same _id, different due date —
+// and stamps each with `_instanceDate` (yyyy-MM-dd). Keying on _id alone would
+// collapse a monthly chore's twelve occurrences into whichever chunk expanded
+// first, so the grid showed it once and the day view (one un-chunked
+// expansion) showed them all. `nextDueDate` is the fallback and is NOT one
+// type — a one-time item passes through with its ISO string, generated
+// instances carry a Date — so normalise through new Date() rather than
+// slicing.
+function occurrenceKey(r: { _id: string; _instanceDate?: string; nextDueDate?: string | Date }): string {
+  if (r._instanceDate) return `${r._id}:${r._instanceDate}`;
+  const due = r.nextDueDate ? new Date(r.nextDueDate) : null;
+  return `${r._id}:${due && !isNaN(due.getTime()) ? due.toISOString() : ''}`;
+}
+
 // Fold per-month expansion chunks into one CalendarData. A record can surface
 // in two chunks — a span crossing the month boundary, or a whole collection
 // the engine returns un-clipped — so everything dedups on its identity; a
 // recurring event's occurrences share an _id and differ by startDate, hence
-// the compound event key. Events re-sort by start so the merged list matches
-// what a single whole-range expansion would have returned.
+// the compound event key (and the equivalent occurrence key for tasks and
+// chores). Events re-sort by start so the merged list matches what a single
+// whole-range expansion would have returned.
 export function mergeCalendarChunks(chunks: CalendarData[]): CalendarData {
   return {
     events: dedupBy(chunks.flatMap((c) => c.events ?? []), (e) => `${e._id}:${e.startDate}`).sort(
       (a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime(),
     ),
-    tasks: dedupBy(chunks.flatMap((c) => c.tasks ?? []), (t) => t._id),
-    chores: dedupBy(chunks.flatMap((c) => c.chores ?? []), (c) => c._id),
+    tasks: dedupBy(chunks.flatMap((c) => c.tasks ?? []), occurrenceKey as (t: any) => string),
+    chores: dedupBy(chunks.flatMap((c) => c.chores ?? []), occurrenceKey as (c: any) => string),
     occasions: dedupBy(chunks.flatMap((c) => c.occasions ?? []), (o) => `${o.id}:${o.date}`),
     recipes: dedupBy(chunks.flatMap((c) => c.recipes ?? []), (r) => {
       const rid = typeof r.recipeId === 'object' ? r.recipeId?._id : r.recipeId;

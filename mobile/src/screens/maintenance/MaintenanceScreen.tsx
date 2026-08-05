@@ -17,6 +17,7 @@ import { ensureDefaultCategories } from '../../lib/categories';
 import * as replica from '../../lib/replica';
 import { Card, CenteredLoader, RoundIconButton, SectionHeader, SkeletonList, EmptyState, IconAvatar, Select, Hint } from '../../components/ui';
 import { parseCalendarDate } from '../../lib/recurrence';
+import { hasUpcomingOccurrence } from '../../lib/repeatingItemScope';
 import { itemTypeConfig } from '../../lib/itemTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { useOwnedAddons } from '../../lib/addons';
@@ -190,7 +191,11 @@ function MaintenanceHome() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     return (itemTasksQ.data ?? [])
-      .filter((t) => t.active !== false && t.nextDueDate)
+      // An ENDED series would otherwise read as permanently overdue: its anchor
+      // (`nextDueDate`) still sits in the past, but the schedule stopped. It has
+      // no outstanding work, so it leaves this status dashboard — the task is
+      // still reachable through its item, which lists every task unfiltered.
+      .filter((t) => t.active !== false && t.nextDueDate && hasUpcomingOccurrence(t))
       .map((t) => {
         const days = Math.round((parseCalendarDate(t.nextDueDate!).getTime() - today.getTime()) / 86400000);
         const status: StatusKey | null = days < 0 ? 'overdue' : days <= leadDays ? 'due-soon' : null;
@@ -229,6 +234,19 @@ function MaintenanceHome() {
   }, [itemTasksQ.data]);
 
   // Overdue + due-soon tasks as a flat list — overdue first, then earliest due.
+  // Tasks whose series has stopped. They are deliberately absent from the
+  // dashboard above (an ended series' anchor sits in the past, so it would read
+  // as permanently overdue) — but their detail page is the only route to Resume
+  // schedule, and a task with NO linked item has no other home on this screen,
+  // so they get their own collapsed group. Mirrors the Chores list.
+  // Ended tasks stay collapsed until asked for — they're history, not work.
+  const [showEndedTasks, setShowEndedTasks] = useState(false);
+
+  const endedTasks = useMemo(
+    () => (itemTasksQ.data ?? []).filter((t) => t.active !== false && !hasUpcomingOccurrence(t)),
+    [itemTasksQ.data],
+  );
+
   const dueTasks = useMemo(
     () =>
       [...allTasks].sort(
@@ -328,6 +346,45 @@ function MaintenanceHome() {
             <Text style={styles.dueEmptyText}>Nothing overdue or due soon 🎉</Text>
           </Card>
         )}
+
+        {endedTasks.length ? (
+          <>
+            <TouchableOpacity
+              style={styles.endedToggle}
+              onPress={() => setShowEndedTasks((v) => !v)}
+              accessibilityRole="button"
+              accessibilityLabel={`${showEndedTasks ? 'Hide' : 'Show'} ended tasks`}
+            >
+              <Text style={styles.endedLabel}>{`Ended tasks (${endedTasks.length})`}</Text>
+              <Ionicons name={showEndedTasks ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
+            </TouchableOpacity>
+            {showEndedTasks ? (
+              <Card style={[styles.dueCard, styles.endedCard]}>
+                {endedTasks.map((task, i) => (
+                  <TouchableOpacity
+                    key={task._id}
+                    style={[styles.dueRow, i > 0 && styles.dueRowBorder]}
+                    activeOpacity={0.7}
+                    onPress={() => navigation.navigate('TaskDetail', { id: task._id })}
+                  >
+                    <MaterialCommunityIcons
+                      name={resolveTaskIcon(
+                        task.icon,
+                        typeof task.categoryId === 'object' ? task.categoryId?.name : null,
+                      )}
+                      size={22}
+                      color={colors.textMuted}
+                    />
+                    <View style={styles.dueRowText}>
+                      <Text style={styles.taskTitle} numberOfLines={1}>{task.title}</Text>
+                      <Text style={styles.dueRowSub} numberOfLines={1}>{refName(task.itemId) || '—'}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </Card>
+            ) : null}
+          </>
+        ) : null}
 
         {!items.length ? (
           <EmptyState
@@ -444,6 +501,12 @@ const styles = StyleSheet.create({
   dueRowSub: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   dueEmptyCard: { marginBottom: spacing.lg, alignItems: 'center', paddingVertical: spacing.lg },
   dueEmptyText: { fontSize: 14, color: colors.textMuted },
+  endedToggle: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.xs, marginTop: spacing.md,
+  },
+  endedLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted, textTransform: 'uppercase' },
+  endedCard: { opacity: 0.6 },
 
   group: { marginBottom: spacing.md },
   itemCard: { marginBottom: spacing.sm, padding: 0 },

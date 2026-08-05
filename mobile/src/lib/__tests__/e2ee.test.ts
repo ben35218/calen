@@ -108,6 +108,8 @@ import {
   sealNew, openRecord, openOpaqueRecord, decryptRecord,
   mintResourceKey, wrapResourceKeyForCollaborator, sealForResource, decryptResourceRecord,
   publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady, rekeyIdentity,
+  currentHouseholdId, unwrapForeignHDKs, openForeignRecord, encryptRecord,
+  subscribeHouseholdChanged, getHDK,
 } from '../e2ee';
 
 const PASSWORD = 'correct horse battery staple';
@@ -399,5 +401,146 @@ describe('the session password held for re-key', () => {
     // identity from a cold, locked session.
     lock();
     expect(await unlockWithPassword('reset-me-123')).toBe(true);
+  });
+});
+
+// Join carry-over (features/households-sharing.md). Moving households drops every
+// cached HDK and unwraps only the NEW household's envelopes, so a record left in
+// the old one becomes unreadable through the ordinary path — the record AAD binds
+// `householdId`, so the destination key can't open it even in principle. These
+// helpers are the one door into it, and they exist because only a device that
+// still holds the old envelope can re-seal that data across.
+describe('join carry-over: reading a household we have left', () => {
+  test('a record left behind is unreadable normally, but opens with its old key + householdId', async () => {
+    // Settled in the original household, holding a record sealed under its HDK.
+    lock();
+    expect(await unlockWithPassword('reset-me-123')).toBe(true);
+    expect(await ensureHouseholdKey()).toBe('ready');
+    const oldHouseholdId = mockServer.householdId;
+    expect(currentHouseholdId()).toBe(oldHouseholdId);
+
+    const stranded = await sealNew('CalendarEvent', { title: 'Book club', startDate: '2026-09-02' });
+    const oldEnvelopes = [...mockServer.hdkEnvelopes];
+    expect(await openOpaqueRecord(stranded as never)).toBeTruthy();
+
+    // Join another household: a fresh id with no key yet, so this session mints
+    // its own HDK and discards every key it held for the household it left.
+    mockServer.householdId = 'hh-joined-2';
+    mockServer.currentKeyVersion = 0;
+    mockServer.hdkEnvelopes = [];
+    mockServer.keyRotationPending = false;
+    expect(await ensureHouseholdKey()).toBe('ready');
+    expect(currentHouseholdId()).toBe('hh-joined-2');
+
+    // THE DEFECT: the record is now opaque to us through the normal path.
+    expect(await openOpaqueRecord(stranded as never)).toBeNull();
+
+    // THE FIX: unwrap the old household's envelope and open the row against the
+    // householdId its ciphertext is actually bound to.
+    const oldHDKs = await unwrapForeignHDKs(oldEnvelopes);
+    expect(oldHDKs.size).toBe(oldEnvelopes.length);
+    const opened = await openForeignRecord(
+      { _id: String(stranded._id), keyVersion: stranded.keyVersion as number, enc: stranded.enc as never },
+      oldHouseholdId,
+      oldHDKs,
+    );
+    expect(opened?.collection).toBe('CalendarEvent');
+    expect(opened?.record).toMatchObject({ title: 'Book club', startDate: '2026-09-02' });
+
+    // And re-sealing it under the household we joined makes it an ordinary
+    // record here — which is what the carry-over writes back to the server.
+    const resealed = await encryptRecord('CalendarEvent', String(stranded._id), opened!.record);
+    const carried = { _id: stranded._id, ...resealed };
+    const reopened = await openOpaqueRecord(carried as never);
+    expect(reopened?.collection).toBe('CalendarEvent');
+    expect(reopened?.record).toMatchObject({ title: 'Book club' });
+  });
+
+  test('the wrong householdId does not open the record (the AAD binds it)', async () => {
+    const stranded = await sealNew('Person', { name: 'Ada' });
+    const hdks = await unwrapForeignHDKs(mockServer.hdkEnvelopes);
+    const wrong = await openForeignRecord(
+      { _id: String(stranded._id), keyVersion: stranded.keyVersion as number, enc: stranded.enc as never },
+      'hh-not-the-one',
+      hdks,
+    );
+    expect(wrong).toBeNull();
+  });
+
+  test('a resource-scoped row is never carried over — it routes by its own lane', async () => {
+    const hdks = await unwrapForeignHDKs(mockServer.hdkEnvelopes);
+    const shared = await openForeignRecord(
+      { _id: 'x1', keyVersion: 1, enc: { alg: 'a', nonce: 'n', ct: 'c', ks: 'cal' } },
+      'hh-joined-2',
+      hdks,
+    );
+    expect(shared).toBeNull();
+  });
+});
+
+// The household-change signal (features/auth-identity.md → "Household-change
+// teardown"). Joining/leaving/being removed leaves every household-scoped cache
+// on the device pointing at the wrong household — including the replica, which is
+// a flat store of DECRYPTED rows that sync will never tombstone away. The app root
+// wipes them on this signal, so its firing contract is load-bearing in both
+// directions: miss a real switch and a leaver keeps reading the household they
+// left; fire on a fresh sign-in and every launch throws away a good replica.
+describe('subscribeHouseholdChanged', () => {
+  test('fires on a switch under a live session, but never on the first read', async () => {
+    lock();
+    const seen: number[] = [];
+    const unsubscribe = subscribeHouseholdChanged(() => seen.push(1));
+
+    // Sign in fresh: hdkHouseholdId goes null → a household. Not a change.
+    mockServer.householdId = 'hh-first';
+    mockServer.currentKeyVersion = 0;
+    mockServer.hdkEnvelopes = [];
+    expect(await unlockWithPassword('reset-me-123')).toBe(true);
+    expect(await ensureHouseholdKey()).toBe('ready');
+    expect(seen).toHaveLength(0);
+
+    // Re-checking the SAME household (every focus/unlock does this) is not one either.
+    expect(await ensureHouseholdKey()).toBe('ready');
+    expect(seen).toHaveLength(0);
+
+    // Now actually move: this is the join/leave/removal case.
+    mockServer.householdId = 'hh-second';
+    mockServer.currentKeyVersion = 0;
+    mockServer.hdkEnvelopes = [];
+    expect(await ensureHouseholdKey()).toBe('ready');
+    expect(seen).toHaveLength(1);
+
+    unsubscribe();
+    mockServer.householdId = 'hh-third';
+    mockServer.currentKeyVersion = 0;
+    mockServer.hdkEnvelopes = [];
+    await ensureHouseholdKey();
+    expect(seen).toHaveLength(1); // unsubscribed
+  });
+
+  // Ordering regression. Subscribers WIPE the replica and re-sync on this signal.
+  // It was originally raised the moment the change was detected — right after
+  // `hdks.clear()` and before any envelope was unwrapped — so the re-sync ran with
+  // no key, decrypted nothing, and left the device on the empty replica it had
+  // just wiped: a blank app. The signal must not arrive until the key for the new
+  // household is actually usable.
+  test('does not fire until the new household key is held', async () => {
+    lock();
+    mockServer.householdId = 'hh-ordering-a';
+    mockServer.currentKeyVersion = 0;
+    mockServer.hdkEnvelopes = [];
+    expect(await unlockWithPassword('reset-me-123')).toBe(true);
+    expect(await ensureHouseholdKey()).toBe('ready');
+
+    let hdkAtSignal: Uint8Array | null = null;
+    const unsubscribe = subscribeHouseholdChanged(() => { hdkAtSignal = getHDK(); });
+
+    mockServer.householdId = 'hh-ordering-b';
+    mockServer.currentKeyVersion = 0;
+    mockServer.hdkEnvelopes = [];
+    expect(await ensureHouseholdKey()).toBe('ready');
+
+    expect(hdkAtSignal).not.toBeNull(); // a refill on this signal can succeed
+    unsubscribe();
   });
 });

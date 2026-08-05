@@ -92,6 +92,53 @@ router.post('/events/:eventId/attachments/upload', upload.single('file'), async 
   }
 });
 
+// Copy every attachment from one event onto another. Used when an occurrence is
+// detached ("Save for This Event Only") or a series is forked ("Save for Future
+// Events"): both write a NEW event record, and attachments hang off the event id,
+// so without this the copy — which for a fork BECOMES the ongoing series — would
+// silently lose its files.
+//
+// The per-file key is wrapped to the household key, not to the event, so nothing
+// is re-encrypted here. The FILE is duplicated on disk rather than sharing a
+// `storageKey`, because DELETE unlinks the file and a shared key would take the
+// other event's attachment with it.
+router.post('/events/:eventId/attachments/copy-from/:sourceEventId', async (req, res) => {
+  try {
+    const target = await findEvent(req);
+    if (!target) return res.status(404).json({ error: 'Event not found' });
+    const source = await Record.findOne({ _id: req.params.sourceEventId, ...req.scopeFilter }).select('_id').lean();
+    if (!source) return res.status(404).json({ error: 'Source event not found' });
+
+    const rows = await EventAttachment.find({ eventId: source._id }).lean();
+    const copies = [];
+    for (const a of rows) {
+      let storageKey = a.storageKey;
+      if (storageKey) {
+        const from = path.join(uploadDir, storageKey);
+        // A row whose file already vanished is skipped rather than cloned as a
+        // broken reference.
+        if (!fs.existsSync(from)) continue;
+        storageKey = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(a.storageKey)}`;
+        fs.copyFileSync(from, path.join(uploadDir, storageKey));
+      }
+      copies.push(await EventAttachment.create({
+        userId: req.user._id,
+        eventId: target._id,
+        title: a.title,
+        storageKey,
+        fileType: a.fileType,
+        fileSizeBytes: a.fileSizeBytes,
+        encrypted: a.encrypted,
+        wrappedFileKey: a.wrappedFileKey,
+        keyVersion: a.keyVersion,
+      }));
+    }
+    res.status(201).json(copies);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/attachments/:id/download', async (req, res) => {
   try {
     const attachment = await EventAttachment.findOne({ _id: req.params.id, ...req.scopeFilter });

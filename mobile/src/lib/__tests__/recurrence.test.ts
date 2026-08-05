@@ -15,6 +15,7 @@ import {
   applyRecurrenceAssistPatch,
   recurrenceAssistCurrent,
   ruleToRecurrence,
+  dueDateForRule,
   excludeUsedAlert,
 } from '../recurrence';
 import { Recurrence } from '../../api';
@@ -359,5 +360,34 @@ describe('form-assist recurrence patches', () => {
       repeatDayOfMonth: null,
       repeatMonths: [],
     });
+  });
+});
+
+// ── dueDateForRule ───────────────────────────────────────────────────────────
+// The chore form reseeds Next Due Date from this whenever the repeat changes.
+describe('dueDateForRule', () => {
+  const rule = (patch: Partial<RepeatRule>): RepeatRule => ({ ...EMPTY_REPEAT, ...patch });
+  const from = new Date(2026, 7, 4, 12); // Tue 4 Aug 2026, local noon
+  const ymd = (d: Date | null) =>
+    d && `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  it('counts forward from the given day for a daily rule', () => {
+    expect(ymd(dueDateForRule(rule({ freq: 'daily', interval: 3 }), from))).toBe('2026-08-07');
+  });
+
+  it('lands on the chosen weekday for a weekly rule', () => {
+    expect(ymd(dueDateForRule(rule({ freq: 'weekly', interval: 1, daysOfWeek: [6] }), from))).toBe('2026-08-15');
+  });
+
+  it('lands on the chosen date for a monthly rule', () => {
+    expect(ymd(dueDateForRule(rule({ freq: 'monthly', interval: 1, daysOfMonth: [1] }), from))).toBe('2026-09-01');
+  });
+
+  it('uses the next occurrence of a yearly rule’s month, not a year out', () => {
+    expect(ymd(dueDateForRule(rule({ freq: 'yearly', interval: 1, months: [9] }), from))).toBe('2026-09-01');
+  });
+
+  it('implies no date when the rule does not repeat, so a picked date stands', () => {
+    expect(dueDateForRule(rule({ freq: '' }), from)).toBeNull();
   });
 });

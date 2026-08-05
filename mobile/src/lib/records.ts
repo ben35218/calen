@@ -27,6 +27,9 @@ export interface RecordSyncDeps {
   remove: (collection: string, id: string) => Promise<void>;
   getCursor: () => Promise<string | null>;
   setCursor: (cursor: string) => Promise<void>;
+  // This session's household, to classify an undecryptable row as retryable
+  // (ours) or permanently foreign (see the cursor-safety note on syncRecords).
+  myHouseholdId: () => string | null;
 }
 
 const store = () => require('@react-native-async-storage/async-storage').default;
@@ -38,6 +41,7 @@ const defaultDeps: RecordSyncDeps = {
   remove: (collection, id) => require('./replica').remove(collection, id),
   getCursor: () => store().getItem(CURSOR_KEY),
   setCursor: (cursor) => store().setItem(CURSOR_KEY, cursor),
+  myHouseholdId: () => require('./e2ee').currentHouseholdId(),
 };
 
 export interface RecordSyncResult {
@@ -62,10 +66,26 @@ export interface RecordSyncResult {
 // cursor at the last reconciled row BEFORE the first undecryptable content row.
 // (A tombstone whose ciphertext is already gone is expected-undecryptable and
 // permanent — it does NOT hold the cursor back, or the pull would loop forever.)
+//
+// A FOREIGN row is the same kind of permanent: the record scope's
+// `userId ∈ scopeIds` branch serves us rows still stamped to another household
+// (a member who joined us with data left behind — see lib/joinCarryover), sealed
+// under an HDK we do not and will never hold. Blocking on those wedges the cursor
+// for good: every later row, including our own, stops reconciling and the replica
+// silently freezes at the moment of the join. So they're skipped like a reaped
+// tombstone. The carry-over migration re-stamps and re-seals them into this
+// household, at which point they arrive decryptable through the normal lane.
 export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<RecordSyncResult> {
   const d = { ...defaultDeps, ...deps };
   const since = await d.getCursor();
   const { records, serverTime } = await d.fetch(since);
+  const mine = d.myHouseholdId();
+  // Only classify as foreign when we know our own household AND the row names a
+  // different one. A resource-scoped row legitimately carries another household's
+  // id (the D1/D2 shared lane) and IS readable via its resource key, so it stays
+  // retryable — its key may simply not be loaded yet.
+  const isForeign = (row: RecordRow): boolean =>
+    !!mine && !!row.householdId && String(row.householdId) !== mine && !row.scope?.resource;
 
   // Group upserts by collection so each bucket is written once.
   const byCollection = new Map<string, Record<string, unknown>[]>();
@@ -89,9 +109,15 @@ export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<R
     }
     const dec = await d.decrypt(row).catch(() => null);
     if (!dec) {
-      // Couldn't decrypt a live content row — key not ready. Block the cursor
-      // here so this row (and everything after it) is re-pulled once unlocked.
+      // Couldn't decrypt a live content row. If it's ours, the key isn't ready —
+      // block the cursor so this row (and everything after it) is re-pulled once
+      // unlocked. If it's foreign, we never hold that key: skip it permanently
+      // rather than wedging the whole feed behind it.
       skipped += 1;
+      if (isForeign(row)) {
+        if (firstBlockedAt === null) watermark = at;
+        continue;
+      }
       if (firstBlockedAt === null) firstBlockedAt = at;
       continue;
     }

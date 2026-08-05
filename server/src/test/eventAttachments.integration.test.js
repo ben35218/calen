@@ -140,3 +140,73 @@ test('scope gate: cannot attach to an event outside your household', async () =>
     .attach('file', PLAINTEXT, { filename: 'ghost.pdf', contentType: 'application/pdf' });
   assert.equal(ghost.status, 404);
 });
+
+// An occurrence override or a series fork writes a NEW event record, and
+// attachments hang off the event id — so without a copy the fork (which BECOMES
+// the ongoing series) silently loses every file. The per-file key is wrapped to
+// the household, not the event, so nothing is re-encrypted; only the row and the
+// file on disk are duplicated.
+test('copy-from duplicates an event\'s attachments onto another event', async () => {
+  const { owner, eventId } = await setupEvent('Fern');
+  const up = await request()
+    .post(`/api/calendar/events/${eventId}/attachments/upload`)
+    .set('Authorization', owner.auth)
+    .field('encrypted', 'true')
+    .field('fileType', 'application/pdf')
+    .field('wrappedFileKey', 'wrapped-key-abc')
+    .field('keyVersion', '1')
+    .attach('file', CIPHERTEXT, { filename: 'blob.bin', contentType: 'application/octet-stream' });
+  assert.equal(up.status, 201);
+
+  // The fork: a second event record in the same household.
+  const fork = await request().post('/api/records')
+    .set('Authorization', owner.auth).send({ enc: opaqueEnc(), keyVersion: 1 });
+  assert.equal(fork.status, 201);
+
+  const copy = await request()
+    .post(`/api/calendar/events/${fork.body._id}/attachments/copy-from/${eventId}`)
+    .set('Authorization', owner.auth);
+  assert.equal(copy.status, 201);
+  assert.equal(copy.body.length, 1);
+
+  const [copied] = copy.body;
+  assert.equal(copied.eventId, fork.body._id, 'the copy belongs to the new event');
+  assert.notEqual(copied._id, up.body._id, 'it is its own row');
+  assert.equal(copied.wrappedFileKey, 'wrapped-key-abc', 'the household-wrapped key carries over unchanged');
+  assert.equal(copied.encrypted, true);
+  assert.notEqual(copied.storageKey, up.body.storageKey, 'the file is duplicated, not shared');
+
+  // Both are independently downloadable...
+  for (const id of [up.body._id, copied._id]) {
+    const dl = await request().get(`/api/calendar/attachments/${id}/download`).set('Authorization', owner.auth);
+    assert.equal(dl.status, 200);
+  }
+  // ...and deleting one must not take the other's file with it, which is exactly
+  // what sharing a storageKey would have caused.
+  const del = await request().delete(`/api/calendar/attachments/${up.body._id}`).set('Authorization', owner.auth);
+  assert.equal(del.status, 200);
+  const survivor = await request()
+    .get(`/api/calendar/attachments/${copied._id}/download`)
+    .set('Authorization', owner.auth);
+  assert.equal(survivor.status, 200, 'the copy survives the original being deleted');
+});
+
+test('copy-from is scope-gated on both events', async () => {
+  const { owner, eventId } = await setupEvent('Gus');
+  const stranger = await registerUser({ firstName: 'Hal' });
+
+  const target = await request().post('/api/records')
+    .set('Authorization', owner.auth).send({ enc: opaqueEnc(), keyVersion: 1 });
+
+  // A stranger can see neither event.
+  const outsider = await request()
+    .post(`/api/calendar/events/${target.body._id}/attachments/copy-from/${eventId}`)
+    .set('Authorization', stranger.auth);
+  assert.equal(outsider.status, 404);
+
+  // An unknown SOURCE 404s even when the target is the caller's own.
+  const ghost = await request()
+    .post(`/api/calendar/events/${target.body._id}/attachments/copy-from/66aabbccddeeff0011223399`)
+    .set('Authorization', owner.auth);
+  assert.equal(ghost.status, 404);
+});

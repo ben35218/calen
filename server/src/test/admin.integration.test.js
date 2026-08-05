@@ -90,21 +90,24 @@ test('unlock override flips state and is audited', async () => {
 // Add-ons are owned household-wide (Household.addons); both admin list
 // surfaces carry the owned set so the portal can answer "which users have
 // which add-ons".
-test('billing and household lists carry the household add-on set', async () => {
-  await Household.updateOne(
-    { _id: plain.user.householdId },
-    { $set: { addons: ['trips', 'birthdays'] } }
-  );
+// Add-on ownership is per USER, so the billing table reports what each user BOUGHT
+// (it used to mirror the household's set onto every member, which couldn't tell a
+// buyer from someone who merely lives with one), while the households list reports
+// the UNION its members can actually use, with per-member provenance beside it.
+test('billing lists per-user add-on ownership; household lists the union', async () => {
+  await User.updateOne({ _id: plain.user._id }, { $set: { addons: ['trips', 'birthdays'] } });
 
   const users = await request().get('/api/monetization-config/users').set('Authorization', admin.auth);
   const row = users.body.find((u) => String(u._id) === String(plain.user._id));
-  assert.deepEqual(row.addons, ['trips', 'birthdays']);
+  assert.deepEqual(row.addons, ['trips', 'birthdays'], 'the buyer owns them');
   const adminRow = users.body.find((u) => String(u._id) === String(admin.user._id));
-  assert.deepEqual(adminRow.addons, [], 'households owning nothing list an empty set');
+  assert.deepEqual(adminRow.addons, [], 'a user who bought nothing owns nothing');
 
   const hhs = await request().get('/api/monetization-config/households').set('Authorization', admin.auth);
   const hh = hhs.body.find((h) => String(h._id) === String(plain.user.householdId));
-  assert.deepEqual(hh.addons, ['trips', 'birthdays']);
+  assert.deepEqual(hh.addons, ['trips', 'birthdays'], 'the household can use its members\' purchases');
+  const member = hh.members.find((m) => String(m._id) === String(plain.user._id));
+  assert.deepEqual(member.addons, ['trips', 'birthdays'], 'provenance: which member paid');
 });
 
 test('credit adjustment is ledgered and audited', async () => {

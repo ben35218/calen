@@ -1,4 +1,5 @@
 import { CalendarData, CalendarEvent, CalendarOccasion, Task, Chore } from '../api';
+import { formatDuration } from './format';
 
 // Default calendar category colors (mirrors CalendarView's `calendars`).
 export const CALENDAR_COLORS: Record<string, string> = {
@@ -29,6 +30,15 @@ export const EVENT_CALENDAR_TYPES = [
 
 export function eventColor(e: CalendarEvent): string {
   return colorOf(e.calendarType);
+}
+
+// Whether the event form opens with the cursor in its Title field. A blank
+// New Event does — the title is the one thing every event needs, so the
+// keyboard should already be up. An edit does not (the title is written), and
+// neither does a create the assistant prefilled ("Edit in form"), where the
+// user is reviewing filled fields rather than typing a title.
+export function shouldAutoFocusTitle(p: { eventId?: string; prefill?: unknown }): boolean {
+  return !p.eventId && !p.prefill;
 }
 
 // yyyy-MM-dd in the device's local timezone (uses local calendar components,
@@ -106,6 +116,155 @@ export function eventStoredFromWhen(w: EventWhen): { startDate: string; endDate?
     startDate: new Date(`${w.date}T${w.startTime}:00`).toISOString(),
     endDate: w.endTime ? new Date(`${endPart}T${w.endTime}:00`).toISOString() : undefined,
   };
+}
+
+// ── Event alerts ────────────────────────────────────────────────────────────
+// An event alert is stored as `reminderMinutes` — minutes before the event's
+// ALERT ANCHOR, which is not always the instant the record stores.
+//
+// A timed event's anchor is its start. An **all-day** event has no start time:
+// it stores both endpoints at noon UTC (above), so counting minutes back from
+// the stored value put every alert at whatever local hour the reader's UTC
+// offset happened to produce — "1 day before" fired at 5am in Los Angeles, 8am
+// in New York and 2pm in Berlin — and a "15 min before" alert described a
+// minute the event never had. So an all-day event's anchor is its own calendar
+// day at the user's day-alert time (Profile → Reminders `dayAlertTime`, 9am
+// unless changed): the same hour task, chore, occasion and holiday day-alerts
+// fire at. Its offsets are consequently whole days — 0 = the day itself at that
+// hour, 1440 = the day before at that hour — and the pickers offer only those.
+// The stored field stays minutes-before for both kinds, so nothing about the
+// record, the API or the seal changes with the event's all-day switch.
+
+export const DEFAULT_DAY_ALERT_TIME = '09:00';
+const MIN_PER_DAY = 1440;
+
+// Whole-day offsets offered on an all-day event, as minutes-before.
+export const ALL_DAY_ALERT_OFFSETS = [0, MIN_PER_DAY, 2 * MIN_PER_DAY, 7 * MIN_PER_DAY];
+
+// `HH:mm` → local hour/minute, falling back to 9am when unset or malformed.
+export function parseDayAlertTime(time?: string | null): { hour: number; minute: number } {
+  const m = /^(\d{1,2}):(\d{2})/.exec(time ?? '');
+  if (!m) return { hour: 9, minute: 0 };
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  return hour < 24 && minute < 60 ? { hour, minute } : { hour: 9, minute: 0 };
+}
+
+// "09:00" → "9:00 AM", for the alert labels that name the hour they fire at.
+export function dayAlertClock(time?: string | null): string {
+  const { hour, minute } = parseDayAlertTime(time);
+  return new Date(2000, 0, 1, hour, minute).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+// The instant an event's alerts count back from (see the note above).
+export function eventAlertAnchor(
+  e: { startDate: string; allDay?: boolean },
+  dayAlertTime?: string | null,
+): Date {
+  if (!e.allDay) return new Date(e.startDate);
+  const { hour, minute } = parseDayAlertTime(dayAlertTime);
+  const [y, m, d] = localDate(e.startDate).split('-').map(Number);
+  return new Date(y, m - 1, d, hour, minute, 0, 0);
+}
+
+// An existing minutes-before value moved onto the all-day grid: a sub-day
+// offset collapses onto the day itself (there is no hour left to count back
+// from), a longer one keeps its whole-day count.
+export function snapAlertToWholeDays(minutes?: number | null): number | null {
+  if (minutes == null) return null;
+  if (minutes < MIN_PER_DAY) return 0;
+  return Math.round(minutes / MIN_PER_DAY) * MIN_PER_DAY;
+}
+
+// Both alert slots re-based for a change to the All-day switch. Switching it
+// OFF changes nothing — every whole-day offset is a legal timed offset too.
+// Switching it ON snaps both, so an already-configured alert is carried onto
+// the day grid rather than silently left describing a time the event no longer
+// has; the second alert drops when it collapses onto the first, since the two
+// must stay distinct (a duplicate would fire the same notification twice).
+export function alertsForAllDay(
+  allDay: boolean,
+  alerts: { reminderMinutes: number | null; alert2Minutes: number | null },
+): { reminderMinutes: number | null; alert2Minutes: number | null } {
+  if (!allDay) return alerts;
+  const reminderMinutes = snapAlertToWholeDays(alerts.reminderMinutes);
+  const snapped2 = snapAlertToWholeDays(alerts.alert2Minutes);
+  return {
+    reminderMinutes,
+    alert2Minutes: reminderMinutes == null || snapped2 === reminderMinutes ? null : snapped2,
+  };
+}
+
+// An all-day event's alert as the picker and the detail view word it, naming
+// the hour it fires at: "On the day (9:00 AM)", "1 day before (9:00 AM)". A
+// value off the day grid — set before all-day alerts were day-based, or by an
+// older client — has no day wording, so it keeps the timed phrasing.
+export function allDayAlertLabel(minutes: number, dayAlertTime?: string | null): string {
+  if (minutes <= 0) return `On the day (${dayAlertClock(dayAlertTime)})`;
+  if (minutes % MIN_PER_DAY !== 0) return `${formatDuration(minutes)} before`;
+  const days = minutes / MIN_PER_DAY;
+  const base =
+    days % 7 === 0
+      ? `${days / 7} week${days === 7 ? '' : 's'} before`
+      : `${days} day${days === 1 ? '' : 's'} before`;
+  return `${base} (${dayAlertClock(dayAlertTime)})`;
+}
+
+// ── Occurrence anchoring ────────────────────────────────────────────────────
+// A repeating event is ONE stored record whose `startDate` is the series' first
+// day, but the user opens it from a calendar cell — the occurrence they tapped.
+// The form must show that occurrence's date (Apple does), so the three helpers
+// below move a when-block between the two frames:
+//
+//   seriesWhen --shift(+n)--> the occurrence the form displays
+//   formWhen   --shift(-n)--> back to the series frame, for a whole-series save
+//
+// Getting this wrong is not cosmetic: without the shift the form shows the
+// wrong day, and without the inverse a plain save drags the entire series onto
+// the occurrence the user happened to open.
+
+// Whole days from `a` to `b` (both yyyy-MM-dd). Both are read at local noon, so
+// a DST boundary between them can't round the difference to 0 or 2.
+export function daysBetween(a: string, b: string): number {
+  const at = new Date(`${a}T12:00:00`).getTime();
+  const bt = new Date(`${b}T12:00:00`).getTime();
+  return Math.round((bt - at) / 86400000);
+}
+
+// yyyy-MM-dd `days` after `day` (negative goes back). Local noon again, and the
+// result is read with local components so it never lands on the wrong UTC day.
+export function addDays(day: string, days: number): string {
+  const d = new Date(`${day}T12:00:00`);
+  d.setDate(d.getDate() + days);
+  return ymd(d);
+}
+
+// Move a form's when-block by whole days, preserving both clock times and the
+// start→end span. An empty `endDate` means "same day as the start" — it stays
+// empty, since the span is unchanged by a shift.
+export function shiftEventWhen(w: EventWhen, days: number): EventWhen {
+  if (!days) return w;
+  return {
+    ...w,
+    date: addDays(w.date, days),
+    endDate: w.endDate ? addDays(w.endDate, days) : '',
+  };
+}
+
+// How far the tapped occurrence sits from the series' own start. 0 when the
+// event doesn't repeat (the occurrence IS the series), when no occurrence day
+// was passed (opened from search), or when they're the same day.
+export function occurrenceShiftDays(
+  seriesWhen: EventWhen,
+  occurrenceDate: string | undefined,
+  recurring: boolean,
+): number {
+  if (!recurring || !occurrenceDate || occurrenceDate === seriesWhen.date) return 0;
+  return daysBetween(seriesWhen.date, occurrenceDate);
 }
 
 export interface DayItems {

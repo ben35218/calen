@@ -190,8 +190,12 @@ export type RootStackParamList = {
 
   // ----- Maintenance (item-centric) -----
   MaintenanceHome: undefined;
-  TaskDetail: { id: string };
-  TaskForm: { id?: string; itemId?: string; categoryId?: string };
+  // `date` = the occurrence the user tapped through from (yyyy-MM-dd), for a
+  // repeating task. It scopes "this occurrence only" edits and deletes the same
+  // way EventDetail/EventForm's `date` does; absent when opened from a list,
+  // where the whole series is the subject.
+  TaskDetail: { id: string; date?: string };
+  TaskForm: { id?: string; itemId?: string; categoryId?: string; date?: string };
   // `mode: 'multi'` = bulk multi-select flow (→ TaskTemplateReview); default is
   // single tap-to-create. `categoryName` filters the list to one category when
   // browsing templates for a known item. `itemId` links the single-tap task to
@@ -207,9 +211,10 @@ export type RootStackParamList = {
 
   // ----- Chores (separate flow) -----
   ChoresHome: undefined;
-  ChoreDetail: { id: string };
+  // `date`: same occurrence-scoping contract as TaskDetail above.
+  ChoreDetail: { id: string; date?: string };
   AddChore: undefined;
-  ChoreForm: { id?: string; prefill?: Record<string, unknown> };
+  ChoreForm: { id?: string; prefill?: Record<string, unknown>; date?: string };
   ChoreTemplates: undefined;
 
   // ----- Kitchen / meal planner -----

@@ -64,6 +64,11 @@ export const TASK_ENC = (p: Rec) => ({
   alertAudience: p.alertAudience, alertUserIds: p.alertUserIds, active: p.active,
   templateId: p.templateId, intervalKm: p.intervalKm,
   lastServiceKm: p.lastServiceKm, nextDueKm: p.nextDueKm,
+  // Set on a copy created by "Save for This … Only": the series it was detached
+  // from and the day it replaces. Sealed like everything else — the link exists
+  // so Resume can tell which upcoming days already have a standalone copy and
+  // leave those skipped rather than double-booking the day.
+  detachedFrom: p.detachedFrom, detachedDate: p.detachedDate,
 });
 
 export const CHORE_ENC = (p: Rec) => ({
@@ -73,6 +78,11 @@ export const CHORE_ENC = (p: Rec) => ({
   reminderTime: p.reminderTime,
   alertAudience: p.alertAudience, active: p.active, templateId: p.templateId,
   icon: p.icon,
+  // Set on a copy created by "Save for This … Only": the series it was detached
+  // from and the day it replaces. Sealed like everything else — the link exists
+  // so Resume can tell which upcoming days already have a standalone copy and
+  // leave those skipped rather than double-booking the day.
+  detachedFrom: p.detachedFrom, detachedDate: p.detachedDate,
 });
 
 export const RECIPE_ENC = (p: Rec) => ({

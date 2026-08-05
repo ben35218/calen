@@ -19,11 +19,13 @@ export function openAllDayItem(navigation: DayNav, item: AllDayItem, date: strin
     case 'trip':
       if (item.id) navigation.navigate('TripDetail', { id: item.id });
       break;
+    // Tasks and chores repeat, so they carry the tapped day through the same
+    // way events do — it's what scopes an edit or delete to this occurrence.
     case 'task':
-      if (item.id) navigation.navigate('TaskDetail', { id: item.id });
+      if (item.id) navigation.navigate('TaskDetail', { id: item.id, date });
       break;
     case 'chore':
-      if (item.id) navigation.navigate('ChoreDetail', { id: item.id });
+      if (item.id) navigation.navigate('ChoreDetail', { id: item.id, date });
       break;
     case 'recipe':
       if (item.id) navigation.navigate('RecipeDetail', { id: item.id });

@@ -9,6 +9,12 @@ const recurrenceSchema = new mongoose.Schema({
   dayOfMonth: Number,
   dayOfWeek: Number,
   weekOfMonth: Number,
+  // Per-occurrence scoping, mirroring CalendarEvent's recurrence. `skipDates`
+  // are YYYY-MM-DD occurrences struck out one at a time ("Delete This Chore
+  // Only"); `until` ends the series ("Delete All Future"). Both live INSIDE
+  // recurrence so the existing CHORE_ENC subset seals them with the rule.
+  skipDates: [String],
+  until: Date,
 }, { _id: false });
 
 const choreSchema = new mongoose.Schema({
@@ -30,6 +36,11 @@ const choreSchema = new mongoose.Schema({
   alertAudience:        { type: String, enum: ['everyone', 'owner'], default: 'everyone' },
   active:               { type: Boolean, default: true },
   templateId:           String,
+  // Set on a copy created by "Save for This … Only" (see maintenance.md): the
+  // series this was detached from and the day it stands in for. The link lets
+  // "Resume schedule" leave that day skipped instead of double-booking it.
+  detachedFrom:         { type: mongoose.Schema.Types.ObjectId },
+  detachedDate:         String,
   icon:                 { type: String, default: 'mdi-broom' },
   // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
   ...encFields,

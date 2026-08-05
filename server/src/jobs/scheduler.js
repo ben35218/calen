@@ -175,6 +175,14 @@ function alertsToday(item, todayStr) {
 }
 
 // ── Event reminders — every 15 min, precise per-occurrence ──────────────────
+//
+// Dormant: fanOutEventReminder returns early for E2EE households, which is now
+// every household, and the one-shot `reminderAt`/`alert2At` fields are no
+// longer written by any route. The math below therefore counts back from the
+// stored startDate for every event, including all-day ones — the rule that an
+// all-day event's alerts are whole days off the user's day-alert hour lives
+// on-device (mobile lib/calendar `eventAlertAnchor` + lib/notifications), the
+// only place reminders are actually computed post-drop.
 async function runEventReminderCheck() {
   if (!pushConfigured()) return;
   const now       = new Date();
@@ -303,7 +311,9 @@ async function runECardCheck() {
       const todayStr = localDateStr(tz);           // YYYY-MM-DD in the author's zone
       const [, moStr, dStr] = todayStr.split('-');
       if (Number(moStr) !== card.month || Number(dStr) !== card.day) continue;
-      const sendHour = parseInt(String(card.sendTime || '09:00').split(':')[0], 10) || 9;
+      // NB: `|| 9` would fold a midnight card (hour 0, falsy) back to 9am.
+      const parsedHour = parseInt(String(card.sendTime || '09:00').split(':')[0], 10);
+      const sendHour = Number.isInteger(parsedHour) ? parsedHour : 9;
       // Send at the first hourly tick AT OR AFTER the send hour on the occasion
       // day — so a card scheduled same-day past its hour, or one whose exact tick
       // was missed (deploy/downtime), still goes out that day. Deactivating the

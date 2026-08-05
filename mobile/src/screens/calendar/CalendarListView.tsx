@@ -346,10 +346,10 @@ const CalendarListView = forwardRef<TodayHandle, {
           );
         })}
         {day.tasks.map((t) => (
-          <ListItem key={t._id} icon={resolveTaskIcon(t.icon, typeof t.categoryId === 'object' ? t.categoryId?.name : null)} color={calColors.maintenance} title={t.title} subtitle="Maintenance task" onPress={() => nav.navigate('TaskDetail', { id: t._id })} />
+          <ListItem key={t._id} icon={resolveTaskIcon(t.icon, typeof t.categoryId === 'object' ? t.categoryId?.name : null)} color={calColors.maintenance} title={t.title} subtitle="Maintenance task" onPress={() => nav.navigate('TaskDetail', { id: t._id, date: selected })} />
         ))}
         {day.chores.map((c) => (
-          <ListItem key={c._id} icon={mdiName(c.icon)} color={calColors.chores} title={c.title} subtitle="Chore" onPress={() => nav.navigate('ChoreDetail', { id: c._id })} />
+          <ListItem key={c._id} icon={mdiName(c.icon)} color={calColors.chores} title={c.title} subtitle="Chore" onPress={() => nav.navigate('ChoreDetail', { id: c._id, date: selected })} />
         ))}
         {day.recipes.map((r, i) => (
           <ListItem key={`recipe-${i}`} icon="silverware-fork-knife" color={calColors.recipes} title={r.title} subtitle="Meal" onPress={() => (r.recipeId ? nav.navigate('RecipeDetail', { id: r.recipeId }) : nav.navigate('KitchenHome'))} />

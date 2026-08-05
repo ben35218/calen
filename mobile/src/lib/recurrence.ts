@@ -1,6 +1,7 @@
 // Shared recurrence logic ported from the web client. The web app duplicated
 // this `recurrenceLabel`/save-rebuild logic across TaskFormView, ChoreFormView,
 // TaskDetailView, ChoreDetailView, and the dashboards; here it lives once.
+import { seedDueDate } from '@household/calendar';
 import { Recurrence, IntervalUnit, RecurrenceType, FormAssistField } from '../api';
 import type { RepeatRule, WeekdayKind } from './eventRepeat';
 
@@ -475,6 +476,16 @@ export function applyRecurrenceAssistPatch(prev: RepeatRule, patch: Record<strin
     if (!next.freq) next.freq = 'yearly';
   }
   return next;
+}
+
+// The first due date a repeat rule implies, counting from `from` (today on a
+// form). Changing the Repeat row on a chore form reseeds Next Due Date from
+// this — a date the old cadence produced means nothing under the new one. A rule
+// with no frequency ("Does not repeat") implies no date and returns null, so
+// turning the repeat off leaves the date the user picked alone.
+export function dueDateForRule(rule: RepeatRule, from: Date = new Date()): Date | null {
+  const d = seedDueDate(ruleToRecurrence(rule), from);
+  return d ? new Date(d) : null;
 }
 
 export function ruleToRecurrence(rule: RepeatRule): Recurrence {

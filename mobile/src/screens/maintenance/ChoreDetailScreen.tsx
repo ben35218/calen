@@ -7,7 +7,10 @@ import { choresApi, peopleApi } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import { useAuth } from '../../store/auth';
 import { Button, Card, Screen, ListRow, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, InfoCard } from '../../components/ui';
-import { recurrenceLabel, dueInLabel, mdiName } from '../../lib/recurrence';
+import { recurrenceLabel, dueInLabel, mdiName, formatCalendarDate } from '../../lib/recurrence';
+import {
+  promptItemDelete, promptResumeSchedule, resumeState, resumeSubtitle, hasUpcomingOccurrence,
+} from '../../lib/repeatingItemScope';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
@@ -17,7 +20,9 @@ type Rt = RouteProp<MaintenanceStackParamList, 'ChoreDetail'>;
 
 export default function ChoreDetailScreen() {
   const navigation = useNavigation<Nav>();
-  const { id } = useRoute<Rt>().params;
+  // `date` = the occurrence tapped through from the calendar; absent when opened
+  // from the chores list, where the whole series is the subject.
+  const { id, date } = useRoute<Rt>().params;
   const qc = useQueryClient();
   const accent = useCalendarColors().colors.chores;
   const { user } = useAuth();
@@ -41,31 +46,54 @@ export default function ChoreDetailScreen() {
     qc.invalidateQueries({ queryKey: ['calendar'] });
   };
 
+  // The chosen action is the mutation's argument, so Delete keeps its pending
+  // state whichever scope the user picks — same shape as the event screens.
   const del = useMutation({
-    mutationFn: () => choresApi.delete(id),
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
     onSuccess: () => {
       invalidate();
       navigation.goBack();
     },
+    onError: (e: any) => Alert.alert("Couldn't delete chore", e?.response?.data?.error || 'Delete failed'),
   });
 
-  const confirmDelete = () =>
-    Alert.alert('Delete Chore', `Delete "${chore?.title}"? This cannot be undone.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
-    ]);
+  // Puts a skipped-down or ended series back to work from today. Same
+  // perform-as-argument shape as delete, so the row keeps a pending state.
+  const resume = useMutation({
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
+    onSuccess: invalidate,
+    onError: (e: any) => Alert.alert("Couldn't resume chore", e?.response?.data?.error || 'Please try again.'),
+  });
+
+  // A one-time chore confirms once; a repeating one offers Apple's "this
+  // occurrence" / "all future" choices against the day the user tapped.
+  const confirmDelete = () => {
+    if (!chore) return;
+    promptItemDelete('chore', chore, date, (perform) => del.mutate(perform));
+  };
 
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit chore" onPress={() => navigation.navigate('ChoreForm', { id })} />
+        <HeaderIconButton icon="pencil" accessibilityLabel="Edit chore" onPress={() => navigation.navigate('ChoreForm', { id, date })} />
       ),
     });
-  }, [navigation, id, chore?.title]);
+  }, [navigation, id, date, chore?.title]);
 
   if (choreQ.isLoading || !chore) {
     return <CenteredLoader color={accent} />;
   }
+
+  const resumeInfo = resumeState(chore);
+  // What the date row says. An ENDED series has no next due date, so reading the
+  // anchor would report it as long overdue ("7 months overdue") when it simply
+  // stopped. Keyed on having no occurrence left rather than on `until` merely
+  // being set — a series ending next month hasn't ended yet.
+  const dueRowTitle = date
+    ? dueInLabel(`${date}T12:00:00`)
+    : !hasUpcomingOccurrence(chore) && resumeInfo.endedOn
+      ? `Ended ${formatCalendarDate(resumeInfo.endedOn)}`
+      : dueInLabel(chore.nextDueDate);
 
   const a = chore.assignedTo;
   const assigneeId = !a ? null : typeof a === 'string' ? a : a._id;
@@ -90,9 +118,23 @@ export default function ChoreDetailScreen() {
 
       <InfoCard style={styles.infoCard}>
         <ListRow icon="person-outline" title={assignee || 'Unassigned'} />
-        <ListRow icon="calendar-outline" title={dueInLabel(chore.nextDueDate)} />
+        {/* The occurrence the user opened, not the series anchor — reading
+            nextDueDate straight would date every occurrence of a repeating
+            chore with the first one. */}
+        <ListRow icon="calendar-outline" title={dueRowTitle} />
         {chore.recurrence ? (
           <ListRow icon="repeat-outline" title={recurrenceLabel(chore.recurrence)} />
+        ) : null}
+        {/* Only when something is actually holding the series back. The subtitle
+            states WHY the chore looks the way it does, which is what makes the
+            action discoverable at all — see maintenance.md. */}
+        {resumeInfo.canResume ? (
+          <ListRow
+            icon="play-circle-outline"
+            title="Resume schedule"
+            subtitle={resumeSubtitle(resumeInfo)}
+            onPress={() => promptResumeSchedule('chore', chore, (perform) => resume.mutate(perform))}
+          />
         ) : null}
       </InfoCard>
 

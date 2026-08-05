@@ -5,7 +5,7 @@ import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, invitationsApi, placesApi, eventAttachmentsApi, EventAttachment, FormAssistField } from '../../api';
+import { calendarApi, invitationsApi, placesApi, eventAttachmentsApi, settingsApi, CalendarEvent, EventAttachment, FormAssistField } from '../../api';
 import { resolveCurrentAddressIfShared } from '../../lib/currentLocation';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
@@ -21,7 +21,11 @@ import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
-import { EVENT_CALENDAR_TYPES, ymd, eventWhenFromStored, eventStoredFromWhen } from '../../lib/calendar';
+import {
+  EVENT_CALENDAR_TYPES, ymd, eventWhenFromStored, eventStoredFromWhen, shouldAutoFocusTitle,
+  shiftEventWhen, occurrenceShiftDays,
+  ALL_DAY_ALERT_OFFSETS, DEFAULT_DAY_ALERT_TIME, allDayAlertLabel, alertsForAllDay,
+} from '../../lib/calendar';
 import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
@@ -31,7 +35,12 @@ import {
 import { getFeedEventById, FEED_EVENT_ID_PREFIX } from '../../lib/calendarFeeds';
 import { formatDuration } from '../../lib/format';
 import { excludeUsedAlert } from '../../lib/recurrence';
-import { eventDeletePrompt } from '../../lib/eventDelete';
+import { promptEventDelete } from '../../lib/eventDelete';
+import {
+  promptSaveScope, saveScopeDecision, isFirstOccurrence, seriesStartDay,
+  reanchorRecurrence, splitExceptionDates, shiftExceptionDates, exceptionShift,
+  SaveScope,
+} from '../../lib/eventSave';
 import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from '../../components/WheelPicker';
 import {
   getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees,
@@ -43,12 +52,16 @@ import { useTravelDraft, clearTravelDraft } from '../../lib/travelDraft';
 import { RepeatRule, WeekdayKind, isCustomRule, repeatSummary } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { useLocationDraft, clearLocationDraft } from '../../lib/locationDraft';
+import { rebindDetailBelow } from '../../navigation/rebindDetailBelow';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'EventForm'>;
 type Rt = RouteProp<CalendarStackParamList, 'EventForm'>;
 
+// Alert offsets for a TIMED event — minutes before its start. An all-day event
+// has no start time, so it gets the whole-day grid instead (ALL_DAY_ALERT_OFFSETS
+// in lib/calendar, labelled with the hour they fire at); see `alertItems`.
 const ALERT_OPTIONS = [
   { label: 'None', value: -1 },
   { label: 'At time of event', value: 0 },
@@ -112,14 +125,20 @@ function decomposeAlert(minutes: number | null): { amount: number; unit: AlertUn
 // two-adjacent-wheels layout did not. The unit has only 3 values, so a tap
 // control is both more robust and more discoverable than a second wheel.
 // Done emits plain "minutes before the event".
+//
+// `dayOnly` is the all-day event's sheet: minutes and hours would be counting
+// back from a start time the event doesn't have, so the unit is fixed to days
+// and the control that offers the other two is not rendered at all.
 function CustomAlertSheet({
   visible,
   initialMinutes,
+  dayOnly,
   onSave,
   onClose,
 }: {
   visible: boolean;
   initialMinutes: number | null;
+  dayOnly?: boolean;
   onSave: (minutes: number) => void;
   onClose: () => void;
 }) {
@@ -129,6 +148,12 @@ function CustomAlertSheet({
   // Reseed from the field's current value each time the sheet opens.
   useEffect(() => {
     if (!visible) return;
+    if (dayOnly) {
+      const days = Math.round((initialMinutes ?? UNIT_MINUTES.day) / UNIT_MINUTES.day);
+      setAmount(Math.min(Math.max(days, 1), AMOUNT_MAX.day));
+      setUnit('day');
+      return;
+    }
     const d = decomposeAlert(initialMinutes);
     setAmount(d.amount);
     setUnit(d.unit);
@@ -156,7 +181,7 @@ function CustomAlertSheet({
         />
         <Text style={styles.wheelUnit}>{UNIT_LABEL[unit]}</Text>
       </View>
-      <SegmentedControl<AlertUnit> value={unit} options={CUSTOM_UNITS} onChange={pickUnit} />
+      {dayOnly ? null : <SegmentedControl<AlertUnit> value={unit} options={CUSTOM_UNITS} onChange={pickUnit} />}
       <Button
         title="Done"
         onPress={() => {
@@ -288,12 +313,35 @@ export default function EventFormScreen() {
   // opening an event never rewrites its saved travel time — only a user edit to
   // the location or starting point does. Null for new events (no baseline).
   const travelSeedRef = useRef<{ location: string; fromAddress: string } | null>(null);
+  // The decrypted event this form is editing. Sealed fields the form doesn't
+  // surface (exceptionDates) must be read back from here and re-sent on save —
+  // `sealUpdate` seals the payload wholesale, so anything missing from it is
+  // erased from `enc`. Dropping exceptionDates resurrected every occurrence the
+  // user had deleted with "Delete This Event Only".
+  const decryptedRef = useRef<CalendarEvent | null>(null);
+  // Whole days between the series' own start and the occurrence the form was
+  // opened from (0 for a one-off, or when opened without an occurrence day).
+  // The form works in the occurrence's frame; a whole-series save shifts back.
+  const occurrenceShiftRef = useRef(0);
+  // Mirrors the `dirty` flag computed near the bottom of this component, so the
+  // save handler (declared above it) can read it without a forward reference.
+  const dirtyRef = useRef(false);
+  // Set when a scoped save's attachment copy failed, so onSuccess can say so.
+  // A failed copy must not fail the save the user already confirmed.
+  const attachmentCopyFailedRef = useRef(false);
   const [travelLoading, setTravelLoading] = useState(false);
   const [travelError, setTravelError] = useState('');
   // Set when the assistant asked for a "time to leave" alert before the drive
   // time was known; resolved to reminderMinutes once travel time computes.
   const [pendingLeaveAlert, setPendingLeaveAlert] = useState(false);
   const assist = useFormAssist();
+
+  // The hour an all-day event's alerts fire at: the account-level day-alert
+  // default shared with tasks, chores, occasions and holidays (Profile →
+  // Reminders). Cached by react-query, so this is the same fetch those screens
+  // already make. Its label ("9:00 AM") rides on every all-day alert option.
+  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
+  const dayAlertTime = settingsQ.data?.dayAlertTime || DEFAULT_DAY_ALERT_TIME;
 
   // The Calendar picker: built-ins minus any the user deleted from the
   // Calendars view (the event's current calendar always stays offered, so old
@@ -311,10 +359,28 @@ export default function EventFormScreen() {
     const opts = [...builtIns, ...customs];
     return opts.length ? opts : EVENT_CALENDAR_TYPES;
   }, [customCalendars, deletedDefaults, form.calendarType]);
-  // The assistant's Calendar select must offer the same set.
+  // The assistant's Calendar select must offer the same set — and on an all-day
+  // event its Alert select must offer the whole-day grid, not minute offsets the
+  // event can't honour.
   const assistFields = useMemo<FormAssistField[]>(
-    () => ASSIST_FIELDS.map((f) => (f.name === 'calendarType' ? { ...f, options: calendarOptions } : f)),
-    [calendarOptions]
+    () =>
+      ASSIST_FIELDS.map((f) => {
+        if (f.name === 'calendarType') return { ...f, options: calendarOptions };
+        if (f.name === 'reminderMinutes' && form.allDay) {
+          return {
+            ...f,
+            label: 'Alert',
+            description:
+              'All-day event: alerts are whole days before it, delivered at the user\'s day-alert time. 0 = on the day itself.',
+            options: [
+              { label: 'None', value: -1 },
+              ...ALL_DAY_ALERT_OFFSETS.map((v) => ({ value: v, label: allDayAlertLabel(v, dayAlertTime) })),
+            ],
+          };
+        }
+        return f;
+      }),
+    [calendarOptions, form.allDay, dayAlertTime]
   );
 
   // Manual edits clear the "AI changed this" highlight for the touched fields.
@@ -465,6 +531,21 @@ export default function EventFormScreen() {
         setPendingLeaveAlert(true);
       }
     }
+
+    // Whatever the patch set, an all-day event's alerts must land on the whole
+    // -day grid — the assistant can ask for "15 minutes before" on an event
+    // with no start time, and turning all-day on in the same patch has to
+    // re-base the alerts already in the form.
+    if (effectiveAllDay) {
+      const merged = {
+        reminderMinutes: 'reminderMinutes' in next ? (next.reminderMinutes ?? null) : form.reminderMinutes,
+        alert2Minutes: 'alert2Minutes' in next ? (next.alert2Minutes ?? null) : form.alert2Minutes,
+      };
+      const snapped = alertsForAllDay(true, merged);
+      if (snapped.reminderMinutes !== merged.reminderMinutes) next.reminderMinutes = snapped.reminderMinutes;
+      if (snapped.alert2Minutes !== merged.alert2Minutes) next.alert2Minutes = snapped.alert2Minutes;
+    }
+
     setForm((f) => ({ ...f, ...next }));
     assist.mark(noHighlight ? changedKeys.filter((k) => !noHighlight.includes(k)) : changedKeys);
   };
@@ -628,11 +709,35 @@ export default function EventFormScreen() {
     return `${lh % 12 || 12}:${String(lm).padStart(2, '0')} ${ampm}`;
   }, [form.travelMinutes, form.allDay, form.startTime]);
 
-  // Alert options. When a drive time is available on a timed event, prepend a
-  // set of departure-relative choices so the user can be alerted when it's time
-  // to leave — or a chosen number of minutes before that. `reminderMinutes` is
+  // Alert options.
+  //
+  // An ALL-DAY event has no start time, so minute offsets have nothing to count
+  // back from: its alerts are whole days off the day-alert hour (see the alert
+  // note in lib/calendar), and that is the only list it may be offered — the
+  // minute list would be describing a time the event doesn't have. Travel time
+  // is meaningless there too, which is why the departure options below are
+  // already all-day-gated.
+  //
+  // On a TIMED event, when a drive time is available, prepend a set of
+  // departure-relative choices so the user can be alerted when it's time to
+  // leave — or a chosen number of minutes before that. `reminderMinutes` is
   // stored as "minutes before the event", so leaving early = travelMinutes + buffer.
   const alertItems = useMemo(() => {
+    if (form.allDay) {
+      const items = [
+        { label: 'None', value: -1 },
+        ...ALL_DAY_ALERT_OFFSETS.map((v) => ({ value: v, label: allDayAlertLabel(v, dayAlertTime) })),
+      ];
+      // A saved value off the grid — a custom day count, or a minute offset
+      // carried by an event saved before all-day alerts became day-based —
+      // still needs a row, or the field would fall back to its placeholder.
+      for (const v of [form.reminderMinutes, form.alert2Minutes]) {
+        if (v == null || items.some((i) => i.value === v)) continue;
+        items.push({ value: v, label: allDayAlertLabel(v, dayAlertTime) });
+      }
+      items.push({ label: 'Custom…', value: CUSTOM_ALERT });
+      return items;
+    }
     const leaveItems: { value: number; label: string }[] = [];
     if (form.travelMinutes && !form.allDay) {
       const buffers = [0, 5, 10, 15, 30]; // minutes before departure
@@ -662,7 +767,7 @@ export default function EventFormScreen() {
     }
     items.push({ label: 'Custom…', value: CUSTOM_ALERT });
     return items;
-  }, [form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes]);
+  }, [form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes, dayAlertTime]);
 
   // Repeat options + the select's value. A custom rule ("every 2 weeks on
   // Monday") selects the Custom row and labels it with the rule's summary.
@@ -714,15 +819,21 @@ export default function EventFormScreen() {
       // E2EE dual-write: prefer decrypted content, falling back to plaintext.
       const e = await openRecord('CalendarEvent', eventQ.data);
       if (cancelled) return;
+      decryptedRef.current = e;
+      // Timed events must be read back in the device's local zone (date AND
+      // clock), all-day ones in UTC — `eventWhenFromStored` is the inverse of
+      // the `eventStoredFromWhen` the save runs through, so reopening a saved
+      // event is a fixed point. Slicing the ISO date instead would read the
+      // UTC day and step an 11:05pm event forward one day per edit.
+      const seriesWhen = eventWhenFromStored(e);
+      // A repeating event's record starts on the series' FIRST day, but the user
+      // tapped one occurrence — show that one, the way Apple does. The save
+      // shifts back for a whole-series write (see buildStartEnd).
+      occurrenceShiftRef.current = occurrenceShiftDays(seriesWhen, date, !!e.recurrence?.freq);
       set({
         title: e.title ?? '',
         calendarType: e.calendarType ?? 'activities',
-        // Timed events must be read back in the device's local zone (date AND
-        // clock), all-day ones in UTC — `eventWhenFromStored` is the inverse of
-        // the `eventStoredFromWhen` the save runs through, so reopening a saved
-        // event is a fixed point. Slicing the ISO date instead would read the
-        // UTC day and step an 11:05pm event forward one day per edit.
-        ...eventWhenFromStored(e),
+        ...shiftEventWhen(seriesWhen, occurrenceShiftRef.current),
         description: e.description ?? '',
         location: e.location ?? '',
         placeId: (e as { placeId?: string }).placeId ?? '',
@@ -765,12 +876,21 @@ export default function EventFormScreen() {
 
   // Form date/time state → the ISO instants the API stores (all-day at noon UTC,
   // timed events as the local wall clock's real instant).
-  const buildStartEnd = () => eventStoredFromWhen(form);
+  // `frame` picks which event the instants describe. 'occurrence' is what the
+  // form literally shows — the day the user opened — and is what a detached
+  // override or a forked series starts on. 'series' shifts back onto the stored
+  // record's own start, for a save that rewrites the whole repeating event in
+  // place; without it, saving from the third occurrence would drag the entire
+  // series forward onto that day.
+  const buildStartEnd = (frame: 'occurrence' | 'series' = 'occurrence') =>
+    eventStoredFromWhen(frame === 'series' ? shiftEventWhen(form, -occurrenceShiftRef.current) : form);
 
   // The decrypted event content an invitation carries (email + .ics + the
   // recipient's copy) — the server can't read an E2EE event's own fields.
+  // Describes the stored record, so it reads the series frame (identical to the
+  // occurrence frame for a new event, where the shift is 0).
   const buildSnapshot = () => {
-    const { startDate, endDate } = buildStartEnd();
+    const { startDate, endDate } = buildStartEnd('series');
     return {
       title: form.title.trim(),
       description: form.description || undefined,
@@ -783,82 +903,173 @@ export default function EventFormScreen() {
     };
   };
 
+  // Everything the form knows, expressed in one frame. 'series' rewrites the
+  // stored record in place; 'occurrence' describes the single day the user is
+  // looking at, which is where a detached override or a forked series begins.
+  const buildPayload = (frame: 'occurrence' | 'series'): Record<string, unknown> => {
+    const { startDate, endDate } = buildStartEnd(frame);
+    return {
+      title: form.title.trim(),
+      calendarType: form.calendarType,
+      allDay: form.allDay,
+      startDate,
+      endDate,
+      description: form.description || undefined,
+      location: form.location || undefined,
+      placeId: form.placeId || undefined,
+      url: form.url || undefined,
+      phone: form.phone || undefined,
+      // null (not undefined) so turning travel time off clears the stored
+      // values on update — the route skips undefined fields.
+      travelMinutes: form.travelEnabled ? form.travelMinutes ?? null : null,
+      travelDistanceKm: form.travelEnabled ? form.travelDistanceKm ?? null : null,
+      // Sealed event content (C3b) set on the Invitees screen; the draft store
+      // is seeded from the fetched event on edit, so re-sealing here preserves
+      // the current value instead of wiping it from `enc`.
+      guestListVisible: getDraftGuestListVisible(),
+      reminderMinutes: form.reminderMinutes ?? undefined,
+      alert2Minutes:
+        form.reminderMinutes !== null && form.alert2Minutes !== null ? form.alert2Minutes : undefined,
+      recurrence: form.recurrFreq
+        ? {
+            freq: form.recurrFreq,
+            interval: form.recurrInterval > 1 ? form.recurrInterval : undefined,
+            daysOfWeek:
+              form.recurrFreq === 'weekly' && form.recurrDaysOfWeek.length ? form.recurrDaysOfWeek : undefined,
+            daysOfMonth:
+              form.recurrFreq === 'monthly' && form.recurrDaysOfMonth.length ? form.recurrDaysOfMonth : undefined,
+            months: form.recurrFreq === 'yearly' && form.recurrMonths.length ? form.recurrMonths : undefined,
+            // The ordinal rule rides with monthly "on the…" or yearly months.
+            weekOfMonth:
+              (form.recurrFreq === 'monthly' && !form.recurrDaysOfMonth.length) ||
+              (form.recurrFreq === 'yearly' && form.recurrMonths.length)
+                ? form.recurrWeekOfMonth ?? undefined
+                : undefined,
+            weekdayKind:
+              (form.recurrFreq === 'monthly' && !form.recurrDaysOfMonth.length) ||
+              (form.recurrFreq === 'yearly' && form.recurrMonths.length)
+                ? form.recurrWeekdayKind ?? undefined
+                : undefined,
+            // End of the chosen local day, so the last occurrence is included.
+            until: form.recurrUntil ? new Date(`${form.recurrUntil}T23:59:59`).toISOString() : undefined,
+          }
+        : undefined,
+      // Occurrences the user removed with "Delete This Event Only". The form
+      // never surfaces them, but the seal replaces the whole blob — omit them
+      // and every deleted occurrence comes back on the next edit. Dropped
+      // entirely once the event no longer repeats (nothing left to except).
+      exceptionDates: form.recurrFreq ? decryptedRef.current?.exceptionDates : undefined,
+    };
+  };
+
+  // Seal a payload the right way for its calendar and write it. Signal-parity
+  // D1: an event on an outside-shared calendar we hold a CalendarKey for seals
+  // under that key (enc.ks='cal') so collaborators can read it — no plaintext
+  // feed. Otherwise it dual-writes under the HDK.
+  const writeEvent = async (payload: Record<string, unknown>, targetId?: string) => {
+    const calType = String(payload.calendarType);
+    let useCalKey = false;
+    if (calType.startsWith('custom-')) {
+      await loadCalendarKeys(calType).catch(() => {});
+      useCalKey = currentCalendarKeyVersion(calType) > 0;
+    }
+    if (targetId) {
+      const sealed = useCalKey
+        ? await sealForCalendar('CalendarEvent', targetId, calType, payload)
+        : null;
+      const body = sealed ? { ...payload, ...sealed } : await sealUpdate('CalendarEvent', targetId, payload);
+      return calendarApi.updateEvent(targetId, body);
+    }
+    if (useCalKey) {
+      const _id = await newObjectId();
+      const sealed = await sealForCalendar('CalendarEvent', _id, calType, payload);
+      if (sealed) return calendarApi.createEvent({ _id, ...payload, ...sealed });
+    }
+    return calendarApi.createEvent(await sealNew('CalendarEvent', payload));
+  };
+
+  // Attachments hang off the event id, so a detached override or a forked series
+  // starts with none. Copy them across — for a fork especially, since the fork
+  // becomes the ongoing series and would otherwise drop the files from every
+  // future occurrence. Never fatal: the record is already written by this point,
+  // so a failure is reported rather than rolled back.
+  const copyAttachments = async (fromId: string, toId: string) => {
+    try {
+      await eventAttachmentsApi.copyFrom(toId, fromId);
+    } catch {
+      attachmentCopyFailedRef.current = true;
+    }
+  };
+
   const save = useMutation({
-    mutationFn: async () => {
-      const allDay = form.allDay;
-      const { startDate, endDate } = buildStartEnd();
-      const payload: Record<string, unknown> = {
-        title: form.title.trim(),
-        calendarType: form.calendarType,
-        allDay,
-        startDate,
-        endDate,
-        description: form.description || undefined,
-        location: form.location || undefined,
-        placeId: form.placeId || undefined,
-        url: form.url || undefined,
-        phone: form.phone || undefined,
-        // null (not undefined) so turning travel time off clears the stored
-        // values on update — the route skips undefined fields.
-        travelMinutes: form.travelEnabled ? form.travelMinutes ?? null : null,
-        travelDistanceKm: form.travelEnabled ? form.travelDistanceKm ?? null : null,
-        // Sealed event content (C3b) set on the Invitees screen; the draft store
-        // is seeded from the fetched event on edit, so re-sealing here preserves
-        // the current value instead of wiping it from `enc`.
-        guestListVisible: getDraftGuestListVisible(),
-        reminderMinutes: form.reminderMinutes ?? undefined,
-        alert2Minutes:
-          form.reminderMinutes !== null && form.alert2Minutes !== null ? form.alert2Minutes : undefined,
-        recurrence: form.recurrFreq
-          ? {
-              freq: form.recurrFreq,
-              interval: form.recurrInterval > 1 ? form.recurrInterval : undefined,
-              daysOfWeek:
-                form.recurrFreq === 'weekly' && form.recurrDaysOfWeek.length ? form.recurrDaysOfWeek : undefined,
-              daysOfMonth:
-                form.recurrFreq === 'monthly' && form.recurrDaysOfMonth.length ? form.recurrDaysOfMonth : undefined,
-              months: form.recurrFreq === 'yearly' && form.recurrMonths.length ? form.recurrMonths : undefined,
-              // The ordinal rule rides with monthly "on the…" or yearly months.
-              weekOfMonth:
-                (form.recurrFreq === 'monthly' && !form.recurrDaysOfMonth.length) ||
-                (form.recurrFreq === 'yearly' && form.recurrMonths.length)
-                  ? form.recurrWeekOfMonth ?? undefined
-                  : undefined,
-              weekdayKind:
-                (form.recurrFreq === 'monthly' && !form.recurrDaysOfMonth.length) ||
-                (form.recurrFreq === 'yearly' && form.recurrMonths.length)
-                  ? form.recurrWeekdayKind ?? undefined
-                  : undefined,
-              // End of the chosen local day, so the last occurrence is included.
-              until: form.recurrUntil ? new Date(`${form.recurrUntil}T23:59:59`).toISOString() : undefined,
-            }
-          : undefined,
-      };
-      // Signal-parity D1: an event on an outside-shared calendar we hold a
-      // CalendarKey for seals under that key (enc.ks='cal') so collaborators can
-      // read it — no plaintext feed. Otherwise it dual-writes under the HDK.
-      const calType = String(payload.calendarType);
-      let useCalKey = false;
-      if (calType.startsWith('custom-')) {
-        await loadCalendarKeys(calType).catch(() => {});
-        useCalKey = currentCalendarKeyVersion(calType) > 0;
+    // The scope the user picked in the save sheet (see onSave). A create, a
+    // one-off edit, and an edit made from the series' first occurrence all
+    // arrive here as 'series' without ever showing the sheet.
+    mutationFn: async (scope: SaveScope = 'series') => {
+      const editing = decryptedRef.current;
+      // "Save for Future Events" chosen ON the series' first occurrence has
+      // nothing behind it to preserve: truncating the original would leave an
+      // empty husk beside the fork. The whole-series rewrite IS that outcome, so
+      // the choice resolves to it here — the sheet still asked, because the user
+      // is applying a change to every future event either way.
+      const futureIsWholeSeries =
+        scope === 'future' && !!editing && isFirstOccurrence(editing, date);
+      if (!isEdit || scope === 'series' || futureIsWholeSeries) {
+        return writeEvent(buildPayload('series'), isEdit ? eventId! : undefined);
       }
-      // E2EE dual-write: send ciphertext alongside plaintext (no-op without an HDK).
-      if (isEdit) {
-        const sealed = useCalKey
-          ? await sealForCalendar('CalendarEvent', eventId!, calType, payload)
-          : null;
-        const body = sealed ? { ...payload, ...sealed } : await sealUpdate('CalendarEvent', eventId!, payload);
-        return calendarApi.updateEvent(eventId!, body);
+
+      const original = decryptedRef.current!;
+      // The occurrence the user opened, in the series' own day-keying. Both
+      // writes below hinge on it: it's the day excluded or truncated from the
+      // original, and the anchor the fork's exceptions are measured from.
+      const occDay = date || seriesStartDay(original);
+      const payload = buildPayload('occurrence');
+      const newStartDay = form.date;
+
+      if (scope === 'occurrence') {
+        // "Save for This Event Only": a standalone event on this day, and the
+        // day struck out of the series. A detached override doesn't repeat, so
+        // it carries neither a rule nor exceptions of its own.
+        payload.recurrence = undefined;
+        payload.exceptionDates = undefined;
+        const created = await writeEvent(payload);
+        await copyAttachments(original._id, created.data._id);
+        try {
+          await calendarApi.excludeOccurrence(original._id, occDay);
+        } catch (e) {
+          // The override exists but the series still shows this day — two
+          // events on one cell. Undo the half that landed rather than leave the
+          // duplicate behind.
+          await calendarApi.deleteEvent(created.data._id).catch(() => {});
+          throw e;
+        }
+        return created;
       }
-      if (useCalKey) {
-        const _id = await newObjectId();
-        const sealed = await sealForCalendar('CalendarEvent', _id, calType, payload);
-        if (sealed) return calendarApi.createEvent({ _id, ...payload, ...sealed });
+
+      // "Save for Future Events": end the old series the day before this
+      // occurrence and start a new one here carrying the edits.
+      const { forked } = splitExceptionDates(original.exceptionDates, occDay);
+      payload.recurrence = reanchorRecurrence(
+        payload.recurrence as Parameters<typeof reanchorRecurrence>[0],
+        occDay,
+        newStartDay,
+      );
+      // Exceptions ride along, moved by however far the user dragged this
+      // occurrence — a skipped day is relative to the series it belongs to.
+      payload.exceptionDates = shiftExceptionDates(forked, exceptionShift(occDay, newStartDay));
+      const created = await writeEvent(payload);
+      await copyAttachments(original._id, created.data._id);
+      try {
+        await calendarApi.truncateSeries(original._id, occDay);
+      } catch (e) {
+        // Same rollback: without the truncation the old series still covers
+        // these days, so the fork would double every remaining occurrence.
+        await calendarApi.deleteEvent(created.data._id).catch(() => {});
+        throw e;
       }
-      return calendarApi.createEvent(await sealNew('CalendarEvent', payload));
+      return created;
     },
-    onSuccess: async (res) => {
+    onSuccess: async (res, scope) => {
       // A new event sends the invitees queued on its Invitees screen — a draft
       // has no event id, so this is the first moment invitations CAN go out.
       // Emails post in parallel; each phone entry opens the Messages composer
@@ -887,9 +1098,28 @@ export default function EventFormScreen() {
           );
         }
       }
+      if (attachmentCopyFailedRef.current) {
+        attachmentCopyFailedRef.current = false;
+        Alert.alert(
+          'Attachments didn’t copy',
+          'The event was saved, but its attachments stayed on the original event. Open it to re-attach them.',
+        );
+      }
       qc.invalidateQueries({ queryKey: ['calendar'] });
       allowLeave();
-      navigation.goBack();
+      // An occurrence override or a series fork wrote a NEW record and left the
+      // original excepted/truncated, so the detail screen under this form is
+      // still bound to the old id and day — going straight back would show the
+      // unedited event (and, after an override, a day the series no longer has).
+      // Rebind it to what was just saved.
+      // Keyed on the id actually written rather than on the chosen scope, since
+      // "future" from the first occurrence resolves to a whole-series rewrite and
+      // creates nothing new.
+      if (isEdit && res.data?._id && res.data._id !== eventId) {
+        rebindDetailBelow(navigation, 'EventDetail', { eventId: res.data._id, date: form.date });
+      } else {
+        navigation.goBack();
+      }
     },
     // Surface save failures (e.g. the E2EE write-guard rejecting a locked save)
     // as a prominent alert rather than easily-missed inline text at the bottom.
@@ -1054,7 +1284,30 @@ export default function EventFormScreen() {
       return;
     }
     setError('');
-    save.mutate();
+    const original = decryptedRef.current;
+    // A create, or an event we couldn't decrypt, has no series to scope against.
+    if (!isEdit || !original) {
+      save.mutate('series');
+      return;
+    }
+    // The form's own dirty flag decides whether there is anything to scope —
+    // it compares the live form to the baseline it seeded with, which is a
+    // truer "did the user change something" than diffing the built payload
+    // (a timed event with no stored end acquires a default one on the way out,
+    // and that alone would prompt on an untouched save).
+    if (!dirtyRef.current) {
+      save.mutate('series');
+      return;
+    }
+    const decision = saveScopeDecision(original, buildPayload('series'));
+    if (decision.kind === 'none') {
+      save.mutate('series');
+      return;
+    }
+    // Cancel resolves to null: stay on the form with the edits intact.
+    promptSaveScope(decision, (scope) => {
+      if (scope) save.mutate(scope);
+    });
   };
 
   // Delete from the edit form: a one-off event confirms once; a recurring one
@@ -1062,17 +1315,8 @@ export default function EventFormScreen() {
   // (eventQ.data) so the recurrence + start day are the real ones, and `date`
   // (the occurrence the form was opened from) as the target occurrence.
   const onDelete = () => {
-    if (!eventQ.data) return;
-    const { title, message, choices } = eventDeletePrompt(eventQ.data, date);
-    Alert.alert(
-      title,
-      message,
-      choices.map((c) => ({
-        text: c.text,
-        style: c.style,
-        onPress: c.perform ? () => del.mutate(c.perform!) : undefined,
-      })),
-    );
+    if (!decryptedRef.current) return;
+    promptEventDelete(decryptedRef.current, date, (perform) => del.mutate(perform));
   };
 
   // The active calendar's colour, tinting this area's accents (save check, the
@@ -1103,6 +1347,10 @@ export default function EventFormScreen() {
     ((baselineRef.current !== null && JSON.stringify(form) !== baselineRef.current) ||
       (!isEdit && (queuedInvitees.length > 0 || queuedAttachments.length > 0)));
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
+  // `onSave` is declared above this line but only ever runs from a tap, by which
+  // point the ref holds the current render's value. It reads dirtiness to decide
+  // whether a repeating event's save needs the scope sheet at all.
+  dirtyRef.current = dirty;
 
   if (isEdit && eventQ.isLoading) {
     return <CenteredLoader color={cal[form.calendarType] || colors.primary} />;
@@ -1209,6 +1457,9 @@ export default function EventFormScreen() {
           value={form.title}
           onChangeText={(v) => set({ title: v })}
           placeholder="Title"
+          // A new event opens straight into the title with the keyboard up
+          // (blank creates only — see shouldAutoFocusTitle).
+          autoFocus={shouldAutoFocusTitle({ eventId, prefill })}
           // Explicit: the keyboard must open shifted so the first letter of a
           // title is capitalized without reaching for shift (RN's documented
           // 'sentences' default doesn't survive to the native field here).
@@ -1246,7 +1497,17 @@ export default function EventFormScreen() {
       {/* All day / Starts / Ends / Travel Time grouped card */}
       <View style={formStyles.groupCard}>
         <View style={formStyles.groupPad}>
-          <SwitchRow label="All day" value={form.allDay} onValueChange={(v) => set({ allDay: v })} color={accent} highlight={assist.changed.has('allDay')} />
+          {/* Switching All day on re-bases any configured alerts onto the whole
+              -day grid — the event loses the start time they were counting back
+              from, so leaving them as-is would keep firing them at an hour the
+              event no longer has. */}
+          <SwitchRow
+            label="All day"
+            value={form.allDay}
+            onValueChange={(v) => set({ allDay: v, ...alertsForAllDay(v, form) })}
+            color={accent}
+            highlight={assist.changed.has('allDay')}
+          />
         </View>
         <View style={formStyles.cardDivider} />
         <View style={formStyles.dtRow}>
@@ -1456,6 +1717,7 @@ export default function EventFormScreen() {
 
       <CustomAlertSheet
         visible={customFor !== null}
+        dayOnly={form.allDay}
         initialMinutes={customFor ? form[customFor] : null}
         onSave={(minutes) => {
           if (customFor) set({ [customFor]: minutes } as Partial<typeof form>);

@@ -17,13 +17,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { notificationsApi, settingsApi, CalendarData } from '../api';
 import { loadCalendarData } from './calendarData';
+import { eventAlertAnchor } from './calendar';
 import { getPrivacyPrefs } from './privacyPrefs';
 import {
   getAlertMutedCalendarIds, getOccasionAlertPrefs, OccasionAlertPrefs,
   getHolidayAlertPrefs, getHolidayCalendars, holidayEnabledIds, HolidayAlertPrefs,
 } from './calendarPrefs';
 import { getHolidays } from './holidays';
-import { occasionTitle, occasionNoun } from './occasions';
+import { occasionTitle } from './occasions';
 
 // Foreground notification behavior (applies to local reminders and any push).
 Notifications.setNotificationHandler({
@@ -46,6 +47,45 @@ const DAY_ALERT_CACHE_KEY = 'hc_day_alert_time';
 const RUN_LOG_KEY = 'hc_reminder_run_log';
 
 interface Reminder { at: Date; title: string; body: string; }
+
+// ── Lead-time wording ───────────────────────────────────────────────────────
+//
+// A reminder's body is the lead time alone — "15 minutes", "Tomorrow" — not a
+// static label and not a sentence. The notification title already names the
+// record and the banner already reads as a reminder, so both the old fixed body
+// ("Upcoming event") and a verb phrase ("Starts in 15 minutes") spend a line on
+// words the user doesn't need. The phrase is measured from the moment the
+// notification fires to the moment it is about, so it stays true no matter when
+// the window is rescheduled.
+
+// Whole days ahead → "Today" / "Tomorrow" / "3 days" / "2 weeks".
+// Day-based alerts (tasks, chores, occasions, holidays) are configured in whole
+// days, so this takes the offset directly rather than re-deriving it from two
+// timestamps (the fire time is a wall-clock hour, the due date is date-only —
+// subtracting them would round badly across a DST boundary).
+export function dayLeadPhrase(days: number): string {
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  if (days % 7 === 0) {
+    const weeks = days / 7;
+    return `${weeks} week${weeks === 1 ? '' : 's'}`;
+  }
+  return `${days} days`;
+}
+
+// Minutes ahead → "Now" / "15 minutes" / "1 hour" / "2 days".
+// Event alerts are minutes-before, and every value the pickers can produce is a
+// whole number of minutes, hours, or days (the Custom sheet's amount + unit), so
+// the coarser units divide cleanly.
+export function leadPhrase(minutes: number): string {
+  if (minutes <= 0) return 'Now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  if (minutes < 1440) {
+    const hours = Math.round(minutes / 60);
+    return `${hours} hour${hours === 1 ? '' : 's'}`;
+  }
+  return dayLeadPhrase(Math.round(minutes / 1440));
+}
 
 // One enabled holiday on one holiday calendar, inside the rolling window.
 // Holidays are never server records — every device computes them from
@@ -98,15 +138,16 @@ function dueDateStr(value: unknown): string | null {
 
 // Day-based alert(s) for a task/chore: (dueDate − reminderDaysBefore) at the
 // item's reminderTime (falling back to the account default), plus the optional
-// second offset. Mirrors scheduler.js `alertsToday`.
-function pushDayAlerts(out: Reminder[], item: { nextDueDate?: string | Date; reminderDaysBefore?: number | null; alert2DaysBefore?: number | null; reminderTime?: string | null; title: string }, body: string, now: number, dayDefault: { hour: number; minute: number }) {
+// second offset. Mirrors scheduler.js `alertsToday`. Each alert's body is its own
+// lead time, so the two offsets on one item read "1 week" and "Today".
+function pushDayAlerts(out: Reminder[], item: { nextDueDate?: string | Date; reminderDaysBefore?: number | null; alert2DaysBefore?: number | null; reminderTime?: string | null; title: string }, now: number, dayDefault: { hour: number; minute: number }) {
   const dueStr = dueDateStr(item.nextDueDate);
   if (!dueStr) return;
   const { hour, minute } = alertHourMinute(item.reminderTime, dayDefault);
   for (const off of [item.reminderDaysBefore, item.alert2DaysBefore]) {
     if (off == null) continue;
     const at = atLocalHour(dateStrMinusDays(dueStr, off), hour, minute);
-    if (at.getTime() > now) out.push({ at, title: item.title, body });
+    if (at.getTime() > now) out.push({ at, title: item.title, body: dayLeadPhrase(off) });
   }
 }
 
@@ -115,7 +156,8 @@ function pushDayAlerts(out: Reminder[], item: { nextDueDate?: string | Date; rem
 // their events are skipped entirely. `occasionPrefs` = the calendar-level alert
 // config for the Occasions calendar (offsets + time); defaults noon day-of + 2wk.
 // `dayAlertTime` = the user's account-level day-based default (`HH:mm`); unset
-// falls back to 9am (ALERT_HOUR). `holidayAlerts` = the alert config shared by
+// falls back to 9am (ALERT_HOUR). It is also the hour an ALL-DAY event's alerts
+// count back from, since such an event has no start time of its own. `holidayAlerts` = the alert config shared by
 // every holiday calendar plus the window's holidays (see HolidayReminderItem);
 // omitted or empty-offset means no holiday reminders, which is the default.
 export function computeReminders(
@@ -132,16 +174,25 @@ export function computeReminders(
   for (const e of data.events) {
     if (!e.startDate) continue;
     if (mutedCalendarIds?.has(e.calendarType)) continue;
-    const start = new Date(e.startDate).getTime();
+    // A timed event's alerts count back from its start; an all-day event has no
+    // start time, so they count back from the day-alert hour on its own date
+    // (lib/calendar `eventAlertAnchor`). Counting back from the stored noon-UTC
+    // instant instead made every all-day alert land at an arbitrary local hour
+    // set by the reader's UTC offset. All-day offsets are whole days, so their
+    // lead phrase is day-based ("Today"/"Tomorrow"), never "15 minutes".
+    const anchor = eventAlertAnchor(e, dayAlertTime).getTime();
     for (const mins of [e.reminderMinutes, e.alert2Minutes]) {
       if (mins == null) continue;
-      const at = new Date(start - mins * 60000);
-      if (at.getTime() > now) out.push({ at, title: e.title, body: 'Upcoming event' });
+      const at = new Date(anchor - mins * 60000);
+      if (at.getTime() > now) {
+        const body = e.allDay ? dayLeadPhrase(Math.round(mins / 1440)) : leadPhrase(mins);
+        out.push({ at, title: e.title, body });
+      }
     }
   }
   // The Maintenance/Chores calendars' Alerts switch mutes their day alerts too.
-  if (!mutedCalendarIds?.has('maintenance')) for (const t of data.tasks) pushDayAlerts(out, t, 'Maintenance due', now, dayDefault);
-  if (!mutedCalendarIds?.has('chores')) for (const c of data.chores) pushDayAlerts(out, c, 'Chore due', now, dayDefault);
+  if (!mutedCalendarIds?.has('maintenance')) for (const t of data.tasks) pushDayAlerts(out, t, now, dayDefault);
+  if (!mutedCalendarIds?.has('chores')) for (const c of data.chores) pushDayAlerts(out, c, now, dayDefault);
 
   // Occasions (birthdays + labeled contact dates) share ONE calendar-level alert
   // config: each configured offset fires at the shared time (default: noon on the
@@ -154,10 +205,10 @@ export function computeReminders(
       for (const off of prefs.offsets) {
         const at = atLocalHour(dateStrMinusDays(o.date, off), hour, minute);
         if (at.getTime() <= now) continue;
-        // On the day → announce it; earlier → an upcoming heads-up.
+        // On the day → announce it; earlier → an upcoming heads-up. The title
+        // already names the occasion, so the body is just its lead time.
         const title = off === 0 ? occasionTitle(o) : `Upcoming: ${occasionTitle(o)}`;
-        const body = off === 0 ? occasionNoun(o) : `${occasionNoun(o)} on ${o.date}`;
-        out.push({ at, title, body });
+        out.push({ at, title, body: dayLeadPhrase(off) });
       }
     }
   }
@@ -176,7 +227,7 @@ export function computeReminders(
         out.push({
           at,
           title: off === 0 ? h.name : `Upcoming: ${h.name}`,
-          body: off === 0 ? 'Holiday' : `Holiday on ${h.date}`,
+          body: dayLeadPhrase(off),
         });
       }
     }

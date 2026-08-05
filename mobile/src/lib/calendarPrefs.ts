@@ -10,7 +10,13 @@ import {
   CountryCode,
 } from './holidays';
 import { applyCalendarColorOverrides } from './calendar';
-import { customCalendarsApi, CustomCalendarRecord, CalendarAccess } from '../api';
+import {
+  customCalendarsApi,
+  settingsApi,
+  CustomCalendarRecord,
+  CalendarAccess,
+  CalendarPrefsPayload,
+} from '../api';
 
 // AsyncStorage-backed equivalents of the web's localStorage singletons
 // (hc_calendar_visibility / hc_holiday_enabled). A tiny subscriber store keeps
@@ -30,6 +36,8 @@ const HOL_CALS_KEY = 'hc_holiday_calendars';
 const HOL_MIGRATED_KEY = 'hc_holiday_cals_migrated';
 // The built-in id the single Holidays calendar used before per-country calendars.
 const LEGACY_HOLIDAY_ID = 'canadian-holidays';
+// User-chosen colour overrides (calendar id → hex). A CACHE of an account
+// setting, not a device setting — see hydrateAccountPrefsFromServer.
 const COLORS_KEY = 'hc_calendar_colors';
 // User-chosen display order for calendars (a list of calendar ids). Sparse:
 // ids not listed fall back to their natural order after the listed ones, so a
@@ -53,14 +61,17 @@ const DENSITY_KEY = 'hc_month_density';
 const DAY_VIEW_KEY = 'hc_day_view_mode';
 // Calendar-level alert config for the Occasions calendar (birthdays + labeled
 // contact dates). One config for the whole calendar — no per-occasion override.
-// Device-local; on-device reminders (lib/notifications) read it. Defaults: an
-// alert at NOON the day of the occasion AND one 2 weeks (14 days) before.
+// On-device reminders (lib/notifications) read it. Defaults: an alert at NOON
+// the day of the occasion AND one 2 weeks (14 days) before.
+//
+// This key (and the holiday one below) is a CACHE of an account setting, not a
+// device setting — see hydrateAccountPrefsFromServer.
 const OCCASION_ALERTS_KEY = 'hc_occasion_alert_prefs';
 // Alert config shared by EVERY holiday calendar the user has (one config, not
 // one per country — a person who wants a heads-up for holidays wants it for all
-// of them). Device-local, same shape as the occasion prefs. Defaults to OFF:
-// holidays are numerous, and silently filling the rolling reminder window with
-// them would crowd out the user's own events.
+// of them). Same shape as the occasion prefs. Defaults to OFF: holidays are
+// numerous, and silently filling the rolling reminder window with them would
+// crowd out the user's own events.
 const HOLIDAY_ALERTS_KEY = 'hc_holiday_alert_prefs';
 
 // The built-in calendars the user may delete from the Calendars view (and add
@@ -294,6 +305,11 @@ let densityState: MonthDensity | null = null;
 let dayViewState: DayViewMode | null = null;
 let occasionAlertState: OccasionAlertPrefs | null = null;
 let holidayAlertState: HolidayAlertPrefs | null = null;
+// Whether the effective colour map is final enough to PAINT with — see
+// markPrefsReady / useCalendarPrefsReady. Distinct from `loaded` (the cache
+// read finished): on a device with no cached arrangement it also waits for the
+// account's first server pass, because there the cache holds nothing to paint.
+let prefsReady = false;
 const visSubs = new Set<() => void>();
 const colorSubs = new Set<() => void>();
 const orderSubs = new Set<() => void>();
@@ -304,6 +320,7 @@ const densitySubs = new Set<() => void>();
 const dayViewSubs = new Set<() => void>();
 const occasionAlertSubs = new Set<() => void>();
 const holidayAlertSubs = new Set<() => void>();
+const readySubs = new Set<() => void>();
 let loaded = false;
 
 // Best-effort country from the device locale (e.g. "en-CA" → CA). Only used
@@ -424,6 +441,17 @@ async function migrateVacationsToTrips() {
 //     account to the next on a shared device.
 // Mirrors the replica/cursor wipe in the auth store's logout, and is called
 // from it. Marking `loaded = false` re-arms ensureLoaded for the next session.
+//
+// Because the wipe is permanent, anything the USER chose here needs a durable
+// home on the account or the wipe is the end of it: the calendars themselves
+// have one (their server records), the alert configs have one (User.
+// occasionAlerts / .holidayAlerts), and the arrangement — colours, order,
+// visibility, deleted built-ins, muted alerts — now has one too
+// (User.calendarPrefs; see hydrateAccountPrefsFromServer). Adding a new
+// user-facing pref to this list without a server counterpart re-creates the
+// bug: it silently reverts to its default on the next sign-in. The two view
+// modes (DENSITY_KEY, DAY_VIEW_KEY) are the deliberate exception — which layout
+// this device last displayed is device state, like a scroll position.
 const ACCOUNT_KEYS = [
   VIS_KEY, HOL_KEY, HOL_DISABLED_KEY, HOL_COUNTRY_KEY, HOL_CALS_KEY, HOL_MIGRATED_KEY,
   COLORS_KEY, ORDER_KEY, CUSTOM_KEY, CUSTOM_SYNCED_KEY, DELETED_DEFAULTS_KEY,
@@ -433,6 +461,7 @@ const ACCOUNT_KEYS = [
 
 export async function resetCalendarPrefs(): Promise<void> {
   loaded = false;
+  prefsReady = false;
   customState = null;
   customServerLoaded = false;
   visState = null;
@@ -444,6 +473,10 @@ export async function resetCalendarPrefs(): Promise<void> {
   dayViewState = null;
   occasionAlertState = null;
   holidayAlertState = null;
+  // Also invalidates any hydration still in flight, so the account being signed
+  // OUT of can't land its alert configs or its arrangement on the next one.
+  alertPrefsEditSeq++;
+  calPrefsEditSeq++;
   pendingLocalHolidayCals = [];
   freshHolidaySeed = false;
   // Repaint every subscriber against the cleared state, so nothing keeps
@@ -458,15 +491,73 @@ export async function resetCalendarPrefs(): Promise<void> {
   dayViewSubs.forEach((fn) => fn());
   occasionAlertSubs.forEach((fn) => fn());
   holidayAlertSubs.forEach((fn) => fn());
+  readySubs.forEach((fn) => fn());
   await AsyncStorage.multiRemove(ACCOUNT_KEYS).catch(() => {});
+}
+
+// ── First-paint readiness ───────────────────────────────────────────────────
+// Every calendar surface resolves its colours through this module, and until
+// the load below lands `colorOf`/`useCalendarColors` answer with the app
+// DEFAULTS. Painting first and recolouring after is what the user sees as
+// "the calendar comes up in the wrong colours for a second" — so the app holds
+// its splash until this flips (RootNavigator), and the first frame of the grid
+// is already the user's arrangement.
+//
+// Two ways to be ready, because there are two sources:
+//   - the device cache (the common case, a warm launch) — ready as soon as the
+//     single multiGet below resolves;
+//   - the ACCOUNT (User.calendarPrefs + the custom-calendar list), when this
+//     device has no cached arrangement at all. That is exactly the first launch
+//     after a sign-in, where sign-out wiped ACCOUNT_KEYS: the cache holds
+//     nothing, so waiting on the cache alone would still paint defaults and
+//     recolour when the fetch lands. Capped (FIRST_PAINT_SERVER_MS) so a slow
+//     or dead network costs a bounded wait, never a stuck splash.
+const FIRST_PAINT_SERVER_MS = 2000;
+
+// Whether the device already holds the account's arrangement, i.e. whether the
+// colour map the cache read produced can be painted as-is. `custom` counts on
+// its own: custom/subscribed/holiday calendars carry their own colour, and its
+// cache is written on every refresh (even for an empty list), so its presence
+// means this account has loaded here before. Exported for tests.
+export function arrangementCachedOnDevice(rawColors: string | null, rawCustom: string | null): boolean {
+  return rawColors !== null || rawCustom !== null;
+}
+
+function markPrefsReady() {
+  if (prefsReady) return;
+  prefsReady = true;
+  readySubs.forEach((fn) => fn());
+}
+
+// The keys ensureLoaded reads, fetched in ONE AsyncStorage round trip. Reading
+// them one `await getItem` at a time (as this did) is ~15 sequential bridge
+// hops before anything can paint — the other half of the wrong-colour flash,
+// and the reason the load didn't finish inside the splash it now gates.
+const LOAD_KEYS = [
+  VIS_KEY, HOL_MIGRATED_KEY, HOL_CALS_KEY, HOL_COUNTRY_KEY, HOL_DISABLED_KEY, HOL_KEY,
+  COLORS_KEY, ORDER_KEY, DELETED_DEFAULTS_KEY, DEFAULT_ALERTS_OFF_KEY,
+  OCCASION_ALERTS_KEY, HOLIDAY_ALERTS_KEY, CUSTOM_KEY, DENSITY_KEY, DAY_VIEW_KEY,
+];
+
+async function readLoadKeys(): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = Object.fromEntries(LOAD_KEYS.map((k) => [k, null]));
+  try {
+    for (const [key, value] of await AsyncStorage.multiGet(LOAD_KEYS)) out[key] = value ?? null;
+  } catch {
+    // Storage unavailable — every key reads as absent and the defaults stand.
+  }
+  return out;
 }
 
 async function ensureLoaded() {
   if (loaded) return;
   loaded = true;
+  // Runs first: it REWRITES some of the keys below, so the read has to see the
+  // migrated data.
   await migrateVacationsToTrips();
+  const raw = await readLoadKeys();
   try {
-    const rawVis = await AsyncStorage.getItem(VIS_KEY);
+    const rawVis = raw[VIS_KEY];
     const saved: VisMap = rawVis ? JSON.parse(rawVis) : {};
     const vis = defaultVis();
     // If saved predates the holidays calendar, keep all visible (matches web).
@@ -484,10 +575,10 @@ async function ensureLoaded() {
   // stored empty array is respected (the user removed their holidays); only a
   // truly-absent key seeds the detected country.
   try {
-    if (await AsyncStorage.getItem(HOL_MIGRATED_KEY)) {
+    if (raw[HOL_MIGRATED_KEY]) {
       pendingLocalHolidayCals = [];
     } else {
-      const rawCals = await AsyncStorage.getItem(HOL_CALS_KEY);
+      const rawCals = raw[HOL_CALS_KEY];
       if (rawCals) {
         const parsed = JSON.parse(rawCals);
         pendingLocalHolidayCals = (Array.isArray(parsed) ? parsed : [])
@@ -504,16 +595,14 @@ async function ensureLoaded() {
         // Pre-per-country install: migrate the single global Holidays calendar
         // (or seed one for the detected country on a fresh install).
         let country: CountryCode = detectCountry();
-        try {
-          const rawCountry = await AsyncStorage.getItem(HOL_COUNTRY_KEY);
-          if (COUNTRIES.some((c) => c.code === rawCountry)) country = rawCountry as CountryCode;
-        } catch {}
+        const rawCountry = raw[HOL_COUNTRY_KEY];
+        if (COUNTRIES.some((c) => c.code === rawCountry)) country = rawCountry as CountryCode;
         let legacyDisabled: string[] = [];
         try {
-          const rawDisabled = await AsyncStorage.getItem(HOL_DISABLED_KEY);
+          const rawDisabled = raw[HOL_DISABLED_KEY];
           if (rawDisabled) legacyDisabled = JSON.parse(rawDisabled);
           else {
-            const rawHol = await AsyncStorage.getItem(HOL_KEY);
+            const rawHol = raw[HOL_KEY];
             legacyDisabled = migrateLegacyEnabledList(rawHol ? JSON.parse(rawHol) : null) ?? [];
           }
         } catch {}
@@ -536,20 +625,20 @@ async function ensureLoaded() {
     pendingLocalHolidayCals = [];
   }
   try {
-    const rawCol = await AsyncStorage.getItem(COLORS_KEY);
+    const rawCol = raw[COLORS_KEY];
     colorOverrideState = rawCol ? JSON.parse(rawCol) : {};
   } catch {
     colorOverrideState = {};
   }
   try {
-    const rawOrder = await AsyncStorage.getItem(ORDER_KEY);
+    const rawOrder = raw[ORDER_KEY];
     const parsedOrder = rawOrder ? JSON.parse(rawOrder) : [];
     orderState = Array.isArray(parsedOrder) ? parsedOrder.filter((id: unknown) => typeof id === 'string') : [];
   } catch {
     orderState = [];
   }
   try {
-    const rawDeleted = await AsyncStorage.getItem(DELETED_DEFAULTS_KEY);
+    const rawDeleted = raw[DELETED_DEFAULTS_KEY];
     const parsedDeleted = rawDeleted ? JSON.parse(rawDeleted) : [];
     deletedDefaultsState = Array.isArray(parsedDeleted)
       ? parsedDeleted.filter((id: string) => DELETABLE_DEFAULT_IDS.includes(id))
@@ -558,7 +647,7 @@ async function ensureLoaded() {
     deletedDefaultsState = [];
   }
   try {
-    const rawAlertsOff = await AsyncStorage.getItem(DEFAULT_ALERTS_OFF_KEY);
+    const rawAlertsOff = raw[DEFAULT_ALERTS_OFF_KEY];
     const parsedAlertsOff = rawAlertsOff ? JSON.parse(rawAlertsOff) : [];
     defaultAlertsOffState = Array.isArray(parsedAlertsOff)
       ? parsedAlertsOff.filter((id: string) => DELETABLE_DEFAULT_IDS.includes(id))
@@ -567,7 +656,7 @@ async function ensureLoaded() {
     defaultAlertsOffState = [];
   }
   try {
-    const rawOcc = await AsyncStorage.getItem(OCCASION_ALERTS_KEY);
+    const rawOcc = raw[OCCASION_ALERTS_KEY];
     const parsedOcc = rawOcc ? JSON.parse(rawOcc) : null;
     occasionAlertState = parsedOcc && Array.isArray(parsedOcc.offsets) && typeof parsedOcc.time === 'string'
       ? { offsets: parsedOcc.offsets.filter((n: unknown) => typeof n === 'number'), time: parsedOcc.time }
@@ -576,7 +665,7 @@ async function ensureLoaded() {
     occasionAlertState = { ...DEFAULT_OCCASION_ALERTS };
   }
   try {
-    const rawHol = await AsyncStorage.getItem(HOLIDAY_ALERTS_KEY);
+    const rawHol = raw[HOLIDAY_ALERTS_KEY];
     const parsedHol = rawHol ? JSON.parse(rawHol) : null;
     holidayAlertState = parsedHol && Array.isArray(parsedHol.offsets) && typeof parsedHol.time === 'string'
       ? { offsets: parsedHol.offsets.filter((n: unknown) => typeof n === 'number'), time: parsedHol.time }
@@ -585,7 +674,7 @@ async function ensureLoaded() {
     holidayAlertState = { ...DEFAULT_HOLIDAY_ALERTS };
   }
   try {
-    const rawCustom = await AsyncStorage.getItem(CUSTOM_KEY);
+    const rawCustom = raw[CUSTOM_KEY];
     const parsed = rawCustom ? JSON.parse(rawCustom) : [];
     // Older caches predate household/outside sharing, server backing, and
     // access levels — normalize legacy shapes (plain id/email arrays) and
@@ -603,7 +692,7 @@ async function ensureLoaded() {
     customState = [];
   }
   try {
-    const rawDensity = await AsyncStorage.getItem(DENSITY_KEY);
+    const rawDensity = raw[DENSITY_KEY];
     densityState = DENSITIES.includes(rawDensity as MonthDensity)
       ? (rawDensity as MonthDensity)
       : DEFAULT_DENSITY;
@@ -611,7 +700,7 @@ async function ensureLoaded() {
     densityState = DEFAULT_DENSITY;
   }
   try {
-    const rawDayView = await AsyncStorage.getItem(DAY_VIEW_KEY);
+    const rawDayView = raw[DAY_VIEW_KEY];
     dayViewState = DAY_VIEWS.includes(rawDayView as DayViewMode)
       ? (rawDayView as DayViewMode)
       : DEFAULT_DAY_VIEW;
@@ -630,8 +719,41 @@ async function ensureLoaded() {
   occasionAlertSubs.forEach((fn) => fn());
   holidayAlertSubs.forEach((fn) => fn());
   // The cache painted instantly; now pull the server truth (incl. calendars
-  // housemates shared with us) in the background.
-  void refreshCustomCalendars();
+  // housemates shared with us) in the background — and, for the arrangement and
+  // the alert configs, the account settings the cache above only mirrors (see
+  // hydrateAccountPrefsFromServer).
+  const firstServerPass = Promise.all([
+    refreshCustomCalendars(),
+    hydrateAccountPrefsFromServer(),
+  ]);
+  if (arrangementCachedOnDevice(raw[COLORS_KEY], raw[CUSTOM_KEY])) {
+    // The cache IS the arrangement — paint now; the pass above only corrects it
+    // (another device's edit), which is not a first-paint concern.
+    markPrefsReady();
+  } else {
+    // Nothing cached (the first launch after a sign-in): the account is the only
+    // source of the colours, so give the pass a bounded moment to land before
+    // painting rather than showing defaults and recolouring a second later.
+    let cap: ReturnType<typeof setTimeout>;
+    void Promise.race([
+      firstServerPass,
+      new Promise((resolve) => { cap = setTimeout(resolve, FIRST_PAINT_SERVER_MS); }),
+    ])
+      .then(markPrefsReady, markPrefsReady)
+      .finally(() => clearTimeout(cap));
+  }
+}
+
+// Write the visibility map to the device cache AND the account. Every mutation
+// the USER makes to visibility goes through here — the map is account state
+// (see calendarPrefs), so a cache-only write is lost at the next sign-out.
+// The two one-time migrations that rewrite the map (the legacy single-Holidays
+// id, and the holiday-calendar upload) deliberately don't: they're local cache
+// repairs, and pushing from them would make an in-flight hydration read its own
+// response as stale.
+function saveVis() {
+  AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
+  pushCalendarPrefs();
 }
 
 // Persist + broadcast a new custom-calendar list (cache and colour plumbing).
@@ -754,6 +876,248 @@ export async function refreshCustomCalendars(): Promise<void> {
   }
 }
 
+// ── Account-backed prefs: the truth is the account, the device holds a cache ─
+// The Occasions and holiday alert configs are ACCOUNT settings (User.
+// occasionAlerts / .holidayAlerts, carried on `/settings`), with the two
+// AsyncStorage keys above as their warm cache. They have to be: the cache is
+// account state, so sign-out wipes it with the rest of ACCOUNT_KEYS — which
+// meant a user who set holiday alerts, backed out of every screen, and later
+// signed out and back in found them off again, with nothing left to restore
+// them from. The server copy also carries the settings to a second device.
+//
+// The calendar ARRANGEMENT (User.calendarPrefs) is the same story and was fixed
+// the same way: recolouring the Chores calendar, reordering the list, hiding a
+// calendar or deleting a built-in wrote only to AsyncStorage, so the sign-out
+// wipe reverted every one of them to the app defaults on the next sign-in.
+//
+// Sanitize a config off the wire — the same normalisation the setters apply, so
+// a hand-edited or legacy value can't schedule nonsense. Returns null when the
+// account has none stored (never configured).
+function normalizeAlertPrefs(value: unknown, fallbackTime: string): AlertPrefsShape | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as { offsets?: unknown; time?: unknown };
+  if (!Array.isArray(raw.offsets)) return null;
+  const offsets = [...new Set(
+    raw.offsets.filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+  )].sort((a, b) => a - b);
+  const time = typeof raw.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(raw.time)
+    ? raw.time
+    : fallbackTime;
+  return { offsets, time };
+}
+
+type AlertPrefsShape = { offsets: number[]; time: string };
+const samePrefs = (a: AlertPrefsShape | null, b: AlertPrefsShape | null) =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+// Bumped by every local edit to either config, so an in-flight hydration can
+// tell that what it fetched is already stale (see hydrateAccountPrefsFromServer).
+let alertPrefsEditSeq = 0;
+// The same guard for the calendar arrangement, counted separately: recolouring
+// a calendar while the fetch is in flight must not also stop the account's
+// alert configs from landing (and vice versa).
+let calPrefsEditSeq = 0;
+
+// The device's current arrangement, in the shape `/settings` carries. Sparse by
+// construction: only deviations from the app defaults appear, so a calendar the
+// user never touched isn't mentioned and one added later takes the defaults.
+function calendarPrefsPayload(): CalendarPrefsPayload {
+  const vis = visState ?? {};
+  return {
+    colors: { ...colorOverrideState },
+    order: [...(orderState ?? [])],
+    // Visible is the default, so only the calendars turned OFF are carried.
+    hidden: Object.keys(vis).filter((id) => vis[id] === false),
+    deletedDefaults: [...(deletedDefaultsState ?? [])],
+    alertsOff: [...(defaultAlertsOffState ?? [])],
+  };
+}
+
+// Persist the arrangement to the account. Every setter that changes colours,
+// order, visibility, deleted built-ins or muted alerts calls this — the
+// AsyncStorage write beside it is only the warm cache. Best-effort: offline,
+// the cache still reflects the change and the next edit re-uploads the whole
+// arrangement (the payload is absolute, not a delta, so a dropped push can't
+// leave the account holding a half-applied state).
+function pushCalendarPrefs() {
+  calPrefsEditSeq++;
+  settingsApi.update({ calendarPrefs: calendarPrefsPayload() }).catch(() => {});
+}
+
+// Sanitize a list of calendar ids off the wire.
+function cleanIdList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((id): id is string => typeof id === 'string' && !!id);
+}
+
+// Adopt the account's stored arrangement over this device's, and seed the
+// account from the device for anything it has never stored. Field by field: an
+// ABSENT field means the account has no opinion yet (so this device's choice
+// becomes it — the upgrade path for a user whose colours predate this being
+// server-backed), while a PRESENT-but-empty one is a real value the user
+// arrived at ("nothing hidden", "no overrides") and must win over the cache.
+function adoptCalendarPrefs(remote: unknown) {
+  const r = (remote && typeof remote === 'object' && !Array.isArray(remote)
+    ? remote
+    : null) as CalendarPrefsPayload | null;
+  const seed: CalendarPrefsPayload = {};
+  let colorsChanged = false;
+  let orderChanged = false;
+  let visChanged = false;
+  let deletedChanged = false;
+  let alertsOffChanged = false;
+
+  const rawColors = r?.colors;
+  if (rawColors && typeof rawColors === 'object' && !Array.isArray(rawColors)) {
+    const next: ColorMap = {};
+    for (const [id, hex] of Object.entries(rawColors)) {
+      if (typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex)) next[id] = hex;
+    }
+    if (JSON.stringify(next) !== JSON.stringify(colorOverrideState)) {
+      colorOverrideState = next;
+      AsyncStorage.setItem(COLORS_KEY, JSON.stringify(next)).catch(() => {});
+      colorsChanged = true;
+    }
+  } else if (Object.keys(colorOverrideState).length) {
+    seed.colors = { ...colorOverrideState };
+  }
+
+  const order = cleanIdList(r?.order);
+  if (order) {
+    if (JSON.stringify(order) !== JSON.stringify(orderState ?? [])) {
+      orderState = order;
+      AsyncStorage.setItem(ORDER_KEY, JSON.stringify(order)).catch(() => {});
+      orderChanged = true;
+    }
+  } else if ((orderState ?? []).length) {
+    seed.order = [...orderState!];
+  }
+
+  const hidden = cleanIdList(r?.hidden);
+  const localHidden = Object.keys(visState ?? {}).filter((id) => visState![id] === false);
+  if (hidden) {
+    if (JSON.stringify([...hidden].sort()) !== JSON.stringify([...localHidden].sort())) {
+      // Rebuild rather than patch: visible is the default for every id, so the
+      // account's hidden list fully determines the map (an id it doesn't name
+      // is visible, which is also how absent ids read — `visibility[id] !==
+      // false` at every call site).
+      const next = defaultVis();
+      for (const id of hidden) next[id] = false;
+      visState = next;
+      AsyncStorage.setItem(VIS_KEY, JSON.stringify(next)).catch(() => {});
+      visChanged = true;
+    }
+  } else if (localHidden.length) {
+    seed.hidden = localHidden;
+  }
+
+  const deleted = cleanIdList(r?.deletedDefaults)?.filter((id) => DELETABLE_DEFAULT_IDS.includes(id));
+  if (deleted) {
+    if (JSON.stringify(deleted) !== JSON.stringify(deletedDefaultsState ?? [])) {
+      deletedDefaultsState = deleted;
+      AsyncStorage.setItem(DELETED_DEFAULTS_KEY, JSON.stringify(deleted)).catch(() => {});
+      deletedChanged = true;
+    }
+  } else if ((deletedDefaultsState ?? []).length) {
+    seed.deletedDefaults = [...deletedDefaultsState!];
+  }
+
+  const alertsOff = cleanIdList(r?.alertsOff);
+  if (alertsOff) {
+    if (JSON.stringify(alertsOff) !== JSON.stringify(defaultAlertsOffState ?? [])) {
+      defaultAlertsOffState = alertsOff;
+      AsyncStorage.setItem(DEFAULT_ALERTS_OFF_KEY, JSON.stringify(alertsOff)).catch(() => {});
+      alertsOffChanged = true;
+    }
+  } else if ((defaultAlertsOffState ?? []).length) {
+    seed.alertsOff = [...defaultAlertsOffState!];
+  }
+
+  if (Object.keys(seed).length) settingsApi.update({ calendarPrefs: seed }).catch(() => {});
+
+  if (colorsChanged) {
+    syncColorOverrides();
+    colorSubs.forEach((fn) => fn());
+  }
+  if (orderChanged) orderSubs.forEach((fn) => fn());
+  if (visChanged) visSubs.forEach((fn) => fn());
+  if (deletedChanged) deletedSubs.forEach((fn) => fn());
+  if (alertsOffChanged) defaultAlertsSubs.forEach((fn) => fn());
+  // A muted-alerts change moves which events the on-device scheduler may
+  // notify for, so the rolling reminder window has to be rebuilt.
+  return alertsOffChanged;
+}
+
+// Adopt the account's stored alert configs (or seed the account from this
+// device when it has none). Fire-and-forget from ensureLoaded: the cache has
+// already painted, so this only corrects it.
+//
+// The seed direction matters for the upgrade path — a user who configured
+// alerts BEFORE the settings were server-backed has them only on this device,
+// and the server's `null` means "never configured", not "off". Uploading the
+// device's non-default config in that case is what carries those settings
+// forward instead of quietly dropping them on the next sign-out.
+async function hydrateAccountPrefsFromServer(): Promise<void> {
+  // An edit made WHILE the fetch is in flight is newer than anything it can
+  // return, so it wins — adopting the response over it would put the user's
+  // alerts back to what they just changed them from.
+  const seq = alertPrefsEditSeq;
+  const calSeq = calPrefsEditSeq;
+  let data: { occasionAlerts?: unknown; holidayAlerts?: unknown; calendarPrefs?: unknown };
+  try {
+    ({ data } = await settingsApi.get());
+  } catch {
+    return; // offline / signed out — the cache stands; the next load retries.
+  }
+  // The arrangement is guarded on its own counter, so an alert edit in flight
+  // doesn't hold back the colours (or the reverse).
+  let changed = calPrefsEditSeq === calSeq && adoptCalendarPrefs(data?.calendarPrefs);
+  if (alertPrefsEditSeq !== seq) {
+    if (changed) rebuildReminderWindow();
+    return;
+  }
+  const adopt = (
+    server: unknown,
+    local: AlertPrefsShape | null,
+    defaults: AlertPrefsShape,
+    apply: (next: AlertPrefsShape) => void,
+    field: 'occasionAlerts' | 'holidayAlerts'
+  ) => {
+    const remote = normalizeAlertPrefs(server, defaults.time);
+    if (remote) {
+      if (!samePrefs(remote, local)) {
+        apply(remote);
+        changed = true;
+      }
+    } else if (local && !samePrefs(local, defaults)) {
+      // Nothing stored for the account yet: this device's own choice becomes it.
+      settingsApi.update({ [field]: local }).catch(() => {});
+    }
+  };
+  adopt(data?.occasionAlerts, occasionAlertState, DEFAULT_OCCASION_ALERTS, (next) => {
+    occasionAlertState = next;
+    AsyncStorage.setItem(OCCASION_ALERTS_KEY, JSON.stringify(next)).catch(() => {});
+    occasionAlertSubs.forEach((fn) => fn());
+  }, 'occasionAlerts');
+  adopt(data?.holidayAlerts, holidayAlertState, DEFAULT_HOLIDAY_ALERTS, (next) => {
+    holidayAlertState = next;
+    AsyncStorage.setItem(HOLIDAY_ALERTS_KEY, JSON.stringify(next)).catch(() => {});
+    holidayAlertSubs.forEach((fn) => fn());
+  }, 'holidayAlerts');
+  // The prefs the reminder window was last built from just changed under it
+  // (a fresh sign-in, or another device's edit), so rebuild it.
+  if (changed) rebuildReminderWindow();
+}
+
+// Rebuild the rolling on-device reminder window. Lazy require: lib/notifications
+// imports THIS module, and pulls in expo-notifications.
+function rebuildReminderWindow() {
+  try {
+    const { rescheduleReminders } = require('./notifications') as typeof import('./notifications');
+    rescheduleReminders().catch(() => {});
+  } catch {}
+}
+
 // ── Holiday-calendar mutations (server-backed via customCalendarsApi) ─────────
 // Optimistically patch a holiday calendar's config locally (snappy toggles),
 // then persist best-effort; the next refresh reconciles on failure.
@@ -805,7 +1169,7 @@ async function serverRemoveHolidayCalendar(id: string): Promise<void> {
   if (visState && id in visState) {
     const { [id]: _gone, ...rest } = visState;
     visState = rest;
-    AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
+    saveVis();
     visSubs.forEach((fn) => fn());
   }
 }
@@ -886,12 +1250,12 @@ export function useCalendarVisibility() {
 
   function setVisible(id: string, visible: boolean) {
     visState = { ...(visState ?? defaultVis()), [id]: visible };
-    AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
+    saveVis();
     broadcast();
   }
   function setAll(visible: boolean) {
     visState = Object.fromEntries(CALENDARS.map((c) => [c.id, visible]));
-    AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
+    saveVis();
     broadcast();
   }
 
@@ -1034,6 +1398,33 @@ export function useHolidayCalendars() {
   };
 }
 
+// Whether the calendar arrangement is ready to PAINT (see markPrefsReady). The
+// RootNavigator holds its splash on this while signed in, so the calendar's
+// first frame already carries the user's colours instead of the app defaults.
+//
+// `enabled` is the signed-in gate, and it is what re-arms the load: sign-out
+// wipes the prefs (resetCalendarPrefs), and this hook lives in an
+// always-mounted gate, so a hook that subscribed once and never re-ran would
+// report "not ready" forever after an account switch and hold the splash for
+// good (the deadlock lib/unlock and lib/viewerAccess both document). Flipping
+// `enabled` false→true re-runs the effect, which restarts ensureLoaded.
+export function useCalendarPrefsReady(enabled: boolean): boolean {
+  const [ready, setReady] = useState(prefsReady);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const sub = () => setReady(prefsReady);
+    readySubs.add(sub);
+    sub();
+    void ensureLoaded().then(sub);
+    return () => {
+      readySubs.delete(sub);
+    };
+  }, [enabled]);
+
+  return !enabled || ready;
+}
+
 // ── Calendar colour hook ────────────────────────────────────────────────────
 export function useCalendarColors() {
   const [colors, setColors] = useState<ColorMap>(mergedColors());
@@ -1047,8 +1438,11 @@ export function useCalendarColors() {
     };
   }, []);
 
+  // The cache write is the fast read for the next launch; the account write is
+  // what survives a sign-out (see hydrateAccountPrefsFromServer).
   function persist() {
     AsyncStorage.setItem(COLORS_KEY, JSON.stringify(colorOverrideState)).catch(() => {});
+    pushCalendarPrefs();
     syncColorOverrides();
     colorSubs.forEach((fn) => fn());
   }
@@ -1096,6 +1490,7 @@ export function useCalendarOrder() {
   function setOrder(ids: string[]) {
     orderState = ids;
     AsyncStorage.setItem(ORDER_KEY, JSON.stringify(ids)).catch(() => {});
+    pushCalendarPrefs();
     orderSubs.forEach((fn) => fn());
   }
 
@@ -1143,7 +1538,7 @@ export function useCustomCalendars() {
     if (visState && id in visState) {
       const { [id]: _gone, ...rest } = visState;
       visState = rest;
-      AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
+      saveVis();
       visSubs.forEach((fn) => fn());
     }
   }
@@ -1171,11 +1566,12 @@ export function useDeletedDefaultCalendars() {
   function persist(next: string[]) {
     deletedDefaultsState = next;
     AsyncStorage.setItem(DELETED_DEFAULTS_KEY, JSON.stringify(next)).catch(() => {});
+    pushCalendarPrefs();
     deletedSubs.forEach((fn) => fn());
   }
   function setEventsVisible(id: string, visible: boolean) {
     visState = { ...(visState ?? defaultVis()), [id]: visible };
-    AsyncStorage.setItem(VIS_KEY, JSON.stringify(visState)).catch(() => {});
+    saveVis();
     visSubs.forEach((fn) => fn());
   }
   function deleteDefault(id: string) {
@@ -1212,13 +1608,28 @@ export function useDefaultCalendarAlerts() {
     else set.add(id);
     defaultAlertsOffState = [...set];
     AsyncStorage.setItem(DEFAULT_ALERTS_OFF_KEY, JSON.stringify(defaultAlertsOffState)).catch(() => {});
+    pushCalendarPrefs();
     defaultAlertsSubs.forEach((fn) => fn());
   }
 
   return { mutedIds, setAlertsEnabled };
 }
 
-// ── Occasions calendar-level alert prefs hook ───────────────────────────────
+// ── Occasions calendar-level alert prefs ────────────────────────────────────
+// Write the Occasions alert config to all three places it lives: the device
+// cache (instant reads), the account (survives sign-out — see
+// hydrateAccountPrefsFromServer), and every mounted subscriber.
+export function setOccasionAlertPrefs(next: OccasionAlertPrefs) {
+  // Normalise: unique, sorted offsets; keep a valid HH:mm time.
+  const offsets = [...new Set(next.offsets.filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b);
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(next.time) ? next.time : DEFAULT_OCCASION_ALERTS.time;
+  occasionAlertState = { offsets, time };
+  alertPrefsEditSeq++;
+  AsyncStorage.setItem(OCCASION_ALERTS_KEY, JSON.stringify(occasionAlertState)).catch(() => {});
+  settingsApi.update({ occasionAlerts: occasionAlertState }).catch(() => {});
+  occasionAlertSubs.forEach((fn) => fn());
+}
+
 export function useOccasionAlertPrefs() {
   const [prefs, setPrefs] = useState<OccasionAlertPrefs>(occasionAlertState ?? { ...DEFAULT_OCCASION_ALERTS });
 
@@ -1231,21 +1642,24 @@ export function useOccasionAlertPrefs() {
     };
   }, []);
 
-  function setOccasionAlertPrefs(next: OccasionAlertPrefs) {
-    // Normalise: unique, sorted offsets; keep a valid HH:mm time.
-    const offsets = [...new Set(next.offsets.filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b);
-    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(next.time) ? next.time : DEFAULT_OCCASION_ALERTS.time;
-    occasionAlertState = { offsets, time };
-    AsyncStorage.setItem(OCCASION_ALERTS_KEY, JSON.stringify(occasionAlertState)).catch(() => {});
-    occasionAlertSubs.forEach((fn) => fn());
-  }
-
   return { prefs, setOccasionAlertPrefs };
 }
 
-// ── Holiday calendars' shared alert prefs hook ──────────────────────────────
+// ── Holiday calendars' shared alert prefs ───────────────────────────────────
 // One config for every holiday calendar, so the Holiday Alerts screen reached
-// from any country's holidays editor edits the same settings.
+// from any country's holidays editor edits the same settings. Written to the
+// device cache, the account, and every mounted subscriber (see above).
+export function setHolidayAlertPrefs(next: HolidayAlertPrefs) {
+  // Normalise: unique, sorted offsets; keep a valid HH:mm time.
+  const offsets = [...new Set(next.offsets.filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b);
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(next.time) ? next.time : DEFAULT_HOLIDAY_ALERTS.time;
+  holidayAlertState = { offsets, time };
+  alertPrefsEditSeq++;
+  AsyncStorage.setItem(HOLIDAY_ALERTS_KEY, JSON.stringify(holidayAlertState)).catch(() => {});
+  settingsApi.update({ holidayAlerts: holidayAlertState }).catch(() => {});
+  holidayAlertSubs.forEach((fn) => fn());
+}
+
 export function useHolidayAlertPrefs() {
   const [prefs, setPrefs] = useState<HolidayAlertPrefs>(holidayAlertState ?? { ...DEFAULT_HOLIDAY_ALERTS });
 
@@ -1257,15 +1671,6 @@ export function useHolidayAlertPrefs() {
       holidayAlertSubs.delete(sub);
     };
   }, []);
-
-  function setHolidayAlertPrefs(next: HolidayAlertPrefs) {
-    // Normalise: unique, sorted offsets; keep a valid HH:mm time.
-    const offsets = [...new Set(next.offsets.filter((n) => Number.isFinite(n) && n >= 0))].sort((a, b) => a - b);
-    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(next.time) ? next.time : DEFAULT_HOLIDAY_ALERTS.time;
-    holidayAlertState = { offsets, time };
-    AsyncStorage.setItem(HOLIDAY_ALERTS_KEY, JSON.stringify(holidayAlertState)).catch(() => {});
-    holidayAlertSubs.forEach((fn) => fn());
-  }
 
   return { prefs, setHolidayAlertPrefs };
 }

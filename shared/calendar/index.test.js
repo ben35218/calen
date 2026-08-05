@@ -239,6 +239,67 @@ test('calendar-type task fires in listed months only', () => {
   assert.deepEqual(out.map(o => o._instanceDate), ['2026-03-15', '2026-09-15']);
 });
 
+// ── Per-occurrence scoping on tasks/chores ───────────────────────────────────
+// The chore/task equivalents of a CalendarEvent's exceptionDates + until, which
+// is what makes "this occurrence only" / "all future" possible for a repeating
+// chore. Both are keyed on `_instanceDate` — the same string the expander
+// stamps — so a skip can't miss by a day.
+test('skipDates removes just the listed occurrences', () => {
+  const task = {
+    nextDueDate: new Date('2026-01-01T12:00:00'),
+    recurrence: {
+      type: 'interval', intervalUnit: 'months', intervalValue: 1,
+      skipDates: ['2026-02-01'],
+    },
+  };
+  const out = expandRecurringTaskChore(task, new Date('2026-01-01'), new Date('2026-03-31'));
+  assert.deepEqual(out.map(o => o._instanceDate), ['2026-01-01', '2026-03-01']);
+});
+
+test('until ends an interval series, keeping the occurrence on the boundary', () => {
+  const task = {
+    nextDueDate: new Date('2026-01-01T12:00:00'),
+    recurrence: {
+      type: 'interval', intervalUnit: 'months', intervalValue: 1,
+      until: new Date('2026-02-01T23:59:59'),
+    },
+  };
+  const out = expandRecurringTaskChore(task, new Date('2026-01-01'), new Date('2026-12-31'));
+  assert.deepEqual(out.map(o => o._instanceDate), ['2026-01-01', '2026-02-01']);
+});
+
+test('skipDates and until apply to a calendar-type series too', () => {
+  const skipped = expandRecurringTaskChore(
+    { recurrence: { type: 'calendar', months: [3, 9], dayOfMonth: 15, skipDates: ['2026-03-15'] } },
+    new Date('2026-01-01'), new Date('2026-12-31'),
+  );
+  assert.deepEqual(skipped.map(o => o._instanceDate), ['2026-09-15']);
+
+  const ended = expandRecurringTaskChore(
+    { recurrence: { type: 'calendar', months: [3, 9], dayOfMonth: 15, until: new Date('2026-06-01') } },
+    new Date('2026-01-01'), new Date('2026-12-31'),
+  );
+  assert.deepEqual(ended.map(o => o._instanceDate), ['2026-03-15']);
+});
+
+test('a skipped one-time item disappears entirely', () => {
+  const out = expandRecurringTaskChore(
+    { nextDueDate: '2026-02-01T12:00:00.000Z', recurrence: { type: 'one-time', skipDates: ['2026-02-01'] } },
+    new Date('2026-01-01'), new Date('2026-12-31'),
+  );
+  assert.deepEqual(out, []);
+});
+
+// An untouched series must behave exactly as before — the new fields are opt-in
+// and every existing record lacks them.
+test('a series with neither field expands unchanged', () => {
+  const out = expandRecurringTaskChore(
+    { nextDueDate: new Date('2026-01-01T12:00:00'), recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1 } },
+    new Date('2026-01-01'), new Date('2026-03-31'),
+  );
+  assert.deepEqual(out.map(o => o._instanceDate), ['2026-01-01', '2026-02-01', '2026-03-01']);
+});
+
 // ── occasionOccurrences / occasionKindFromLabel ───────────────────────────────
 test('occasion recurs yearly on its anniversary (Date or YYYY-MM-DD string)', () => {
   assert.deepEqual(

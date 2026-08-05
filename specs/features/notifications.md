@@ -1,10 +1,11 @@
 ---
 title: Notifications & reminders
 status: current
-last-verified: 55bfc65+ (2026-07-29); day-based reminder default moved from 7am to **9am local** (`ALERT_HOUR`) across the server cron + on-device scheduler, and made **per-user configurable** via `User.dayAlertTime` (`PUT /settings`, Reminders screen TimeField) — cron honors the hour, on-device honors HH:mm (2026-07-29); moved the reminders controls (master toggle + day-based time) out of the Account screen into a dedicated Reminders screen off the profile hub (2026-07-29); e-card sends now flow through the mailer's lifecycle gates + delivery outbox (queue/retry) and the `ecard` template is admin-toggleable — see email-lifecycle.md (2026-07-29); calendar-level occasion alerts (noon day-of + 2wk default, on-device) + scheduled e-card server send (2026-07-28); e-card sends at-or-after the send hour on the occasion day (catch-up) (2026-07-28); e-card emails render via the style-gallery card renderer (ecardTemplates.js), template key passed through the scheduler (2026-07-28); scheduler also passes font/framing overrides + photos (embedded as inline CID attachments; missing files skipped, never fatal) (2026-07-28); paired alert slots (event/chore/task/occasion) must hold distinct values — second picker excludes the first's value via `excludeUsedAlert`, preventing duplicate notifications (2026-07-28); the Reminders screen accepts a **`promptEnable`** route param — a Calen assistant "Set up reminders" setup chip (`setup_reminders`, see ai-assistant.md) deep-links here and, while the master toggle is still off, shows a `SetupCallout` nudging the user to turn reminders on (df8c7f3+, 2026-07-31); e-cards are now **one-time** — `runECardCheck` sends a card on its next occurrence then clears `active` + stamps `sentAt` (replacing the annual `lastSentYear` guard), so a sent card never re-fires (df8c7f3+, 2026-07-31); **reminder-delivery repair** — the rolling window is now also recomputed on any `['calendar']` invalidation (an alert set on an event previously never reached the OS until the next background→foreground round trip), the pass is single-flight (overlapping passes double-scheduled the batch), the `localReminders` duplicate guard is claimed only after the OS accepts the batch and released when a pass fails, and the Reminders screen reports OS pending count / next reminder / last-run reason + a test notification (46cd98a+, 2026-08-03); **root cause found on-device** — `pushDayAlerts` called `.slice()` on `nextDueDate`, which the calendar engine emits as a **Date object** for recurring chores/tasks, so one recurring item threw and suppressed the entire reminder window (events included); fixed with a shape-tolerant `dueDateStr`, guarded per-reminder scheduling, stage+frame tagging in the run log, and engine-driven tests replacing the string-only fixtures that missed it (46cd98a+, 2026-08-04); **holiday alerts** — holiday calendars gained the same calendar-level alert config as Occasions (one config shared by ALL holiday calendars, device-local `hc_holiday_alert_prefs`, default OFF), reached from a notifications button on the holidays editor; holidays are computed on-device from `lib/holidays`, so they enter `computeReminders` as a `holidayAlerts` argument and are muted per-calendar by that calendar's Alerts switch (46cd98a+, 2026-08-04); **development-only surfaces removed for launch** — the Reminders screen's Delivery card (pending/next status rows + Send a test notification) and the `getReminderDiagnostics()` / `sendTestNotification()` helpers are gone; the run log survives but is **unrendered** (persisted + `console.warn` only), and its tests now assert the persisted record rather than an accessor (46cd98a+, 2026-08-04)
+last-verified: c2d18c0+ (2026-08-04); **all-day event alerts are whole days off the day-alert hour, not minutes off noon UTC** — an all-day event has no start time, but its Alert pickers still offered 15/30/60-minute lead times and the scheduler counted them back from the stored noon-UTC instant, so every all-day alert landed at whatever local hour the reader's UTC offset produced (5am in Los Angeles, 8am in New York, 2pm in Berlin) and a previously configured minute offset survived the All-day switch untouched; an event alert now counts back from an ALERT ANCHOR (`eventAlertAnchor`, lib/calendar) — its start instant when timed, its own calendar date at `User.dayAlertTime` (9am default) when all-day — the all-day pickers/labels/Custom sheet/AI schemas offer whole days only ("On the day (9:00 AM)"), switching All day ON re-bases the alerts already set instead of dropping or keeping them, and the notification body is day-based (2026-08-04); day-based reminder default moved from 7am to **9am local** (`ALERT_HOUR`) across the server cron + on-device scheduler, and made **per-user configurable** via `User.dayAlertTime` (`PUT /settings`, Reminders screen TimeField) — cron honors the hour, on-device honors HH:mm (2026-07-29); moved the reminders controls (master toggle + day-based time) out of the Account screen into a dedicated Reminders screen off the profile hub (2026-07-29); e-card sends now flow through the mailer's lifecycle gates + delivery outbox (queue/retry) and the `ecard` template is admin-toggleable — see email-lifecycle.md (2026-07-29); calendar-level occasion alerts (noon day-of + 2wk default, on-device) + scheduled e-card server send (2026-07-28); e-card sends at-or-after the send hour on the occasion day (catch-up) (2026-07-28); e-card emails render via the style-gallery card renderer (ecardTemplates.js), template key passed through the scheduler (2026-07-28); scheduler also passes font/framing overrides + photos (embedded as inline CID attachments; missing files skipped, never fatal) (2026-07-28); paired alert slots (event/chore/task/occasion) must hold distinct values — second picker excludes the first's value via `excludeUsedAlert`, preventing duplicate notifications (2026-07-28); the Reminders screen accepts a **`promptEnable`** route param — a Calen assistant "Set up reminders" setup chip (`setup_reminders`, see ai-assistant.md) deep-links here and, while the master toggle is still off, shows a `SetupCallout` nudging the user to turn reminders on (df8c7f3+, 2026-07-31); e-cards are now **one-time** — `runECardCheck` sends a card on its next occurrence then clears `active` + stamps `sentAt` (replacing the annual `lastSentYear` guard), so a sent card never re-fires (df8c7f3+, 2026-07-31); **reminder-delivery repair** — the rolling window is now also recomputed on any `['calendar']` invalidation (an alert set on an event previously never reached the OS until the next background→foreground round trip), the pass is single-flight (overlapping passes double-scheduled the batch), the `localReminders` duplicate guard is claimed only after the OS accepts the batch and released when a pass fails, and the Reminders screen reports OS pending count / next reminder / last-run reason + a test notification (46cd98a+, 2026-08-03); **root cause found on-device** — `pushDayAlerts` called `.slice()` on `nextDueDate`, which the calendar engine emits as a **Date object** for recurring chores/tasks, so one recurring item threw and suppressed the entire reminder window (events included); fixed with a shape-tolerant `dueDateStr`, guarded per-reminder scheduling, stage+frame tagging in the run log, and engine-driven tests replacing the string-only fixtures that missed it (46cd98a+, 2026-08-04); **holiday alerts** — holiday calendars gained the same calendar-level alert config as Occasions (one config shared by ALL holiday calendars, device-local `hc_holiday_alert_prefs`, default OFF), reached from a notifications button on the holidays editor; holidays are computed on-device from `lib/holidays`, so they enter `computeReminders` as a `holidayAlerts` argument and are muted per-calendar by that calendar's Alerts switch (46cd98a+, 2026-08-04); **development-only surfaces removed for launch** — the Reminders screen's Delivery card (pending/next status rows + Send a test notification) and the `getReminderDiagnostics()` / `sendTestNotification()` helpers are gone; the run log survives but is **unrendered** (persisted + `console.warn` only), and its tests now assert the persisted record rather than an accessor (46cd98a+, 2026-08-04); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04); **a reminder body is now the bare lead time** — the fixed `Upcoming event` / `Maintenance due` / `Chore due` labels (and the occasion/holiday `… on 2026-08-20` form) are replaced by `15 minutes` / `Tomorrow` / `2 weeks`, one wording across every reminder kind, via `leadPhrase` + `dayLeadPhrase` in `lib/notifications.ts` (c2d18c0+, 2026-08-04)
 code:
   - mobile/src/lib/notifications.ts
-  - mobile/src/lib/calendarPrefs.ts         # occasion + holiday alert prefs (device-local)
+  - mobile/src/lib/calendar.ts              # eventAlertAnchor + the all-day alert grid/labels
+  - mobile/src/lib/calendarPrefs.ts         # occasion + holiday alert prefs (account-backed, device-cached)
   - mobile/src/screens/calendar/{OccasionAlerts,HolidayAlerts}Screen.tsx
   - mobile/src/hooks/useReminderScheduler.ts
   - mobile/src/screens/profile/RemindersScreen.tsx
@@ -22,6 +23,7 @@ tests:
   - server/src/jobs/scheduler.test.js
   - mobile/src/lib/__tests__/notifications.test.ts
   - mobile/src/lib/__tests__/rescheduleReminders.test.ts
+  - mobile/src/lib/__tests__/eventAlerts.test.ts   # the alert anchor (timed start vs all-day day-alert hour)
 ---
 
 # Notifications & reminders
@@ -47,6 +49,57 @@ obsolete.
   cancels all scheduled ones.
 - Events support up to two alerts; `alertAudience` (`everyone`/`owner`) chooses
   who is reminded in a shared household.
+- **An event alert counts back from the event's ALERT ANCHOR, which is not always
+  the instant the record stores.** Both alerts are stored as `reminderMinutes` /
+  `alert2Minutes` — minutes *before the anchor* — for every event, so the field,
+  the API and the seal are the same for both kinds:
+  - A **timed** event's anchor is its **start instant**.
+  - An **all-day** event has no start time. It stores both endpoints at **noon
+    UTC** (see [calendar.md](calendar.md)), so counting minutes back from the
+    stored value put the alert at whatever local hour the reader's UTC offset
+    produced — "1 day before" fired at 5am in Los Angeles, 8am in New York and
+    2pm in Berlin — and a "15 min before" alert described a minute the event
+    never had. Its anchor is therefore **its own calendar date at the user's
+    day-alert time** (`User.dayAlertTime`, 9am unless changed — the same hour
+    task, chore, occasion and holiday day-alerts fire at).
+  - Both anchors come from `eventAlertAnchor` in `mobile/src/lib/calendar.ts`;
+    nothing may re-derive them.
+  - Because an all-day event's anchor is a wall-clock hour on a date, its offsets
+    are **whole days**: `0` = the day itself at that hour, `1440` = the day
+    before, `2880` = two days, `10080` = a week. The event form offers exactly
+    those (plus None and Custom…, whose sheet is **fixed to the Days unit**), the
+    detail view labels them with the hour they fire at ("1 day before (9:00
+    AM)"), and the AI form-assist / `open_event_form` schemas advertise only
+    whole-day values while the event is all-day.
+  - **Switching All day ON re-bases the alerts already configured** rather than
+    leaving them describing a time the event no longer has: sub-day offsets
+    collapse onto the day itself, longer ones round to whole days, and a second
+    alert that lands on the same offset as the first is dropped (two alerts must
+    stay distinct). Switching All day **off** changes nothing — every whole-day
+    offset is a legal timed offset too. Turning all-day on must never silently
+    clear a configured alert.
+  - An all-day event carrying an off-grid value (saved before this rule, or by
+    an older client) still fires — at the anchor minus that value — and still
+    renders, in timed wording, so the picker never falls back to its placeholder.
+  - An all-day alert's body is **day-based** (`Today`/`Tomorrow`/`N days`), never
+    the minute wording.
+- **A reminder's body is the lead time and nothing else.** The notification title
+  already names the record and the banner already reads as a reminder, so the
+  body is the bare interval between the alert firing and the thing it is about —
+  `15 minutes`, `Tomorrow` — with no verb phrase and no record-kind label. It is
+  measured from the fire time, so it stays true however often the window is
+  rescheduled. Every kind (event, maintenance task, chore, occasion, holiday)
+  uses the same wording:
+  - Minute offsets (`leadPhrase`): `Now` (at time of event) / `N minutes` /
+    `N hours`, rolling into the day forms at 1440.
+  - Whole-day offsets (`dayLeadPhrase`): `Today` / `Tomorrow` / `N days`, with
+    exact multiples of seven days collapsing to `N weeks`.
+  - Day-based alerts phrase from the configured offset rather than a timestamp
+    difference, so a DST boundary can't round the day count off by one.
+  - Both helpers live in `lib/notifications.ts`. The earlier fixed bodies
+    (`Upcoming event`, `Maintenance due`, `Chore due`, and the occasion/holiday
+    `… on 2026-08-20` form, which leaked a raw yyyy-mm-dd into a user-facing
+    string) are gone.
 - **Two alerts must be distinct.** Anywhere two alert slots are offered (event
   Alert/Second alert, chore & maintenance Alert/Second alert, occasion
   Alert/Second alert), the second picker excludes the value already chosen in the
@@ -77,8 +130,10 @@ obsolete.
   honors the full `HH:mm`. Changing the time reschedules on-device reminders.
 - **Occasion reminders** (the Occasions calendar — birthdays + labeled contact
   dates) use a single **calendar-level** alert config (no per-occasion override):
-  a set of day-before offsets + one time, stored device-local
-  (`hc_occasion_alert_prefs`). Defaults: an alert at **noon the day of** the
+  a set of day-before offsets + one time, held on the **account**
+  (`User.occasionAlerts`, read/written on `/settings`) and cached on the device
+  (`hc_occasion_alert_prefs` — see *Where the two calendar-level configs live*
+  below). Defaults: an alert at **noon the day of** the
   occasion AND one **two weeks before**. The two offset slots must be distinct
   (`excludeUsedAlert`), same as event/task alerts. Every occasion kind (birthday/
   anniversary/marriage/death/custom) uses this config, on-device. The Occasions
@@ -86,8 +141,9 @@ obsolete.
   **server** birthday push (`scheduler.js`, non-E2EE households only) stays
   birthday-only; new occasion kinds are on-device only.
 - **Holiday reminders** use the same calendar-level shape as occasions, with one
-  config shared by **every** holiday calendar: offsets + one time, device-local
-  (`hc_holiday_alert_prefs`), edited on the **Holiday Alerts** screen reached
+  config shared by **every** holiday calendar: offsets + one time, on the account
+  (`User.holidayAlerts`) and cached device-side (`hc_holiday_alert_prefs`),
+  edited on the **Holiday Alerts** screen reached
   from the notifications button on any holidays editor (see
   [calendar.md](calendar.md)). They **default to off** (`offsets: []`, time
   `09:00`) — holidays are numerous, and scheduling them by default would crowd
@@ -99,6 +155,26 @@ obsolete.
   any other calendar's events. The holiday lookahead deliberately runs **past**
   the 21-day window by the largest offset, so a "2 weeks before" alert for a
   holiday 25 days out still fires inside the window (pure date math, no fetch).
+- **Where the two calendar-level configs live.** The Occasions and holiday alert
+  configs are **account settings, not device settings**: `User.occasionAlerts` /
+  `User.holidayAlerts`, carried on `GET`/`PUT /settings`. `lib/calendarPrefs`
+  keeps the two AsyncStorage keys as a **cache** so a read never waits on the
+  network — but the cache is account state, wiped at sign-out with the rest of
+  `ACCOUNT_KEYS`, so it can never be the only copy. It was, and the settings
+  therefore did not survive a sign-out: alerts set on the Holiday Alerts screen
+  read back correctly for the whole session and were gone at the next sign-in.
+  Rules:
+  - Every edit writes the cache **and** `PUT /settings` (the server normalizes:
+    offsets deduped, sorted, whole days ≥ 0; `time` a valid 24h `HH:mm`).
+  - On load, `hydrateAlertPrefsFromServer` adopts the account's config over the
+    cache and reschedules the reminder window if it differs.
+  - `null` on the wire means **never configured** — the client's own defaults
+    apply. An **empty `offsets` list is a real value** meaning the user turned
+    that calendar's alerts off, and must not be collapsed into `null`: doing so
+    would put an opted-out user back on the occasions default and re-notify them.
+  - When the account has no config but the device holds a **non-default** one,
+    the device's is uploaded rather than dropped — that is the upgrade path for
+    settings made before these were server-backed.
 - **Timezone stickiness.** Day-based timing is only right if the stored zones
   track reality, so both zones self-heal:
   - The personal `User.timezone` follows the **device clock**: synced at app

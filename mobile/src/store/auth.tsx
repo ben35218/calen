@@ -9,7 +9,7 @@ import {
   unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
   unlockFromDeviceCache, forgetDeviceKey, generateAccountSecret, addPasskeyFactor,
   holdRecoveryCode, releaseRecoveryCode, clearRecoveryCode, setSealAuthor,
-  subscribeKeysReady, rememberSessionPassword,
+  subscribeKeysReady, subscribeHouseholdChanged, rememberSessionPassword, getHDK,
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
 import { maintainKeyHygiene } from '../lib/dropMigration';
@@ -186,6 +186,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // leaving the collaborator's "waiting for the owner" state permanent.
       // Best-effort background pass; cheap no-op when nothing is pending.
       void maintainKeyHygiene();
+    })();
+  }), []);
+
+  // Household changed under this session (joined / left / removed). Every
+  // household-scoped cache on the device now belongs to the WRONG household, so
+  // it gets the same teardown sign-out performs — minus the identity half, since
+  // the user is still signed in and their per-user unlock is unaffected.
+  //
+  // This is a privacy fix, not just a correctness one. The replica is a FLAT
+  // store of decrypted rows with no householdId column, and record sync only
+  // removes a row when the server sends a tombstone — which the household we
+  // just left will never send us again. Without this wipe, a member who leaves
+  // (or is removed) keeps that household's calendar, meals, and tasks readable
+  // on their phone indefinitely, while the leave dialog promises "anything
+  // shared here stays with the other members". Server-side they're already cut
+  // off (their key envelope is deleted and rotation is flagged), so this is the
+  // device half of the same eviction.
+  useEffect(() => subscribeHouseholdChanged(() => {
+    void (async () => {
+      queryClient.clear();
+      await clearReplica().catch(() => {});
+      // Same pairing as sign-out: a wiped replica MUST reset the sync cursor, or
+      // the next pull resumes from the old high-water mark and the household we
+      // just JOINED never lands (its records are all older than the cursor).
+      await resetRecordCursor().catch(() => {});
+      // Calendar prefs are household state (which calendars exist, their
+      // sharing, colours, order) and add-on locks are the household-wide union —
+      // both change the instant membership does, and leaving must re-lock lanes
+      // the old household had paid for.
+      await resetCalendarPrefs().catch(() => {});
+      await resetOwnedAddons().catch(() => {});
+      // Refill ONLY when this session actually holds the new household's key.
+      // Syncing without one decrypts nothing, so it would leave the device on an
+      // empty replica it just wiped — a blank app until something else happened
+      // to re-pull. When no key is held yet (joined and awaiting approval, or
+      // still locked), subscribeKeysReady owns the refill and fires the moment
+      // records become decryptable.
+      if (getHDK()) {
+        try { await syncRecords(); } catch { /* offline — refilled on the next pass */ }
+      }
+      queryClient.invalidateQueries();
     })();
   }), []);
 

@@ -14,7 +14,7 @@ import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 
 // Encrypted item content (categoryId/type/dates stay plaintext).
-import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader, Button } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
@@ -23,6 +23,7 @@ import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { mdiName } from '../../lib/recurrence';
 import { ITEM_TYPES, itemTypeConfig, TYPE_CATEGORY_MATCH, VEHICLE_CATEGORY, ItemField } from '../../lib/itemTypes';
+import { popPastDetail } from '../../navigation/rebindDetailBelow';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -459,6 +460,31 @@ export default function ItemFormScreen() {
     save.mutate();
   };
 
+  // Delete from the edit form — the same control the item's detail page carries.
+  // An item has no occurrences to scope against, so this is the plain confirm,
+  // worded like ItemDetail's because the server cascade is the same: the item
+  // takes its manuals and receipts with it.
+  const del = useMutation({
+    mutationFn: () => itemsApi.delete(id!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['items'] });
+      // Tasks hang off the item and go with it.
+      qc.invalidateQueries({ queryKey: ['tasks'] });
+      qc.invalidateQueries({ queryKey: ['maintenance'] });
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+      allowLeave();
+      // Past the detail below, which is bound to what was just deleted.
+      popPastDetail(navigation, 'ItemDetail');
+    },
+    onError: (e: any) => Alert.alert("Couldn't delete item", e.response?.data?.error || 'Delete failed'),
+  });
+
+  const onDelete = () =>
+    Alert.alert('Delete item?', `Permanently delete “${form.name}” and its manuals and receipts?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
+    ]);
+
   // No save during the add wizard — only once the form itself is shown.
   useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, enabled: step === 'form' });
 
@@ -859,6 +885,12 @@ export default function ItemFormScreen() {
       ) : null}
 
       <FormError>{error}</FormError>
+
+      {isEdit ? (
+        <View style={fs.footer}>
+          <Button title="Delete Item" variant="danger" loading={del.isPending} onPress={onDelete} />
+        </View>
+      ) : null}
     </Screen>
   );
 }

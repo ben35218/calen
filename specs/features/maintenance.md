@@ -1,9 +1,10 @@
 ---
 title: Maintenance (items, tasks, chores)
 status: current
-last-verified: bb130ef+ (2026-07-30); the maintenance/chores/task-plan assistants gained chat web search (server-side web_search tool + "Searching the web…" activity label) — behavior and pricing owned by ai-assistant.md / billing-plans.md (2026-07-30); manual upload + save-from-URL are no longer credit-metered — meter('manualParse') removed from both (they spend no model tokens; only auto-lookup + extract-tasks are billed), regression-tested at zero balance (2026-07-30); chore/task Alert + Second alert must be distinct — second picker excludes the first's value (`excludeUsedAlert`) (2026-07-28); the item/task/chore add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (the Item form guards its final details step, not the add wizard) (2026-07-29); the chores assistant's **"Review & add chore" chip now persists** by default instead of being consumed on tap (`ChoresAssistantScreen` no longer calls `resolvePending()` when opening `ChoreForm`) — it's retired only once the chore is actually created, which `ChoreForm` signals via `markAssistantDraftSaved('chores')` (shared `lib/assistantDraft` store) so re-tapping and re-saving can't duplicate the chore; the persist-until-created rule is owned by [ai-assistant.md](ai-assistant.md) (2026-07-31); superseded same day by the **inline per-message chip** model — `ChoresAssistantScreen`'s "Review & add chore" chip now renders under its own turn's bubble, reads its draft from `msg.pendingChore` (moved into `useChat`), and stays permanently tappable; the `assistantDraft` signal + `ChoreForm`'s `markAssistantDraftSaved('chores')` were removed (a form-opening chip has no direct-create to guard). Chip behavior is owned by [ai-assistant.md](ai-assistant.md) (2026-07-31)
+last-verified: c2d18c0+ (2026-08-04); an ended chore/task now reads **"Ended <date>"** instead of reporting its stale anchor as long overdue, the Maintenance screen gained the same collapsed **"Ended tasks"** group the Chores list has (without it an ended task with no linked item had no home on that screen), and an all-ended chores list shows an inline empty state rather than blank space (2026-08-04); **"Resume schedule"** on the chore/task detail card puts a skipped-down or ended series back to work **from today**, leaving the past exactly as it looks — future skips are dropped while past ones stay, and lifting a past `until` enumerates the now-past tail into `skipDates` so no cleared history is repopulated (a literal undo was considered and rejected); upcoming days already covered by a detached copy stay skipped, via a new sealed `detachedFrom`/`detachedDate` link stamped on the copy; ended chores stay reachable in a collapsed "Ended chores" footer group and ended tasks leave the overdue dashboard (they had read as permanently overdue) (2026-08-04); **"Delete All Future" left the chore sitting in the Chores list** — truncating ends the series but keeps the record (so past days keep their occurrences), and neither the Chores list nor the Maintenance due/overdue lists filtered on whether anything remained ahead, so an ended chore went on advertising its stale anchor as a live next due date; both now drop items with no occurrence from today onward (`hasUpcomingOccurrence`). The occurrence date field is also renamed "Date" (from "Next Due Date", which named the wrong thing once the form showed the tapped occurrence) with a hint naming which occurrence is being edited (2026-08-04); **a repeat-rule-only change saved silently** — the save-scope decision suppressed its sheet when the edit was made from the series' first occurrence (reasoning that "future" and "the whole series" are the same write there), which collapsed two separate concerns: the occurrence governs how a chosen scope is CARRIED OUT, never whether the user is asked; the sheet now always appears for a series-defining change and future-from-the-first is performed as an in-place series update (events, chores and tasks alike) (2026-08-04); a scoped save now lands the user on the record it created — an override/fork writes a NEW record, so the detail screen under the form stayed bound to the original id and showed the unedited event (reported: "saved this event only, the event view was unchanged, but the month grid had the change"); the form rebinds that entry to the new id + day on exit (`navigation/rebindDetailBelow.ts`), chore and task forms included (2026-08-04); **repeating chores and maintenance tasks answer the same occurrence-scope questions as calendar events** — `recurrence.skipDates` + `recurrence.until` (sealed inside the rule, honoured by the shared expander), the tapped day threaded through ChoreDetail/ChoreForm/TaskDetail/TaskForm, and Apple-style delete + save sheets; a task's mileage interval scopes as series-defining alongside the repeat rule, skipping an interval series' anchor advances it, and completion history stays with the truncated original on a fork (the warning now rides only the outcomes that actually destroy the record) (2026-08-04); the chore form's **"Assigned to" is limited to household members** (self-Persons whose `accountId` is a current `GET /household` member, you first then alphabetical) instead of every `type: 'family'` contact — a solo household lists only you, and an existing non-member assignee stays visible-but-unofferable (2026-08-04); the maintenance/chores/task-plan assistants gained chat web search (server-side web_search tool + "Searching the web…" activity label) — behavior and pricing owned by ai-assistant.md / billing-plans.md (2026-07-30); manual upload + save-from-URL are no longer credit-metered — meter('manualParse') removed from both (they spend no model tokens; only auto-lookup + extract-tasks are billed), regression-tested at zero balance (2026-07-30); chore/task Alert + Second alert must be distinct — second picker excludes the first's value (`excludeUsedAlert`) (2026-07-28); the item/task/chore add/edit forms guard against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (the Item form guards its final details step, not the add wizard) (2026-07-29); the chores assistant's **"Review & add chore" chip now persists** by default instead of being consumed on tap (`ChoresAssistantScreen` no longer calls `resolvePending()` when opening `ChoreForm`) — it's retired only once the chore is actually created, which `ChoreForm` signals via `markAssistantDraftSaved('chores')` (shared `lib/assistantDraft` store) so re-tapping and re-saving can't duplicate the chore; the persist-until-created rule is owned by [ai-assistant.md](ai-assistant.md) (2026-07-31); superseded same day by the **inline per-message chip** model — `ChoresAssistantScreen`'s "Review & add chore" chip now renders under its own turn's bubble, reads its draft from `msg.pendingChore` (moved into `useChat`), and stays permanently tappable; the `assistantDraft` signal + `ChoreForm`'s `markAssistantDraftSaved('chores')` were removed (a form-opening chip has no direct-create to guard). Chip behavior is owned by [ai-assistant.md](ai-assistant.md) (2026-07-31); changing a chore's **Repeat** on the add/edit form now resets its **Next Due Date** from the new rule (shared `dueDateForRule`, unit-tested; "Does not repeat" leaves the picked date alone) (c2d18c0+, 2026-08-04); the **item, task and chore edit forms now end in a Delete button** like the event form does — reported missing from the edit view; each runs the same prompt its detail screen runs (occurrence-scoped sheet for a repeating chore/task, cascade confirm for an item) and exits past the detail underneath, which is bound to the record just destroyed (`navigation/popPastDetail`, unit-tested) (c2d18c0+, 2026-08-04)
 code:
   - mobile/src/screens/maintenance/
+  - mobile/src/lib/choreAssignees.ts
   - server/src/routes/{items,tasks,chores,taskTemplates,choreTemplates,odometer,manuals}.js
   - server/src/models/{Item,MaintenanceTask,Chore,TaskCompletion,OdometerLog,Manual}.js
   - server/src/services/recurrence.js
@@ -12,6 +13,9 @@ tests:
   - server/src/test/maintenance.integration.test.js
   - server/src/services/recurrence.test.js
   - mobile/src/lib/__tests__/recurrence.test.ts
+  - mobile/src/lib/__tests__/choreAssignees.test.ts
+  - mobile/src/lib/__tests__/repeatingItemScope.test.ts
+  - mobile/src/navigation/__tests__/rebindDetailBelow.test.ts
 ---
 
 # Maintenance (items, tasks, chores)
@@ -30,6 +34,16 @@ odometer tracking for mileage-based service.
   hook — a successful save/delete exits without prompting. On the Item form the
   guard covers only the final details step, not the add wizard. See
   [calendar.md](calendar.md) and [mobile/CLAUDE.md](../../mobile/CLAUDE.md).
+- **Every edit form ends in Delete.** The item, task, and chore forms carry a
+  danger-styled **Delete Item / Delete Task / Delete Chore** button at the bottom
+  when editing (never on an add), matching the event form. It runs the *same*
+  prompt the matching detail screen's Delete runs — the occurrence-scoped sheet
+  for a repeating chore/task, the plain cascade confirm for an item — so the user
+  who opened the form to change something and decided to bin it instead doesn't
+  have to back out first. Deleting from a form exits **past** the detail screen
+  underneath it (`navigation/popPastDetail`), because that page is bound to the
+  record (or occurrence) just destroyed; the user lands where the detail was
+  opened from, exactly as the detail screen's own Delete leaves them.
 
 ### Add-on gating
 
@@ -71,11 +85,141 @@ odometer tracking for mileage-based service.
   picker excludes the value already chosen in the first (`excludeUsedAlert`), so
   the same lead time can't fire twice. See [notifications.md](notifications.md).
 - A `Chore` is the lighter household variant (recurrence, `assignedTo`,
-  `nextDueDate`, alerts) without item binding. Tapping "+" on the chores list
+  `nextDueDate`, alerts) without item binding. **"Assigned to" offers household
+  members only** — never the wider contacts roster. `Chore.assignedTo` refs a
+  `Person`, so the options are the self-Persons of the current household's member
+  accounts: the decrypted people list filtered to `accountId ∈ GET /household →
+  members` (plus your own id, so a solo household — or an offline/404 household
+  fetch — still lists just you), sorted **you first**, then the rest
+  alphabetically. A chore already assigned to a non-member (assigned before this
+  rule, or to someone since removed from the household) keeps that person as a
+  visible option so the field never silently reads "Unassigned"; they just can't
+  be picked fresh. The same option list is what the form advertises to
+  "Ask Calen" form-assist, so the assistant can't assign a chore to a contact
+  either. Tapping "+" on the chores list
   opens an **Add Chore chooser** (`AddChoreScreen`) — mirroring the item form's
   "what would you like to add?" scope step — offering *add a chore by hand*
   (→ `ChoreForm`) or *use a template* (→ `ChoreTemplates`). The chooser
   `replace`s itself so Back returns to the list, not the chooser.
+- **Changing a chore's repeat resets its next due date.** On the add and edit
+  chore forms (`ChoreForm`), any change to the Repeat rule — live from the pushed
+  Repeat screen, from "Ask Calen", or from an assistant draft's prefilled
+  recurrence — reseeds **Next Due Date** from the new rule
+  (`dueDateForRule` in `lib/recurrence.ts`, over the shared `seedDueDate`), since
+  a date the old cadence produced means nothing under the new one. The reseeded
+  date is shown in the field, not applied silently at save. A rule with **no**
+  frequency ("Does not repeat") implies no date, so turning the repeat off leaves
+  the date the user picked alone — as does editing any non-repeat field. The same
+  helper seeds the create-time fallback for a chore saved with the field still
+  empty (client-owned due-date lifecycle, D4).
+- **A repeating chore or task is scoped per occurrence, exactly like a calendar
+  event.** Chores and maintenance tasks are the other two things on the calendar
+  that repeat, and they now answer the same Apple questions
+  (`lib/repeatingItemScope.ts` serves both domains; only the noun and the api group
+  differ). A `one-time` item — or one with no recurrence — keeps the plain single
+  confirm and never prompts.
+  - **The occurrence is what's opened.** Tapping a chore or task from a calendar
+    cell passes that day as the `date` route param (`ChoreDetail` / `ChoreForm` /
+    `TaskDetail` / `TaskForm`), and the detail screen and form show **that day**
+    rather than the record's `nextDueDate` anchor. A whole-series save shifts the
+    due date back onto the anchor by the same delta, so saving from the third
+    occurrence doesn't drag the series onto it. Opened from a list (Chores,
+    Maintenance, an item, calendar search) there is no occurrence and the series
+    itself is the subject.
+  - **Delete** — from the detail screen or the edit form, identically — offers
+    **Delete This Chore/Task Only** and **Delete All Future
+    Chores/Tasks** in a native action sheet. *This … Only* adds the day to
+    `recurrence.skipDates`; *All Future* sets `recurrence.until` to the end of the
+    previous day, or **deletes the record** when the occurrence is the series'
+    first (nothing precedes it).
+  - **Save** offers **Save for This … Only** and **Save for Future …** under
+    "How should this change be applied?", with the same series/occurrence split
+    events use: the **repeat rule** — and, for a task, the **mileage interval**
+    (`intervalKm`), which is a second recurrence schedule in disguise — are
+    series-defining and offer *Save for Future* alone. A mixed edit takes the most
+    restrictive answer; an unchanged form and a one-time item don't prompt at all.
+    Being on the series' **first** occurrence does NOT suppress the sheet — it only
+    changes how the choice is performed (*Save for Future* there is a plain
+    in-place series update, since there is nothing behind it to truncate to), the
+    same rule events follow. *This … Only* writes a
+    detached **one-time** copy on that day and skips the day in the series; *Save
+    for Future* truncates the original and starts a new series carrying the edits,
+    with skips from the fork day on inherited and shifted by however far the
+    occurrence moved. Both are create-then-mutate with a rollback on failure.
+  - **"Resume schedule" undoes accumulated scoping, forward only.** A chore or
+    task that has been skipped down (or ended) carries a **Resume schedule** row
+    at the bottom of its detail card, shown only when something is actually
+    holding the series back, with a subtitle naming what
+    (`"Ended Aug 4 · 3 skipped ahead"`). That subtitle is the feature's
+    discoverability: it explains why the item looks the way it does before
+    offering the fix. Confirming resumes the series **from today**:
+    - Skips from today onward are dropped — those occurrences come back.
+    - **The past is left exactly as it looks.** Days already skipped stay
+      skipped, and because clearing a past `until` would also expose the stretch
+      between the end day and today, those occurrences are **enumerated into
+      `skipDates` as the end date is lifted**. Resuming can never repopulate
+      history the user deliberately cleared. This is a deliberate choice over a
+      literal undo.
+    - An upcoming day that already has a **detached copy** (from *Save for This …
+      Only*) stays skipped, or the day would show the copy *and* the series
+      occurrence. The link is `detachedFrom` + `detachedDate`, stamped on the copy
+      when it is created and sealed with the rest of the record.
+    - Resuming is **idempotent**, and never deletes anything the user created.
+
+    Forward-only semantics are also what make the anchor's one-way drift
+    irrelevant: `skipOccurrence` advances `nextDueDate` past a skipped anchor day
+    and an interval series can never expand earlier than its anchor, but
+    everything lost that way is in the past, which resume doesn't touch.
+  - **A finished series leaves the to-do lists.** "Delete All Future" ends the
+    series with `recurrence.until` instead of destroying the record, precisely so
+    the days already behind it keep their occurrences. But the Chores list and the
+    Maintenance due/overdue lists exist to show **outstanding work**, so an item
+    with no occurrence remaining from today onward is filtered out of both
+    (`hasUpcomingOccurrence` — an unbounded series always qualifies; a bounded one
+    is expanded over the window its own `until` closes, so the check is exact
+    rather than a guess from `nextDueDate`). It still renders on the past calendar
+    days it legitimately occupies. Without this a chore the user had just ended
+    stayed listed, advertising its stale anchor as a live next due date — and a
+    maintenance task read as permanently **overdue**, since its anchor sits in the
+    past while the schedule has stopped.
+
+    Ended items must stay **reachable**, since their detail page is the only route
+    to Resume schedule. Both lists keep them in a collapsed **"Ended chores (N)"** /
+    **"Ended tasks (N)"** group, dimmed and expandable. The Maintenance one is not
+    optional politeness: that screen groups tasks under their linked item and skips
+    any without one, so an ended **item-less** task would otherwise have no home on
+    the screen at all. When every chore has ended the list shows an inline empty
+    state above the group rather than blank space.
+  - **An ended item's date row says so.** Its anchor still sits in the past, so
+    reading `nextDueDate` would report a stopped series as long overdue ("7 months
+    overdue"). The row shows `Ended <date>` instead — keyed on having **no
+    occurrence left**, not merely on `until` being set, since a series ending next
+    month hasn't ended yet.
+  - **The date field is named for the frame it's in.** Opened on an occurrence, it
+    holds THAT day, not the series anchor — so calling it "Next Due Date" would
+    name the wrong thing (the real next due date may be months behind what's
+    shown). It reads **"Date"** in that frame and keeps **"Next Due Date"** when
+    the series itself is the subject (opened from a list, or a one-time item). A
+    single `Hint` under the date/repeat group names the occurrence being edited
+    ("Editing the Aug 20 chore in this repeating series."), so the form doesn't
+    read as the whole chore and the save sheet's "This … Only" choice has a
+    visible referent.
+  - **Skipping the anchor moves it.** An `interval` series walks forward from
+    `nextDueDate`, so skipping the day the record is currently anchored on also
+    advances the anchor (`computeNextDueDate`) — otherwise the detail screen and
+    the due-in label would keep reporting a due date the calendar no longer shows.
+  - **Completion history stays with the original record.** `TaskCompletion` is
+    keyed on the task id, and a *Save for Future* fork is a **new** record, so the
+    ledger remains with the truncated original — history describes the schedule
+    that produced it. Only destroying the record destroys its history, which is why
+    the "This also removes all completion history" warning appears on the one-time
+    confirm and on a first-occurrence sheet (where *All Future* deletes the record)
+    and **not** on a later occurrence's sheet, where every choice leaves the record
+    standing. Chores keep no completion ledger, so they never carry the warning.
+  - `skipDates` and `until` live **inside** the recurrence object, which
+    `CHORE_ENC` / `TASK_ENC` already seal whole — no encryption-subset change, and
+    the shared engine honours both on expansion (see
+    [calendar.md](calendar.md)).
 - **"Ask Calen" form-assist** on the task and chore forms fills fields from a
   plain-language description (via the generic `formAssist` route — AI endpoints
   here, incl. item photo scan and manual extract/auto-lookup, are refused

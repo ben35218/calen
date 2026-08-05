@@ -11,6 +11,7 @@ import { useReminderScheduler } from '../hooks/useReminderScheduler';
 import { useAppLock } from '../hooks/useAppLock';
 import { useSelfPersonSeed } from '../hooks/useSelfPersonSeed';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
+import { useCalendarPrefsReady } from '../lib/calendarPrefs';
 import { useOnboardingStatus } from '../lib/onboarding';
 import OnboardingScreen from '../screens/onboarding/OnboardingScreen';
 import AuthNavigator from './AuthNavigator';
@@ -46,6 +47,12 @@ export default function RootNavigator() {
   const viewer = useViewerContent();
   const onboarding = useOnboardingStatus();
   const remindersEnabled = usePrivacyPrefs().prefs.remindersEnabled;
+  // Calendar colours are prefs, and every surface falls back to the app
+  // defaults until they load — so painting before they land showed the grid,
+  // chips and section accents in the wrong colours for a beat and then
+  // recoloured them. Loading them behind the splash (with the other caches)
+  // makes the first frame the user's own arrangement.
+  const calendarPrefsReady = useCalendarPrefsReady(isLoggedIn && !bootstrapping);
   const navRef = useNavigationContainerRef<RootStackParamList>();
 
   // Central RevenueCat identity: purchases are per-USER (app_user_id = user
@@ -80,8 +87,11 @@ export default function RootNavigator() {
   // Hold the splash a beat longer while the first-run flag reads from disk, so a
   // returning user never flashes the onboarding screen before it resolves.
   const onboardingPending = isLoggedIn && !onboarding.loaded;
+  // Same for the calendar arrangement (colours/order/visibility): held only
+  // while signed in, and self-capped when it has to wait on the account.
+  const calendarPrefsPending = isLoggedIn && !calendarPrefsReady;
 
-  if (bootstrapping || unlockPending || onboardingPending) {
+  if (bootstrapping || unlockPending || onboardingPending || calendarPrefsPending) {
     return (
       <View style={styles.splash}>
         <ActivityIndicator size="large" color={colors.primary} />

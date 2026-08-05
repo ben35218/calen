@@ -25,6 +25,9 @@ import {
 } from '../../lib/recurrence';
 import { itemTypeConfig } from '../../lib/itemTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import {
+  promptItemDelete, promptResumeSchedule, resumeState, resumeSubtitle, hasUpcomingOccurrence,
+} from '../../lib/repeatingItemScope';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing, radius } from '../../theme';
 
@@ -58,7 +61,9 @@ function dueInLabel(dueDate?: string | null): string {
 
 export default function TaskDetailScreen() {
   const navigation = useNavigation<Nav>();
-  const { id } = useRoute<Rt>().params;
+  // `date` = the occurrence tapped through from the calendar; absent when opened
+  // from a list or an item, where the whole series is the subject.
+  const { id, date } = useRoute<Rt>().params;
   const qc = useQueryClient();
   const accent = useCalendarColors().colors.maintenance;
   const [completeOpen, setCompleteOpen] = useState(false);
@@ -160,19 +165,35 @@ export default function TaskDetailScreen() {
     },
   });
 
+  // Puts a skipped-down or ended series back to work from today. Same
+  // perform-as-argument shape as delete, so the row keeps a pending state.
+  const resume = useMutation({
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
+    onSuccess: invalidate,
+    onError: (e: any) => Alert.alert("Couldn't resume task", e?.response?.data?.error || 'Please try again.'),
+  });
+
+  // The chosen action is the mutation's argument, so Delete keeps its pending
+  // state whichever scope the user picks — same shape as the event screens.
   const del = useMutation({
-    mutationFn: () => tasksApi.delete(id),
+    mutationFn: (perform: () => Promise<unknown>) => perform(),
     onSuccess: () => {
       invalidate();
       navigation.goBack();
     },
+    onError: (e: any) => Alert.alert("Couldn't delete task", e?.response?.data?.error || 'Delete failed'),
   });
 
-  const confirmDelete = () =>
-    Alert.alert('Delete Task', `Delete "${task?.title}"? This also removes all completion history.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => del.mutate() },
-    ]);
+  // A one-time task confirms once; a repeating one offers Apple's "this
+  // occurrence" / "all future" choices against the day the user tapped.
+  //
+  // Only deleting the WHOLE task drops its completion history, so the warning
+  // rides with that outcome rather than being stated up front for a scope that
+  // leaves the record — and its history — in place.
+  const confirmDelete = () => {
+    if (!task) return;
+    promptItemDelete('task', task, date, (perform) => del.mutate(perform));
+  };
 
   const isPaused = task?.active === false;
   useLayoutEffect(() => {
@@ -180,7 +201,7 @@ export default function TaskDetailScreen() {
     navigation.setOptions({
       title: 'Task',
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit task" onPress={() => navigation.navigate('TaskForm', { id })} />
+        <HeaderIconButton icon="pencil" accessibilityLabel="Edit task" onPress={() => navigation.navigate('TaskForm', { id, date })} />
       ),
     });
   }, [navigation, id]);
@@ -188,6 +209,15 @@ export default function TaskDetailScreen() {
   if (taskQ.isLoading || !task) {
     return <CenteredLoader color={accent} />;
   }
+
+  const resumeInfo = resumeState(task);
+  // Same rule as the chore detail: show the occurrence the user tapped, "Ended"
+  // for a series that has stopped, and the anchor's due-in only otherwise.
+  const dueRowTitle = date
+    ? dueInLabel(`${date}T12:00:00`)
+    : !hasUpcomingOccurrence(task) && resumeInfo.endedOn
+      ? `Ended ${formatCalendarDate(resumeInfo.endedOn)}`
+      : dueInLabel(task.nextDueDate);
 
   // Category name from the populated ref, used for the header icon fallback + tint.
   const categoryName =
@@ -285,7 +315,7 @@ export default function TaskDetailScreen() {
         {task.itemId && typeof task.itemId === 'object' ? (
           <ListRow mdiIcon={itemTypeConfig(task.itemId.type).icon} title={task.itemId.name} />
         ) : null}
-        <ListRow icon="calendar-outline" title={dueInLabel(task.nextDueDate)} />
+        <ListRow icon="calendar-outline" title={dueRowTitle} />
         {task.lastCompletedAt ? (
           <ListRow icon="time-outline" title="Last completed" subtitle={formatCalendarDate(task.lastCompletedAt)} />
         ) : null}
@@ -294,6 +324,17 @@ export default function TaskDetailScreen() {
         ) : null}
         {task.intervalKm ? (
           <ListRow icon="speedometer-outline" title="Service interval" subtitle={`Every ${task.intervalKm.toLocaleString()} km`} />
+        ) : null}
+        {/* Only when something is actually holding the series back. The subtitle
+            states WHY the task looks the way it does, which is what makes the
+            action discoverable at all — see maintenance.md. */}
+        {resumeInfo.canResume ? (
+          <ListRow
+            icon="play-circle-outline"
+            title="Resume schedule"
+            subtitle={resumeSubtitle(resumeInfo)}
+            onPress={() => promptResumeSchedule('task', task, (perform) => resume.mutate(perform))}
+          />
         ) : null}
       </Card>
 

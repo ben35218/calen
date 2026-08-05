@@ -29,6 +29,127 @@ async function reseal(
   return store().update(collection, id, await sealUpdate(collection, id, merged, subset(merged)));
 }
 
+// The same re-seal, but honouring the key the record already lives under.
+//
+// `reseal` above always seals with the household key. That is wrong for a record
+// on an outside-shared calendar (`enc.ks === 'cal'`), which is sealed with that
+// calendar's own key so collaborators can read it: re-sealing under the HDK
+// silently flips it out of the shared lane and locks them out. Every
+// occurrence-scoped edit to an event goes through here for that reason — the
+// alternative was to withhold occurrence scoping on shared calendars entirely,
+// which cost the capability rather than fixing the write.
+//
+// Falls back to the household lane whenever the calendar key isn't held, which
+// is also what `EventFormScreen.writeEvent` does for a full save.
+async function resealInLane(
+  collection: string,
+  subset: (p: Record<string, unknown>) => Record<string, unknown>,
+  id: string,
+  changes: Record<string, unknown>,
+) {
+  const { sealUpdate, sealForCalendar, loadCalendarKeys, currentCalendarKeyVersion } =
+    require('../lib/e2ee') as typeof import('../lib/e2ee');
+  const rep = require('../lib/replica') as typeof import('../lib/replica');
+  const existing = (await rep.getAll<Record<string, unknown>>(collection)).find((r) => r._id === id) ?? {};
+  const merged = { ...existing, ...changes };
+  const enc = existing.enc as { ks?: string } | undefined;
+  const calType = String(merged.calendarType ?? '');
+
+  if (enc?.ks === 'cal' && calType) {
+    await loadCalendarKeys(calType).catch(() => {});
+    if (currentCalendarKeyVersion(calType) > 0) {
+      const sealed = await sealForCalendar(collection, id, calType, subset(merged));
+      if (sealed) return store().update(collection, id, { ...merged, ...sealed });
+    }
+  }
+  return store().update(collection, id, await sealUpdate(collection, id, merged, subset(merged)));
+}
+
+// ── Per-occurrence scoping for repeating chores / maintenance tasks ──────────
+// The chore+task equivalents of calendarApi.excludeOccurrence / truncateSeries.
+// `skipDates` and `until` live INSIDE the recurrence object, which CHORE_ENC and
+// TASK_ENC already seal whole, so both write through the same reseal path as
+// pause/resume. HDK lane only — chores and tasks are never calendar-key sealed.
+const dayEnd = (day: string) => new Date(`${day}T23:59:59`).toISOString();
+function previousDay(day: string): string {
+  const d = new Date(`${day}T12:00:00`);
+  d.setDate(d.getDate() - 1);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// "Delete/Save This Occurrence Only": strike the day out of the series.
+//
+// An interval series also walks forward from `nextDueDate`, so skipping the day
+// the record is currently anchored on has to move the anchor too — otherwise the
+// detail screen and the due-in label keep reporting a due date the calendar no
+// longer shows.
+async function skipItemOccurrence(
+  collection: string,
+  subset: (p: Record<string, unknown>) => Record<string, unknown>,
+  id: string,
+  occurrenceDate: string,
+) {
+  const rep = require('../lib/replica') as typeof import('../lib/replica');
+  const { computeNextDueDate } = require('@household/calendar');
+  const existing = (await rep.getAll<Record<string, unknown>>(collection)).find((r) => r._id === id) ?? {};
+  const rec = (existing.recurrence as Record<string, unknown>) ?? {};
+  const skipDates = Array.from(
+    new Set([...((rec.skipDates as string[]) ?? []), occurrenceDate]),
+  ).sort();
+  const changes: Record<string, unknown> = { recurrence: { ...rec, skipDates } };
+  const due = existing.nextDueDate ? new Date(existing.nextDueDate as string) : null;
+  if (due && !Number.isNaN(due.getTime())) {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dueDay = `${due.getFullYear()}-${pad(due.getMonth() + 1)}-${pad(due.getDate())}`;
+    if (dueDay === occurrenceDate) {
+      const next = computeNextDueDate({ ...existing, recurrence: rec }, due);
+      if (next) changes.nextDueDate = next;
+    }
+  }
+  return reseal(collection, subset, id, changes);
+}
+
+// "Resume schedule": put a scoped-down series back to work from today, without
+// disturbing the past. The caller computes the new recurrence
+// (lib/repeatingItemScope.buildResumedRecurrence) because it needs the decrypted
+// record plus the series' detached copies; this just seals and writes it.
+async function resumeItemSeries(
+  collection: string,
+  subset: (p: Record<string, unknown>) => Record<string, unknown>,
+  id: string,
+  recurrence: Record<string, unknown>,
+) {
+  return reseal(collection, subset, id, { recurrence });
+}
+
+// Every standalone copy made from a given series, so a resume can tell which
+// upcoming days are already covered. Reads the decrypted replica — the server
+// can't index a sealed `detachedFrom`.
+async function detachedCopiesOf(collection: string, seriesId: string): Promise<string[]> {
+  const rep = require('../lib/replica') as typeof import('../lib/replica');
+  const rows = await rep.getAll<Record<string, unknown>>(collection);
+  return rows
+    .filter((r) => String(r.detachedFrom ?? '') === String(seriesId) && !!r.detachedDate)
+    .map((r) => String(r.detachedDate));
+}
+
+// "Delete/Save All Future": end the series the day before this occurrence, so
+// everything already past stays put.
+async function truncateItemSeries(
+  collection: string,
+  subset: (p: Record<string, unknown>) => Record<string, unknown>,
+  id: string,
+  occurrenceDate: string,
+) {
+  const rep = require('../lib/replica') as typeof import('../lib/replica');
+  const existing = (await rep.getAll<Record<string, unknown>>(collection)).find((r) => r._id === id) ?? {};
+  const rec = (existing.recurrence as Record<string, unknown>) ?? {};
+  return reseal(collection, subset, id, {
+    recurrence: { ...rec, until: dayEnd(previousDay(occurrenceDate)) },
+  });
+}
+
 // Typed endpoint groups ported from client/src/services/api.js. Wave 1 (Tasks &
 // Chores) fills out the maintenance surface: tasks, chores, their templates,
 // plus the supporting groups their screens need (categories, items, history,
@@ -218,6 +339,13 @@ export interface Recurrence {
   dayOfMonth?: number | null;
   dayOfWeek?: number | null;
   weekOfMonth?: number | null;
+  // Per-occurrence scoping, the chore/task counterpart of a CalendarEvent's
+  // exceptionDates + recurrence.until. `skipDates` are YYYY-MM-DD occurrences
+  // struck out one at a time; `until` ends the series. Both live inside
+  // recurrence so CHORE_ENC/TASK_ENC seal them with the rule, and the shared
+  // engine honours them on expansion.
+  skipDates?: string[];
+  until?: string | Date | null;
 }
 
 // ----- Tasks (maintenance) ---------------------------------------------------
@@ -289,6 +417,15 @@ export const tasksApi = {
   // C3b: pause/resume flip the sealed `active` field → re-seal client-side.
   pause: (id: string) => reseal('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, { active: false }),
   resume: (id: string) => reseal('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, { active: true }),
+  // Apple-style occurrence scoping on a repeating task (see the helpers above).
+  skipOccurrence: (id: string, occurrenceDate: string) =>
+    skipItemOccurrence('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, occurrenceDate),
+  truncateSeries: (id: string, occurrenceDate: string) =>
+    truncateItemSeries('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, occurrenceDate),
+  // Put a scoped-down series back to work from today (see repeatingItemScope).
+  resumeSeries: (id: string, recurrence: Record<string, unknown>) =>
+    resumeItemSeries('MaintenanceTask', require('../lib/encSubsets').TASK_ENC, id, recurrence),
+  detachedCopies: (seriesId: string) => detachedCopiesOf('MaintenanceTask', seriesId),
   // Template instantiation happens client-side now (lib/taskTemplates —
   // Signal-parity D4): the app builds + seals template tasks and POSTs /tasks.
   templates: (params?: Record<string, unknown>) => api.get<TaskTemplate[]>('/task-templates', { params }),
@@ -407,6 +544,15 @@ export const choresApi = {
   delete: (id: string) => store().remove('Chore', id),
   pause: (id: string) => reseal('Chore', require('../lib/encSubsets').CHORE_ENC, id, { active: false }),
   resume: (id: string) => reseal('Chore', require('../lib/encSubsets').CHORE_ENC, id, { active: true }),
+  // Apple-style occurrence scoping on a repeating chore (see the helpers above).
+  skipOccurrence: (id: string, occurrenceDate: string) =>
+    skipItemOccurrence('Chore', require('../lib/encSubsets').CHORE_ENC, id, occurrenceDate),
+  truncateSeries: (id: string, occurrenceDate: string) =>
+    truncateItemSeries('Chore', require('../lib/encSubsets').CHORE_ENC, id, occurrenceDate),
+  // Put a scoped-down series back to work from today (see repeatingItemScope).
+  resumeSeries: (id: string, recurrence: Record<string, unknown>) =>
+    resumeItemSeries('Chore', require('../lib/encSubsets').CHORE_ENC, id, recurrence),
+  detachedCopies: (seriesId: string) => detachedCopiesOf('Chore', seriesId),
   // Template instantiation happens client-side now (Signal-parity D4): the app
   // builds + seals template chores and POSTs /chores.
   templates: (params?: Record<string, unknown>) => api.get<ChoreTemplate[]>('/chore-templates', { params }),
@@ -667,6 +813,30 @@ export const historyApi = {
   list: (params?: Record<string, unknown>) => api.get<Completion[]>('/history', { params }),
 };
 
+// A calendar-level alert config: days before the date (0 = the day of) plus the
+// wall-clock `HH:mm` they all fire at. Mirrors lib/calendarPrefs' local shape.
+export interface AlertPrefs {
+  offsets: number[];
+  time: string;
+}
+
+// The user's calendar arrangement as it travels on `/settings`. Every field is
+// SPARSE — only deviations from the app defaults are carried, so a calendar the
+// user never touched (or one added later, on any device) picks up the defaults.
+// Mirrors lib/calendarPrefs' local state.
+export interface CalendarPrefsPayload {
+  // calendar id → hex colour, for calendars the user recoloured.
+  colors?: Record<string, string>;
+  // Display order as calendar ids; ids not listed sort after these.
+  order?: string[];
+  // Calendars toggled off in the Calendars view (visible is the default).
+  hidden?: string[];
+  // Built-in calendars the user deleted (restorable via Add Calendar).
+  deletedDefaults?: string[];
+  // Calendars whose "Event Alerts" switch is off.
+  alertsOff?: string[];
+}
+
 export interface Settings {
   householdMemberCount?: number;
   firstName?: string;
@@ -680,6 +850,21 @@ export interface Settings {
   // the 9am default. Set on the Account screen; honored by the server cron (hour
   // only) and the on-device scheduler (full HH:mm).
   dayAlertTime?: string | null;
+  // Calendar-level alert configs for the two calendars whose items are computed
+  // on-device: Occasions, and the holiday calendars (one config for all of
+  // them). ACCOUNT settings — lib/calendarPrefs caches them on the device but
+  // treats these as the truth, since the cache is wiped at sign-out. null =
+  // never configured (the client's own defaults apply); `offsets: []` = the
+  // user turned that calendar's alerts off.
+  occasionAlerts?: AlertPrefs | null;
+  holidayAlerts?: AlertPrefs | null;
+  // How the user arranged their calendars. An ACCOUNT setting for the same
+  // reason as the alert configs above — the device cache is wiped at sign-out,
+  // so without this every colour, reorder, hide and delete was lost on the next
+  // sign-in. null = never configured (this device's arrangement stands and
+  // seeds the account); a field ABSENT within it means the same for that field,
+  // while an empty value means the user cleared it.
+  calendarPrefs?: CalendarPrefsPayload | null;
   homeAddress?: string;
   // Coarse home-area label (city + region/country) the calendar assistant grounds
   // local suggestions in — derived client-side from the address, or set by hand.
@@ -1050,7 +1235,25 @@ export const householdApi = {
   // reseal pass; then a stamp that unblocks the server null script.
   resealAll: () => api.get<E2eeResealAll>('/household/e2ee/reseal-all'),
   resealComplete: () => api.post<{ ok: boolean; dropFieldsVersion: number }>('/household/e2ee/reseal-complete'),
+  // Join carry-over: records left stranded in a household this user has left,
+  // served with that household's envelopes so the device can decrypt and re-seal
+  // them into the household it joined. See lib/joinCarryover.
+  carryover: () => api.get<CarryoverPending>('/household/carryover'),
+  carryoverMove: (id: string, payload: { enc: unknown; keyVersion?: number }) =>
+    api.put<{ ok: boolean; moved: boolean }>(`/household/carryover/${id}`, payload),
+  carryoverComplete: () =>
+    api.post<{ ok: boolean; reaped: number; remaining: string[] }>('/household/carryover/complete'),
 };
+
+// Stranded records grouped by the household they were left behind in.
+export interface CarryoverPending {
+  total: number;
+  households: {
+    householdId: string;
+    envelopes: { keyVersion: number; wrappedHDK: string }[];
+    records: RecordRow[];
+  }[];
+}
 
 // Re-seal-all pass: per collection, records needing their newer content fields
 // folded into `enc`, served with their current plaintext DROP_FIELDS + old enc.
@@ -1380,7 +1583,11 @@ export interface CalendarEvent {
   readOnly?: boolean;
   // E2EE dual-write (Phase 3a): opaque ciphertext of the content + its key version.
   keyVersion?: number;
-  enc?: { alg: string; nonce: string; ct: string };
+  // `ks` names the key the content is sealed under: absent = the household key,
+  // 'cal' = the CalendarKey of an outside-shared calendar (D1). The recurrence
+  // helpers below re-seal under the HDK only, so `ks === 'cal'` is what the
+  // occurrence-scoped edits and deletes check before offering themselves.
+  enc?: { alg: string; nonce: string; ct: string; ks?: string };
 }
 
 export type OccasionKind = 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
@@ -1442,6 +1649,10 @@ export interface EventAttachment {
 export const eventAttachmentsApi = {
   list: (eventId: string) => api.get<EventAttachment[]>(`/calendar/events/${eventId}/attachments`),
   delete: (id: string) => api.delete(`/calendar/attachments/${id}`),
+  // Duplicate an event's attachments onto another event (an occurrence override
+  // or a forked series — both are new records, and attachments hang off the id).
+  copyFrom: (targetEventId: string, sourceEventId: string) =>
+    api.post<EventAttachment[]>(`/calendar/events/${targetEventId}/attachments/copy-from/${sourceEventId}`),
   // upload is handled via lib/upload (multipart, field 'file'); endpoint:
   //   POST /calendar/events/:eventId/attachments/upload
   // download is a Bearer / token-query URL built in the screen:
@@ -1471,16 +1682,18 @@ export const calendarApi = {
   deleteEvent: (id: string) => store().remove('CalendarEvent', id),
   // Single-field flips on sealed event content (C3b: `guestListVisible` and
   // `cancelled` live inside `enc`, so a plaintext PUT is rejected by the opaque
-  // store). Re-seal via the replica like pause/resume; HDK lane only, same as
-  // the recurrence helpers below.
+  // store). Re-seal via the replica like pause/resume, in whichever key lane the
+  // event already lives under (see resealInLane), same as the recurrence
+  // helpers below.
   setGuestListVisible: (id: string, v: boolean) =>
-    reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { guestListVisible: v }),
+    resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { guestListVisible: v }),
   cancelEvent: (id: string) =>
-    reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { cancelled: true }),
+    resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { cancelled: true }),
   // Recurring-event deletes (Apple-style). The server can't edit sealed content,
-  // so each re-seals the whole event (reseal reads the decrypted record from the
-  // replica, so callers never reconstruct the recurrence). Both seal under the
-  // HDK — an outside-shared calendar's own recurring events aren't handled here.
+  // so each re-seals the whole event (resealInLane reads the decrypted record
+  // from the replica, so callers never reconstruct the recurrence), under
+  // whichever key the event already lives under — an event on an outside-shared
+  // calendar keeps its CalendarKey lane instead of being flipped to the HDK.
   //
   // "Delete This Event Only": add the tapped occurrence's day to exceptionDates;
   // the shared engine skips it.
@@ -1490,7 +1703,7 @@ export const calendarApi = {
     const exceptionDates = Array.from(
       new Set([...((existing?.exceptionDates as string[]) ?? []), occurrenceDate]),
     ).sort();
-    return reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { exceptionDates });
+    return resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { exceptionDates });
   },
   // "Delete All Future Events" for a non-first occurrence: end the series on the
   // day before it (past occurrences stay). `until` is the end of that local day,
@@ -1503,7 +1716,7 @@ export const calendarApi = {
     const pad = (n: number) => String(n).padStart(2, '0');
     const untilDay = `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-${pad(prev.getDate())}`;
     const recurrence = { ...(existing?.recurrence ?? {}), until: new Date(`${untilDay}T23:59:59`).toISOString() };
-    return reseal('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { recurrence });
+    return resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { recurrence });
   },
 };
 

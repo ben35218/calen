@@ -13,7 +13,7 @@ const { rateLimit } = require('../middleware/rateLimit');
 const { dedupeCategoriesForScope } = require('../services/dedupeCategories');
 const { validateHDKEnvelope, validateRotation, pickRecordEnc } = require('../services/householdKey');
 const { computeReadiness, DROP_FIELDS, DROP_FIELDS_VERSION } = require('../services/dropReadiness');
-const { e2eeRequired, stripSealedContent, AUTHOR_HIDDEN } = require('../services/e2eePolicy');
+const { e2eeRequired, stripSealedContent, AUTHOR_HIDDEN, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 const { alertHousehold, alertUser, securityAlert } = require('../services/securityAlerts');
 const { dropPlaintext } = require('../scripts/dropPlaintext');
 const { CONTENT_MODELS } = require('../services/contentModels');
@@ -285,6 +285,144 @@ router.post('/e2ee/reseal-complete', async (req, res) => {
     if (!req.household) return res.status(404).json({ error: 'No household' });
     await Household.updateOne({ _id: req.household._id }, { $set: { dropFieldsVersion: DROP_FIELDS_VERSION } });
     res.json({ ok: true, dropFieldsVersion: DROP_FIELDS_VERSION });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Join carry-over: rescue records stranded in a household the caller left ──
+//
+// Moving between households used to be a one-line `User.householdId` flip, on the
+// premise that "your own data comes with you" — true when the read scope was
+// `userId ∈ scopeIds`. Signal-parity C4 ended that: an e2eeActive household's
+// records are stamped with ITS householdId and have their plaintext `userId`
+// dropped (see routes/records.js), so after a move the joiner's own records match
+// neither branch of `scopeClause` and are sealed under a key the destination
+// household doesn't hold. They aren't lost — `handleDeparture` refuses to reap a
+// household that still holds ciphertext — but they're invisible.
+//
+// The server can't re-seal (it never holds an HDK), so the joiner's unlocked
+// device drives the move: list the stranded rows here, decrypt them under the old
+// household's HDK, re-seal under the new one, and PUT each back. Authorization is
+// **envelope-holding**: we only serve ciphertext from a household the caller still
+// has a HouseholdKeyEnvelope for — key material they already possess, so this
+// reveals nothing they couldn't already read.
+
+// Households the caller holds key material for but is no longer a member of.
+async function orphanedHouseholdsFor(userId, currentHouseholdId) {
+  const envelopes = await HouseholdKeyEnvelope
+    .find({ userId }, 'householdId keyVersion wrappedHDK').lean();
+  const byHousehold = new Map();
+  for (const e of envelopes) {
+    if (currentHouseholdId && String(e.householdId) === String(currentHouseholdId)) continue;
+    const key = String(e.householdId);
+    if (!byHousehold.has(key)) byHousehold.set(key, { householdId: key, envelopes: [] });
+    byHousehold.get(key).envelopes.push({ keyVersion: e.keyVersion, wrappedHDK: e.wrappedHDK });
+  }
+  return [...byHousehold.values()];
+}
+
+// Only HDK-sealed, live rows move. A resource-scoped record (`enc.ks` 'cal'/'trip')
+// is deliberately excluded: it routes by `scope.resource` to collaborators in ANY
+// household (the D1/D2 lane), so it is already reachable from the new household and
+// re-stamping its householdId would break the owner-side rotation accounting.
+const CARRYOVER_FILTER = {
+  deleted: { $ne: true },
+  enc: { $exists: true, $ne: null },
+  'enc.ks': { $nin: ['cal', 'trip'] },
+};
+
+// GET /household/carryover — the caller's stranded records, grouped by the
+// household they're marooned in, with that household's envelopes so the device can
+// unwrap the key needed to read them.
+router.get('/carryover', async (req, res) => {
+  try {
+    // No destination household means nowhere to carry anything TO — listing
+    // ciphertext the caller couldn't move would be pointless, not just harmless.
+    if (!req.household) return res.json({ total: 0, households: [] });
+    const LIMIT = 500;
+    const orphans = await orphanedHouseholdsFor(req.user._id, req.household._id);
+    const households = [];
+    let total = 0;
+    for (const orphan of orphans) {
+      const records = await Record
+        .find({ householdId: orphan.householdId, ...CARRYOVER_FILTER })
+        .select('enc keyVersion scope').limit(LIMIT).lean();
+      if (!records.length) continue;
+      households.push({ ...orphan, records });
+      total += records.length;
+    }
+    res.json({ total, households });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /household/carryover/:id — the device posts one record re-sealed under the
+// destination household's HDK; the server re-stamps its householdId. This MOVES
+// the row (keeping its `_id`) rather than copying it, so attachments, invitations,
+// and every other reference by event/task id survive the merge intact.
+router.put('/carryover/:id', async (req, res) => {
+  try {
+    if (!req.household) return res.status(404).json({ error: 'No household' });
+    let enc;
+    try { enc = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+    if (!enc.enc) return res.status(400).json({ error: E2EE_REQUIRED_MESSAGE });
+
+    const record = await Record.findById(req.params.id).select('householdId enc').lean();
+    if (!record) return res.status(404).json({ error: 'No such record' });
+    // Already carried over (a retried pass) — idempotent success, not an error.
+    if (String(record.householdId) === String(req.household._id)) return res.json({ ok: true, moved: false });
+
+    // The only authorization that matters: the caller must still hold a key
+    // envelope for the household this record lives in.
+    const holdsKey = await HouseholdKeyEnvelope.exists({
+      householdId: record.householdId, userId: req.user._id,
+    });
+    if (!holdsKey) return res.status(403).json({ error: 'Not your record' });
+
+    // C4: an HDK record in an e2eeActive household attributes to the household
+    // only — the author stays sealed inside `enc`, exactly as a fresh write would.
+    const update = { ...enc, householdId: req.household._id };
+    const unset = req.household.e2eeActive ? { userId: 1 } : {};
+    await Record.updateOne(
+      { _id: record._id },
+      { $set: update, ...(Object.keys(unset).length ? { $unset: unset } : {}) },
+      { timestamps: true },
+    );
+    res.json({ ok: true, moved: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /household/carryover/complete — drain and reap. Once the live records are
+// out, the tombstones left behind carry no content and only exist to block the
+// reap `handleDeparture` skipped, so delete them and retire the empty household.
+// Left alone (and reported back) if resource-scoped records still route through it.
+router.post('/carryover/complete', async (req, res) => {
+  try {
+    // Symmetric with the listing: without a destination nothing was carried over,
+    // so there is nothing drained and certainly nothing safe to reap.
+    if (!req.household) return res.json({ ok: true, reaped: 0, remaining: [] });
+    const orphans = await orphanedHouseholdsFor(req.user._id, req.household._id);
+    let reaped = 0;
+    const remaining = [];
+    for (const orphan of orphans) {
+      const members = await User.countDocuments({ householdId: orphan.householdId });
+      if (members > 0) continue; // still someone else's live household — never touch it
+      const live = await Record.countDocuments({ householdId: orphan.householdId, ...CARRYOVER_FILTER });
+      if (live > 0) { remaining.push(orphan.householdId); continue; }
+      // Anything left is a tombstone or a resource-lane row. Tombstones go; a
+      // resource-lane row must keep its household (and therefore its key) alive.
+      await Record.deleteMany({ householdId: orphan.householdId, deleted: true });
+      if (await Record.exists({ householdId: orphan.householdId })) { remaining.push(orphan.householdId); continue; }
+      await Household.deleteOne({ _id: orphan.householdId });
+      await HouseholdKeyEnvelope.deleteMany({ householdId: orphan.householdId });
+      reaped++;
+    }
+    res.json({ ok: true, reaped, remaining });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -905,13 +1043,22 @@ router.post('/join-requests/:id/approve', async (req, res) => {
       { upsert: true },
     );
 
-    // Move the requester into this household (their own data comes with them) and
-    // clean up the household they left.
+    // Move the requester into this household and clean up the household they
+    // left. Their DATA does not travel with this flip — an e2eeActive household's
+    // records are stamped with its householdId and sealed under its HDK, so they
+    // stay behind until the joiner's unlocked device re-seals them across (the
+    // carry-over pass above / lib/joinCarryover). `handleDeparture` deliberately
+    // leaves the old household + its envelopes standing while that ciphertext
+    // exists, which is what keeps the carry-over possible.
     const oldId = requester.householdId;
     await User.updateOne(
       { _id: requester._id },
       { $set: { householdId: req.household._id } },
     );
+    // (No add-on bookkeeping here: ownership lives on `User.addons` and takes
+    // effect as the union across household members, so a joiner's purchases
+    // travel with them automatically — and are not surrendered to the household
+    // they leave. See specs/features/billing-plans.md.)
     if (String(oldId) !== String(req.household._id)) await handleDeparture(oldId, requester._id);
 
     // Merge the joiner's default categories into the destination set so identical
