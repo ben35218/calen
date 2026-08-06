@@ -176,10 +176,13 @@ export default function TripItemFormScreen() {
     set(patch);
   };
 
-  // The mirror of setEnd: editing a start (date/time) to at/after the end pushes
-  // the end forward so the booking keeps its length — the end is never left
-  // before the start. Only runs when an end is set; otherwise the start moves
-  // freely. Serves both the Starts/Ends and the journey Departs/Arrives pair.
+  // Editing a start (date/time) carries the end with it, in either direction,
+  // so the booking keeps its length — changing the length is the end field's
+  // job (setEnd). Only runs when an end is set; a **time** edit additionally
+  // needs a previous start time (a first-set isn't a move) and an end time to
+  // keep in step — otherwise the midnight fallback would drag a date-only end
+  // across days. Serves both the Starts/Ends and the journey Departs/Arrives
+  // pair.
   const setStart = (
     sk: { date: 'startDate' | 'depDate'; time: 'startTime' | 'depTime' },
     ek: { date: 'endDate' | 'arrDate'; time: 'endTime' | 'arrTime' },
@@ -189,7 +192,9 @@ export default function TripItemFormScreen() {
     const patch: Partial<typeof form> = { [sk[part]]: v } as Partial<typeof form>;
     const startDate = (form as any)[sk.date] as string;
     const endDate = (form as any)[ek.date] as string;
-    if (startDate && endDate) {
+    const timeShiftOk =
+      part === 'date' || Boolean((form as any)[sk.time] && (form as any)[ek.time]);
+    if (startDate && endDate && timeShiftOk) {
       const startTime = ((form as any)[sk.time] as string) || '00:00';
       const endTime = ((form as any)[ek.time] as string) || '00:00';
       const newStart = {

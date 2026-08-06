@@ -389,12 +389,12 @@ export default function EventFormScreen() {
     assist.clear(Object.keys(patch));
   };
 
-  // Moving the start (time or date) to at/after the end drags the end forward by
-  // the same amount so the event keeps its length and the end is never left
-  // before the start (10–11 → start 2pm becomes 2–3pm). Mirror of setEndTime/
-  // setEndDate via the shared lib/datetime rule; cross-midnight aware, so a
-  // pushed end may roll onto a later day (and folds back to a blank endDate when
-  // it lands on the start's own day).
+  // Moving the start (time or date) carries the end with it by the same amount,
+  // in either direction, so the event keeps its length (9–10 → start 8am
+  // becomes 8–9; start 2pm becomes 2–3) — changing the length is the end
+  // field's job (setEndTime/setEndDate). Shared lib/datetime rule;
+  // cross-midnight aware, so a pushed end may roll onto a later day (and folds
+  // back to a blank endDate when it lands on the start's own day).
   const setStart = (patch: { date?: string; time?: string }) => {
     const nextDate = patch.date ?? form.date;
     const nextTime = patch.time ?? form.startTime;
@@ -416,8 +416,9 @@ export default function EventFormScreen() {
     set(out);
   };
 
-  // The mirror of setStart: dragging the end to at/before the start pulls the
-  // start back so the event keeps its length (8–9 → end 4am makes start 3am). If
+  // The end sets the duration, so a moved end normally leaves the start put —
+  // except dragging it to at/before the start, which pulls the start back so the
+  // event keeps its length (8–9 → end 4am makes start 3am). If
   // the shifted start crosses back over midnight, its date rolls to the previous
   // day and the (previously same-day) end date is pinned to the original day.
   const setEndTime = (v: string) => {
@@ -1504,7 +1505,15 @@ export default function EventFormScreen() {
           <SwitchRow
             label="All day"
             value={form.allDay}
-            onValueChange={(v) => set({ allDay: v, ...alertsForAllDay(v, form) })}
+            onValueChange={(v) =>
+              set({
+                allDay: v,
+                ...alertsForAllDay(v, {
+                  reminderMinutes: form.reminderMinutes,
+                  alert2Minutes: form.alert2Minutes,
+                }),
+              })
+            }
             color={accent}
             highlight={assist.changed.has('allDay')}
           />

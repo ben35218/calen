@@ -112,6 +112,19 @@ describe('alertsForAllDay', () => {
     const alerts = { reminderMinutes: 15, alert2Minutes: 1440 };
     expect(alertsForAllDay(false, alerts)).toEqual(alerts);
   });
+
+  // The switch spreads this result over `{ allDay: v, … }`. Returning the
+  // caller's own object (the whole form) put a stale `allDay: true` back on top
+  // of the patch, so All day could never be switched off.
+  it('returns only the two alert keys, never the object it was handed', () => {
+    const form = { allDay: true, title: 'Dentist', reminderMinutes: 1440, alert2Minutes: null };
+    for (const allDay of [false, true]) {
+      const out = alertsForAllDay(allDay, form);
+      expect(out).not.toBe(form);
+      expect(Object.keys(out).sort()).toEqual(['alert2Minutes', 'reminderMinutes']);
+      expect({ allDay: !allDay, ...out }).toMatchObject({ allDay: !allDay });
+    }
+  });
 });
 
 describe('allDayAlertLabel', () => {

@@ -47,6 +47,18 @@ test('POST validates month/day/recipients and rejects bad input', async () => {
   assert.equal(ok.body.sentAt, null);
 });
 
+test('U+FFFC OBJ characters are stripped from the stored card text', async () => {
+  // iOS leaves U+FFFC in text fields after dictation/inline placeholders;
+  // mail clients draw it as an "OBJ" box, so it never reaches the stored card.
+  const u = await registerUser({ firstName: 'Dictator' });
+  const created = await request().post('/api/ecards').set('Authorization', u.auth)
+    .send(validBody({ message: 'Happy birthday!￼ 🥳', greeting: 'Dear Dad,￼', signature: 'Ben￼' }));
+  assert.equal(created.status, 201);
+  assert.equal(created.body.message, 'Happy birthday! 🥳');
+  assert.equal(created.body.greeting, 'Dear Dad,');
+  assert.equal(created.body.signature, 'Ben');
+});
+
 test('the chosen card style (template key) persists through create and edit', async () => {
   const u = await registerUser({ firstName: 'Stylist' });
 

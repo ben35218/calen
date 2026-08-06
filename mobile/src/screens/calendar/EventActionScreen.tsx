@@ -95,8 +95,8 @@ export default function EventActionScreen() {
       })
     );
 
-  // The mirror: moving "from" to at/after "to" pushes "to" forward so the window
-  // keeps its width (same-day, clamped at 23:59) — "to" is never left before "from".
+  // Moving "from" carries "to" with it, in either direction, so the window keeps
+  // its width (same-day, clamped at 23:59) — editing "to" is how the width changes.
   const setWindowFrom = (i: number, v: string) =>
     setWindows((ws) =>
       ws.map((w, j) => {

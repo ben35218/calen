@@ -60,12 +60,20 @@ describe('endKeepingDuration (date+time pairs)', () => {
     expect(out).toEqual({ date: D, time: '11:00' });
   });
 
-  it('leaves the end alone when the new start is still before it', () => {
-    expect(endKeepingDuration({ date: D, time: '08:00' }, { date: D, time: '09:00' }, { date: D, time: '08:30' })).toBeNull();
+  it('carries the end back when the start moves earlier, preserving the gap', () => {
+    // 9–10am, start → 8am ⇒ end becomes 9am (the design-change canonical example)
+    const out = endKeepingDuration({ date: D, time: '09:00' }, { date: D, time: '10:00' }, { date: D, time: '08:00' });
+    expect(out).toEqual({ date: D, time: '09:00' });
   });
 
-  it('leaves the end alone when the new start exactly equals it (zero-length allowed)', () => {
-    expect(endKeepingDuration({ date: D, time: '08:00' }, { date: D, time: '09:00' }, { date: D, time: '09:00' })).toBeNull();
+  it('carries the end for a small forward nudge that stays before the old end', () => {
+    expect(endKeepingDuration({ date: D, time: '08:00' }, { date: D, time: '09:00' }, { date: D, time: '08:30' }))
+      .toEqual({ date: D, time: '09:30' });
+  });
+
+  it('carries the end when the new start lands exactly on the old end', () => {
+    expect(endKeepingDuration({ date: D, time: '08:00' }, { date: D, time: '09:00' }, { date: D, time: '09:00' }))
+      .toEqual({ date: D, time: '10:00' });
   });
 
   it('does nothing when the pair had no positive duration', () => {
@@ -78,30 +86,40 @@ describe('endKeepingDuration (date+time pairs)', () => {
     expect(out).toEqual({ date: '2026-07-30', time: '00:20' });
   });
 
+  it('folds a next-day end back onto the start day when the start moves earlier', () => {
+    // 23:00 → 00:20 next day (80 min), start → 22:00 ⇒ end 23:20 same day
+    const out = endKeepingDuration({ date: D, time: '23:00' }, { date: '2026-07-30', time: '00:20' }, { date: D, time: '22:00' });
+    expect(out).toEqual({ date: D, time: '23:20' });
+  });
+
   it('closes the equal-date hole: start date advanced onto a same-clock end pushes the end out', () => {
     // start 29th 09:00 → 30th 08:00 (23h), start date → 30th ⇒ end 31st 08:00 (span kept)
     const out = endKeepingDuration({ date: D, time: '09:00' }, { date: '2026-07-30', time: '08:00' }, { date: '2026-07-30', time: '09:00' });
     expect(out).toEqual({ date: '2026-07-31', time: '08:00' });
   });
 
-  it('preserves a multi-day span for date-only pairs', () => {
-    // 3-day trip (29th→1st), start pushed to the 1st ⇒ end slides forward 3 days to the 4th
+  it('preserves a multi-day span for date-only pairs, in both directions', () => {
+    // 3-day trip (29th→1st), start pushed onto the old end date ⇒ end slides to the 4th
     const out = endKeepingDuration({ date: D, time: '00:00' }, { date: '2026-08-01', time: '00:00' }, { date: '2026-08-01', time: '00:00' });
-    expect(out).toBeNull(); // start == end date, zero shift trigger
+    expect(out).toEqual({ date: '2026-08-04', time: '00:00' });
     const out2 = endKeepingDuration({ date: D, time: '00:00' }, { date: '2026-08-01', time: '00:00' }, { date: '2026-08-02', time: '00:00' });
     expect(out2).toEqual({ date: '2026-08-05', time: '00:00' });
+    // start pulled back 3 days ⇒ end slides back with it
+    const out3 = endKeepingDuration({ date: D, time: '00:00' }, { date: '2026-08-01', time: '00:00' }, { date: '2026-07-26', time: '00:00' });
+    expect(out3).toEqual({ date: '2026-07-29', time: '00:00' });
   });
 });
 
 describe('endTimeKeepingDuration (same-day time windows)', () => {
-  it('pushes the end forward and clamps at 23:59', () => {
+  it('carries the end in either direction and clamps at 23:59', () => {
     expect(endTimeKeepingDuration('09:00', '12:00', '13:00')).toBe('16:00');
+    expect(endTimeKeepingDuration('09:00', '12:00', '08:00')).toBe('11:00');
+    expect(endTimeKeepingDuration('09:00', '12:00', '10:00')).toBe('13:00');
     // would land after 23:59 → clamped
     expect(endTimeKeepingDuration('22:00', '23:00', '23:30')).toBe('23:59');
   });
 
-  it('returns null when the start stays before the end or the window is empty', () => {
-    expect(endTimeKeepingDuration('09:00', '12:00', '10:00')).toBeNull();
+  it('returns null when the window is empty', () => {
     expect(endTimeKeepingDuration('09:00', '09:00', '13:00')).toBeNull();
   });
 });

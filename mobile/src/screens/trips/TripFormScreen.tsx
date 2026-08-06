@@ -422,8 +422,8 @@ export default function TripFormScreen() {
               value={form.startDate}
               onChange={(v) => {
                 // A trip is date-only; treat both ends as midnight. Moving the
-                // start past the end pushes the end forward to keep the trip's
-                // length, so the end is never left before the start.
+                // start slides the end by the same number of days so the trip
+                // keeps its length — the end date is what changes it.
                 if (form.startDate && form.endDate) {
                   const shifted = endKeepingDuration(
                     { date: form.startDate, time: '00:00' },

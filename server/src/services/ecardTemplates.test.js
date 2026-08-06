@@ -85,6 +85,27 @@ test('the subject puts the name inside the heading punctuation, never after it',
   assert.match(gold, /Happy Anniversary, Alan — from Ben/);
 });
 
+test('U+FFFC OBJ characters are stripped from every author line', () => {
+  // iOS leaves U+FFFC (object replacement character) in text fields after
+  // dictation/inline placeholders; mail clients draw it as an "OBJ" box.
+  const { subject, html, text } = renderECard({
+    kind: 'birthday', template: 'birthday-confetti', toName: 'Sam', fromName: 'Ben',
+    message: 'Wishing you a wonderful birthday!￼ 🥳',
+    greeting: 'Dear Dad,￼', signoff: 'Cheers,￼', signature: 'Ben￼',
+  });
+  for (const out of [subject, html, text]) {
+    assert.ok(!out.includes('￼'), 'no object-replacement character in output');
+  }
+  assert.ok(html.includes('Wishing you a wonderful birthday! 🥳'), 'message intact around the strip');
+});
+
+test('the Gmail-only rule shrinks the hero emoji (bitmap-blur workaround)', () => {
+  const { html } = renderECard({ kind: 'birthday', template: 'birthday-confetti', toName: 'Sam', fromName: 'Ben' });
+  assert.ok(html.includes('u + .body .ec-hero'), 'Gmail-targeted hero rule present');
+  assert.ok(html.includes('<body class="body"'), 'body carries the .body hook class');
+  assert.ok(html.includes('class="ec-hero"'), 'hero row carries the shrink class');
+});
+
 test('condolence cards never put the recipient name in the subject', () => {
   const { subject } = renderECard({ kind: 'death', template: 'condolence-dove', toName: 'Sam', fromName: 'Ben' });
   assert.ok(!subject.includes('Sam'), 'no name in a condolence subject');

@@ -16,6 +16,9 @@
 //   Outlook macOS and Thunderbird play them; Gmail and Outlook for Windows
 //   strip `animation` and show the identical static card. A
 //   prefers-reduced-motion media query stills everything for users who ask.
+// - Gmail also swaps emoji glyphs for its own small bitmap images, which blur
+//   when scaled to the 58px hero — a Gmail-only rule (`u + .body`, matching
+//   Gmail's <u></u><div class="body"> rewrite) shrinks the hero there.
 // - All user-supplied strings (names, message, custom labels) are escaped.
 // - <meta name="color-scheme" content="light"> pins the designed palette so
 //   dark-mode clients don't invert the card faces.
@@ -26,6 +29,14 @@ function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+// U+FFFC OBJECT REPLACEMENT CHARACTER (and its U+FFF9–B interlinear-annotation
+// neighbours): iOS leaves one behind in a text field when dictation or an
+// inline placeholder was involved, and mail clients draw it as an "OBJ" box.
+// Strip from every author-supplied line (also applied at write time in
+// routes/ecards.js; stripping here too covers already-stored cards).
+const OBJ_CHARS = /[\uFFF9-\uFFFC]/g;
+const stripObj = (s) => String(s ?? '').replace(OBJ_CHARS, '');
 
 // ── The gallery ──────────────────────────────────────────────────────────────
 // Per variant: `key` (stable API string), `name` (picker label), heading/emoji,
@@ -140,6 +151,12 @@ const STYLE_BLOCK = `
   .ec-d0 { animation-delay: 0s; }  .ec-d1 { animation-delay: .45s; }
   .ec-d2 { animation-delay: .9s; } .ec-d3 { animation-delay: 1.35s; }
   .ec-d4 { animation-delay: 1.8s; }
+  /* Gmail replaces emoji glyphs with its own small bitmap images, so the 58px
+     hero emoji upscales into a blur there (native emoji fonts elsewhere render
+     it crisp). \`u + .body\` matches only in Gmail — shrink the hero to the
+     bitmap's comfortable size and give the row back the height difference so
+     the cover keeps its proportions. */
+  u + .body .ec-hero { font-size: 32px !important; line-height: 1.2 !important; padding: 10px 0 !important; }
 `;
 
 // The animated cover-art row above the heading. Every piece is a plain
@@ -182,16 +199,16 @@ const FONTS = {
 // attaches (mailer) — rendered full-width between the message and sign-off.
 function renderECard({ kind, template, occasionLabel, toName, toEmail, fromName, message, greeting, signoff, signature, font, photoCids }) {
   const v = resolveTemplate(kind, template);
-  const sender = String(signature || '').trim() || fromName || 'Someone';
+  const sender = stripObj(signature).trim() || stripObj(fromName) || 'Someone';
   // A custom occasion titles the card with its author-written label.
-  const heading = kind === 'custom' && occasionLabel ? occasionLabel : v.heading;
+  const heading = kind === 'custom' && occasionLabel ? stripObj(occasionLabel) : v.heading;
   // Recipients are stored with their full contact name (for the recipient
   // list), but a card addresses people familiarly — greet and subject-line by
   // FIRST name only ("Dear Sarah," not "Dear Sarah Smith,").
-  const firstName = String(toName || '').trim().split(/\s+/)[0] || '';
-  const greetLine = String(greeting || '').trim() || (firstName ? `Dear ${firstName},` : 'Hello,');
-  const signoffLine = String(signoff || '').trim() || v.signoff;
-  const body = String(message || '').trim();
+  const firstName = stripObj(toName).trim().split(/\s+/)[0] || '';
+  const greetLine = stripObj(greeting).trim() || (firstName ? `Dear ${firstName},` : 'Hello,');
+  const signoffLine = stripObj(signoff).trim() || v.signoff;
+  const body = stripObj(message).trim();
 
   // Personal name in the subject for celebrations; never for condolence
   // (and not for custom labels, where "Graduation, Sam" reads oddly). The name
@@ -226,14 +243,14 @@ function renderECard({ kind, template, occasionLabel, toName, toEmail, fromName,
 <meta name="supported-color-schemes" content="light">
 <style>${STYLE_BLOCK}</style>
 </head>
-<body style="margin:0;padding:0;background:${v.wash};">
+<body class="body" style="margin:0;padding:0;background:${v.wash};">
 <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${esc(preheader)}&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="${v.wash}" style="background:${v.wash};">
 <tr><td align="center" style="padding:36px 12px 44px;">
   <table role="presentation" cellpadding="0" cellspacing="0" style="width:520px;max-width:100%;">
     <tr><td bgcolor="${v.g1}" style="background:${v.g1};background-image:linear-gradient(135deg,${v.g1},${v.g2});border-radius:24px 24px 0 0;padding:42px 32px 38px;text-align:center;">
       ${decoRow(v.deco)}
-      <div style="font-size:58px;line-height:1.15;margin-top:10px;"><span class="${heroAnimClass}" style="display:inline-block;">${v.emoji}</span></div>
+      <div class="ec-hero" style="font-size:58px;line-height:1.15;margin-top:10px;"><span class="${heroAnimClass}" style="display:inline-block;">${v.emoji}</span></div>
       <div style="font-family:${headingFont};font-size:34px;line-height:1.2;font-weight:700;color:${v.heroText};margin-top:16px;${v.serif ? 'letter-spacing:.5px;' : ''}">${esc(heading)}</div>
     </td></tr>
     <tr><td bgcolor="#ffffff" style="background:#ffffff;padding:36px 38px 30px;font-family:${bodyFont};">
@@ -268,4 +285,4 @@ function renderECard({ kind, template, occasionLabel, toName, toEmail, fromName,
   return { subject, html, text };
 }
 
-module.exports = { GALLERY, FONTS, resolveTemplate, renderECard };
+module.exports = { GALLERY, FONTS, resolveTemplate, renderECard, stripObj };

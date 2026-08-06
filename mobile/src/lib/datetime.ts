@@ -1,17 +1,18 @@
 // Shared start→end datetime math for every form that pairs a "Starts" with an
 // "Ends" (calendar events, trips, itinerary items, reschedule windows).
 //
-// The rule these helpers encode is symmetric, so the end is NEVER left before
-// the start:
-//   • Drag the **end** to at/before the **start** → slide the start back by the
-//     same amount so the gap is preserved (8–9am, end → 4am ⇒ start 3am).
-//     `startKeepingDuration` / `startTimeKeepingDuration`.
-//   • Drag the **start** to at/after the **end** → push the end forward by the
-//     same amount so the gap is preserved (8–9am, start → 10am ⇒ end 11am).
+// The rule these helpers encode is asymmetric — the start moves the event, the
+// end sets its duration — and the end is NEVER left before the start:
+//   • Edit the **start** → the end ALWAYS follows by the same amount, in either
+//     direction, so the duration is preserved (8–9am, start → 7am ⇒ end 8am;
+//     start → 10am ⇒ end 11am). Changing the duration is the end's job.
 //     `endKeepingDuration` / `endTimeKeepingDuration`.
+//   • Edit the **end** → the duration changes and the start stays put — unless
+//     the new end lands at/before the start, in which case the start slides
+//     back by the same amount so the gap is preserved (8–9am, end → 4am ⇒
+//     start 3am). `startKeepingDuration` / `startTimeKeepingDuration`.
 // In each case only the *other* endpoint moves; the one the user is editing
-// stays exactly where they put it. When the edit keeps the pair in order we
-// leave the other endpoint alone.
+// stays exactly where they put it.
 
 export type DateTimeParts = { date: string; time: string };
 
@@ -85,12 +86,12 @@ export function startTimeKeepingDuration(
   return minutesToTime(Math.max(0, newEndMin - duration));
 }
 
-// The mirror of startKeepingDuration: given the current end, the start **before**
-// the edit, and the **new** start, return the end shifted to keep the original
-// duration — but only when the new start lands strictly after the end (the case
-// the user is editing into). Cross-date aware: the returned end may roll to a
-// later day. Returns null when the new start is still at/before the end (leave
-// the end put) or the pair had no positive duration to preserve.
+// The counterpart of startKeepingDuration, but unconditional: given the current
+// end, the start **before** the edit, and the **new** start, return the end
+// shifted by the same amount so the duration is preserved — moving the start
+// moves the whole event, in either direction. Cross-date aware: the returned
+// end may roll onto another day. Returns null only when the pair had no
+// positive duration to preserve (leave the end put).
 export function endKeepingDuration(
   prevStart: DateTimeParts,
   end: DateTimeParts,
@@ -102,7 +103,6 @@ export function endKeepingDuration(
   const newStartMin = daysBetween(anchor, newStart.date) * MIN_PER_DAY + timeToMinutes(newStart.time);
   const duration = endMin - prevStartMin;
   if (duration <= 0) return null; // no positive gap to preserve
-  if (newStartMin <= endMin) return null; // start still before the end — nothing to do
   const newEndMin = newStartMin + duration;
   return {
     date: addDays(anchor, Math.floor(newEndMin / MIN_PER_DAY)),
@@ -110,9 +110,11 @@ export function endKeepingDuration(
   };
 }
 
-// Same-day, time-only mirror of startTimeKeepingDuration (a from→to window
-// sharing one date). Clamps at 23:59 so the end never rolls to the next day.
-// Returns the new end "HH:MM", or null when no shift is needed.
+// Same-day, time-only counterpart of startTimeKeepingDuration (a from→to window
+// sharing one date), and like endKeepingDuration it is unconditional: any move
+// of "from" carries "to" with it to keep the window's width. Clamps at 23:59 so
+// the end never rolls to the next day. Returns the new end "HH:MM", or null
+// when the window had no positive width to preserve.
 export function endTimeKeepingDuration(
   startTime: string,
   prevEndTime: string,
@@ -122,6 +124,5 @@ export function endTimeKeepingDuration(
   const duration = endMin - timeToMinutes(startTime);
   if (duration <= 0) return null;
   const newStartMin = timeToMinutes(newStartTime);
-  if (newStartMin <= endMin) return null;
   return minutesToTime(Math.min(MIN_PER_DAY - 1, newStartMin + duration));
 }

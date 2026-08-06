@@ -3,7 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const ECard = require('../models/ECard');
-const { FONTS } = require('../services/ecardTemplates');
+const { FONTS, stripObj } = require('../services/ecardTemplates');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -62,21 +62,23 @@ function parseBody(body) {
   if (bad) return { error: `invalid recipient email: ${bad.email}` };
 
   const sendTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(body.sendTime || '')) ? body.sendTime : '09:00';
-  const message = String(body.message || '').slice(0, 2000);
+  // stripObj: drop U+FFFC object-replacement chars iOS leaves in text fields —
+  // they render as an "OBJ" box in mail clients (also stripped at render time).
+  const message = stripObj(body.message || '').slice(0, 2000);
   // Unknown font keys fall back to '' (the template's own default).
   const font = FONTS[String(body.font || '')] ? String(body.font) : '';
 
   return {
     value: {
       kind,
-      occasionLabel: String(body.occasionLabel || '').trim() || undefined,
+      occasionLabel: stripObj(body.occasionLabel || '').trim() || undefined,
       month, day, sendTime,
       template: String(body.template || '').trim() || undefined,
       font,
       message,
-      greeting: String(body.greeting || '').trim().slice(0, 120),
-      signoff: String(body.signoff || '').trim().slice(0, 120),
-      signature: String(body.signature || '').trim().slice(0, 120),
+      greeting: stripObj(body.greeting || '').trim().slice(0, 120),
+      signoff: stripObj(body.signoff || '').trim().slice(0, 120),
+      signature: stripObj(body.signature || '').trim().slice(0, 120),
       recipients: cleanRecipients,
       personId: body.personId || undefined,
     },

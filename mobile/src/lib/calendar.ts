@@ -186,11 +186,18 @@ export function snapAlertToWholeDays(minutes?: number | null): number | null {
 // the day grid rather than silently left describing a time the event no longer
 // has; the second alert drops when it collapses onto the first, since the two
 // must stay distinct (a duplicate would fire the same notification twice).
+//
+// Both branches return a FRESH two-key object, never the argument itself:
+// callers spread the result over a form patch, and a wider object handed in
+// (the whole form) would otherwise spread its own `allDay` back on top of the
+// switch's new value and pin the event to all-day.
 export function alertsForAllDay(
   allDay: boolean,
   alerts: { reminderMinutes: number | null; alert2Minutes: number | null },
 ): { reminderMinutes: number | null; alert2Minutes: number | null } {
-  if (!allDay) return alerts;
+  if (!allDay) {
+    return { reminderMinutes: alerts.reminderMinutes, alert2Minutes: alerts.alert2Minutes };
+  }
   const reminderMinutes = snapAlertToWholeDays(alerts.reminderMinutes);
   const snapped2 = snapAlertToWholeDays(alerts.alert2Minutes);
   return {
