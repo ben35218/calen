@@ -413,23 +413,46 @@ function sendAccountDeletedConfirmation({ email, firstName, hadActiveAiPlan }) {
 const ECARD_UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads');
 const PHOTO_EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp' };
 
+// Photos come off the phone at full camera resolution (~3MB each) — big enough
+// that Apple Mail defers them into "Tap to Download" tiles instead of rendering
+// the inline card. Downscale to email size at send time (covers already-stored
+// photos too; the uploaded original stays untouched for the app's preview).
+// GIFs pass through (resizing would cost the animation); any decode failure
+// falls back to the original bytes — a photo is never dropped over sizing.
+const ECARD_PHOTO_MAX_DIM = 1280;
+async function emailSizedPhoto(filePath, contentType) {
+  if (contentType === 'image/gif') return fs.readFileSync(filePath);
+  try {
+    const sharp = require('sharp');
+    const img = sharp(filePath)
+      .rotate() // bake in EXIF orientation before it's lost in re-encode
+      .resize(ECARD_PHOTO_MAX_DIM, ECARD_PHOTO_MAX_DIM, { fit: 'inside', withoutEnlargement: true });
+    if (contentType === 'image/png') return await img.png().toBuffer();
+    if (contentType === 'image/webp') return await img.webp({ quality: 80 }).toBuffer();
+    return await img.jpeg({ quality: 80 }).toBuffer();
+  } catch {
+    return fs.readFileSync(filePath);
+  }
+}
+
 // `ccEmail` (optional) is the author's own address: an e-card is server-sent on
 // a future date while the app is closed, so — unlike device-composed shares —
 // the sender has no Sent-folder copy. CC'ing the author gives them a record of
 // what each recipient received. It's their own address (no new data exposure)
 // and stays within the existing plaintext-exception boundary for e-cards.
-function sendECard({ toEmail, toName, fromName, ccEmail, kind, occasionLabel, message, template, font, greeting, signoff, signature, photos }) {
+async function sendECard({ toEmail, toName, fromName, ccEmail, kind, occasionLabel, message, template, font, greeting, signoff, signature, photos }) {
   const files = (photos || []).filter((p) => p.storageKey && fs.existsSync(path.join(ECARD_UPLOAD_DIR, p.storageKey)));
   const photoCids = files.map((_, i) => `ecard-photo-${i}@calen`);
   const { subject, html, text } = renderECard({
     kind, template, occasionLabel, toName, fromName, message, font, greeting, signoff, signature, photoCids,
   });
-  const attachments = files.map((p, i) => ({
+  const attachments = await Promise.all(files.map(async (p, i) => ({
     filename: `photo-${i + 1}${PHOTO_EXT[p.contentType] || '.jpg'}`,
-    path: path.join(ECARD_UPLOAD_DIR, p.storageKey),
+    content: await emailSizedPhoto(path.join(ECARD_UPLOAD_DIR, p.storageKey), p.contentType || 'image/jpeg'),
     cid: photoCids[i],
     contentType: p.contentType || 'image/jpeg',
-  }));
+    contentDisposition: 'inline',
+  })));
   return sendMail({ to: toEmail, cc: ccEmail || undefined, subject, kind: 'ecard', text, html, attachments: attachments.length ? attachments : undefined });
 }
 
@@ -463,6 +486,7 @@ module.exports = {
   sendAccountDeletedConfirmation,
   buildAccountDeletedConfirmation,
   sendECard,
+  emailSizedPhoto,
   // Delivery internals shared with jobs/emailReconcile.js + admin routes.
   attemptSend,
   classifyFailure,

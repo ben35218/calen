@@ -10,6 +10,7 @@ import {
 } from '../../components/ui';
 import { useAuth } from '../../store/auth';
 import { useCustomCalendars, refreshCustomCalendars } from '../../lib/calendarPrefs';
+import { useSessionLocked } from '../../hooks/useSessionLocked';
 import { useUnlocked } from '../../lib/unlock';
 import { customCalendarsApi } from '../../api';
 import {
@@ -79,6 +80,7 @@ export default function ViewerUnlockScreen() {
   const { user, logout } = useAuth();
   const { calendars } = useCustomCalendars();
   const { unlocked } = useUnlocked();
+  const locked = useSessionLocked();
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -146,7 +148,14 @@ export default function ViewerUnlockScreen() {
     if (sawPending.current && !requestPending) navigation.replace('ViewerHome');
   }, [requestPending, navigation]);
 
+  // One departure, ever: manual unlocks navigate from afterUnlock, the passive
+  // self-heal below navigates on its own, and the approval effect above
+  // replaces the route — without this latch two of them landing in the same
+  // commit would pop/replace twice.
+  const leaving = useRef(false);
+
   const goBackToCalendar = useCallback(() => {
+    leaving.current = true;
     // Pushed from the shell → step back. Landed here as the whole shell (the
     // locked case) → there's nothing beneath, so open the calendar.
     if (navigation.canGoBack()) navigation.goBack();
@@ -160,6 +169,21 @@ export default function ViewerUnlockScreen() {
     qc.invalidateQueries();
     goBackToCalendar();
   }, [goBackToCalendar, qc]);
+
+  // Self-heal: leave for the calendar if the session unlocks WITHOUT an action
+  // on this screen. A navigator that mounted during a still-running sign-in
+  // enroll (the gate flips on setUser's render, and for a brand-new invitee the
+  // billing round-trip can beat the KDF) lands here even though the unlock
+  // completes moments later — and with `initialRouteName` read once at mount,
+  // nothing else would ever move them off a recovery screen they don't need.
+  // Guards: a manual unlock in flight (`busy`) or done (`leaving`) owns its own
+  // navigation, and the request-sent state stays put — post-re-key the session
+  // IS unlocked, but no calendar has been wrapped to the new key yet, so the
+  // calendar would render as an empty grid that looks like lost data.
+  useEffect(() => {
+    if (locked || leaving.current || sawPending.current || busy || asked || requestPending) return;
+    void afterUnlock();
+  }, [locked, busy, asked, requestPending, afterUnlock]);
 
   // A stale error from one path shouldn't greet the user inside the next
   // one's sheet, so every open/close wipes it.

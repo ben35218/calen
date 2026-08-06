@@ -30,10 +30,15 @@ import { colors } from '../theme';
 // hidden behind a menu. Restoring access IS the screen in that state.
 //
 // `initialRouteName` is read once, at mount, which is what makes this safe:
-// RootNavigator holds the splash until auth bootstrap finishes (including its
-// silent biometric/passkey unlock attempt), so the lock state is settled by
-// then; and once the user is back in, the navigator does NOT re-mount and yank
-// them out of whatever they're reading.
+// the lock state is settled before this navigator can mount — RootNavigator
+// holds the splash until auth bootstrap finishes (including its silent
+// biometric/passkey unlock attempt), and the live sign-in paths (login /
+// register in store/auth) run their E2EE enroll/unlock BEFORE setUser flips
+// the gate. Once the user is in, the navigator does NOT re-mount and yank them
+// out of whatever they're reading. The paths that can't settle first (passkey
+// login's interactive unlock, the post-reset flow) are caught by
+// ViewerUnlockScreen's self-heal, which leaves for the calendar the moment the
+// session turns out to be unlocked.
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 

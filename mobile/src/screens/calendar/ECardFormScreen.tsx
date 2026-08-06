@@ -6,11 +6,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { peopleApi, ecardsApi, ecardPhotoUploadPath, ecardPhotoPath, Person, OccasionKind, ECardPhoto } from '../../api';
+import { peopleApi, ecardsApi, ecardPhotoPath, Person, OccasionKind, ECardPhoto } from '../../api';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
-import { pickImage, PickedFile } from '../../lib/media';
-import { uploadFile } from '../../lib/upload';
+import { pickImages, PickedFile } from '../../lib/media';
+import { uploadECardPhotos } from '../../lib/ecardPhotos';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
 import { PERSON_ENC } from '../../lib/encSubsets';
 import * as replica from '../../lib/replica';
@@ -346,15 +346,29 @@ export default function ECardFormScreen() {
         personId, kind, occasionLabel, month, day, sendTime, template, font,
         message, greeting, signoff, signature, recipients,
       };
-      const res = existing ? await ecardsApi.update(existing._id, body) : await ecardsApi.create(body);
-      // Photos picked this session upload once the card has an id. A failed
-      // photo never loses the card — it can be re-added from the edit screen.
-      for (const f of localPhotos) {
-        try { await uploadFile(ecardPhotoUploadPath(res.data._id), f, 'photo'); } catch { /* keep going */ }
-      }
-      return res;
+      return existing ? await ecardsApi.update(existing._id, body) : await ecardsApi.create(body);
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['ecards'] }); allowLeave(); nav.goBack(); },
+    onSuccess: (res) => {
+      // The card row is saved — leave at once. Photos picked this session are
+      // multi-MB uploads; they continue in the background so the user isn't
+      // held on the form. A failed photo never loses the card — it can be
+      // re-added from the edit screen (the alert says so).
+      const photos = localPhotos;
+      if (photos.length) {
+        void uploadECardPhotos(res.data._id, photos).then((failed) => {
+          qc.invalidateQueries({ queryKey: ['ecards'] });
+          if (failed) {
+            Alert.alert(
+              'Some photos didn’t upload',
+              `Your card is scheduled, but ${failed} of ${photos.length} photo${photos.length > 1 ? 's' : ''} couldn’t be added. Open the card to add ${failed > 1 ? 'them' : 'it'} again.`,
+            );
+          }
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['ecards'] });
+      allowLeave();
+      nav.goBack();
+    },
     onError: () => Alert.alert('Could not schedule', 'Please check your connection and try again.'),
   });
 
@@ -369,12 +383,15 @@ export default function ECardFormScreen() {
   });
 
   const addPhoto = async () => {
-    if (serverPhotos.length + localPhotos.length >= MAX_PHOTOS) {
+    const remaining = MAX_PHOTOS - serverPhotos.length - localPhotos.length;
+    if (remaining <= 0) {
       Alert.alert('Photo limit', `A card can hold up to ${MAX_PHOTOS} photos.`);
       return;
     }
-    const file = await pickImage();
-    if (file) setLocalPhotos((prev) => [...prev, file]);
+    // Multi-select in one library visit, capped at the card's open slots (the
+    // OS picker enforces selectionLimit; the slice guards platforms that don't).
+    const files = await pickImages(remaining);
+    if (files.length) setLocalPhotos((prev) => [...prev, ...files.slice(0, remaining)]);
   };
 
   const cancelCard = useMutation({

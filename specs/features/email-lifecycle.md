@@ -1,7 +1,7 @@
 ---
 title: Email lifecycle, delivery tracking & reconciliation
 status: current
-last-verified: df8c7f3+ (2026-08-01); `recipe_share` retired — recipe sharing is now device-composed via the OS share sheet (RecipeDetailScreen), so `POST /recipes/:id/share-email` + `sendRecipeShare`/`buildRecipeShare` were deleted, the catalog entry kept as `implemented:false` (preview 404s), the decrypted-recipe plaintext round-trip removed; occasion e-cards now CC the author (`sendMail`/`attemptSend`/outbox payload gained an optional `cc`, scheduler passes `ccEmail: author.email`) so the sender keeps a copy of a server-sent card (2026-08-01); `account_deleted` gains an active-subscription reminder — when the wiped account had `aiPlanActive`, the email states the Calen AI plan is Apple-billed, was NOT cancelled by the deletion, and points to Apple's subscription settings (`hadActiveAiPlan` flag from `services/accountDeletion.js`; the catalog sample previews the reminder variant) (2026-07-30); first cut — code-owned catalog + admin-editable overlay (enable/subject/note), EmailLog upgraded to a delivery ledger with a transient outbox, transient/permanent; `event_invitation` retired (2026-07-29) — event invite outreach is now device-composed like every other invite (server sends a push to account holders instead; `sendEventInvitation`/`buildEventInvitation` deleted from the mailer, catalog entry kept as `implemented:false` so historical logs resolve, admin preview 404s) failure classification with backoff retry + suppression, welcome + account-deleted bookend emails, admin catalog/preview/retry/cancel/reconcile/suppression surfaces
+last-verified: f6874e9+ (2026-08-05); e-card photos downscale to email size at send time (`emailSizedPhoto`, sharp: ≤1280px, EXIF-oriented, GIF/decode-failure passthrough) and attach as inline CID content buffers — full-res phone photos rendered as "Tap to Download" tiles in Apple Mail instead of inline card images (2026-08-05); `recipe_share` retired — recipe sharing is now device-composed via the OS share sheet (RecipeDetailScreen), so `POST /recipes/:id/share-email` + `sendRecipeShare`/`buildRecipeShare` were deleted, the catalog entry kept as `implemented:false` (preview 404s), the decrypted-recipe plaintext round-trip removed; occasion e-cards now CC the author (`sendMail`/`attemptSend`/outbox payload gained an optional `cc`, scheduler passes `ccEmail: author.email`) so the sender keeps a copy of a server-sent card (2026-08-01); `account_deleted` gains an active-subscription reminder — when the wiped account had `aiPlanActive`, the email states the Calen AI plan is Apple-billed, was NOT cancelled by the deletion, and points to Apple's subscription settings (`hadActiveAiPlan` flag from `services/accountDeletion.js`; the catalog sample previews the reminder variant) (2026-07-30); first cut — code-owned catalog + admin-editable overlay (enable/subject/note), EmailLog upgraded to a delivery ledger with a transient outbox, transient/permanent; `event_invitation` retired (2026-07-29) — event invite outreach is now device-composed like every other invite (server sends a push to account holders instead; `sendEventInvitation`/`buildEventInvitation` deleted from the mailer, catalog entry kept as `implemented:false` so historical logs resolve, admin preview 404s) failure classification with backoff retry + suppression, welcome + account-deleted bookend emails, admin catalog/preview/retry/cancel/reconcile/suppression surfaces
 code:
   - server/src/services/emailCatalog.js
   - server/src/services/mailer.js
@@ -55,7 +55,12 @@ be a catalog key. Templates by stage:
   address** (`sendMail` accepts an optional `cc`, threaded to nodemailer and
   persisted in the outbox payload so a retried send keeps it; the scheduler
   passes `ccEmail: author.email`). It's the author's own address, so no new data
-  is exposed beyond the existing e-card plaintext exception.
+  is exposed beyond the existing e-card plaintext exception. Card photos are
+  **downscaled at send time** (`emailSizedPhoto`, sharp: fit within 1280px,
+  re-encoded, EXIF orientation baked in; GIFs untouched; decode failure falls
+  back to the original bytes) and attached as `contentDisposition: 'inline'`
+  CID content buffers — full-resolution phone photos made Apple Mail defer the
+  card's inline images into "Tap to Download" tiles.
 - **Account** — `account_deleted` (sent just before purge; when the account
   had an active Calen AI plan it carries the Apple-keeps-billing reminder —
   deletion can't cancel a store subscription, see

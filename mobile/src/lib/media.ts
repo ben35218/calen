@@ -47,17 +47,34 @@ export async function takePhoto(): Promise<PickedFile | null> {
   };
 }
 
-export async function pickImage(): Promise<PickedFile | null> {
-  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!perm.granted) return null;
-  const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.7 });
-  if (result.canceled) return null;
-  const asset = result.assets[0];
+function assetToFile(asset: ImagePicker.ImagePickerAsset): PickedFile {
   return {
     uri: asset.uri,
     name: asset.fileName ?? inferName(asset.uri, 'photo.jpg'),
     type: asset.mimeType ?? 'image/jpeg',
   };
+}
+
+export async function pickImage(): Promise<PickedFile | null> {
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!perm.granted) return null;
+  const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.7 });
+  if (result.canceled) return null;
+  return assetToFile(result.assets[0]);
+}
+
+// Pick up to `limit` photos in one library visit (e-card photos). Returns []
+// when permission is denied or the picker is cancelled.
+export async function pickImages(limit: number): Promise<PickedFile[]> {
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!perm.granted) return [];
+  const result = await ImagePicker.launchImageLibraryAsync({
+    quality: 0.7,
+    allowsMultipleSelection: true,
+    selectionLimit: limit,
+  });
+  if (result.canceled) return [];
+  return result.assets.map(assetToFile);
 }
 
 // Pick a document (PDF, image, or .eml) for manual/attachment/confirmation

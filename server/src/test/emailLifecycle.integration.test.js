@@ -100,6 +100,39 @@ test('config gate: a disabled optional template is canceled, not sent', async ()
   assert.equal((await latest({ to: 'foodie2@example.com', kind: 'ecard' })).status, 'dry');
 });
 
+test('e-card photos are downscaled to email size at send time', async () => {
+  // A full-resolution phone photo (~3MB) makes Apple Mail defer the card's
+  // inline images into "Tap to Download" tiles. sendECard runs every photo
+  // through emailSizedPhoto: fit within 1280px, re-encoded — small enough to
+  // render inline. GIFs pass through untouched (resizing drops the animation).
+  const sharp = require('sharp');
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const big = path.join(os.tmpdir(), `ecard-test-big-${process.pid}.jpg`);
+  await sharp({ create: { width: 3000, height: 2000, channels: 3, background: '#3366aa' } })
+    .jpeg().toFile(big);
+
+  const sized = await mailer.emailSizedPhoto(big, 'image/jpeg');
+  const meta = await sharp(sized).metadata();
+  assert.ok(meta.width <= 1280 && meta.height <= 1280, `downscaled (got ${meta.width}x${meta.height})`);
+  assert.ok(sized.length < fs.statSync(big).size, 'smaller than the original');
+
+  // Already-small photos are not upscaled.
+  const small = path.join(os.tmpdir(), `ecard-test-small-${process.pid}.jpg`);
+  await sharp({ create: { width: 400, height: 300, channels: 3, background: '#aa6633' } })
+    .jpeg().toFile(small);
+  const kept = await sharp(await mailer.emailSizedPhoto(small, 'image/jpeg')).metadata();
+  assert.equal(kept.width, 400);
+
+  // GIF bytes pass through identically.
+  const gif = path.join(os.tmpdir(), `ecard-test-${process.pid}.gif`);
+  fs.writeFileSync(gif, Buffer.from('GIF89a-not-really-a-gif'));
+  assert.deepEqual(await mailer.emailSizedPhoto(gif, 'image/gif'), fs.readFileSync(gif));
+
+  for (const f of [big, small, gif]) fs.unlinkSync(f);
+});
+
 test('a required template cannot be disabled (server-validated)', async () => {
   const res = await request().put('/api/admin/email/catalog').set('Authorization', admin.auth)
     .send({ templates: { password_reset: { enabled: false } } });

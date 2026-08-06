@@ -110,6 +110,13 @@ jest.mock('../../../lib/unlock', () => ({
   useUnlocked: () => ({ unlocked: mockUnlocked.value, loaded: true }),
 }));
 
+// The session lock state. Locked by default — the screen exists for a locked
+// viewer; the self-heal tests flip it to the mounted-by-mistake case.
+const mockSessionLocked = { value: true };
+jest.mock('../../../hooks/useSessionLocked', () => ({
+  useSessionLocked: () => mockSessionLocked.value,
+}));
+
 import { Alert } from 'react-native';
 import ViewerUnlockScreen from '../ViewerUnlockScreen';
 
@@ -126,6 +133,7 @@ beforeEach(() => {
   mockCustom.list = [sharedCal()];
   mockKnowsPassword.value = false;
   mockUnlocked.value = false;
+  mockSessionLocked.value = true;
   mockLogout.mockClear();
   mockRefreshCustom.mockClear();
   mockUser.e2eePasswordStale = true; // the post-reset case, unless a test says otherwise
@@ -292,6 +300,30 @@ test('once the owner approves, the wait ends and the calendar opens', async () =
   mockCustom.list = [sharedCal()]; // the owner said yes
   view.rerender(<ViewerUnlockScreen />);
   await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('ViewerHome'));
+});
+
+test('a session that turns out to be unlocked leaves for the calendar on its own', async () => {
+  // The registration race: RootNavigator's gate can remount while a sign-in's
+  // E2EE enroll is still deriving keys, so ViewerNavigator reads "locked" at
+  // mount, pins its once-read initialRouteName here — and the unlock lands
+  // moments later with nothing left to notice it. The screen itself is that
+  // something: it must hand an unlocked session straight to the calendar.
+  mockSessionLocked.value = false;
+  mockCanGoBack.value = false; // the landing-screen case — this IS the shell
+  await render(<ViewerUnlockScreen />);
+  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('ViewerHome'));
+});
+
+test('an unlocked session still waits on the confirmation, never the calendar', async () => {
+  // Post-re-key the session IS unlocked, but nothing has been wrapped to the
+  // new identity yet — the self-heal must not undercut the terminal
+  // request-sent state by dropping the user onto an empty grid.
+  mockSessionLocked.value = false;
+  mockCustom.list = [sharedCal({ accessRequestedAt: '2026-08-03T00:00:00.000Z' })];
+  const view = await render(<ViewerUnlockScreen />);
+  expect(view.getByText('Request sent')).toBeTruthy();
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(mockGoBack).not.toHaveBeenCalled();
 });
 
 test('a first paint with no stamp yet does not bounce to the calendar', async () => {

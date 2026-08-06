@@ -66,8 +66,23 @@ test('a full contact name greets and subjects by first name only', () => {
   });
   assert.ok(html.includes('Dear Sarah,'), 'greeting uses the first name');
   assert.ok(!html.includes('Sarah Anne Smith'), 'full name never rendered');
-  assert.match(subject, /Happy Birthday!, Sarah — from Ben/);
+  assert.match(subject, /Happy Birthday, Sarah! — from Ben/);
   assert.ok(text.includes('Dear Sarah,'), 'plaintext matches');
+});
+
+test('the subject puts the name inside the heading punctuation, never after it', () => {
+  // "Congratulations!" + Alan must read "Congratulations, Alan!" —
+  // shipped bug: "Congratulations!, Alan".
+  const { subject } = renderECard({
+    kind: 'anniversary', template: 'anniversary-hearts', toName: 'Alan Polk', fromName: 'Ben',
+  });
+  assert.match(subject, /Happy Anniversary, Alan! — from Ben/);
+  assert.ok(!subject.includes('!,'), 'no punctuation-comma collision');
+  // A heading with no trailing punctuation appends the name plainly.
+  const gold = renderECard({
+    kind: 'anniversary', template: 'anniversary-gold', toName: 'Alan', fromName: 'Ben',
+  }).subject;
+  assert.match(gold, /Happy Anniversary, Alan — from Ben/);
 });
 
 test('condolence cards never put the recipient name in the subject', () => {

@@ -249,8 +249,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (creds: { email: string; password: string }) => {
     const { data } = await authApi.login(creds);
     await saveToken(data.token);
+    // Unlock/enroll E2EE BEFORE setUser: setUser flips the RootNavigator gate,
+    // and downstream navigators read the lock state once at mount — a free
+    // viewer's billing status usually lands before the Argon2 KDF finishes, so
+    // mounting early pinned ViewerNavigator's initialRouteName to ViewerUnlock
+    // and stranded a user who had just typed the correct password on the
+    // recovery screen. The token is already stored, so keysApi is authed; the
+    // seal author is set eagerly so anything sealed during the unlock pipeline
+    // (keys-ready sync, key hygiene) carries the author id.
+    setSealAuthor(data.user._id);
+    await initE2EE(creds.password);
     setUser(data.user);
-    await initE2EE(creds.password); // token stored → keysApi is authed
   }, []);
 
   // Pass an email for the username-first flow (one assertion signs in AND
@@ -323,8 +332,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // later). hasPassword = true server-side.
         const { data } = await authApi.register({ ...payload, password: payload.password, passwordless: false });
         await saveToken(data.token);
-        setUser(data.user);
+        // Same ordering as login: enroll E2EE before setUser mounts the gate,
+        // or a brand-new invitee races the billing fetch and lands on the
+        // viewer shell's recovery screen instead of their shared calendar.
+        setSealAuthor(data.user._id);
         await initE2EE(payload.password);
+        setUser(data.user);
         return;
       }
       // Passwordless signup: mint a high-entropy secret on-device to bootstrap the
@@ -337,8 +350,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         password: secret, passwordless: true,
       });
       await saveToken(data.token);
-      setUser(data.user);
+      setSealAuthor(data.user._id);
       await initE2EE(secret);
+      setUser(data.user);
     },
     []
   );
@@ -356,6 +370,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         password: secret, passwordless: true,
       });
       await saveToken(data.token);
+      setSealAuthor(data.user._id);
       // Hold the recovery-code modal across enrollment + the passkey step, so a
       // passkey failure isn't confusingly preceded by (or buried under) the
       // recovery code. It's released only once the passkey succeeds.
@@ -376,6 +391,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearRecoveryCode(); // drop the held code — this account is going away
         await authApi.deleteAccount({}).catch(() => {});
         lockE2EE();
+        setSealAuthor(null); // eagerly set above; setUser(null) never runs here
         await forgetDeviceKey().catch(() => {});
         await clearToken();
         throw new Error(

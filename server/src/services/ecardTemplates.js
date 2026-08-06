@@ -194,9 +194,13 @@ function renderECard({ kind, template, occasionLabel, toName, toEmail, fromName,
   const body = String(message || '').trim();
 
   // Personal name in the subject for celebrations; never for condolence
-  // (and not for custom labels, where "Graduation, Sam" reads oddly).
+  // (and not for custom labels, where "Graduation, Sam" reads oddly). The name
+  // goes INSIDE the heading's closing punctuation — "Happy Birthday, Sam!",
+  // never "Happy Birthday!, Sam".
   const withName = ['birthday', 'anniversary', 'marriage'].includes(kind) && firstName;
-  const subject = `${v.emoji} ${heading}${withName ? `, ${firstName}` : ''} — from ${sender}`;
+  const [, headingBase, headingPunct] = heading.match(/^(.*?)([!.]*)$/s);
+  const subjectHeading = withName ? `${headingBase}, ${firstName}${headingPunct}` : heading;
+  const subject = `${v.emoji} ${subjectHeading} — from ${sender}`;
 
   const chosen = FONTS[font];
   const headingFont = chosen ? chosen.stack : (v.serif ? SERIF : SANS);
