@@ -12,6 +12,7 @@ import {
 } from '../../lib/calendarWindow';
 import { monthBlockWeeks, clipBars } from '../../lib/monthGrid';
 import { weekBars, WeekBar } from '../../lib/calendar';
+import { tintedChip } from '../../lib/color';
 import type { CustomCalendar } from '../../lib/calendarPrefs';
 import { MonthJumpHeaderButton } from '../calendar/MonthJumpSheet';
 import { BottomSheet, CardRow, Skeleton } from '../../components/ui';
@@ -474,29 +475,33 @@ const WeekRow = React.memo(function WeekRow({
             <View style={{ height: cellLanes * BAR_H }} />
 
             <View style={styles.cellItems}>
-              {cell.chips.map((chip) => (
+              {cell.chips.map((chip) => {
+                // Same tinted chip as the owner's Details grid (see lib/color).
+                const tint = tintedChip(chip.color);
+                return (
                 <TouchableOpacity
                   key={chip.key}
                   activeOpacity={0.7}
                   style={[
                     styles.chip,
-                    { backgroundColor: chip.color, height: chipHeight(chipRows(charsPerLine, chip)) - 2 },
+                    { backgroundColor: tint.fill, height: chipHeight(chipRows(charsPerLine, chip)) - 2 },
                     chip.cancelled ? styles.chipCancelled : null,
                   ]}
                   onPress={() => onPressChip(chip.eventId)}
                 >
                   <Text
-                    style={[styles.chipText, chip.cancelled && styles.chipTextCancelled]}
+                    style={[styles.chipText, { color: tint.label }, chip.cancelled && styles.chipTextCancelled]}
                     numberOfLines={titleLines(charsPerLine, chip.label)}
                     ellipsizeMode="clip"
                   >
                     {chip.label}
                   </Text>
                   {chip.time ? (
-                    <Text style={styles.chipTime} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text>
+                    <Text style={[styles.chipTime, { color: tint.time }]} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text>
                   ) : null}
                 </TouchableOpacity>
-              ))}
+                );
+              })}
               {cell.extra ? <Text style={styles.moreText}>+{cell.extra} more</Text> : null}
               {showSkeleton && !cell.chips.length ? <CellSkeleton date={cell.date} /> : null}
             </View>
@@ -575,9 +580,11 @@ const styles = StyleSheet.create({
   cellItems: { flex: 1 },
   chip: { borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, marginBottom: 2, justifyContent: 'center', overflow: 'hidden' },
   chipCancelled: { opacity: 0.45 },
-  chipText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
+  // Title/time colours come per-chip from the calendar's tint (lib/color);
+  // these carry only the metrics, with a safe default colour.
+  chipText: { fontSize: 12, lineHeight: 13, color: colors.text, fontWeight: '600' },
   chipTextCancelled: { textDecorationLine: 'line-through' },
-  chipTime: { fontSize: 10, lineHeight: 12, color: 'rgba(255,255,255,0.85)', fontWeight: '600', marginTop: 1 },
+  chipTime: { fontSize: 10, lineHeight: 12, color: colors.textMuted, fontWeight: '600', marginTop: 1 },
   moreText: { fontSize: 11, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
   skeletonChip: { marginBottom: 4, marginHorizontal: 1 },
   spanBar: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, justifyContent: 'center', paddingHorizontal: 4 },

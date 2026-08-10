@@ -388,7 +388,7 @@ export default function ContactImportScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.toolbar}>
-        <Input value={search} onChangeText={setSearch} placeholder="Search contacts" style={styles.search} />
+        <Input value={search} onChangeText={setSearch} placeholder="Search contacts" autoCapitalize="none" autoCorrect={false} style={styles.search} />
         <View style={styles.toolbarRow}>
           <TouchableOpacity onPress={toggleAll}>
             <Text style={styles.selectAll}>{allFilteredSelected ? 'Deselect all' : 'Select all'}</Text>

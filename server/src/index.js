@@ -33,4 +33,9 @@ connectDB().then(() => {
     console.log(`Calen server running on port ${PORT}`);
     startScheduler();
   });
+  // Real-time record-change pokes: the WebSocket endpoint rides the same HTTP
+  // server (upgrade on /api/records/ws); the change stream catches writes from
+  // other instances/scripts (no-ops gracefully off a replica set).
+  require('./services/recordSocket').attachRecordSocket(httpServer);
+  require('./services/recordChanges').startChangeStream();
 });

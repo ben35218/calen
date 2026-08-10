@@ -2,28 +2,21 @@ import React, { useLayoutEffect, useState } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Share } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { recipesApi, recipeScheduleApi, RecipeSchedule } from '../../api';
+import { recipesApi, recipeScheduleApi } from '../../api';
 import { openRecord, sealNew } from '../../lib/e2ee';
+import { featuredSchedule } from '../../lib/mealSchedule';
 import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
 import { Button, Card, Screen, Divider, Badge, DateField, CenteredLoader, ScreenTitle, HeaderIconButton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
+import { ymd } from '../../lib/calendar';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<KitchenStackParamList, 'RecipeDetail'>;
 type Rt = RouteProp<KitchenStackParamList, 'RecipeDetail'>;
-
-function featured(schedules: RecipeSchedule[]) {
-  if (!schedules.length) return null;
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const upcoming = schedules.filter((s) => new Date(s.scheduledDate) >= now);
-  if (upcoming.length) return { s: upcoming[0], upcoming: true };
-  return { s: schedules[schedules.length - 1], upcoming: false };
-}
 
 export default function RecipeDetailScreen() {
   const navigation = useNavigation<Nav>();
@@ -108,7 +101,18 @@ export default function RecipeDetailScreen() {
   }
 
   const total = (recipe.prepTimeMins || 0) + (recipe.cookTimeMins || 0);
-  const feat = featured(schedulesQ.data ?? []);
+  const feat = featuredSchedule(schedulesQ.data ?? [], ymd(new Date()));
+  // A still-to-come meal is somewhere the user can go: tapping the date opens
+  // the Meals view on the shopping period containing it, with that day scrolled
+  // into view and highlighted. `popTo` unwinds to the Meals view already on the
+  // stack (rather than pushing a second one) and falls back to opening it when
+  // the recipe was reached from somewhere else. A past date has no planner
+  // destination worth landing on, so it stays plain text.
+  const openInPlanner = feat?.upcoming
+    ? () => navigation.dispatch(
+        StackActions.popTo('KitchenHome', { pane: 'planner', weekStart: feat.day, scrollToDate: feat.day }, { merge: true }),
+      )
+    : null;
 
   return (
     <View style={{ flex: 1 }}>
@@ -131,10 +135,22 @@ export default function RecipeDetailScreen() {
         <Card style={styles.scheduleCard}>
           <View style={styles.scheduleRow}>
             <Ionicons name={feat ? 'calendar' : 'calendar-outline'} size={20} color={accent} />
-            <View style={{ flex: 1 }}>
+            <TouchableOpacity
+              style={styles.scheduleText}
+              activeOpacity={0.7}
+              disabled={!openInPlanner}
+              accessibilityRole={openInPlanner ? 'button' : undefined}
+              accessibilityLabel={openInPlanner ? `Next scheduled ${formatCalendarDate(feat!.day)}, open in meal planner` : undefined}
+              onPress={openInPlanner ?? undefined}
+            >
               <Text style={styles.scheduleLabel}>{feat ? (feat.upcoming ? 'Next scheduled' : 'Last scheduled') : 'Not yet scheduled'}</Text>
-              {feat ? <Text style={styles.scheduleDate}>{formatCalendarDate(feat.s.scheduledDate)}</Text> : null}
-            </View>
+              {feat ? (
+                <View style={styles.scheduleDateRow}>
+                  <Text style={[styles.scheduleDate, openInPlanner ? { color: accent } : null]}>{formatCalendarDate(feat.day)}</Text>
+                  {openInPlanner ? <Ionicons name="chevron-forward" size={14} color={accent} /> : null}
+                </View>
+              ) : null}
+            </TouchableOpacity>
             <Button title="Schedule" color={accent} onPress={() => setScheduleOpen((o) => !o)} />
           </View>
           {scheduleOpen ? (
@@ -196,8 +212,10 @@ const styles = StyleSheet.create({
   desc: { fontSize: 15, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 21 },
   scheduleCard: { marginBottom: spacing.md },
   scheduleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  scheduleText: { flex: 1 },
   scheduleLabel: { fontSize: 12, color: colors.textMuted },
-  scheduleDate: { fontSize: 15, fontWeight: '600', color: colors.text, marginTop: 2 },
+  scheduleDateRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
+  scheduleDate: { fontSize: 15, fontWeight: '600', color: colors.text },
   schedulePad: { marginTop: spacing.md, gap: spacing.sm },
   sectionCard: { padding: 0, paddingTop: spacing.md, marginBottom: spacing.md },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, paddingHorizontal: spacing.md, marginBottom: spacing.sm },

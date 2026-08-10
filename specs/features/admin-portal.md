@@ -1,7 +1,7 @@
 ---
 title: Admin portal (web console)
 status: current
-last-verified: 71f3baf+ (2026-07-31); Monetization view's token-rate editor became per-type — each `tokenRatesPer1M` family is a 4-field row (input/output/cacheRead/cacheWrite $/1M), legacy numeric entries expand on load, validation (client + server PUT) requires the per-type object shape — pricing behavior in billing-plans.md (2026-07-31); Monetization view gained the chat token-pricing knobs (`credits.appleFeePct`/`chatMargin`, validated [0,1)/[1.0,1.5]) and now excludes `chat` from the flat action-price grid (chat is token-priced, not flat-debited) — behavior in billing-plans.md (2026-07-30); Monetization view edits the flat per-action credit prices + the Calen AI plan section (provider rates relabeled as reconciliation-only cost reference) per the billing restructure (2026-07-30); added the Feedback triage view (in-app questions/bugs/ideas → `GET /admin/feedback` + `POST /admin/feedback/:id/status`, audited, new-count nav badge) — behavior in feedback.md (2026-07-29); added the Email lifecycle view (editable send map + retry policy + suppression list) and upgraded the Email log to a delivery-outbox view (retry/cancel/reconcile) — behavior in email-lifecycle.md (2026-07-29)
+last-verified: ddaa21b+ (2026-08-10); new **Quality** nav group — Releases + Test cases, the release-QA surface (per-build record → per-device runs → the sign-off gate, and the repo-imported test-case library); its badge counts releases under test that cannot yet sign off; behavior owned by [release-qa.md](release-qa.md) (2026-08-10); 71f3baf+ (2026-07-31); Monetization view's token-rate editor became per-type — each `tokenRatesPer1M` family is a 4-field row (input/output/cacheRead/cacheWrite $/1M), legacy numeric entries expand on load, validation (client + server PUT) requires the per-type object shape — pricing behavior in billing-plans.md (2026-07-31); Monetization view gained the chat token-pricing knobs (`credits.appleFeePct`/`chatMargin`, validated [0,1)/[1.0,1.5]) and now excludes `chat` from the flat action-price grid (chat is token-priced, not flat-debited) — behavior in billing-plans.md (2026-07-30); Monetization view edits the flat per-action credit prices + the Calen AI plan section (provider rates relabeled as reconciliation-only cost reference) per the billing restructure (2026-07-30); added the Feedback triage view (in-app questions/bugs/ideas → `GET /admin/feedback` + `POST /admin/feedback/:id/status`, audited, new-count nav badge) — behavior in feedback.md (2026-07-29); added the Email lifecycle view (editable send map + retry policy + suppression list) and upgraded the Email log to a delivery-outbox view (retry/cancel/reconcile) — behavior in email-lifecycle.md (2026-07-29)
 code:
   - admin/
   - server/src/routes/admin.js
@@ -33,9 +33,11 @@ admin-only server surfaces behind it.
   message), in-app feedback ([feedback](feedback.md)), and the support mailbox
   (the user emailed us).
 - **Sensitive actions are audited.** Role changes, unlock grants/revokes,
-  credit adjustments, monetization-config saves, moderation triage, and every
-  support-mailbox read/reply/move write an `AuditLog` row (who/when + minimal
-  meta, never content). See the event list in `server/src/models/AuditLog.js`.
+  credit adjustments, monetization-config saves, moderation triage, every
+  support-mailbox read/reply/move, and the release-QA actions (case import,
+  release status changes, run completion, sign-off) write an `AuditLog` row
+  (who/when + minimal meta, never content). See the event list in
+  `server/src/models/AuditLog.js`.
 - **Destructive/sensitive actions are confirmed.** Granting/revoking the admin
   role and revoking an app unlock require an explicit confirm dialog; credit
   adjustments require a note; monetization-config saves show a leaf-level
@@ -59,9 +61,11 @@ admin-only server surfaces behind it.
 
 - Nav is grouped — Analytics (Insights, AI usage), Revenue (Monetization,
   Billing, Households), Support (Support inbox, Content reports, Feedback),
-  Operations (Users, Do-not-call, Email lifecycle, Email log, Audit log) — and
+  **Quality (Releases, Test cases)**, Operations (Users, Do-not-call, Email
+  lifecycle, Email log, Audit log) — and
   doubles as a work queue: badge counts for
-  unseen support mail, open content reports, and new feedback refresh on a slow
+  unseen support mail, open content reports, new feedback, and **releases under
+  test that cannot yet sign off**, refreshed on a slow
   poll (~2 min; best-effort, failures silent).
 - The app bar shows an environment chip (`VITE_ENV_LABEL`, defaulting to
   PRODUCTION in prod builds / DEV otherwise) so prod is never edited by
@@ -93,4 +97,6 @@ admin-only server surfaces behind it.
 | Feedback | `GET /api/admin/feedback`, `POST /api/admin/feedback/:id/status` | In-app questions/bugs/ideas triage (`new`→`triaged`→`resolved`); status changes audited (`feedback_status_changed`). Message + captured device diagnostics + reporter email shown. Behavior: [feedback](feedback.md). |
 | Email lifecycle | `GET/PUT /api/admin/email/catalog`, `GET …/catalog/:key/preview`, `GET/POST/DELETE …/suppressions` | The full send map (grouped by lifecycle stage), editable metadata (enable/subject/note per template, retry policy, suppression toggle) with review-diff confirm + unsaved-changes guard; template preview (sandboxed iframe); the suppression list (add/release). Bodies are code-owned — not editable here. Behavior: [email-lifecycle](email-lifecycle.md). |
 | Email log | `GET /api/admin/email/log`, `…/log/stats`, `POST …/log/:id/{retry,cancel}`, `POST …/reconcile` | Outbound no-reply@ delivery ledger + outbox; bodies never stored. Per-row retry/cancel on queued sends, suppress-recipient on failures, "Reconcile now", header stat chips. Behavior: [email-lifecycle](email-lifecycle.md). |
+| Releases | `GET/POST /api/admin/qa/releases`, `GET/PUT …/releases/:id`, `GET …/releases/:id/summary`, `POST …/releases/:id/sign-off`, `GET/POST …/runs`, `GET …/runs/:id`, `POST …/runs/:id/{results,complete}` | One record per public build → its test runs (one per device) → the case list being executed. Sign-off is **refused (409) while a blocker case is unexecuted or failing**, naming the offenders; the screen and the gate read the same rollup. Creation, status changes, run completion and sign-off are audited. Behavior: [release-qa](release-qa.md). |
+| Test cases | `GET/POST /api/admin/qa/cases`, `PUT …/cases/:id`, `POST …/cases/import` | The library releases are tested against, imported from the repo's own plan document (markdown or CSV, read client-side and posted as text — no multipart). Import is **dry-run first**, with the four-bucket diff (added/updated/unchanged/**retired**) shown for confirm — the same review-diff rule as the monetization and email configs. A repo-owned case is not editable here; a case dropped from the document is retired, never deleted. Behavior: [release-qa](release-qa.md). |
 | Audit log | `GET /api/admin/audit` | Filterable by event; CSV export; includes the admin-action events above. |

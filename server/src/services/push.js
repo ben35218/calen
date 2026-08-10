@@ -37,15 +37,26 @@ function isNative(sub) {
   return sub?.platform === 'ios' || sub?.platform === 'android' || Boolean(sub?.expoToken);
 }
 
-// Deliver to a native device via Expo. Throws an error tagged { statusCode: 410 }
-// when Expo reports the token is no longer registered, so callers prune it.
-async function sendToExpo(subscription, payload) {
-  const message = {
+// Build the Expo push message for a payload. A `silent: true` payload becomes a
+// DATA-ONLY message (no title/body, `_contentAvailable` for the iOS background
+// wake) — the record-change poke lane: the device syncs its replica without the
+// user seeing anything. Exported for tests.
+function buildExpoMessage(subscription, payload) {
+  if (payload.silent) {
+    return { to: subscription.expoToken, data: payload.data || {}, _contentAvailable: true };
+  }
+  return {
     to: subscription.expoToken,
     title: payload.title,
     body: payload.body,
     data: payload.data || payload,
   };
+}
+
+// Deliver to a native device via Expo. Throws an error tagged { statusCode: 410 }
+// when Expo reports the token is no longer registered, so callers prune it.
+async function sendToExpo(subscription, payload) {
+  const message = buildExpoMessage(subscription, payload);
   const headers = { 'Content-Type': 'application/json' };
   if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
   const { data } = await axios.post(EXPO_PUSH_URL, message, { headers });
@@ -64,8 +75,11 @@ async function sendToSubscription(subscription, payload) {
   if (isNative(subscription)) {
     return sendToExpo(subscription, payload);
   }
+  // Silent pokes are a native-app concern (background replica refresh); a
+  // browser sub can't act on a notification it never shows — skip quietly.
+  if (payload.silent) return;
   if (!webConfigured) throw new Error('Web push not configured');
   await webpush.sendNotification(subscription, JSON.stringify(payload));
 }
 
-module.exports = { isConfigured, publicKey, sendToSubscription };
+module.exports = { isConfigured, publicKey, sendToSubscription, buildExpoMessage };

@@ -89,6 +89,23 @@ test('a local update leaves the replica row decrypting to the NEW content', asyn
   expect(row.keyVersion).toBe(2);
 });
 
+// list() is EQUALITY-only. Filtering on a field no record carries empties the
+// list — which is exactly how the meal planner's leftover `{ start, end }` range
+// made every scheduled meal invisible. Callers do range selection themselves
+// (lib/mealSchedule); this pins the contract that forces them to.
+test('a param naming a field no record carries yields an empty list', async () => {
+  const rows = [{ _id: 's1', recipeId: 'r1', scheduledDate: '2026-08-12' }];
+  replica.getAll.mockResolvedValue(rows);
+  // The dev-only warning that surfaces this case is the point; keep it off stdout.
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+  expect((await store.list('RecipeSchedule')).data).toEqual(rows);
+  expect((await store.list('RecipeSchedule', { recipeId: 'r1' })).data).toEqual(rows);
+  expect((await store.list('RecipeSchedule', { start: '2026-08-10', end: '2026-08-16' })).data).toEqual([]);
+  expect(warn).toHaveBeenCalled();
+  warn.mockRestore();
+});
+
 test('a created row carries its own ciphertext too', async () => {
   await store.create('Person', { _id: 'p2', name: 'Alex', enc: 'ct2', keyVersion: 3 });
 

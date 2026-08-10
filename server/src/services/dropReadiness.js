@@ -26,7 +26,7 @@ const DROP_FIELDS = {
   CalendarEvent:  ['calendarType', 'title', 'description', 'location', 'placeId', 'url', 'phone',
                    'startDate', 'endDate', 'allDay', 'travelMinutes', 'travelDistanceKm',
                    'reminderMinutes', 'alert2Minutes', 'alertAudience', 'guestListVisible',
-                   'invitationId', 'cancelled', 'recurrence'],
+                   'invitationId', 'cancelled', 'recurrence', 'householdInvitees'],
   Person:         ['type', 'name', 'relationship', 'birthday', 'notes', 'address',
                    'businessName', 'phone', 'email', 'accountId', 'deviceContactId'],
   MaintenanceTask:['itemId', 'categoryId', 'title', 'icon', 'description', 'instructions', 'recurrence',

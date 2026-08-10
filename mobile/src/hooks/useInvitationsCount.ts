@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { invitationsApi, customCalendarsApi, tripsApi, householdApi, callsApi } from '../api';
 import { listAccessRequests } from '../lib/calendarKeys';
+import { listMyHouseholdEventRequests } from '../lib/householdRsvp';
 
 // The Invitations inbox's pending count — everything the inbox's "New" tab
 // surfaces: an invitation — event, calendar, trip, or household — awaiting a
@@ -55,6 +56,13 @@ export function useInvitationsCount(): number {
     queryFn: listAccessRequests,
     staleTime: 60_000,
   });
+  // Household event invites awaiting my accept/decline — derived from the
+  // synced replica (see lib/householdRsvp), same key as the inbox row.
+  const hhEventQ = useQuery({
+    queryKey: ['calendar', 'householdEventRequests'],
+    queryFn: listMyHouseholdEventRequests,
+    staleTime: 60_000,
+  });
   const countPending = (rows?: { status: string }[]) => (rows ?? []).filter((i) => i.status === 'pending').length;
   const callNotices = (callsQ.data ?? []).filter(
     (c) => (c.status === 'ended' || c.status === 'failed') && c.outcome && !c.acknowledged,
@@ -64,9 +72,10 @@ export function useInvitationsCount(): number {
   const joinReqs = (joinReqQ.data ?? []).length;
   const notices = (noticesQ.data ?? []).filter((n) => !n.acknowledgedAt).length;
   const accessReqs = (accessReqQ.data ?? []).length;
+  const hhEventReqs = (hhEventQ.data ?? []).filter((r) => r.myStatus === 'pending').length;
   return (
     countPending(invQ.data) + countPending(calInvQ.data) +
     countPending(tripInvQ.data) + countPending(hhInvQ.data) +
-    joinReqs + accessReqs + notices + callNotices
+    joinReqs + accessReqs + notices + callNotices + hhEventReqs
   );
 }

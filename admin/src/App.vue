@@ -40,6 +40,16 @@
             </template>
           </v-list-item>
 
+          <v-list-subheader>Quality</v-list-subheader>
+          <v-list-item to="/releases" prepend-icon="mdi-rocket-launch-outline" title="Releases">
+            <template #append>
+              <v-chip v-if="badges.blockedReleases" size="x-small" color="error" variant="flat">
+                {{ badges.blockedReleases }}
+              </v-chip>
+            </template>
+          </v-list-item>
+          <v-list-item to="/test-cases" prepend-icon="mdi-clipboard-check-outline" title="Test cases" />
+
           <v-list-subheader>Operations</v-list-subheader>
           <v-list-item to="/users" prepend-icon="mdi-account-multiple" title="Users" />
           <v-list-item to="/do-not-call" prepend-icon="mdi-phone-off" title="Do-not-call" />
@@ -60,7 +70,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useAuthStore } from './stores/auth';
-import { adminApi, emailApi } from './services/api';
+import { adminApi, emailApi, qaApi } from './services/api';
 
 const auth = useAuthStore();
 const route = useRoute();
@@ -76,20 +86,26 @@ const env = computed(() => {
 // Nav badges double as a to-do list: unseen support mail + open content
 // reports, refreshed on a slow poll (the support count hits IMAP, so keep the
 // interval generous). Failures are silent — badges are best-effort.
-const badges = ref({ supportUnseen: 0, openReports: 0, newFeedback: 0 });
+const badges = ref({ supportUnseen: 0, openReports: 0, newFeedback: 0, blockedReleases: 0 });
 let badgeTimer = null;
 
 async function loadBadges() {
-  const [s, m, f] = await Promise.allSettled([
+  const [s, m, f, r] = await Promise.allSettled([
     emailApi.supportStatus(),
     adminApi.moderation({ page: 1, pageSize: 1 }),
     adminApi.feedback({ page: 1, pageSize: 1 }),
+    // A release under test that can't sign off is outstanding work, same as an
+    // untriaged report — so it gets the same treatment in the nav.
+    qaApi.releases({ status: 'testing', page: 1, pageSize: 25 }),
   ]);
   if (s.status === 'fulfilled' && s.value.data.configured !== false) {
     badges.value.supportUnseen = s.value.data.boxes?.find((b) => b.path === 'INBOX')?.unseen || 0;
   }
   if (m.status === 'fulfilled') badges.value.openReports = m.value.data.openCount || 0;
   if (f.status === 'fulfilled') badges.value.newFeedback = f.value.data.newCount || 0;
+  if (r.status === 'fulfilled') {
+    badges.value.blockedReleases = (r.value.data.items || []).filter((x) => !x.summary?.canSignOff).length;
+  }
 }
 
 watch(() => auth.isLoggedIn, (loggedIn) => {

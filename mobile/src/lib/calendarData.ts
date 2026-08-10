@@ -17,6 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { assembleCalendarData } from '@household/calendar';
 import { CalendarData, settingsApi, tripsApi } from '../api';
 import { currentUserId, openRecord } from './e2ee';
+import { populateRecipeRefs } from './mealSchedule';
 import { applyAddonLocks, getOwnedAddonIds } from './addons';
 import { getAccessibleCustomCalendarIds } from './calendarPrefs';
 import { FeedSource, expandFeedSources, loadFeedSources } from './calendarFeeds';
@@ -111,6 +112,32 @@ export function revalidateCalendar(): Promise<void> {
   return revalidating;
 }
 
+// Poke-friendly revalidation: a server poke (socket message, reconnect,
+// foreground) must never be silently dropped by the floor above — a poke means
+// the server HAS something new. If a pass ran too recently, park a single
+// trailing timer at the floor's expiry instead; bursts of pokes coalesce into
+// that one pending pass. Staleness after a poke is therefore bounded by
+// REVALIDATE_MIN_INTERVAL_MS, never unbounded.
+let pendingRevalidate: ReturnType<typeof setTimeout> | null = null;
+
+export function scheduleRevalidate(): void {
+  if (pendingRevalidate) return;
+  const wait = Math.max(0, REVALIDATE_MIN_INTERVAL_MS - (Date.now() - lastRevalidatedAt));
+  pendingRevalidate = setTimeout(() => {
+    pendingRevalidate = null;
+    // A pass already in flight may have queried the server BEFORE the poke's
+    // write landed — joining it could still miss the change. Re-schedule after
+    // it settles instead (that trailing pass waits out the floor, so this
+    // converges rather than spins).
+    const inFlight = revalidating;
+    if (inFlight) {
+      void inFlight.then(() => scheduleRevalidate());
+      return;
+    }
+    void revalidateCalendar();
+  }, wait);
+}
+
 // Load the calendar sources from the local replica (Signal-parity C3b). The
 // content records (events/tasks/chores/people/recipe schedules) now live in the
 // unified opaque store: syncRecords() pulls /records/sync, decrypts each row via
@@ -147,14 +174,19 @@ export async function loadCalendarSources(
 
   // Content collections: read the decrypted rows straight from the replica. Trips
   // are still a per-collection resource (D2), fetched + decrypted separately.
-  const [events, tasks, chores, people, recipeSchedules, trips] = await Promise.all([
+  const [events, tasks, chores, people, schedules, recipes, trips] = await Promise.all([
     replica.getAll<any>('CalendarEvent').catch(() => []),
     replica.getAll<any>('MaintenanceTask').catch(() => []),
     replica.getAll<any>('Chore').catch(() => []),
     replica.getAll<any>('Person').catch(() => []),
     replica.getAll<any>('RecipeSchedule').catch(() => []),
+    replica.getAll<any>('Recipe').catch(() => []),
     mode === 'inline' ? loadTrips() : replica.getAll<any>('Trip').catch(() => []),
   ]);
+
+  // Re-attach each scheduled meal's recipe title from the Recipe replica — the
+  // same content-blind-store join the planner window needs (lib/mealSchedule).
+  const recipeSchedules = populateRecipeRefs(schedules, recipes);
 
   return { events, tasks, chores, people, trips, recipeSchedules, selfId, ...grocery };
 }

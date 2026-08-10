@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -8,18 +8,16 @@ import {
   TouchableOpacity,
   RefreshControl,
   Image,
-  Animated,
-  PanResponder,
   Alert,
 } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, Recipe } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Input, Badge, Chip, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
+import { Card, Input, Badge, Chip, RoundIconButton, SectionHeader, SkeletonList, EmptyState, SwipeableRow } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, radius, spacing } from '../../theme';
@@ -31,66 +29,6 @@ const UNTAGGED = 'Untagged';
 
 function totalMins(r: Recipe) {
   return (r.prepTimeMins || 0) + (r.cookTimeMins || 0);
-}
-
-// Width of the red Delete action revealed when a row is swiped left.
-const ACTION_WIDTH = 88;
-
-// A list row that reveals a red Delete action when swiped left. Built on
-// PanResponder/Animated (no gesture-handler dependency). Swiping past halfway
-// snaps the action open; tapping it (or swiping fully) calls onDelete.
-function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  const openRef = useRef(false);
-
-  const snap = (open: boolean) => {
-    openRef.current = open;
-    Animated.spring(translateX, {
-      toValue: open ? -ACTION_WIDTH : 0,
-      useNativeDriver: true,
-      bounciness: 0,
-    }).start();
-  };
-
-  const pan = useRef(
-    PanResponder.create({
-      // Only claim the gesture for a deliberate horizontal drag, so vertical
-      // scrolling and taps still pass through to the list / row.
-      onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onPanResponderMove: (_, g) => {
-        const base = openRef.current ? -ACTION_WIDTH : 0;
-        const x = Math.max(-ACTION_WIDTH, Math.min(0, base + g.dx));
-        translateX.setValue(x);
-      },
-      onPanResponderRelease: (_, g) => {
-        const base = openRef.current ? -ACTION_WIDTH : 0;
-        snap(base + g.dx < -ACTION_WIDTH / 2);
-      },
-      onPanResponderTerminate: () => snap(openRef.current),
-    })
-  ).current;
-
-  return (
-    <View style={styles.swipeWrap}>
-      <View style={styles.swipeAction}>
-        <TouchableOpacity
-          style={styles.swipeActionBtn}
-          onPress={() => {
-            snap(false);
-            onDelete();
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="trash-outline" size={22} color="#fff" />
-          <Text style={styles.swipeActionText}>Delete</Text>
-        </TouchableOpacity>
-      </View>
-      <Animated.View style={{ transform: [{ translateX }] }} {...pan.panHandlers}>
-        {children}
-      </Animated.View>
-    </View>
-  );
 }
 
 // The recipe library, a standalone screen reached from the Meals view's
@@ -185,7 +123,7 @@ export default function RecipesScreen() {
         stickySectionHeadersEnabled
         ListHeaderComponent={
           <View>
-            <Input placeholder="Search recipes…" value={search} onChangeText={setSearch} />
+            <Input placeholder="Search recipes…" value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false} />
             {tags.length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
                 <Chip label="All" selected={!selectedTag} color={accent} onPress={() => setSelectedTag(null)} />
@@ -208,7 +146,13 @@ export default function RecipesScreen() {
           />
         }
         renderItem={({ item }) => (
-          <SwipeableRow onDelete={() => confirmDelete(item)}>
+          <SwipeableRow
+            onDelete={() => confirmDelete(item)}
+            accessibilityLabel={`Delete ${item.title}`}
+            // Shaped to the card it slides out from: same corner radius, and
+            // stopping short of the card's row gap.
+            actionStyle={styles.rowSwipeAction}
+          >
             <TouchableOpacity activeOpacity={0.8} onPress={() => navigation.navigate('RecipeDetail', { id: item._id })}>
               <Card style={styles.row}>
                 {item.imageUrl ? (
@@ -248,21 +192,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 16, fontWeight: '600', color: colors.text },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' },
   meta: { fontSize: 13, color: colors.textMuted },
-
-  // Swipe-to-delete. The red action sits behind the card and is uncovered as
-  // the card slides left; the card keeps its own marginBottom for row spacing.
-  swipeWrap: { position: 'relative' },
-  swipeAction: {
-    position: 'absolute',
-    top: 0,
-    bottom: spacing.sm,
-    right: 0,
-    width: ACTION_WIDTH,
-    backgroundColor: colors.error,
-    borderRadius: radius.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  swipeActionBtn: { flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
-  swipeActionText: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 2 },
+  // The revealed Delete matches the card's outer corners and stops at the row
+  // gap the card's own marginBottom leaves; its inner edge stays square so it
+  // reads as continuous with the card it slid out of.
+  rowSwipeAction: { bottom: spacing.sm, borderTopRightRadius: radius.lg, borderBottomRightRadius: radius.lg },
 });

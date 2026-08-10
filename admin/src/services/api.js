@@ -96,6 +96,31 @@ export const emailApi = {
   supportSeen: (uid, payload) => api.post(`/admin/email/support/messages/${uid}/seen`, payload),
 };
 
+// Release QA: test-case library, releases, runs and sign-off (requireAdmin-gated).
+// The repo is the source of truth for cases — `importCases` uploads a plan
+// document's TEXT (read client-side), and is called twice: once with
+// dryRun:true to show the diff, then again to commit it.
+// Spec: specs/features/release-qa.md.
+export const qaApi = {
+  releases: (params) => api.get('/admin/qa/releases', { params }),
+  createRelease: (data) => api.post('/admin/qa/releases', data),
+  release: (id) => api.get(`/admin/qa/releases/${id}`),
+  updateRelease: (id, data) => api.put(`/admin/qa/releases/${id}`, data),
+  summary: (id) => api.get(`/admin/qa/releases/${id}/summary`),
+  signOff: (id, note) => api.post(`/admin/qa/releases/${id}/sign-off`, { note }),
+
+  cases: (params) => api.get('/admin/qa/cases', { params }),
+  createCase: (data) => api.post('/admin/qa/cases', data),
+  updateCase: (id, data) => api.put(`/admin/qa/cases/${id}`, data),
+  importCases: (data) => api.post('/admin/qa/cases/import', data),
+
+  runs: (params) => api.get('/admin/qa/runs', { params }),
+  createRun: (data) => api.post('/admin/qa/runs', data),
+  run: (id) => api.get(`/admin/qa/runs/${id}`),
+  saveResults: (id, results) => api.post(`/admin/qa/runs/${id}/results`, { results }),
+  completeRun: (id, status) => api.post(`/admin/qa/runs/${id}/complete`, { status }),
+};
+
 // Content-blind product-usage analytics (requireAdmin-gated).
 export const analyticsApi = {
   overview: () => api.get('/admin/analytics/overview'),

@@ -427,6 +427,8 @@ export default function AccountScreen() {
           value={form.firstName}
           onChangeText={set('firstName')}
           placeholder="First name"
+          autoCapitalize="words"
+          textContentType="givenName"
           containerStyle={fs.headField}
           style={fs.headInput}
         />
@@ -435,6 +437,8 @@ export default function AccountScreen() {
           value={form.lastName}
           onChangeText={set('lastName')}
           placeholder="Last name"
+          autoCapitalize="words"
+          textContentType="familyName"
           containerStyle={fs.headField}
           style={fs.headInput}
         />

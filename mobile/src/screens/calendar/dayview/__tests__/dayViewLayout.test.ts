@@ -13,6 +13,11 @@ import {
   diffDays,
   hourLabel,
   nowBadgeLabel,
+  timeRangeLabel,
+  blockDetail,
+  blockTitleLines,
+  travelBandLabel,
+  travelAccessibilityLabel,
   TimedBlock,
   EventStatus,
   EVENT_ICON,
@@ -20,7 +25,7 @@ import {
   MIN_BLOCK,
   DAY_MIN,
 } from '../dayViewLayout';
-import { DayItems } from '../../../../lib/calendar';
+import { DayItems, GROCERY_ICON, RECIPE_ICON } from '../../../../lib/calendar';
 import { occasionIcon } from '../../../../lib/occasions';
 
 const CAL_COLORS = {
@@ -75,6 +80,22 @@ describe('normalizeDay routing', () => {
     expect(allDay[0]).toMatchObject({ kind: 'event', icon: EVENT_ICON });
   });
 
+  it('carries the location and travel time a block card renders', () => {
+    const day = emptyDay();
+    day.events = [
+      {
+        _id: 'e1', title: 'EarlyON Alfred', calendarType: 'activities',
+        startDate: iso('2026-07-27', '09:00'), endDate: iso('2026-07-27', '11:00'),
+        location: '520 St Philippe St', travelMinutes: 15,
+      },
+      // No drive time set: the block must not claim one.
+      { _id: 'e2', title: 'Swim', calendarType: 'activities', startDate: iso('2026-07-27', '13:00'), travelMinutes: null },
+    ] as any;
+    const { timed } = normalizeDay(day, [], '2026-07-27', CAL_COLORS, NO_STATUS);
+    expect(timed[0]).toMatchObject({ location: '520 St Philippe St', travelMinutes: 15 });
+    expect(timed[1].travelMinutes).toBeUndefined();
+  });
+
   it('badges occasions with their kind icon in the birthdays colour', () => {
     const day = emptyDay();
     day.occasions = [
@@ -84,6 +105,26 @@ describe('normalizeDay routing', () => {
     const occ = allDay.find((a) => a.kind === 'occasion');
     expect(occ).toMatchObject({ kind: 'occasion', color: CAL_COLORS.birthdays, icon: occasionIcon('birthday') });
     expect(occ?.muted).toBeFalsy();
+  });
+
+  // A meal has to read as a meal on every calendar surface, so the day view
+  // badges recipes and the shopping day with the same glyphs the month grid and
+  // the list view use — and shows the recipe's own name, which only arrives
+  // because lib/calendarData joins the title back onto the schedule.
+  it('badges meals and the shopping day with the shared calendar glyphs', () => {
+    const day = emptyDay();
+    day.recipes = [{ title: 'Tacos', recipeId: 'r1' }];
+    day.grocery = true;
+    const { allDay } = normalizeDay(day, [], '2026-07-27', CAL_COLORS, NO_STATUS);
+
+    expect(allDay.find((a) => a.kind === 'recipe')).toMatchObject({
+      title: 'Tacos', icon: RECIPE_ICON, color: CAL_COLORS.recipes, id: 'r1',
+    });
+    // Both take the Meals calendar's colour — the shopping day is part of that
+    // calendar, not a colour of its own (it used to be a hard-coded yellow).
+    expect(allDay.find((a) => a.kind === 'grocery')).toMatchObject({
+      title: 'Grocery shopping', icon: GROCERY_ICON, color: CAL_COLORS.recipes,
+    });
   });
 
   it('clips a midnight-spanning event to each column day', () => {
@@ -180,6 +221,33 @@ describe('packLanes', () => {
     expect(laid.every((b) => Math.abs(b.widthFrac - 1 / 3) < 1e-9)).toBe(true);
     expect(new Set(laid.map((b) => b.leftFrac)).size).toBe(3);
   });
+
+  it('extends a block upward by its travel time', () => {
+    const [b] = packLanes([{ ...block('a', 600, 660), travelMinutes: 20 }]);
+    // Starts at the departure, spans the drive plus the event.
+    expect(b).toMatchObject({ top: 580, height: 80, travelHeight: 20 });
+  });
+
+  it('reports no travel band for an event without a drive time', () => {
+    expect(packLanes([block('a', 600, 660)])[0]).toMatchObject({ top: 600, height: 60, travelHeight: 0 });
+  });
+
+  it('clips a travel band that would start before midnight', () => {
+    const [b] = packLanes([{ ...block('a', 20, 80), travelMinutes: 45 }]);
+    expect(b).toMatchObject({ top: 0, height: 80, travelHeight: 20 });
+  });
+
+  it('collides on the travel band — you cannot drive and sit in a meeting', () => {
+    // The meeting ends at 600; the drive to the 620 event starts at 590.
+    const laid = packLanes([block('meeting', 540, 600), { ...block('away', 620, 700), travelMinutes: 30 }]);
+    expect(laid.every((b) => b.widthFrac === 0.5)).toBe(true);
+    expect(laid[0].leftFrac).not.toBe(laid[1].leftFrac);
+  });
+
+  it('leaves blocks that only APPEAR to overlap alone once the drive is short enough', () => {
+    const laid = packLanes([block('meeting', 540, 600), { ...block('away', 620, 700), travelMinutes: 15 }]);
+    expect(laid.every((b) => b.widthFrac === 1)).toBe(true);
+  });
 });
 
 describe('week-strip math', () => {
@@ -215,6 +283,10 @@ describe('initialScrollY', () => {
 
   it('lands just above the first event on other days', () => {
     expect(initialScrollY(null, [{ startMin: 540 }, { startMin: 700 }], viewport)).toBe(510);
+  });
+
+  it('counts a travel band as part of the first event', () => {
+    expect(initialScrollY(null, [{ startMin: 540, travelMinutes: 60 }], viewport)).toBe(450);
   });
 
   it('defaults to 8 AM on empty days and clamps to the scroll range', () => {
@@ -264,5 +336,53 @@ describe('labels', () => {
   it('formats the now badge without a meridiem', () => {
     expect(nowBadgeLabel(14 * 60 + 8)).toBe('2:08');
     expect(nowBadgeLabel(5)).toBe('12:05');
+  });
+
+  it('collapses a block’s start–end range the way Apple does', () => {
+    // One meridiem when both sides share it, and no ":00" on the hour.
+    expect(timeRangeLabel(9 * 60, 11 * 60)).toBe('9 – 11AM');
+    expect(timeRangeLabel(13 * 60, 14 * 60 + 30)).toBe('1 – 2:30PM');
+    // Crossing noon, each side has to carry its own.
+    expect(timeRangeLabel(11 * 60 + 30, 13 * 60)).toBe('11:30AM – 1PM');
+    // Midnight and noon read as 12, not 0.
+    expect(timeRangeLabel(0, 30)).toBe('12 – 12:30AM');
+    expect(timeRangeLabel(12 * 60, 13 * 60)).toBe('12 – 1PM');
+  });
+});
+
+describe('block detail tiers', () => {
+  it('shows title, location and time only where all three fit', () => {
+    expect(blockDetail(58)).toBe('full'); // a one-hour event
+    expect(blockDetail(56)).toBe('full');
+    expect(blockDetail(55)).toBe('medium');
+  });
+
+  it('drops to title + time, then to the title alone, as the block shrinks', () => {
+    expect(blockDetail(38)).toBe('medium');
+    expect(blockDetail(37)).toBe('compact');
+    expect(blockDetail(MIN_BLOCK - 2)).toBe('compact'); // the shortest block there is
+  });
+
+  it('gives the title a second line only where one fits above the meta rows', () => {
+    expect(blockTitleLines(78)).toBe(2);
+    expect(blockTitleLines(77)).toBe(1);
+  });
+});
+
+describe('travel band labels', () => {
+  it('names travel outright when the band can carry a line', () => {
+    expect(travelBandLabel(15, 15)).toBe('15 min travel');
+    expect(travelBandLabel(90, 90)).toBe('1 hr 30 min travel');
+  });
+
+  it('falls silent on a band too short to print one', () => {
+    expect(travelBandLabel(13, 13)).toBeNull();
+    expect(travelBandLabel(0, 60)).toBeNull();
+  });
+
+  it('always spells the band out for a screen reader', () => {
+    expect(travelAccessibilityLabel(30, 10 * 60)).toBe(
+      '30 min travel time before this event — leave by 9:30 AM'
+    );
   });
 });

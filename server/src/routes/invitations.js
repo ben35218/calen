@@ -97,9 +97,13 @@ function notifySender(invitation, responder, action) {
     const sender = await User.findById(invitation.fromUserId);
     if (!sender) return;
     const name = [responder.firstName, responder.lastName].filter(Boolean).join(' ') || responder.email;
+    // Sealed (D3) invites have no plaintext snapshot — fall back to a generic body.
+    const body = invitation.event?.title
+      ? `${name} ${action} “${invitation.event.title}”`
+      : `${name} ${action} your event invitation`;
     await pushToUser(sender, {
       title: `Invitation ${action}`,
-      body: `${name} ${action} “${invitation.event.title}”`,
+      body,
       tag: `invitation-reply-${invitation._id}`,
     });
   })().catch(() => {});

@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { notificationsApi, settingsApi, CalendarData } from '../api';
 import { loadCalendarData } from './calendarData';
-import { eventAlertAnchor } from './calendar';
+import { AlertAnchor, effectiveAlertAnchor, eventAlertAnchor, leaveAlertBuffer } from './calendar';
 import { getPrivacyPrefs } from './privacyPrefs';
 import {
   getAlertMutedCalendarIds, getOccasionAlertPrefs, OccasionAlertPrefs,
@@ -50,13 +50,20 @@ interface Reminder { at: Date; title: string; body: string; }
 
 // ── Lead-time wording ───────────────────────────────────────────────────────
 //
-// A reminder's body is the lead time alone — "15 minutes", "Tomorrow" — not a
-// static label and not a sentence. The notification title already names the
-// record and the banner already reads as a reminder, so both the old fixed body
-// ("Upcoming event") and a verb phrase ("Starts in 15 minutes") spend a line on
-// words the user doesn't need. The phrase is measured from the moment the
-// notification fires to the moment it is about, so it stays true no matter when
-// the window is rescheduled.
+// A DAY-BASED reminder's body is the lead time alone — "Tomorrow", "2 weeks".
+// The title already names the record, and a chore due tomorrow has no start
+// instant or departure to count down to, so a verb would only spend the line.
+//
+// A TIMED EVENT's body names what the lead time is until, because that event
+// can carry either of two framings and the number alone cannot tell them apart:
+// "23 minutes" on an event with a 23-minute drive is the moment to walk out the
+// door, not a heads-up before it starts. The body therefore reads "Starts in 23
+// minutes" or "Leave in 23 minutes" ("Leave now" / "Starting now" at zero),
+// chosen by the alert's own `alertAnchor` — the framing the user picked in the
+// form, not one re-derived from the minutes (see lib/calendar).
+//
+// Every phrase is measured from the moment the notification fires to the moment
+// it is about, so it stays true no matter when the window is rescheduled.
 
 // Whole days ahead → "Today" / "Tomorrow" / "3 days" / "2 weeks".
 // Day-based alerts (tasks, chores, occasions, holidays) are configured in whole
@@ -73,18 +80,48 @@ export function dayLeadPhrase(days: number): string {
   return `${days} days`;
 }
 
-// Minutes ahead → "Now" / "15 minutes" / "1 hour" / "2 days".
-// Event alerts are minutes-before, and every value the pickers can produce is a
-// whole number of minutes, hours, or days (the Custom sheet's amount + unit), so
-// the coarser units divide cleanly.
-export function leadPhrase(minutes: number): string {
-  if (minutes <= 0) return 'Now';
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-  if (minutes < 1440) {
-    const hours = Math.round(minutes / 60);
-    return `${hours} hour${hours === 1 ? '' : 's'}`;
+// Minutes ahead → "23 minutes" / "1 hour" / "1 hour 30 minutes" / "2 days" /
+// "1 week", spelled out for the middle of a sentence.
+//
+// Two things it deliberately does NOT do, both of which the old `leadPhrase`
+// did: it never ROUNDS (the Custom sheet's minutes wheel reaches 180, so a
+// 90-minute lead was reading back as "2 hours"), and it never uses the calendar
+// words `dayLeadPhrase` produces — "Starts in Tomorrow" is not a sentence, and a
+// timed event can carry a whole-day alert.
+export function durationPhrase(minutes: number): string {
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (minutes % 10080 === 0) return unit(minutes / 10080, 'week');
+  if (minutes % 1440 === 0) return unit(minutes / 1440, 'day');
+  const parts: string[] = [];
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days) parts.push(unit(days, 'day'));
+  if (hours) parts.push(unit(hours, 'hour'));
+  if (mins) parts.push(unit(mins, 'minute'));
+  return parts.join(' ');
+}
+
+// The body of a TIMED event's alert: what the lead time is until, in the
+// framing the user chose. `minutes` is always minutes before the event (that is
+// what the record stores for both anchors); a departure-anchored alert counts
+// its buffer back from the drive, so "23 min before leaving" on a 40-minute
+// drive is stored as 63 and must read as 23.
+//
+// `effectiveAlertAnchor` re-checks the drive time rather than trusting the
+// stored anchor: dropping the location off an event leaves `alertAnchor:
+// 'leave'` behind on a record with nothing to leave for, and the alert falls
+// back to what it literally is — a lead time before the start.
+export function timedEventBody(
+  minutes: number,
+  anchor?: AlertAnchor | null,
+  travelMinutes?: number | null,
+): string {
+  if (effectiveAlertAnchor(anchor, false, travelMinutes) === 'leave') {
+    const buffer = leaveAlertBuffer(minutes, travelMinutes!);
+    return buffer <= 0 ? 'Leave now' : `Leave in ${durationPhrase(buffer)}`;
   }
-  return dayLeadPhrase(Math.round(minutes / 1440));
+  return minutes <= 0 ? 'Starting now' : `Starts in ${durationPhrase(minutes)}`;
 }
 
 // One enabled holiday on one holiday calendar, inside the rolling window.
@@ -181,11 +218,19 @@ export function computeReminders(
     // set by the reader's UTC offset. All-day offsets are whole days, so their
     // lead phrase is day-based ("Today"/"Tomorrow"), never "15 minutes".
     const anchor = eventAlertAnchor(e, dayAlertTime).getTime();
-    for (const mins of [e.reminderMinutes, e.alert2Minutes]) {
+    // Each slot carries its OWN framing (`alertAnchor`/`alert2Anchor`), so the
+    // two alerts on one event can word themselves differently — "Starts in 1
+    // hour" and then "Leave now" is the normal pairing on an event with a drive.
+    for (const [mins, slotAnchor] of [
+      [e.reminderMinutes, e.alertAnchor],
+      [e.alert2Minutes, e.alert2Anchor],
+    ] as const) {
       if (mins == null) continue;
       const at = new Date(anchor - mins * 60000);
       if (at.getTime() > now) {
-        const body = e.allDay ? dayLeadPhrase(Math.round(mins / 1440)) : leadPhrase(mins);
+        const body = e.allDay
+          ? dayLeadPhrase(Math.round(mins / 1440))
+          : timedEventBody(mins, slotAnchor, e.travelMinutes);
         out.push({ at, title: e.title, body });
       }
     }

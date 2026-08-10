@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import AnchoredMenu, { AnchoredMenuItem } from '../../../components/AnchoredMenu';
+import AssistantButton from '../../../components/AssistantButton';
 import { DayViewMode } from '../../../lib/calendarPrefs';
+import { useAiEnabled } from '../../../lib/privacyPrefs';
 import { colors, spacing } from '../../../theme';
+import { popIn, useReduceMotion } from '../dayTransition';
 import { DayNav } from './dayNav';
 
 // Matches CalendarScreen's floating-pill vocabulary.
@@ -23,25 +26,36 @@ const MODE_META: { key: DayViewMode; label: string; icon: string; dividerBefore?
 ];
 
 // The day view's floating chrome, floating over whichever layer is active:
-// back-to-month pill (labelled with the anchor's month), the switcher/search/
-// add pill, the Today pill, and the month-jump pill. (The Invitations inbox
-// lives in Profile — badged via the month view's avatar — not in this chrome.)
+// back-to-month pill (labelled with the anchor's month) and the switcher/search/
+// add pill on top; the Today | Calendars pill and the Calen FAB along the
+// bottom. The bottom row deliberately matches CalendarScreen's exactly — the
+// day view is the same canvas, so its floating controls must not differ.
+// (The Invitations inbox lives in Profile — badged via the month view's avatar
+// — not in this chrome.)
 export default function DayViewChrome({
   monthLabel,
   date,
   mode,
   onMode,
   onToday,
+  enter,
 }: {
   monthLabel: string;
   date: string;
   mode: DayViewMode;
   onMode: (m: DayViewMode) => void;
   onToday: () => void;
+  // The host's month ⇄ day zoom (0 = away, 1 = in place). Only the TOP row
+  // rides it — the bottom row is the month view's own, unmoved.
+  enter: Animated.Value;
 }) {
   const navigation = useNavigation<DayNav>();
   const insets = useSafeAreaInsets();
+  const aiEnabled = useAiEnabled();
+  const reduced = useReduceMotion();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  const topZoom = { opacity: enter, transform: [{ scale: popIn(enter, reduced) }] };
 
   const menuItems: AnchoredMenuItem[] = MODE_META.map((m) => ({
     key: m.key,
@@ -55,8 +69,8 @@ export default function DayViewChrome({
 
   return (
     <>
-      <View
-        style={[styles.topChrome, { paddingTop: insets.top, height: insets.top + TOP_BAR_ROW }]}
+      <Animated.View
+        style={[styles.topChrome, topZoom, { paddingTop: insets.top, height: insets.top + TOP_BAR_ROW }]}
         pointerEvents="box-none"
       >
         <TouchableOpacity
@@ -83,7 +97,7 @@ export default function DayViewChrome({
             <Ionicons name="add" size={26} color={BTN_FG} />
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
 
       <AnchoredMenu
         visible={menuOpen}
@@ -92,21 +106,25 @@ export default function DayViewChrome({
         items={menuItems}
       />
 
+      {/* ── Bottom chrome: identical to the month view's — Today | Calendars on
+          the left, the Calen FAB alone on the right. (Back to the month is the
+          top-left pill, so no calendar glyph down here.) ── */}
       <View style={[styles.pill, styles.bottomLeft, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity style={styles.todayBtn} onPress={onToday}>
           <Text style={styles.todayText}>Today</Text>
         </TouchableOpacity>
-      </View>
-
-      <View style={[styles.pill, styles.bottomRight, { bottom: insets.bottom + 16 }]}>
-        <TouchableOpacity
-          style={styles.bottomPillBtn}
-          onPress={() => navigation.navigate('CalendarHome')}
-          accessibilityLabel="Month view"
-        >
-          <Ionicons name="calendar-outline" size={22} color={BTN_FG} />
+        <View style={styles.pillDivider} />
+        <TouchableOpacity style={styles.todayBtn} onPress={() => navigation.navigate('Calendars')}>
+          <Text style={styles.todayText}>Calendars</Text>
         </TouchableOpacity>
       </View>
+
+      {aiEnabled ? (
+        <AssistantButton
+          style={[styles.bottomRight, { bottom: insets.bottom + 16 }]}
+          onPress={() => navigation.navigate('Assistant', { initial: 'calendar' })}
+        />
+      ) : null}
     </>
   );
 }
@@ -127,7 +145,10 @@ const styles = StyleSheet.create({
   pillBtn: { paddingHorizontal: 8, paddingVertical: 6 },
   bottomLeft: { position: 'absolute', left: spacing.md, zIndex: 10 },
   bottomRight: { position: 'absolute', right: spacing.md, zIndex: 10 },
-  bottomPillBtn: { paddingHorizontal: 12, paddingVertical: 6 },
-  todayBtn: { paddingHorizontal: 22, paddingVertical: 6 },
+  pillDivider: { width: StyleSheet.hairlineWidth, height: 20, backgroundColor: colors.border },
+  // 16, not the 22 this pill used when Today sat in it alone: with a second
+  // label beside it the wider padding pushed the divider off-centre and stretched
+  // the group. Must stay in step with CalendarScreen's todayBtn.
+  todayBtn: { paddingHorizontal: 16, paddingVertical: 6 },
   todayText: { color: BTN_FG, fontSize: 17, fontWeight: '700' },
 });

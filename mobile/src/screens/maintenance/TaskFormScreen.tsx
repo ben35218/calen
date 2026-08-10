@@ -234,6 +234,17 @@ export default function TaskFormScreen() {
   const dueDateLabel = editingOccurrence ? 'Date' : 'Next Due Date';
 
   const buildPayload = (frame: 'occurrence' | 'series'): Record<string, unknown> => {
+    const recurrence: Record<string, unknown> = { ...ruleToRecurrence(repeatRule) };
+    // The Repeat screen edits only the rule; the skip/end bookkeeping sealed
+    // beside it rides along — without this a plain series save resurrects
+    // every skipped day and un-ends an ended series.
+    const prior = decryptedTask.current?.recurrence as
+      | { skipDates?: string[]; until?: string | Date | null }
+      | undefined;
+    if (recurrence.type !== 'one-time' && prior) {
+      if (prior.skipDates?.length) recurrence.skipDates = prior.skipDates;
+      if (prior.until != null) recurrence.until = prior.until;
+    }
     const payload: Record<string, unknown> = {
       title: form.title,
       // Bare glyph or null so the app falls back to the category icon.
@@ -246,7 +257,7 @@ export default function TaskFormScreen() {
       // "owner"-scoped task falls back to everyone rather than lingering.
       alertUserIds: form.reminderDaysBefore == null ? [] : form.alertUserIds,
       alertAudience: 'everyone',
-      recurrence: ruleToRecurrence(repeatRule),
+      recurrence,
     };
     if (form.categoryId) payload.categoryId = form.categoryId;
     if (form.itemId) payload.itemId = form.itemId;
@@ -363,7 +374,12 @@ export default function TaskFormScreen() {
       save.mutate('series');
       return;
     }
-    const decision = itemSaveScopeDecision(original, buildPayload('series'));
+    // The date field holds the occurrence's day, and the payload diff ignores
+    // `nextDueDate` (the rule reseeds it), so a moved date is reported to the
+    // decision explicitly — otherwise "do this one on Friday instead" saved
+    // silently as a whole-series re-anchor.
+    const occurrenceDateMoved = editingOccurrence && !!form.nextDueDate && form.nextDueDate !== date;
+    const decision = itemSaveScopeDecision(original, buildPayload('series'), { occurrenceDateMoved });
     if (decision.kind === 'none') {
       save.mutate('series');
       return;
@@ -535,9 +551,10 @@ export default function TaskFormScreen() {
       </GroupCard>
       {/* Names the occurrence being edited. Without it the form looks like the
           whole task, and the save sheet's "This … Only" choice has no
-          visible referent. */}
+          visible referent. Pinned to the TAPPED day, not the live date field —
+          moving the date must keep naming the occurrence being replaced. */}
       {editingOccurrence ? (
-        <Hint>{`Editing the ${formatCalendarDate(form.nextDueDate)} task in this repeating series.`}</Hint>
+        <Hint>{`Editing the ${formatCalendarDate(date)} task in this repeating series.`}</Hint>
       ) : null}
 
       <GroupCard>

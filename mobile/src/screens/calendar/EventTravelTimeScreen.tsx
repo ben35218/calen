@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
@@ -8,6 +8,8 @@ import { Screen, SwitchRow, useHeaderCheckButton } from '../../components/ui';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { resolveHomeAddress } from '../../lib/homeAddress';
 import { setTravelDraft } from '../../lib/travelDraft';
+import { TRAVEL_MODES } from '../../lib/travelModes';
+import type { TravelMode } from '../../api';
 import { resolveCurrentAddress } from '../../lib/currentLocation';
 import { form } from '../../components/formStyles';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -32,6 +34,7 @@ export default function EventTravelTimeScreen() {
   const params = useRoute<Rt>().params;
   const [enabled, setEnabled] = useState(params.enabled);
   const [fromAddress, setFromAddress] = useState(params.fromAddress);
+  const [mode, setMode] = useState<TravelMode>(params.mode);
   const [manualMinutes, setManualMinutes] = useState<number | null>(params.manualMinutes);
   const [locating, setLocating] = useState(false);
 
@@ -41,11 +44,12 @@ export default function EventTravelTimeScreen() {
   const homeQ = useQuery({ queryKey: ['homeAddress'], queryFn: resolveHomeAddress });
   const homeAddress = (homeQ.data || '').trim();
 
-  const sync = (next: Partial<{ enabled: boolean; fromAddress: string; manualMinutes: number | null }>) => {
+  const sync = (next: Partial<{ enabled: boolean; fromAddress: string; mode: TravelMode; manualMinutes: number | null }>) => {
     if (next.enabled !== undefined) setEnabled(next.enabled);
     if (next.fromAddress !== undefined) setFromAddress(next.fromAddress);
+    if (next.mode !== undefined) setMode(next.mode);
     if (next.manualMinutes !== undefined) setManualMinutes(next.manualMinutes);
-    setTravelDraft({ enabled, fromAddress, manualMinutes, ...next });
+    setTravelDraft({ enabled, fromAddress, mode, manualMinutes, ...next });
   };
 
   // Edits sync back to the event form live through the travelDraft store, so the
@@ -88,6 +92,30 @@ export default function EventTravelTimeScreen() {
 
       {enabled ? (
         <>
+          {manualMinutes == null ? (
+            // Apple Maps-style mode row: bare glyphs, with the active mode sat
+            // in a tinted capsule. The glyph alone names the mode visually, so
+            // every button carries an explicit accessibility label.
+            <View style={styles.modeRow}>
+              {TRAVEL_MODES.map((m) => {
+                const active = m.value === mode;
+                return (
+                  <TouchableOpacity
+                    key={m.value}
+                    style={[styles.modeBtn, active && styles.modeBtnActive]}
+                    onPress={() => sync({ mode: m.value })}
+                    activeOpacity={0.7}
+                    hitSlop={{ top: 6, bottom: 6 }}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`Travel by ${m.label.toLowerCase()}`}
+                  >
+                    <MaterialCommunityIcons name={m.icon as any} size={20} color={active ? colors.primary : colors.text} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : null}
           <PlacesAutocomplete
             label="Starting location"
             value={fromAddress}
@@ -140,6 +168,16 @@ export default function EventTravelTimeScreen() {
 
 const styles = StyleSheet.create({
   hint: { fontSize: 13, color: colors.textMuted, marginTop: -spacing.sm, marginBottom: spacing.md },
+  modeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
+  modeBtn: {
+    minWidth: 52,
+    height: 36,
+    paddingHorizontal: spacing.md,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeBtnActive: { backgroundColor: colors.primary + '22' },
   quickRow: { flexDirection: 'row', gap: spacing.lg, marginTop: -spacing.xs, marginBottom: spacing.md },
   quick: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   quickLabel: { fontSize: 13, color: colors.primary, fontWeight: '600' },

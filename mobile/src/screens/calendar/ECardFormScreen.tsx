@@ -571,6 +571,8 @@ export default function ECardFormScreen() {
               value={signature}
               onChangeText={setSignature}
               placeholder={senderName}
+              autoCapitalize="words"
+              textContentType="name"
               placeholderTextColor={CARD_MUTED}
               style={[styles.previewSign, styles.editableLine, { fontSize: bodySize }, cardFont ? { fontFamily: cardFont } : null]}
             />

@@ -9,7 +9,13 @@ import { InviteeEntry } from './invitees';
 // without non-serializable params.
 
 let queued: InviteeEntry[] = [];
-// The "Guests can see guest list" flag rides the same store: the Invitees
+// Household members (userIds) picked in the Invitees screen's "Your household"
+// section. Same doctrine as `queued`: a draft commits them here, and
+// EventFormScreen seals them into the create payload (householdInvitees) and
+// notifies them after the save. On EDIT the form seeds this from the fetched
+// event, so a whole-payload re-save preserves the list.
+let queuedHouseholdInvitees: string[] = [];
+// The guest-list visibility flag rides the same store: the Invitees
 // screen owns the switch (for drafts AND saved events — the form seeds it from
 // the fetched event), and EventFormScreen reads it into the sealed save
 // payload. Saved events re-seal the flag straight from the Invitees screen
@@ -34,11 +40,25 @@ export function setQueuedInvitees(next: InviteeEntry[]) {
 }
 
 export function clearQueuedInvitees() {
-  if (queued.length || !guestListVisible) {
+  if (queued.length || queuedHouseholdInvitees.length || !guestListVisible) {
     queued = [];
+    queuedHouseholdInvitees = [];
     guestListVisible = true;
     emit();
   }
+}
+
+export function getQueuedHouseholdInvitees(): string[] {
+  return queuedHouseholdInvitees;
+}
+
+export function setQueuedHouseholdInvitees(next: string[]) {
+  queuedHouseholdInvitees = next;
+  emit();
+}
+
+export function useQueuedHouseholdInvitees(): string[] {
+  return useSyncExternalStore(subscribe, () => queuedHouseholdInvitees);
 }
 
 export function getDraftGuestListVisible(): boolean {

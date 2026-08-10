@@ -6,7 +6,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { loadCalendarData } from '../../lib/calendarData';
-import { buildMonth, itemsForDate, eventColor, ymd, MonthGrid } from '../../lib/calendar';
+import { buildMonth, itemsForDate, eventColor, ymd, MonthGrid, GROCERY_ICON, RECIPE_ICON } from '../../lib/calendar';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import { useCallEventStatus } from '../../lib/callStatus';
@@ -186,7 +186,7 @@ const CalendarListView = forwardRef<TodayHandle, {
     setSelected(ymd(now));
   };
 
-  useImperativeHandle(ref, () => ({ scrollToToday: goToday }));
+  useImperativeHandle(ref, () => ({ scrollToToday: goToday, getSelectedDate: () => selected }));
 
   // Report the visible month to the host while active, for cross-layer
   // month continuity with the grid family.
@@ -257,14 +257,27 @@ const CalendarListView = forwardRef<TodayHandle, {
                 onLongPress={() => nav.navigate('EventForm', { date: cell.date })}
                 delayLongPress={LONG_PRESS_MS}
               >
+                {/* Apple's dark-mode selection: today keeps its primary disc only
+                    while it IS the selection; once another day is picked, today
+                    demotes to a bare primary-coloured number and the picked day
+                    carries a white disc with the number knocked out (background
+                    colour through the disc). */}
                 <View
                   style={[
                     styles.dayNumWrap,
-                    cell.isToday && styles.todayWrap,
+                    cell.isToday && isSel && styles.todayWrap,
                     isSel && !cell.isToday && styles.selectedWrap,
                   ]}
                 >
-                  <Text style={[styles.dayNum, cell.isToday && styles.todayNum]}>{cell.day}</Text>
+                  <Text
+                    style={[
+                      styles.dayNum,
+                      cell.isToday && (isSel ? styles.todayNum : styles.todayNumIdle),
+                      isSel && !cell.isToday && styles.selectedNum,
+                    ]}
+                  >
+                    {cell.day}
+                  </Text>
                 </View>
                 <View style={styles.dotRow}>
                   {dots.map((c, i) => (
@@ -352,10 +365,18 @@ const CalendarListView = forwardRef<TodayHandle, {
           <ListItem key={c._id} icon={mdiName(c.icon)} color={calColors.chores} title={c.title} subtitle="Chore" onPress={() => nav.navigate('ChoreDetail', { id: c._id, date: selected })} />
         ))}
         {day.recipes.map((r, i) => (
-          <ListItem key={`recipe-${i}`} icon="silverware-fork-knife" color={calColors.recipes} title={r.title} subtitle="Meal" onPress={() => (r.recipeId ? nav.navigate('RecipeDetail', { id: r.recipeId }) : nav.navigate('KitchenHome'))} />
+          <ListItem key={`recipe-${i}`} icon={RECIPE_ICON} color={calColors.recipes} title={r.title} subtitle="Meal" onPress={() => (r.recipeId ? nav.navigate('RecipeDetail', { id: r.recipeId }) : nav.navigate('KitchenHome'))} />
         ))}
         {day.grocery ? (
-          <ListItem icon="cart" color={calColors.recipes} title="Grocery shopping" subtitle="Shopping day" onPress={() => nav.navigate('KitchenHome', { pane: 'grocery' })} />
+          <ListItem
+            icon={GROCERY_ICON}
+            color={calColors.recipes}
+            title="Grocery shopping"
+            subtitle="Shopping day"
+            // Same three params as the month grid's cart: the shopping list for
+            // this day's period, with the day queued for the Planner pane.
+            onPress={() => nav.navigate('KitchenHome', { pane: 'grocery', weekStart: selected, scrollToDate: selected })}
+          />
         ) : null}
       </ScrollView>
 
@@ -395,9 +416,12 @@ const styles = StyleSheet.create({
   dayCell: { alignItems: 'center', paddingVertical: 4, height: WEEK_ROW_H },
   dayNumWrap: { minWidth: 26, height: 26, borderRadius: 13, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
   todayWrap: { backgroundColor: colors.primary },
-  selectedWrap: { backgroundColor: colors.surface },
+  selectedWrap: { backgroundColor: '#fff' },
   dayNum: { fontSize: 15, color: colors.text, fontWeight: '600' },
   todayNum: { color: '#fff', fontWeight: '700' },
+  todayNumIdle: { color: colors.primary, fontWeight: '700' },
+  // The screen's black canvas showing "through" the white disc.
+  selectedNum: { color: '#000', fontWeight: '700' },
   dotRow: { flexDirection: 'row', gap: 3, marginTop: 3, height: 8, alignItems: 'center' },
   dot: { width: 5, height: 5, borderRadius: 2.5 },
   listDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginTop: spacing.sm },

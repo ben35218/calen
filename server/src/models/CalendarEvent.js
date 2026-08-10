@@ -23,6 +23,13 @@ const calendarEventSchema = new mongoose.Schema({
   alert2Minutes:   Number,
   alert2At:        Date,
   alert2SentAt:    Date,
+  // What each alert's lead time was set against: the event's start ('event',
+  // the default and what an older record without the field means) or departure
+  // ('leave' — "30 min before leaving"). Both are stored as minutes before the
+  // EVENT in the fields above, so the scheduler needs nothing from these; they
+  // carry the framing the client shows the setting back in.
+  alertAnchor:     { type: String, enum: ['event', 'leave'] },
+  alert2Anchor:    { type: String, enum: ['event', 'leave'] },
   // Who the alert goes to in a shared household: 'everyone' or 'owner' (creator).
   alertAudience:   { type: String, enum: ['everyone', 'owner'], default: 'everyone' },
   // Whether cross-household invitees may see who else is invited (the guests

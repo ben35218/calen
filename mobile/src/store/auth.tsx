@@ -20,6 +20,7 @@ import { resetRecordCursor, syncRecords } from '../lib/records';
 import { resetCalendarPrefs } from '../lib/calendarPrefs';
 import { resetOwnedAddons } from '../lib/addons';
 import { cacheUnlocked, clearUnlockCache } from '../lib/unlock';
+import { unregisterCurrentPushToken } from '../lib/push';
 import { clearViewerContentCache } from '../lib/viewerAccess';
 
 // Enroll (or unlock) the E2EE keypair after auth, then make sure this session
@@ -84,6 +85,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     lockE2EE(); // drop the in-memory private key
     await forgetDeviceKey().catch(() => {}); // and the biometric device cache
+    // Retire this install's push token while the session can still authorize
+    // it — a signed-out device must not keep receiving the account's pushes.
+    await unregisterCurrentPushToken().catch(() => {});
     await clearToken();
     // The next sign-in may be a different account: query keys aren't scoped by
     // user, so cached server state and the on-device replica would paint the

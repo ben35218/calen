@@ -7,6 +7,9 @@
 import {
   eventAlertAnchor, snapAlertToWholeDays, alertsForAllDay, allDayAlertLabel,
   parseDayAlertTime, ALL_DAY_ALERT_OFFSETS, DEFAULT_DAY_ALERT_TIME,
+  canLeaveAnchor, effectiveAlertAnchor, inferAlertAnchor, leaveAlertBuffer,
+  leaveAlertMinutes, promoteSecondAlert, rebaseLeaveAlert, timedAlertLabel,
+  LEAVE_ALERT_BUFFERS,
 } from '../calendar';
 
 describe('eventAlertAnchor', () => {
@@ -148,6 +151,123 @@ describe('allDayAlertLabel', () => {
   // the picker falls back to its placeholder and looks like "no alert set".
   it('keeps timed phrasing for a legacy sub-day value', () => {
     expect(allDayAlertLabel(15, '09:00')).toBe('15 min before');
+  });
+});
+
+// The Second Alert field only renders while a first alert exists, so clearing
+// the first has to move the second up — leaving it set behind the hidden row is
+// an alert the user can neither see nor edit.
+describe('promoteSecondAlert', () => {
+  it('moves the second alert into the first slot when the first is cleared', () => {
+    expect(promoteSecondAlert({
+      reminderMinutes: null, alert2Minutes: 60, alertAnchor: 'event', alert2Anchor: 'event',
+    })).toEqual({
+      reminderMinutes: 60, alert2Minutes: null, alertAnchor: 'event', alert2Anchor: 'event',
+    });
+  });
+
+  it('carries the survivor’s own framing up with it', () => {
+    expect(promoteSecondAlert({
+      reminderMinutes: null, alert2Minutes: 53, alertAnchor: 'event', alert2Anchor: 'leave',
+    })).toEqual({
+      reminderMinutes: 53, alert2Minutes: null, alertAnchor: 'leave', alert2Anchor: 'event',
+    });
+  });
+
+  it('leaves a configured pair alone', () => {
+    const pair = { reminderMinutes: 15, alert2Minutes: 60, alertAnchor: 'event' as const, alert2Anchor: 'leave' as const };
+    expect(promoteSecondAlert(pair)).toEqual(pair);
+  });
+
+  it('is a no-op when there is nothing to promote', () => {
+    expect(promoteSecondAlert({ reminderMinutes: null, alert2Minutes: null })).toEqual({
+      reminderMinutes: null, alert2Minutes: null, alertAnchor: 'event', alert2Anchor: 'event',
+    });
+  });
+
+  // Spread over the form patch, exactly like `alertsForAllDay` — a wider object
+  // handed back would put the caller's own stale fields on top of the patch.
+  it('returns only the four alert keys, never the object it was handed', () => {
+    const form = { allDay: false, title: 'Dentist', reminderMinutes: null, alert2Minutes: 30 };
+    const out = promoteSecondAlert(form);
+    expect(out).not.toBe(form);
+    expect(Object.keys(out).sort()).toEqual(['alert2Anchor', 'alert2Minutes', 'alertAnchor', 'reminderMinutes']);
+    expect({ ...form, ...out }).toMatchObject({ title: 'Dentist', reminderMinutes: 30, alert2Minutes: null });
+  });
+});
+
+// An alert's lead time can be set against the event's start or against
+// DEPARTURE, and with a drive time in play both framings can name the same
+// instant — so which one the user chose is stored, never re-derived from the
+// number. Guessing it back (any value past the drive time = departure-relative)
+// re-worded a plain "2 hours before" as "1 hr 37 min before leaving".
+describe('alert anchors', () => {
+  const TRAVEL = 23;
+
+  it('offers a departure anchor only on a timed event with a drive time', () => {
+    expect(canLeaveAnchor(false, TRAVEL)).toBe(true);
+    expect(canLeaveAnchor(true, TRAVEL)).toBe(false);   // all-day: no start to leave for
+    expect(canLeaveAnchor(false, null)).toBe(false);    // no drive time: no departure
+    expect(canLeaveAnchor(false, 0)).toBe(false);
+  });
+
+  it('degrades a departure anchor the event can no longer honour', () => {
+    expect(effectiveAlertAnchor('leave', false, TRAVEL)).toBe('leave');
+    expect(effectiveAlertAnchor('leave', true, TRAVEL)).toBe('event');
+    expect(effectiveAlertAnchor('leave', false, null)).toBe('event');
+    expect(effectiveAlertAnchor(null, false, TRAVEL)).toBe('event');
+    expect(effectiveAlertAnchor(undefined, false, TRAVEL)).toBe('event');
+  });
+
+  it('converts between a departure buffer and the stored minutes-before-event', () => {
+    expect(leaveAlertMinutes(30, TRAVEL)).toBe(53);
+    expect(leaveAlertBuffer(53, TRAVEL)).toBe(30);
+    expect(leaveAlertMinutes(0, TRAVEL)).toBe(TRAVEL);  // "Time to leave"
+    expect(leaveAlertBuffer(TRAVEL, TRAVEL)).toBe(0);
+    // An alert inside the drive time isn't a negative buffer, it's departure.
+    expect(leaveAlertBuffer(10, TRAVEL)).toBe(0);
+  });
+
+  // The reported bug: with a 23-minute drive, a custom "2 hours before" was
+  // re-worded as "1 hr 37 min before leaving" purely because 120 ≥ 23.
+  it('words a lead time in the framing it was set in, not the other one', () => {
+    expect(timedAlertLabel(120, 'event', TRAVEL)).toBe('2 hr before');
+    expect(timedAlertLabel(90, 'event', TRAVEL)).toBe('1 hr 30 min before');
+    expect(timedAlertLabel(0, 'event', TRAVEL)).toBe('At time of event');
+    // The same numbers, set against departure, read as departure.
+    expect(timedAlertLabel(113, 'leave', TRAVEL)).toBe('1 hr 30 min before leaving');
+    expect(timedAlertLabel(TRAVEL, 'leave', TRAVEL, '8:37 AM')).toBe('Time to leave (8:37 AM)');
+    expect(timedAlertLabel(TRAVEL, 'leave', TRAVEL)).toBe('Time to leave');
+  });
+
+  it('falls back to plain event wording when the drive time is gone', () => {
+    expect(timedAlertLabel(120, 'leave', null)).toBe('2 hr before');
+  });
+
+  // Events saved before the anchor existed carry only a number. The canned
+  // departure rows keep reading the way they always did; everything else reads
+  // as what it literally is.
+  it('infers a legacy anchor only for the canned departure rows', () => {
+    for (const buf of LEAVE_ALERT_BUFFERS) {
+      expect(inferAlertAnchor(TRAVEL + buf, false, TRAVEL)).toBe('leave');
+    }
+    expect(inferAlertAnchor(120, false, TRAVEL)).toBe('event');
+    expect(inferAlertAnchor(60, false, TRAVEL)).toBe('event');
+    expect(inferAlertAnchor(TRAVEL, true, TRAVEL)).toBe('event');   // all-day
+    expect(inferAlertAnchor(TRAVEL, false, null)).toBe('event');
+    expect(inferAlertAnchor(null, false, TRAVEL)).toBe('event');
+  });
+
+  // "30 min before leaving" has to stay 30 minutes before the NEW departure
+  // when the drive time changes; an event-anchored alert never moves.
+  it('moves a departure-anchored alert with the drive time', () => {
+    expect(rebaseLeaveAlert(53, 'leave', 23, 40)).toBe(70);   // still 30 min before leaving
+    expect(rebaseLeaveAlert(53, 'leave', 23, 10)).toBe(40);
+    expect(rebaseLeaveAlert(53, 'event', 23, 40)).toBe(53);
+    expect(rebaseLeaveAlert(null, 'leave', 23, 40)).toBeNull();
+    // Nothing to re-base against: the stored lead time is left exactly as it is.
+    expect(rebaseLeaveAlert(53, 'leave', null, 40)).toBe(53);
+    expect(rebaseLeaveAlert(53, 'leave', 23, null)).toBe(53);
   });
 });
 

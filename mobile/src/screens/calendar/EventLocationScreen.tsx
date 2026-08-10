@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Image, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Image, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -24,7 +24,9 @@ type Rt = RouteProp<{ EventLocation: { eventId?: string; initial?: { location?: 
 const CONTENT_KEYS = [
   'title', 'calendarType', 'allDay', 'startDate', 'endDate', 'description',
   'location', 'placeId', 'url', 'phone', 'travelMinutes', 'travelDistanceKm',
-  'reminderMinutes', 'alert2Minutes', 'alertAudience', 'guestListVisible', 'recurrence',
+  'reminderMinutes', 'alert2Minutes', 'alertAnchor', 'alert2Anchor',
+  'alertAudience', 'guestListVisible', 'recurrence',
+  'householdInvitees',
 ] as const;
 
 // Google Places details, shaped by the server proxy (routes/places.js).
@@ -149,6 +151,15 @@ export default function EventLocationScreen() {
     return a || n;
   };
 
+  // Tapping the map preview opens the place in Maps, the same as tapping the
+  // location map on the event view. The query is the string the event stores,
+  // so both entry points land on the same place.
+  const openInMaps = () => {
+    const q = locationString().trim();
+    if (!q) return;
+    Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`);
+  };
+
   const save = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> = {};
@@ -226,7 +237,16 @@ export default function EventLocationScreen() {
       {picked ? (
         /* PICKED — the resolved place collapses into a read-only card. */
         <View style={styles.placeCard}>
-          {mapUri ? <Image source={{ uri: mapUri }} style={styles.placeMap} /> : null}
+          {mapUri ? (
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={openInMaps}
+              accessibilityRole="button"
+              accessibilityLabel="Open in Maps"
+            >
+              <Image source={{ uri: mapUri }} style={styles.placeMap} />
+            </TouchableOpacity>
+          ) : null}
           <View style={styles.placeBody}>
             <View style={{ flex: 1 }}>
               <Text style={styles.placeName} numberOfLines={2}>{cardTitle}</Text>
@@ -253,9 +273,15 @@ export default function EventLocationScreen() {
           <Input label="Name" value={name} onChangeText={setName} placeholder="Business or place name" />
           <Input label="Address" value={address} onChangeText={setAddress} placeholder="Street address" />
           {mapUri ? (
-            <View style={styles.mapCard}>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={openInMaps}
+              style={styles.mapCard}
+              accessibilityRole="button"
+              accessibilityLabel="Open in Maps"
+            >
               <Image source={{ uri: mapUri }} style={styles.mapImage} />
-            </View>
+            </TouchableOpacity>
           ) : null}
         </>
       ) : (

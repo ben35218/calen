@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { TravelMode } from '../api';
 
 // Travel-time settings edited on the pushed EventTravelTime screen. The event
 // form and the pushed screen share this module-level draft (mirrors
@@ -8,6 +9,8 @@ import { useSyncExternalStore } from 'react';
 export interface TravelDraft {
   enabled: boolean;
   fromAddress: string;
+  // How the user is travelling — the mode the automatic time is computed for.
+  mode: TravelMode;
   // A manually chosen duration in minutes; null = automatic (computed from the
   // starting location to the event location).
   manualMinutes: number | null;

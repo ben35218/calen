@@ -4,9 +4,10 @@
 // + schedules. Only the resulting item names leave the device (to the AI
 // organize endpoint, with explicit consent, exactly as before).
 
-import { recipeScheduleApi, recipesApi, Recipe, RecipeSchedule, GroceryItem } from '../api';
+import { recipesApi, Recipe, GroceryItem } from '../api';
 import { openRecord } from './e2ee';
 import * as replica from './replica';
+import { loadSchedulesInRange } from './mealSchedule';
 import { aggregateGroceryList } from './groceryAggregate';
 
 export { aggregateGroceryList };
@@ -25,13 +26,7 @@ export async function loadGroceryList(
   end.setDate(end.getDate() + (frequency === 'biweekly' ? 13 : 6));
 
   const [schedules, recipes] = await Promise.all([
-    replica
-      .syncedList<RecipeSchedule>('RecipeSchedule', async () =>
-        (await recipeScheduleApi.list({ start: iso(start), end: iso(end) })).data)
-      .then((rows) => rows.filter((r) => {
-        const d = r.scheduledDate?.slice(0, 10);
-        return d && d >= iso(start) && d <= iso(end);
-      })),
+    loadSchedulesInRange(iso(start), iso(end)),
     replica
       .syncedList<Recipe>('Recipe', async () => (await recipesApi.list()).data)
       .then((rows) => Promise.all(rows.map((r) => openRecord('Recipe', r)))),

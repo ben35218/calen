@@ -111,7 +111,7 @@ export default function StepIngredientLinker({
       </TouchableOpacity>
       {showBrowse ? (
         <View style={styles.browseCard}>
-          <Input value={query} onChangeText={setQuery} placeholder="Search…" />
+          <Input value={query} onChangeText={setQuery} placeholder="Search…" autoCapitalize="none" autoCorrect={false} />
           {browseList.map((ing) => (
             <TouchableOpacity key={ing._lid} style={styles.browseRow} onPress={() => toggle(ing._lid)}>
               <Ionicons

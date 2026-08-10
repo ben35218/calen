@@ -7,7 +7,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { loadCalendarData } from '../../lib/calendarData';
 import { getHolidays } from '../../lib/holidays';
 import { useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
-import { eventColor, ymd } from '../../lib/calendar';
+import { eventColor, ymd, RECIPE_ICON } from '../../lib/calendar';
 import { mdiName } from '../../lib/recurrence';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { occasionTitle, occasionNoun, occasionIcon } from '../../lib/occasions';
@@ -62,7 +62,7 @@ export default function CalendarSearchScreen() {
     for (const r of data.recipes ?? []) {
       const title = typeof r.recipeId === 'object' ? r.recipeId?.title || 'Recipe' : 'Recipe';
       const rid = typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined);
-      out.push({ key: `r-${r._id ?? rid}-${r.scheduledDate}`, title, subtitle: 'Meal', color: calColors.recipes, icon: 'silverware-fork-knife', date: ld(r.scheduledDate), nav: () => (rid ? nav.navigate('RecipeDetail', { id: rid }) : nav.navigate('KitchenHome')) });
+      out.push({ key: `r-${r._id ?? rid}-${r.scheduledDate}`, title, subtitle: 'Meal', color: calColors.recipes, icon: RECIPE_ICON, date: ld(r.scheduledDate), nav: () => (rid ? nav.navigate('RecipeDetail', { id: rid }) : nav.navigate('KitchenHome')) });
     }
     for (const t of data.trips ?? []) {
       const start = t.ranges?.[0]?.start;
@@ -99,6 +99,7 @@ export default function CalendarSearchScreen() {
           value={query}
           onChangeText={setQuery}
           autoFocus
+          autoCapitalize="none"
           autoCorrect={false}
           returnKeyType="search"
         />

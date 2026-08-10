@@ -27,12 +27,29 @@ export const EVENT_ENC = (p: Rec) => ({
   location: p.location, placeId: p.placeId, url: p.url, phone: p.phone,
   startDate: p.startDate, endDate: p.endDate, allDay: p.allDay,
   travelMinutes: p.travelMinutes, travelDistanceKm: p.travelDistanceKm,
+  // The transportation method the travel time was computed for (DRIVE when
+  // absent — every pre-mode record was a drive time).
+  travelMode: p.travelMode,
   reminderMinutes: p.reminderMinutes, alert2Minutes: p.alert2Minutes,
+  // Whether each alert's lead time counts back from the start or from departure
+  // (lib/calendar). Content, so it rides inside the seal like the minutes do.
+  alertAnchor: p.alertAnchor, alert2Anchor: p.alert2Anchor,
   alertAudience: p.alertAudience, guestListVisible: p.guestListVisible,
   invitationId: p.invitationId, cancelled: p.cancelled, recurrence: p.recurrence,
+  // Household members (userIds) the creator asked to accept/decline. Their
+  // responses live in per-responder EventRsvp records, not on the event.
+  householdInvitees: p.householdInvitees,
   // YYYY-MM-DD occurrences removed from a recurring series ("Delete This Event
   // Only"); the shared engine skips them on expansion.
   exceptionDates: p.exceptionDates,
+});
+
+// A household member's accept/decline of an event they were invited to
+// (householdInvitees). One record per responder per event — each has a single
+// writer, so concurrent responses never contend on the event record itself.
+// The responder's identity is the folded-in `author` (withAuthor, C4).
+export const EVENT_RSVP_ENC = (p: Rec) => ({
+  eventId: p.eventId, status: p.status, respondedAt: p.respondedAt,
 });
 
 // Multi-value labeled fields (phones/emails/addresses/dates/urls/relatedNames)

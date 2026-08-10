@@ -8,6 +8,8 @@ import { useViewerContent } from '../lib/viewerAccess';
 import UnlockPaywallScreen from '../screens/plan/UnlockPaywallScreen';
 import ViewerNavigator from './ViewerNavigator';
 import { useReminderScheduler } from '../hooks/useReminderScheduler';
+import { usePushNotifications } from '../hooks/usePushNotifications';
+import { useRecordSync } from '../hooks/useRecordSync';
 import { useAppLock } from '../hooks/useAppLock';
 import { useSelfPersonSeed } from '../hooks/useSelfPersonSeed';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
@@ -74,6 +76,16 @@ export default function RootNavigator() {
   // turned reminders off; refresh on foreground. Flipping the toggle off cancels
   // the pending schedule (the hook's cleanup path).
   useReminderScheduler(isLoggedIn && !bootstrapping && remindersEnabled);
+
+  // Remote push: register this device's token (sign-in + foreground) and route
+  // notification taps to the right screen (household event invites/replies,
+  // invitation alerts). See hooks/usePushNotifications.
+  usePushNotifications(navRef, isLoggedIn && !bootstrapping);
+
+  // Real-time calendar freshness (poke-and-pull): the record-change WebSocket
+  // while foregrounded + the silent-push background sync task. A housemate's
+  // write appears on this device without a manual refresh.
+  useRecordSync(isLoggedIn && !bootstrapping);
 
   // App lock (Signal-parity A4): relock the in-memory keys after the configured
   // background window; no-op while the pref is "never".

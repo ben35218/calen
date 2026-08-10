@@ -5,7 +5,8 @@ import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, invitationsApi, placesApi, eventAttachmentsApi, settingsApi, CalendarEvent, EventAttachment, FormAssistField } from '../../api';
+import { calendarApi, householdApi, invitationsApi, placesApi, eventAttachmentsApi, settingsApi, CalendarEvent, EventAttachment, FormAssistField, TravelMode } from '../../api';
+import { useAuth } from '../../store/auth';
 import { resolveCurrentAddressIfShared } from '../../lib/currentLocation';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
@@ -16,7 +17,7 @@ import {
   getQueuedAttachments, addQueuedAttachment, removeQueuedAttachment,
   clearQueuedAttachments, useQueuedAttachments,
 } from '../../lib/attachmentDraft';
-import { Button, Input, Select, Screen, SwitchRow, SegmentedControl, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, BottomSheet, Card, ListRow, InfoCard } from '../../components/ui';
+import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, Card, ListRow, InfoCard } from '../../components/ui';
 import FormAssist from '../../components/FormAssist';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
@@ -25,6 +26,8 @@ import {
   EVENT_CALENDAR_TYPES, ymd, eventWhenFromStored, eventStoredFromWhen, shouldAutoFocusTitle,
   shiftEventWhen, occurrenceShiftDays,
   ALL_DAY_ALERT_OFFSETS, DEFAULT_DAY_ALERT_TIME, allDayAlertLabel, alertsForAllDay,
+  AlertAnchor, LEAVE_ALERT_BUFFERS, effectiveAlertAnchor, inferAlertAnchor,
+  leaveAlertMinutes, promoteSecondAlert, rebaseLeaveAlert, timedAlertLabel,
 } from '../../lib/calendar';
 import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
@@ -34,27 +37,29 @@ import {
 } from '../../lib/e2ee';
 import { getFeedEventById, FEED_EVENT_ID_PREFIX } from '../../lib/calendarFeeds';
 import { formatDuration } from '../../lib/format';
-import { excludeUsedAlert } from '../../lib/recurrence';
 import { promptEventDelete } from '../../lib/eventDelete';
 import {
   promptSaveScope, saveScopeDecision, isFirstOccurrence, seriesStartDay,
   reanchorRecurrence, splitExceptionDates, shiftExceptionDates, exceptionShift,
   SaveScope,
 } from '../../lib/eventSave';
-import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from '../../components/WheelPicker';
+import CustomAlertSheet from '../../components/CustomAlertSheet';
 import {
   getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees,
   getDraftGuestListVisible, setDraftGuestListVisible,
+  getQueuedHouseholdInvitees, setQueuedHouseholdInvitees, useQueuedHouseholdInvitees,
 } from '../../lib/inviteeDraft';
-import { inviteeKey, sendInvitations } from '../../lib/invitees';
+import { inviteeKey, sendInvitations, formatWhen } from '../../lib/invitees';
+import { notifyHouseholdInvitees, rsvpsForEvent } from '../../lib/householdRsvp';
 import { useEmailComposer } from '../../components/EmailAppSheet';
 import { useTravelDraft, clearTravelDraft } from '../../lib/travelDraft';
+import { normalizeTravelMode, travelModeLabel } from '../../lib/travelModes';
 import { RepeatRule, WeekdayKind, isCustomRule, repeatSummary } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { useLocationDraft, clearLocationDraft } from '../../lib/locationDraft';
 import { rebindDetailBelow } from '../../navigation/rebindDetailBelow';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
-import { colors, spacing, radius } from '../../theme';
+import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'EventForm'>;
 type Rt = RouteProp<CalendarStackParamList, 'EventForm'>;
@@ -71,8 +76,27 @@ const ALERT_OPTIONS = [
   { label: '1 day before', value: 1440 },
 ];
 
-// Sentinel picker value: opens the custom dual-wheel sheet instead of setting a time.
-const CUSTOM_ALERT = -2;
+// The alert Selects are keyed by "<anchor>:<minutes>", not by the minute count:
+// the same number means two different settings depending on its anchor (with a
+// 45-minute drive, 60 minutes before the event and 15 minutes before leaving are
+// both "60"), and they diverge the moment the drive time changes. Two sentinel
+// keys sit alongside: no alert, and the row that opens the custom sheet.
+const NONE_ALERT = 'none';
+const CUSTOM_ALERT = 'custom';
+
+type AlertItem = { value: string; label: string; minutes: number | null; anchor: AlertAnchor };
+
+const alertKey = (minutes: number | null, anchor: AlertAnchor): string =>
+  minutes == null ? NONE_ALERT : `${anchor === 'leave' ? 'l' : 'e'}:${minutes}`;
+
+// The other slot's alert, dropped from this slot's list — two alerts on the same
+// instant would just fire the same notification twice. Sentinels and the slot's
+// own current selection always stay (mirrors `excludeUsedAlert`, by minutes
+// rather than by key, so the two framings of one instant can't both be picked).
+function excludeUsedAlertKey(options: AlertItem[], used: number | null, self: number | null): AlertItem[] {
+  if (used == null) return options;
+  return options.filter((o) => o.minutes == null || o.minutes === self || o.minutes !== used);
+}
 
 // Leading glyph for an attachment row, by broad file kind.
 function attachmentIcon(fileType?: string): keyof typeof Ionicons.glyphMap {
@@ -95,102 +119,6 @@ function addMinutesToTime(time: string, minutes: number): string {
   const [h, m] = time.split(':').map(Number);
   const total = h * 60 + m + minutes;
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-}
-
-// Custom-alert unit: a string key so it drives the SegmentedControl directly.
-type AlertUnit = 'min' | 'hr' | 'day';
-const UNIT_MINUTES: Record<AlertUnit, number> = { min: 1, hr: 60, day: 1440 };
-// Word shown beside the amount wheel (the live "[30] minutes" spinner readout).
-const UNIT_LABEL: Record<AlertUnit, string> = { min: 'minutes', hr: 'hours', day: 'days' };
-// Amount wheel range per unit (iOS timer-style: finer units, shorter ranges).
-const AMOUNT_MAX: Record<AlertUnit, number> = { min: 59, hr: 23, day: 31 };
-const CUSTOM_UNITS: { label: string; value: AlertUnit }[] = [
-  { label: 'Minutes', value: 'min' },
-  { label: 'Hours', value: 'hr' },
-  { label: 'Days', value: 'day' },
-];
-
-// Decompose stored "minutes before the event" into the largest clean unit, to
-// seed the wheel from the field's current value. No usable value → 30 minutes.
-function decomposeAlert(minutes: number | null): { amount: number; unit: AlertUnit } {
-  if (!minutes || minutes <= 0) return { amount: 30, unit: 'min' };
-  const unit: AlertUnit = minutes % 1440 === 0 ? 'day' : minutes % 60 === 0 ? 'hr' : 'min';
-  return { amount: Math.min(minutes / UNIT_MINUTES[unit], AMOUNT_MAX[unit]), unit };
-}
-
-// The alert picker's "Custom…" choice. A single amount wheel + the unit word
-// beside it (the classic "[30] minutes" spinner readout), with the unit chosen
-// via a SegmentedControl below. This mirrors the Repeat screen's "Every" sheet —
-// one scroll wheel inside the modal, which scrolls reliably; the earlier
-// two-adjacent-wheels layout did not. The unit has only 3 values, so a tap
-// control is both more robust and more discoverable than a second wheel.
-// Done emits plain "minutes before the event".
-//
-// `dayOnly` is the all-day event's sheet: minutes and hours would be counting
-// back from a start time the event doesn't have, so the unit is fixed to days
-// and the control that offers the other two is not rendered at all.
-function CustomAlertSheet({
-  visible,
-  initialMinutes,
-  dayOnly,
-  onSave,
-  onClose,
-}: {
-  visible: boolean;
-  initialMinutes: number | null;
-  dayOnly?: boolean;
-  onSave: (minutes: number) => void;
-  onClose: () => void;
-}) {
-  const [amount, setAmount] = useState(30);
-  const [unit, setUnit] = useState<AlertUnit>('min');
-
-  // Reseed from the field's current value each time the sheet opens.
-  useEffect(() => {
-    if (!visible) return;
-    if (dayOnly) {
-      const days = Math.round((initialMinutes ?? UNIT_MINUTES.day) / UNIT_MINUTES.day);
-      setAmount(Math.min(Math.max(days, 1), AMOUNT_MAX.day));
-      setUnit('day');
-      return;
-    }
-    const d = decomposeAlert(initialMinutes);
-    setAmount(d.amount);
-    setUnit(d.unit);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
-
-  // Switching to a coarser unit can leave the amount past its wheel's range.
-  const pickUnit = (u: AlertUnit) => {
-    setUnit(u);
-    setAmount((a) => Math.min(a, AMOUNT_MAX[u]));
-  };
-
-  return (
-    <BottomSheet visible={visible} onClose={onClose} style={styles.alertSheet}>
-      <View style={styles.wheelRow}>
-        {/* Selection band sits behind the centered row, like the native spinner's. */}
-        <View pointerEvents="none" style={styles.wheelBand} />
-        <WheelPicker
-          // Remount per open (fresh position) and per unit (clamped range).
-          key={`amount-${String(visible)}-${unit}`}
-          width={96}
-          items={Array.from({ length: AMOUNT_MAX[unit] }, (_, i) => ({ label: String(i + 1), value: i + 1 }))}
-          value={amount}
-          onChange={setAmount}
-        />
-        <Text style={styles.wheelUnit}>{UNIT_LABEL[unit]}</Text>
-      </View>
-      {dayOnly ? null : <SegmentedControl<AlertUnit> value={unit} options={CUSTOM_UNITS} onChange={pickUnit} />}
-      <Button
-        title="Done"
-        onPress={() => {
-          onSave(amount * UNIT_MINUTES[unit]);
-          onClose();
-        }}
-      />
-    </BottomSheet>
-  );
 }
 
 // "a@x.com, b@y.com +2 more" — the Invitees card's one-line preview.
@@ -270,6 +198,11 @@ export default function EventFormScreen() {
   // mail app — the sheet must live on THIS screen since the Invitees screen is
   // already closed by then.
   const { composeEmail, emailSheet } = useEmailComposer();
+  // Sender name for household invite/response pushes (client-chosen strings —
+  // the server relay can't read the sealed event).
+  const { user } = useAuth();
+  const myDisplayName =
+    [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'A housemate';
 
   const [form, setForm] = useState({
     title: '',
@@ -289,10 +222,16 @@ export default function EventFormScreen() {
     // = the user picked a fixed duration there (no auto recompute).
     travelEnabled: false,
     travelManual: false,
+    travelMode: 'DRIVE' as TravelMode,
     travelMinutes: null as number | null,
     travelDistanceKm: null as string | null,
+    // Alerts are stored as minutes before the EVENT; the anchor beside each one
+    // records whether the user set that lead time against the event's start or
+    // against departure ("30 min before leaving"). See lib/calendar.
     reminderMinutes: null as number | null,
+    alertAnchor: 'event' as AlertAnchor,
     alert2Minutes: null as number | null,
+    alert2Anchor: 'event' as AlertAnchor,
     recurrFreq: '',
     recurrInterval: 1,
     recurrDaysOfWeek: [] as number[],
@@ -312,7 +251,7 @@ export default function EventFormScreen() {
   // below skips while the live values still match this snapshot, so merely
   // opening an event never rewrites its saved travel time — only a user edit to
   // the location or starting point does. Null for new events (no baseline).
-  const travelSeedRef = useRef<{ location: string; fromAddress: string } | null>(null);
+  const travelSeedRef = useRef<{ location: string; fromAddress: string; mode: TravelMode } | null>(null);
   // The decrypted event this form is editing. Sealed fields the form doesn't
   // surface (exceptionDates) must be read back from here and re-sent on save —
   // `sealUpdate` seals the payload wholesale, so anything missing from it is
@@ -519,11 +458,16 @@ export default function EventFormScreen() {
       next.endTime = defaultEnd;
     }
 
+    // A lead time the assistant set is plain minutes before the event — the
+    // departure framing only comes from the leave-time intent below.
+    if ('reminderMinutes' in next) next.alertAnchor = 'event';
+
     // A leave-time alert takes precedence over any fixed reminder. Apply it now
     // if the drive time is already known; otherwise defer until it computes.
     if (wantsLeaveAlert) {
       if (form.travelMinutes && !form.allDay) {
         next.reminderMinutes = form.travelMinutes;
+        next.alertAnchor = 'leave';
         if (!changedKeys.includes('reminderMinutes')) changedKeys.push('reminderMinutes');
         setPendingLeaveAlert(false);
       } else {
@@ -545,9 +489,18 @@ export default function EventFormScreen() {
       const snapped = alertsForAllDay(true, merged);
       if (snapped.reminderMinutes !== merged.reminderMinutes) next.reminderMinutes = snapped.reminderMinutes;
       if (snapped.alert2Minutes !== merged.alert2Minutes) next.alert2Minutes = snapped.alert2Minutes;
+      // No start time, so no departure to anchor to (see the All day switch).
+      next.alertAnchor = 'event';
+      next.alert2Anchor = 'event';
     }
 
-    setForm((f) => ({ ...f, ...next }));
+    // However the first alert ends up cleared — the assistant setting it to None
+    // included — the second one moves up rather than staying set behind a hidden
+    // row (same rule as the Alert picker).
+    setForm((f) => {
+      const merged = { ...f, ...next };
+      return { ...merged, ...promoteSecondAlert(merged) };
+    });
     assist.mark(noHighlight ? changedKeys.filter((k) => !noHighlight.includes(k)) : changedKeys);
   };
 
@@ -605,39 +558,48 @@ export default function EventFormScreen() {
     }));
   }, [hasDestination, form.travelEnabled]);
 
-  // Compute traffic-aware drive time from the origin to the event location.
+  // Compute travel time from the origin to the event location for the chosen
+  // mode (traffic-aware for driving; schedule-aware for transit, which is why
+  // the event's start rides along as the departure anchor).
   const fetchTravelTime = async () => {
     const destination = form.location?.trim();
     const origin = form.fromAddress?.trim();
     if (!destination) return;
+    // Transit estimates depend on when you're going — anchor them to the
+    // event's start (its local wall clock) rather than "now".
+    const departureTime =
+      !form.allDay && form.date && form.startTime
+        ? new Date(`${form.date}T${form.startTime}:00`).toISOString()
+        : undefined;
     setForm((f) => ({ ...f, travelMinutes: null, travelDistanceKm: null }));
     setTravelError('');
     setTravelLoading(true);
     try {
-      const { data } = await placesApi.getTravelTime(destination, origin);
+      const { data } = await placesApi.getTravelTime(destination, origin, form.travelMode, departureTime);
       const d = data as { minutes?: number; distanceKm?: string };
       setForm((f) => ({ ...f, travelMinutes: d.minutes ?? null, travelDistanceKm: d.distanceKm ?? null }));
     } catch (e: any) {
-      setTravelError(e.response?.data?.error || "Couldn't calculate drive time");
+      setTravelError(e.response?.data?.error || "Couldn't calculate travel time");
     } finally {
       setTravelLoading(false);
     }
   };
 
-  // Recompute (debounced) whenever the location or starting point changes —
-  // only while travel time is enabled and not set to a manual duration.
+  // Recompute (debounced) whenever the location, starting point or mode
+  // changes — only while travel time is enabled and not set to a manual
+  // duration.
   useEffect(() => {
     if (!form.travelEnabled || form.travelManual) return;
     if (!form.location.trim()) return;
     // Editing: never auto-change travel time just from opening the event. The
     // seed populates location (and leaves origin blank), which would otherwise
     // trigger a recompute that overwrites the saved minutes. Only recompute once
-    // the user actually changes the destination or starting point.
+    // the user actually changes the destination, starting point or mode.
     const seed = travelSeedRef.current;
-    if (seed && seed.location === form.location && seed.fromAddress === form.fromAddress) return;
+    if (seed && seed.location === form.location && seed.fromAddress === form.fromAddress && seed.mode === form.travelMode) return;
     const t = setTimeout(fetchTravelTime, 700);
     return () => clearTimeout(t);
-  }, [form.location, form.fromAddress, form.travelEnabled, form.travelManual]);
+  }, [form.location, form.fromAddress, form.travelMode, form.travelEnabled, form.travelManual]);
 
   // Apply edits made on the pushed Travel Time screen as they happen.
   const travelDraft = useTravelDraft();
@@ -647,6 +609,7 @@ export default function EventFormScreen() {
       ...f,
       travelEnabled: travelDraft.enabled,
       fromAddress: travelDraft.fromAddress,
+      travelMode: travelDraft.mode,
       travelManual: travelDraft.manualMinutes != null,
       travelMinutes: !travelDraft.enabled ? null : travelDraft.manualMinutes ?? f.travelMinutes,
       travelDistanceKm: travelDraft.enabled && travelDraft.manualMinutes == null ? f.travelDistanceKm : null,
@@ -692,7 +655,7 @@ export default function EventFormScreen() {
   // known; apply it as soon as travel time computes (on a timed event).
   useEffect(() => {
     if (!pendingLeaveAlert || form.allDay || !form.travelMinutes) return;
-    setForm((f) => ({ ...f, reminderMinutes: f.travelMinutes }));
+    setForm((f) => ({ ...f, reminderMinutes: f.travelMinutes, alertAnchor: 'leave' }));
     assist.add(['reminderMinutes']);
     setPendingLeaveAlert(false);
   }, [pendingLeaveAlert, form.travelMinutes, form.allDay]);
@@ -710,6 +673,32 @@ export default function EventFormScreen() {
     return `${lh % 12 || 12}:${String(lm).padStart(2, '0')} ${ampm}`;
   }, [form.travelMinutes, form.allDay, form.startTime]);
 
+  // The anchor each slot can actually honour right now — a departure anchor
+  // survives only while the event is timed and its drive time is known.
+  const alertAnchor = effectiveAlertAnchor(form.alertAnchor, form.allDay, form.travelMinutes);
+  const alert2Anchor = effectiveAlertAnchor(form.alert2Anchor, form.allDay, form.travelMinutes);
+
+  // A departure-anchored alert holds its distance from DEPARTURE, so a changed
+  // drive time moves it: "30 min before leaving" must still be 30 minutes before
+  // the new departure, not 30 before the old one. Losing the drive time entirely
+  // (travel time switched off, or the destination cleared) leaves the stored
+  // lead time alone but drops the departure framing with it — there is no
+  // departure left to describe.
+  const prevTravelRef = useRef<number | null>(form.travelMinutes);
+  useEffect(() => {
+    const prev = prevTravelRef.current;
+    const next = form.travelMinutes;
+    prevTravelRef.current = next;
+    if (prev === next) return;
+    setForm((f) => ({
+      ...f,
+      reminderMinutes: rebaseLeaveAlert(f.reminderMinutes, f.alertAnchor, prev, next),
+      alert2Minutes: rebaseLeaveAlert(f.alert2Minutes, f.alert2Anchor, prev, next),
+      alertAnchor: next ? f.alertAnchor : 'event',
+      alert2Anchor: next ? f.alert2Anchor : 'event',
+    }));
+  }, [form.travelMinutes]);
+
   // Alert options.
   //
   // An ALL-DAY event has no start time, so minute offsets have nothing to count
@@ -720,55 +709,66 @@ export default function EventFormScreen() {
   // already all-day-gated.
   //
   // On a TIMED event, when a drive time is available, prepend a set of
-  // departure-relative choices so the user can be alerted when it's time to
-  // leave — or a chosen number of minutes before that. `reminderMinutes` is
-  // stored as "minutes before the event", so leaving early = travelMinutes + buffer.
-  const alertItems = useMemo(() => {
+  // departure-anchored choices so the user can be alerted when it's time to
+  // leave — or a chosen number of minutes before that. Every row carries the
+  // anchor it was built with, so picking one records the framing the user chose
+  // instead of leaving it to be guessed back out of the number later.
+  const alertItems = useMemo<AlertItem[]>(() => {
+    const none: AlertItem = { value: NONE_ALERT, label: 'None', minutes: null, anchor: 'event' };
+    const custom: AlertItem = { value: CUSTOM_ALERT, label: 'Custom…', minutes: null, anchor: 'event' };
     if (form.allDay) {
-      const items = [
-        { label: 'None', value: -1 },
-        ...ALL_DAY_ALERT_OFFSETS.map((v) => ({ value: v, label: allDayAlertLabel(v, dayAlertTime) })),
+      const items: AlertItem[] = [
+        none,
+        ...ALL_DAY_ALERT_OFFSETS.map((v) => ({
+          value: alertKey(v, 'event'), label: allDayAlertLabel(v, dayAlertTime), minutes: v, anchor: 'event' as AlertAnchor,
+        })),
       ];
       // A saved value off the grid — a custom day count, or a minute offset
       // carried by an event saved before all-day alerts became day-based —
       // still needs a row, or the field would fall back to its placeholder.
       for (const v of [form.reminderMinutes, form.alert2Minutes]) {
-        if (v == null || items.some((i) => i.value === v)) continue;
-        items.push({ value: v, label: allDayAlertLabel(v, dayAlertTime) });
+        if (v == null || items.some((i) => i.minutes === v)) continue;
+        items.push({ value: alertKey(v, 'event'), label: allDayAlertLabel(v, dayAlertTime), minutes: v, anchor: 'event' });
       }
-      items.push({ label: 'Custom…', value: CUSTOM_ALERT });
+      items.push(custom);
       return items;
     }
-    const leaveItems: { value: number; label: string }[] = [];
-    if (form.travelMinutes && !form.allDay) {
-      const buffers = [0, 5, 10, 15, 30]; // minutes before departure
-      for (const buf of buffers) {
+    const travel = form.travelMinutes;
+    const leaveItems: AlertItem[] = [];
+    if (travel) {
+      for (const buf of LEAVE_ALERT_BUFFERS) {
         // No computable departure time (e.g. no start time yet) — omit "Time to leave".
         if (buf === 0 && !leaveByTime) continue;
-        const label = buf === 0 ? `Time to leave (${leaveByTime})` : `${buf} min before leaving`;
-        leaveItems.push({ value: form.travelMinutes + buf, label });
+        const minutes = leaveAlertMinutes(buf, travel);
+        leaveItems.push({
+          value: alertKey(minutes, 'leave'),
+          label: timedAlertLabel(minutes, 'leave', travel, leaveByTime),
+          minutes,
+          anchor: 'leave',
+        });
       }
     }
-    // Dedupe by value (a leave option may collide with a base "X min before").
-    const used = new Set(leaveItems.map((i) => i.value));
-    const base = ALERT_OPTIONS.filter((o) => !used.has(o.value));
-    // "None" stays first; departure-relative options follow it so they're
+    const base: AlertItem[] = ALERT_OPTIONS.filter((o) => o.value >= 0).map((o) => ({
+      value: alertKey(o.value, 'event'), label: o.label, minutes: o.value, anchor: 'event',
+    }));
+    // "None" stays first; departure-anchored options follow it so they're
     // visible without scrolling (the option modal caps at 70% screen height).
-    const items = [base[0], ...leaveItems, ...base.slice(1)];
-    // A saved custom value has no canned option — synthesize a label for it so
-    // the field doesn't show the placeholder. When a drive time is known and
-    // the value reaches past it, describe it relative to departure instead.
-    for (const v of [form.reminderMinutes, form.alert2Minutes]) {
-      if (v == null || v <= 0 || items.some((i) => i.value === v)) continue;
-      const label =
-        form.travelMinutes && !form.allDay && v >= form.travelMinutes
-          ? `${formatDuration(v - form.travelMinutes)} before leaving`
-          : `${formatDuration(v)} before`;
-      items.push({ value: v, label });
+    const items: AlertItem[] = [none, ...leaveItems, ...base];
+    // A saved custom value has no canned row — synthesize one in its own
+    // framing, so the field shows the setting back rather than its placeholder.
+    for (const [v, anchor] of [
+      [form.reminderMinutes, alertAnchor],
+      [form.alert2Minutes, alert2Anchor],
+    ] as const) {
+      if (v == null || items.some((i) => i.value === alertKey(v, anchor))) continue;
+      items.push({ value: alertKey(v, anchor), label: timedAlertLabel(v, anchor, travel, leaveByTime), minutes: v, anchor });
     }
-    items.push({ label: 'Custom…', value: CUSTOM_ALERT });
+    items.push(custom);
     return items;
-  }, [form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes, dayAlertTime]);
+  }, [
+    form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes,
+    alertAnchor, alert2Anchor, dayAlertTime,
+  ]);
 
   // Repeat options + the select's value. A custom rule ("every 2 weeks on
   // Monday") selects the Custom row and labels it with the rule's summary.
@@ -844,10 +844,22 @@ export default function EventFormScreen() {
         // Auto-computed times always store a distance; a bare minutes value
         // means a manually picked duration.
         travelManual: e.travelMinutes != null && e.travelDistanceKm == null,
+        // Pre-mode records were always drive times.
+        travelMode: normalizeTravelMode(e.travelMode),
         travelMinutes: e.travelMinutes ?? null,
         travelDistanceKm: e.travelDistanceKm ?? null,
-        reminderMinutes: e.reminderMinutes ?? null,
-        alert2Minutes: e.alert2Minutes ?? null,
+        // Events saved before the anchor was recorded carry only a number, so
+        // read the framing back the way that event has always displayed: the
+        // canned departure rows keep their "before leaving" wording, everything
+        // else is what it literally says — minutes before the event. A record
+        // holding only a SECOND alert (written before the promotion rule) opens
+        // with it in the first slot rather than with an invisible alert set.
+        ...promoteSecondAlert({
+          reminderMinutes: e.reminderMinutes ?? null,
+          alert2Minutes: e.alert2Minutes ?? null,
+          alertAnchor: e.alertAnchor ?? inferAlertAnchor(e.reminderMinutes, e.allDay, e.travelMinutes),
+          alert2Anchor: e.alert2Anchor ?? inferAlertAnchor(e.alert2Minutes, e.allDay, e.travelMinutes),
+        }),
         recurrFreq: e.recurrence?.freq ?? '',
         recurrInterval: e.recurrence?.interval ?? 1,
         recurrDaysOfWeek: e.recurrence?.daysOfWeek ?? [],
@@ -864,10 +876,14 @@ export default function EventFormScreen() {
       // Remember what travel loaded with so the recompute effect can tell an
       // untouched open (skip) from a real user edit (recompute). Origin isn't
       // seeded onto the form, so it starts blank.
-      travelSeedRef.current = { location: e.location ?? '', fromAddress: '' };
+      travelSeedRef.current = { location: e.location ?? '', fromAddress: '', mode: normalizeTravelMode(e.travelMode) };
       // Seed the Invitees screen's guest-list switch (missing on events that
       // predate the setting — treated as visible).
       setDraftGuestListVisible(e.guestListVisible !== false);
+      // Same seed-through for the household invitee list: a whole-payload
+      // re-save re-seals it from the draft store, so seeding here is what keeps
+      // an edit from wiping it out of `enc`.
+      setQueuedHouseholdInvitees(e.householdInvitees ?? []);
       // The form now mirrors the saved event — let the guard snapshot it as the
       // clean baseline (any later edit registers as unsaved).
       setSeeded(true);
@@ -909,6 +925,9 @@ export default function EventFormScreen() {
   // looking at, which is where a detached override or a forked series begins.
   const buildPayload = (frame: 'occurrence' | 'series'): Record<string, unknown> => {
     const { startDate, endDate } = buildStartEnd(frame);
+    // The drive time the saved event will actually carry — what the alert
+    // anchors below are judged against.
+    const travelForSave = form.travelEnabled ? form.travelMinutes : null;
     return {
       title: form.title.trim(),
       calendarType: form.calendarType,
@@ -924,13 +943,21 @@ export default function EventFormScreen() {
       // values on update — the route skips undefined fields.
       travelMinutes: form.travelEnabled ? form.travelMinutes ?? null : null,
       travelDistanceKm: form.travelEnabled ? form.travelDistanceKm ?? null : null,
+      travelMode: form.travelEnabled ? form.travelMode : null,
       // Sealed event content (C3b) set on the Invitees screen; the draft store
       // is seeded from the fetched event on edit, so re-sealing here preserves
       // the current value instead of wiping it from `enc`.
       guestListVisible: getDraftGuestListVisible(),
+      // Household members asked to accept/decline — same draft-store doctrine.
+      householdInvitees: getQueuedHouseholdInvitees().length ? getQueuedHouseholdInvitees() : undefined,
       reminderMinutes: form.reminderMinutes ?? undefined,
       alert2Minutes:
         form.reminderMinutes !== null && form.alert2Minutes !== null ? form.alert2Minutes : undefined,
+      // Which instant each lead time was set against (see lib/calendar). Sent as
+      // the anchor the event can still honour, so an alert that was departure-
+      // anchored before the event went all-day is stored as what it now is.
+      alertAnchor: effectiveAlertAnchor(form.alertAnchor, form.allDay, travelForSave),
+      alert2Anchor: effectiveAlertAnchor(form.alert2Anchor, form.allDay, travelForSave),
       recurrence: form.recurrFreq
         ? {
             freq: form.recurrFreq,
@@ -1077,10 +1104,20 @@ export default function EventFormScreen() {
       // in turn (send failures are dropped — the form is already closing).
       if (!isEdit) {
         const queued = getQueuedInvitees();
+        // Household members picked on the Invitees screen get their instant
+        // "accept or decline?" push now that the event exists. Best-effort —
+        // the durable channel is their Invitations inbox (synced records).
+        const queuedHousehold = getQueuedHouseholdInvitees();
+        if (queuedHousehold.length) {
+          notifyHouseholdInvitees(
+            res.data._id, queuedHousehold, 'Event invitation',
+            `${myDisplayName} invited you to “${form.title.trim()}” — accept or decline`,
+          ).catch(() => {});
+        }
         if (queued.length) {
           await sendInvitations(res.data._id, queued, buildSnapshot(), getDraftGuestListVisible(), composeEmail);
-          clearQueuedInvitees();
         }
+        if (queued.length || queuedHousehold.length) clearQueuedInvitees();
         // Attachments picked on the draft form upload now that the event exists.
         // A failed upload doesn't block the save the user just confirmed, but we
         // no longer swallow it silently — the user is told which files didn't
@@ -1105,6 +1142,29 @@ export default function EventFormScreen() {
           'Attachments didn’t copy',
           'The event was saved, but its attachments stayed on the original event. Open it to re-attach them.',
         );
+      }
+      // Edit-renotify: a date/time change on an event with household invitees
+      // re-pushes an update to everyone who hasn't declined. RSVPs are kept —
+      // an edit does not reset responses. In-place rewrites only: an occurrence
+      // override / series fork writes a NEW record, whose RSVPs start fresh.
+      if (isEdit && res.data?._id === eventId) {
+        const before = decryptedRef.current;
+        const hhIds = getQueuedHouseholdInvitees();
+        const snap = buildSnapshot();
+        const whenChanged =
+          !!before &&
+          (String(before.startDate) !== String(snap.startDate) ||
+            String(before.endDate ?? '') !== String(snap.endDate ?? '') ||
+            !!before.allDay !== !!snap.allDay);
+        if (hhIds.length && whenChanged) {
+          rsvpsForEvent(eventId!)
+            .then((rsvps) => {
+              const to = hhIds.filter((id) => rsvps[id]?.status !== 'declined');
+              if (!to.length) return;
+              return notifyHouseholdInvitees(eventId!, to, `“${snap.title}” changed`, `Now ${formatWhen(snap)}`);
+            })
+            .catch(() => {});
+        }
       }
       qc.invalidateQueries({ queryKey: ['calendar'] });
       allowLeave();
@@ -1266,6 +1326,20 @@ export default function EventFormScreen() {
   const inviteeEmails = isEdit
     ? (inviteesQ.data ?? []).map((i) => i.toEmail ?? i.toPhone ?? '')
     : queuedInvitees.map(inviteeKey);
+
+  // Household invitees join the row's count/preview by name. The draft store is
+  // live for drafts AND seeded/updated on edit, so one source covers both.
+  const queuedHouseholdIds = useQueuedHouseholdInvitees();
+  const householdQ = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await householdApi.get()).data,
+    enabled: queuedHouseholdIds.length > 0,
+  });
+  const householdInviteeNames = queuedHouseholdIds.map((id) => {
+    const m = householdQ.data?.members?.find((x) => x._id === id);
+    return m ? [m.firstName, m.lastName].filter(Boolean).join(' ').trim() || m.email || 'Member' : '…';
+  });
+  const allInviteeLabels = [...householdInviteeNames, ...inviteeEmails];
 
   // Guest leaves the event: their copy is deleted and the invitation retired.
   const leave = useMutation({
@@ -1512,6 +1586,9 @@ export default function EventFormScreen() {
                   reminderMinutes: form.reminderMinutes,
                   alert2Minutes: form.alert2Minutes,
                 }),
+                // An all-day event has no departure to count back from, so the
+                // re-based alerts land plainly before the day itself.
+                ...(v ? { alertAnchor: 'event' as AlertAnchor, alert2Anchor: 'event' as AlertAnchor } : {}),
               })
             }
             color={accent}
@@ -1581,6 +1658,7 @@ export default function EventFormScreen() {
             navigation.navigate('EventTravelTime', {
               enabled: form.travelEnabled,
               fromAddress: form.fromAddress,
+              mode: form.travelMode,
               manualMinutes: form.travelManual ? form.travelMinutes : null,
             })
           }
@@ -1593,7 +1671,7 @@ export default function EventFormScreen() {
               {!form.travelEnabled
                 ? 'None'
                 : form.travelMinutes
-                  ? `${formatDuration(form.travelMinutes)}${leaveByTime ? ` · Leave by ${leaveByTime}` : ''}`
+                  ? `${formatDuration(form.travelMinutes)}${!form.travelManual && form.travelMode !== 'DRIVE' ? ` · ${travelModeLabel(form.travelMode)}` : ''}${leaveByTime ? ` · Leave by ${leaveByTime}` : ''}`
                   : 'On'}
             </Text>
           )}
@@ -1676,8 +1754,8 @@ export default function EventFormScreen() {
           }
         >
           <Text style={formStyles.dtLabel}>Invitees</Text>
-          <Text style={[formStyles.groupValue, !inviteeEmails.length && formStyles.groupValueMuted]} numberOfLines={1}>
-            {inviteeEmails.length ? `${inviteeEmails.length} invited · ${inviteePreview(inviteeEmails)}` : 'None'}
+          <Text style={[formStyles.groupValue, !allInviteeLabels.length && formStyles.groupValueMuted]} numberOfLines={1}>
+            {allInviteeLabels.length ? `${allInviteeLabels.length} invited · ${inviteePreview(allInviteeLabels)}` : 'None'}
           </Text>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} style={formStyles.rowChevron} />
         </TouchableOpacity>
@@ -1690,12 +1768,22 @@ export default function EventFormScreen() {
       <View style={formStyles.groupCard}>
         <Select
           inlineLabel="Alert"
-          value={form.reminderMinutes ?? undefined}
-          options={excludeUsedAlert(alertItems, form.alert2Minutes, form.reminderMinutes)}
+          value={alertKey(form.reminderMinutes, alertAnchor)}
+          options={excludeUsedAlertKey(alertItems, form.alert2Minutes, form.reminderMinutes)}
           placeholder="None"
           onChange={(v) => {
             if (v === CUSTOM_ALERT) setCustomFor('reminderMinutes');
-            else set({ reminderMinutes: v === -1 ? null : (v as number) });
+            else {
+              const opt = alertItems.find((i) => i.value === v);
+              // Clearing this one hands the slot to the second alert, which the
+              // form would otherwise hide while leaving it set.
+              set(promoteSecondAlert({
+                reminderMinutes: opt?.minutes ?? null,
+                alertAnchor: opt?.anchor ?? 'event',
+                alert2Minutes: form.alert2Minutes,
+                alert2Anchor: form.alert2Anchor,
+              }));
+            }
           }}
           highlight={assist.changed.has('reminderMinutes')}
           containerStyle={formStyles.dtFieldWrap}
@@ -1708,12 +1796,15 @@ export default function EventFormScreen() {
             <View style={formStyles.cardDivider} />
             <Select
               inlineLabel="Second Alert"
-              value={form.alert2Minutes ?? undefined}
-              options={excludeUsedAlert(alertItems, form.reminderMinutes, form.alert2Minutes)}
+              value={alertKey(form.alert2Minutes, alert2Anchor)}
+              options={excludeUsedAlertKey(alertItems, form.reminderMinutes, form.alert2Minutes)}
               placeholder="None"
               onChange={(v) => {
                 if (v === CUSTOM_ALERT) setCustomFor('alert2Minutes');
-                else set({ alert2Minutes: v === -1 ? null : (v as number) });
+                else {
+                  const opt = alertItems.find((i) => i.value === v);
+                  set({ alert2Minutes: opt?.minutes ?? null, alert2Anchor: opt?.anchor ?? 'event' });
+                }
               }}
               containerStyle={formStyles.dtFieldWrap}
               fieldStyle={formStyles.rowField}
@@ -1727,9 +1818,16 @@ export default function EventFormScreen() {
       <CustomAlertSheet
         visible={customFor !== null}
         dayOnly={form.allDay}
+        travelMinutes={form.travelMinutes}
         initialMinutes={customFor ? form[customFor] : null}
-        onSave={(minutes) => {
-          if (customFor) set({ [customFor]: minutes } as Partial<typeof form>);
+        initialAnchor={customFor === 'alert2Minutes' ? alert2Anchor : alertAnchor}
+        onSave={(minutes, anchor) => {
+          if (!customFor) return;
+          set(
+            customFor === 'alert2Minutes'
+              ? { alert2Minutes: minutes, alert2Anchor: anchor }
+              : { reminderMinutes: minutes, alertAnchor: anchor },
+          );
         }}
         onClose={() => setCustomFor(null)}
       />
@@ -1851,17 +1949,4 @@ const styles = StyleSheet.create({
   attMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md },
   attName: { flex: 1, fontSize: 16, color: colors.text },
   attRemove: { padding: spacing.sm },
-  // Custom alert dual wheel content inside the shared BottomSheet.
-  alertSheet: { gap: spacing.sm },
-  wheelRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: spacing.md, height: WHEEL_ITEM_H * WHEEL_VISIBLE,
-  },
-  wheelBand: {
-    position: 'absolute', left: 0, right: 0,
-    top: ((WHEEL_VISIBLE - 1) / 2) * WHEEL_ITEM_H, height: WHEEL_ITEM_H,
-    borderRadius: radius.sm, backgroundColor: colors.border + '55',
-  },
-  // The unit word beside the amount wheel ("30 minutes").
-  wheelUnit: { fontSize: 23, color: colors.text },
 });

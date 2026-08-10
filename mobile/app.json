@@ -17,7 +17,8 @@
         "CFBundleDisplayName": "Calen",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
-          "fetch"
+          "fetch",
+          "remote-notification"
         ],
         "LSApplicationQueriesSchemes": [
           "message",

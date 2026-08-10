@@ -268,7 +268,12 @@ const IGNORED_FIELDS = ['nextDueDate', 'nextDueKm', 'lastCompletedAt', 'lastServ
 function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a == null && b == null) return true;
-  if (a == null || b == null) return false;
+  // A missing list and an empty one say the same thing — the rule builders
+  // emit `months: []` where records written by other paths omit the key.
+  if (a == null || b == null) {
+    const other = a ?? b;
+    return Array.isArray(other) && other.length === 0;
+  }
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     const sa = [...a].map(String).sort();
@@ -286,11 +291,26 @@ function sameValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
+// `skipDates` and `until` live INSIDE the sealed recurrence object (events keep
+// exceptionDates beside their rule, where IGNORED_FIELDS can reach it). The
+// Repeat screen edits neither, so a difference there is scoping bookkeeping,
+// never a user edit — without this, one skipped day made every later edit read
+// as a rule change and collapsed the sheet to "Save for Future" alone.
+function ruleOnly(rec: unknown): unknown {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return rec;
+  const { skipDates, until, ...rest } = rec as Rec;
+  return rest;
+}
+
 export function changedItemFields(original: Rec, payload: Rec): string[] {
   const ignored = new Set<string>(IGNORED_FIELDS);
   return Object.keys(payload)
     .filter((k) => !ignored.has(k))
-    .filter((k) => !sameValue(original[k], payload[k]));
+    .filter((k) =>
+      k === 'recurrence'
+        ? !sameValue(ruleOnly(original[k]), ruleOnly(payload[k]))
+        : !sameValue(original[k], payload[k]),
+    );
 }
 
 export type ItemScopeDecision =
@@ -302,12 +322,22 @@ export type ItemScopeDecision =
 // silent. It decides how the chosen scope is carried out (the forms resolve
 // "future"-from-the-first into a whole-series rewrite), never whether the user
 // is asked.
+//
+// `occurrenceDateMoved` is the form saying the user picked a different day for
+// the occurrence it is showing. The payload diff cannot see that edit on its
+// own: `nextDueDate` is in IGNORED_FIELDS because the due-date lifecycle
+// rewrites it whenever the repeat rule changes, so only the form can tell a
+// user-picked day from a rule-derived reseed. A moved date is an
+// occurrence-level change — "do the Aug 20 chore on Aug 22 instead" — and
+// offers both scopes, exactly as an event's date/time does.
 export function itemSaveScopeDecision(
   original: RepeatingItem,
   payload: Rec,
+  opts?: { occurrenceDateMoved?: boolean },
 ): ItemScopeDecision {
   if (!itemRepeats(original)) return { kind: 'none' };
   const changed = changedItemFields(original as unknown as Rec, payload);
+  if (opts?.occurrenceDateMoved) changed.push('nextDueDate');
   if (!changed.length) return { kind: 'none' };
   const seriesOnly = changed.some((f) => (SERIES_FIELDS as readonly string[]).includes(f));
   return seriesOnly ? { kind: 'futureOnly', changed } : { kind: 'both', changed };

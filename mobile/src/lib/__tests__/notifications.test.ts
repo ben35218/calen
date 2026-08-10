@@ -6,7 +6,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 jest.mock('../calendarData', () => ({ loadCalendarData: jest.fn() }));
 
 import type { CalendarData, CalendarOccasion } from '../../api';
-import { computeReminders, leadPhrase, dayLeadPhrase } from '../notifications';
+import { computeReminders, durationPhrase, timedEventBody, dayLeadPhrase } from '../notifications';
 
 // yyyy-mm-dd for `days` from local midnight today.
 function dayStr(days: number): string {
@@ -204,7 +204,7 @@ describe('computeReminders — all-day events', () => {
       new Set(), undefined, '09:00',
     );
     expect(reminders[0].at.getTime()).toBe(start.getTime() - 30 * 60000);
-    expect(reminders[0].body).toBe('30 minutes');
+    expect(reminders[0].body).toBe('Starts in 30 minutes');
   });
 
   it('is suppressed when the event\'s calendar is muted', () => {
@@ -272,20 +272,48 @@ describe('computeReminders — over real engine output', () => {
   });
 });
 
-// The notification title is already the item's name, so the body is the lead
-// time and nothing else — bare "15 minutes"/"Tomorrow", no verb phrase and no
-// record-kind label, both of which spent the line on words the banner already
-// implies.
+// A day-based reminder's body is the lead time and nothing else — bare
+// "Tomorrow"/"2 weeks", no verb phrase and no record-kind label, both of which
+// spent the line on words the banner already implies. A TIMED EVENT's body
+// names what that lead time is until, because the same number means two
+// different things depending on the alert's anchor.
 describe('reminder lead-time wording', () => {
-  it('phrases minute offsets up through days', () => {
-    expect(leadPhrase(0)).toBe('Now');
-    expect(leadPhrase(1)).toBe('1 minute');
-    expect(leadPhrase(15)).toBe('15 minutes');
-    expect(leadPhrase(60)).toBe('1 hour');
-    expect(leadPhrase(120)).toBe('2 hours');
-    expect(leadPhrase(1440)).toBe('Tomorrow');
-    expect(leadPhrase(2880)).toBe('2 days');
-    expect(leadPhrase(10080)).toBe('1 week');
+  it('spells an exact duration, never rounding and never using calendar words', () => {
+    expect(durationPhrase(1)).toBe('1 minute');
+    expect(durationPhrase(15)).toBe('15 minutes');
+    expect(durationPhrase(60)).toBe('1 hour');
+    expect(durationPhrase(120)).toBe('2 hours');
+    // The Custom sheet's minutes wheel reaches 180, so mixed values are real:
+    // the old rounding read this back as "2 hours".
+    expect(durationPhrase(90)).toBe('1 hour 30 minutes');
+    expect(durationPhrase(97)).toBe('1 hour 37 minutes');
+    expect(durationPhrase(1440)).toBe('1 day');   // NOT "Tomorrow"
+    expect(durationPhrase(2880)).toBe('2 days');
+    expect(durationPhrase(10080)).toBe('1 week');
+  });
+
+  it('names what a timed event\'s lead time counts down to', () => {
+    expect(timedEventBody(60, 'event')).toBe('Starts in 1 hour');
+    expect(timedEventBody(23, null)).toBe('Starts in 23 minutes');       // absent anchor = event
+    expect(timedEventBody(0, 'event')).toBe('Starting now');
+    expect(timedEventBody(1440, 'event')).toBe('Starts in 1 day');
+  });
+
+  // A departure-anchored alert stores minutes before the EVENT (drive + buffer),
+  // so the body has to subtract the drive back out: "23 min before leaving" on a
+  // 40-minute drive is stored as 63 and must never read as "Leave in 63 minutes".
+  it('counts a departure-anchored alert down to leaving, not to the start', () => {
+    expect(timedEventBody(63, 'leave', 40)).toBe('Leave in 23 minutes');
+    expect(timedEventBody(40, 'leave', 40)).toBe('Leave now');
+    expect(timedEventBody(30, 'leave', 40)).toBe('Leave now'); // buffer can't go negative
+    expect(timedEventBody(100, 'leave', 40)).toBe('Leave in 1 hour');
+  });
+
+  // Dropping the location leaves `alertAnchor: 'leave'` on a record with no
+  // drive time; the alert falls back to what the stored number literally is.
+  it('falls back to start wording when the drive time is gone', () => {
+    expect(timedEventBody(63, 'leave', null)).toBe('Starts in 1 hour 3 minutes');
+    expect(timedEventBody(63, 'leave', 0)).toBe('Starts in 1 hour 3 minutes');
   });
 
   it('phrases whole-day offsets, collapsing multiples of a week', () => {
@@ -299,13 +327,29 @@ describe('reminder lead-time wording', () => {
   const data = (over: Partial<CalendarData>): CalendarData =>
     ({ tasks: [], chores: [], events: [], occasions: [], recipes: [], groceryShopping: [], trips: [], ...over } as any);
 
-  it('tells an event how long until it starts, and nothing more', () => {
+  it('tells an event how long until it starts', () => {
     const start = new Date(Date.now() + 3 * 3600_000);
     const reminders = computeReminders(
       data({ events: [{ _id: 'e1', title: 'Dentist', startDate: start.toISOString(), reminderMinutes: 15, alert2Minutes: 60, calendarType: 'personal' }] as any }),
       new Set(), undefined, null,
     );
-    expect(reminders.map((r) => r.body)).toEqual(['1 hour', '15 minutes']);
+    expect(reminders.map((r) => r.body)).toEqual(['Starts in 1 hour', 'Starts in 15 minutes']);
+  });
+
+  // The two slots hold their own anchors, so one event's pair can word itself
+  // two different ways — the normal shape for an event with a drive time.
+  it('words each alert slot by its own anchor', () => {
+    const start = new Date(Date.now() + 3 * 3600_000);
+    const reminders = computeReminders(
+      data({ events: [{
+        _id: 'e1', title: 'Dentist', startDate: start.toISOString(), calendarType: 'personal',
+        travelMinutes: 23,
+        reminderMinutes: 60, alertAnchor: 'event',   // an hour before the appointment
+        alert2Minutes: 23, alert2Anchor: 'leave',    // and the moment to walk out
+      }] as any }),
+      new Set(), undefined, null,
+    );
+    expect(reminders.map((r) => r.body)).toEqual(['Starts in 1 hour', 'Leave now']);
   });
 
   it('gives day-based alerts their own lead time per offset', () => {

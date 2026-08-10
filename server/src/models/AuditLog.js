@@ -45,6 +45,13 @@ const AUDIT_EVENTS = [
   'email_suppressed',      // an admin added an address to the suppression list
   'email_released',        // an admin released an address from the suppression list
   'email_reconcile_run',   // an admin manually triggered the delivery reconcile pass (meta: summary)
+  // Release QA (spec: features/release-qa.md). Meta is ids/counts about our own
+  // release process — never product content.
+  'qa_release_created',        // an admin opened a release record for a build
+  'qa_release_status_changed', // planning → testing → submitted → released / rolled-back
+  'qa_cases_imported',         // a plan document was imported (meta: sourceDoc + the four counts)
+  'qa_run_completed',          // a test run was closed (meta: runId, releaseId, result count)
+  'qa_release_signed_off',     // the sign-off gate accepted (meta: coverage at the moment of signing)
 ];
 
 const auditLogSchema = new mongoose.Schema({

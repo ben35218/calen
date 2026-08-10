@@ -440,6 +440,7 @@ export default function HouseholdScreen() {
           label="Household name"
           value={name}
           onChangeText={setName}
+          autoCapitalize="words"
           onBlur={saveName}
           returnKeyType="done"
           onSubmitEditing={saveName}

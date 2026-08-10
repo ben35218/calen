@@ -16,6 +16,13 @@ const routes = [
   // E2EE ops merged into Households once every household was born-encrypted;
   // keep the old path working for bookmarks.
   { path: '/e2ee', redirect: '/households' },
+  // Release QA (spec: specs/features/release-qa.md). A release drills into its
+  // runs, and a run into the case list being executed — all pushes, so the
+  // browser back button walks the hierarchy.
+  { path: '/releases', name: 'Releases', component: () => import('../views/ReleasesView.vue') },
+  { path: '/releases/:id', name: 'Release', component: () => import('../views/ReleaseDetailView.vue') },
+  { path: '/runs/:id', name: 'TestRun', component: () => import('../views/TestRunView.vue') },
+  { path: '/test-cases', name: 'TestCases', component: () => import('../views/TestCasesView.vue') },
   { path: '/audit', name: 'Audit', component: () => import('../views/AuditLogView.vue') },
   { path: '/moderation', name: 'Moderation', component: () => import('../views/ModerationView.vue') },
   { path: '/feedback', name: 'Feedback', component: () => import('../views/FeedbackView.vue') },

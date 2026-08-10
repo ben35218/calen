@@ -1,15 +1,20 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Alert, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { calendarApi, invitationsApi, peopleApi, EventInvitation, Person } from '../../api';
-import { Badge, Input, RevealWrap, Screen, SwitchRow, useHeaderCheckButton } from '../../components/ui';
+import { calendarApi, householdApi, invitationsApi, peopleApi, EventInvitation, HouseholdMember, Person } from '../../api';
+import {
+  Badge, HintDisclosure, Input, RevealWrap, Screen, SectionHeader, SwitchRow,
+  useHeaderCheckButton,
+} from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import {
   getQueuedInvitees, setQueuedInvitees, useDraftGuestListVisible, setDraftGuestListVisible,
+  getQueuedHouseholdInvitees, setQueuedHouseholdInvitees,
 } from '../../lib/inviteeDraft';
+import { notifyHouseholdInvitees, rsvpsForEvent } from '../../lib/householdRsvp';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import {
   InviteeEntry, inviteeKey, normalizePhone, composeSmsInvite, sendInvitations, eventInviteEmailContent,
@@ -107,6 +112,42 @@ export default function EventInviteesScreen() {
     enabled: !isDraft,
   });
 
+  // ── "Your household" section — members asked to accept/decline ────────────
+  // Housemates already see every event; selecting one here stamps them into the
+  // sealed householdInvitees list, notifies them right away (saved event) or on
+  // save (draft), and tracks their accept/decline (per-member EventRsvp records).
+  const householdQ = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await householdApi.get()).data,
+  });
+  const hhMembers = useMemo(
+    () => (householdQ.data?.members ?? []).filter((m) => m._id !== user?._id),
+    [householdQ.data, user?._id],
+  );
+  // Their current responses (saved events only — a draft has nothing to answer).
+  const rsvpQ = useQuery({
+    queryKey: ['calendar', 'rsvps', eventId],
+    queryFn: () => rsvpsForEvent(eventId!),
+    enabled: !isDraft,
+  });
+  // Selection: a draft starts from the queued list; a saved event seeds from the
+  // decrypted event once it loads (replica rows are already decrypted).
+  const [hhSelected, setHhSelected] = useState<string[]>(() => (isDraft ? getQueuedHouseholdInvitees() : []));
+  const hhInitial = useRef<string[] | null>(isDraft ? getQueuedHouseholdInvitees() : null);
+  const eventQ = useQuery({
+    queryKey: ['calendar', 'event', eventId, 'invitees'],
+    queryFn: async () => (await calendarApi.getEvent(eventId!)).data,
+    enabled: !isDraft,
+  });
+  useEffect(() => {
+    if (isDraft || hhInitial.current !== null || !eventQ.data) return;
+    const ids = eventQ.data.householdInvitees ?? [];
+    hhInitial.current = ids;
+    setHhSelected(ids);
+  }, [isDraft, eventQ.data]);
+  const toggleMember = (id: string) =>
+    setHhSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
   // Contacts (decrypted on-device) back the field's autocomplete.
   const peopleQ = useQuery({
     queryKey: ['people', 'decrypted'],
@@ -193,22 +234,49 @@ export default function EventInviteesScreen() {
 
   // ✓ — commit the field, then queue (draft) or send (saved event). Entries
   // that fail to send stay staged with the reason, so ✓ can retry just those.
+  // Household selection: a draft queues it beside the outside entries; a saved
+  // event re-seals householdInvitees now and instantly notifies newly added
+  // members (best-effort — the durable channel is their Invitations inbox).
   const onConfirm = async () => {
     const { ok, entries } = commitInput();
     if (!ok) return;
     if (isDraft) {
+      setQueuedHouseholdInvitees(hhSelected);
       setQueuedInvitees(entries);
       allowLeave();
       navigation.goBack();
       return;
     }
-    if (!entries.length) {
+    const hhBaseline = hhInitial.current ?? [];
+    const hhChanged = JSON.stringify(hhSelected) !== JSON.stringify(hhBaseline);
+    if (!entries.length && !hhChanged) {
       allowLeave();
       navigation.goBack();
       return;
     }
     setBusy(true);
     try {
+      if (hhChanged) {
+        await calendarApi.setHouseholdInvitees(eventId!, hhSelected);
+        const added = hhSelected.filter((id) => !hhBaseline.includes(id));
+        if (added.length) {
+          const myName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'A housemate';
+          notifyHouseholdInvitees(
+            eventId!, added, 'Event invitation',
+            `${myName} invited you to “${snapshot.title}” — accept or decline`,
+          ).catch(() => {});
+        }
+        hhInitial.current = hhSelected;
+        // Keep the draft store in step: an edit form open beneath this screen
+        // re-seals householdInvitees from the store on save (the same
+        // guest-list seed-through), so a stale seed would undo this write.
+        setQueuedHouseholdInvitees(hhSelected);
+      }
+      if (!entries.length) {
+        allowLeave();
+        navigation.goBack();
+        return;
+      }
       const failures = await sendInvitations(eventId!, entries, snapshot, guestListVisible, composeEmail);
       await qc.invalidateQueries({ queryKey: ['invitations', 'sent', eventId] });
       if (failures.length) {
@@ -218,6 +286,8 @@ export default function EventInviteesScreen() {
         allowLeave();
         navigation.goBack();
       }
+    } catch (e: any) {
+      setError(e.response?.data?.error || e.message || 'Could not update household invitees');
     } finally {
       setBusy(false);
     }
@@ -227,7 +297,10 @@ export default function EventInviteesScreen() {
 
   // Guard the ✕ / back / swipe-back against dropping staged invitees or
   // half-typed text; `allowLeave` above lets ✓ exit without the prompt.
-  const dirty = JSON.stringify(staged) !== initialStaged.current || !!input.trim();
+  const dirty =
+    JSON.stringify(staged) !== initialStaged.current ||
+    !!input.trim() ||
+    (hhInitial.current !== null && JSON.stringify(hhSelected) !== JSON.stringify(hhInitial.current));
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const revoke = useMutation({
@@ -276,6 +349,42 @@ export default function EventInviteesScreen() {
   const channelIcon = (isPhone: boolean) => (
     <Ionicons name={isPhone ? 'chatbubble-outline' : 'mail-outline'} size={14} color={colors.textMuted} />
   );
+
+  const memberName = (m: HouseholdMember) =>
+    [m.firstName, m.lastName].filter(Boolean).join(' ').trim() || m.email || 'Member';
+
+  const memberRow = (m: HouseholdMember) => {
+    const selected = hhSelected.includes(m._id);
+    const rsvp = selected ? rsvpQ.data?.[m._id] : undefined;
+    return (
+      <TouchableOpacity
+        key={m._id}
+        style={styles.row}
+        activeOpacity={0.7}
+        disabled={busy}
+        onPress={() => toggleMember(m._id)}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: selected }}
+        accessibilityLabel={memberName(m)}
+      >
+        <View style={styles.memberAvatar}>
+          <Text style={styles.memberInitial}>{memberName(m).charAt(0).toUpperCase()}</Text>
+        </View>
+        <Text style={styles.email} numberOfLines={1}>{memberName(m)}</Text>
+        {rsvp ? (
+          <Badge
+            label={rsvp.status === 'accepted' ? 'Accepted' : 'Declined'}
+            color={rsvp.status === 'accepted' ? colors.success : colors.error}
+          />
+        ) : null}
+        <Ionicons
+          name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+          size={22}
+          color={selected ? calColor : colors.textMuted}
+        />
+      </TouchableOpacity>
+    );
+  };
 
   const stagedRow = (entry: InviteeEntry) => (
     <View key={inviteeKey(entry)} style={styles.row}>
@@ -327,6 +436,12 @@ export default function EventInviteesScreen() {
   );
 
   const sent = inviteesQ.data ?? [];
+  // The guest list is a cross-household concern only — housemates aren't part
+  // of it, and it governs nothing until at least one outside person is staged
+  // or already invited. Staged counts: the switch must be settable BEFORE the
+  // ✓/save that actually sends, since each invitation is stamped with the flag
+  // as it goes out.
+  const hasOutsideInvitees = staged.length > 0 || sent.length > 0;
   const sections = [
     { title: 'New',      rows: staged.map(stagedRow) },
     { title: 'Received', rows: sent.filter((i) => i.status === 'pending').map(sentRow) },
@@ -336,76 +451,111 @@ export default function EventInviteesScreen() {
 
   return (
     <Screen>
-      <Text style={styles.hint}>
-        {isDraft
-          ? 'Add people outside your household by email address or phone number — press return to add each. Invitations go out when you save the event.'
-          : 'Add people outside your household by email address or phone number — press return to add each. Invitations go out when you tap the check mark.'}
-      </Text>
-
-      {/* The dropdown renders below the input, which the keyboard-aware scroll
-          keeps just above the keyboard — RevealWrap scrolls the pair clear when
-          it opens (a direct useRevealOnOpen call here would read a null scroll
-          context, since this component renders Screen itself). */}
-      <RevealWrap open={suggestOpen} count={suggestions.length} style={styles.inputWrap}>
-        <GroupCard>
-          <View style={styles.inputRow}>
-            <Input
-              placeholder="Email or phone number"
-              value={input}
-              onChangeText={(v) => { setInput(v); setError(''); setSuggestOpen(true); }}
-              onSubmitEditing={commitInput}
-              blurOnSubmit={false}
-              returnKeyType="done"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              containerStyle={[fs.headField, styles.inputGrow]}
-              style={fs.headInput}
-            />
-            {inputCommittable ? (
-              <TouchableOpacity
-                style={[styles.commitBtn, { backgroundColor: calColor }]}
-                hitSlop={HIT_SLOP}
-                onPress={commitInput}
-              >
-                <Ionicons name="checkmark-sharp" size={16} color="#fff" />
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </GroupCard>
-        {suggestOpen && suggestions.length > 0 ? (
-          <View style={styles.dropdown}>
-            {suggestions.map(({ person: p, entry }) => (
-              <TouchableOpacity
-                key={p._id}
-                style={styles.suggestRow}
-                onPress={() => {
-                  setStaged((s) => [...s, entry]);
-                  // Keep the pieces before the one just completed.
-                  setInput(input.split(/[,;\n]+/).slice(0, -1).map((s) => s.trim()).filter(Boolean).join(', '));
-                  setSuggestOpen(false);
-                }}
-              >
-                <Ionicons
-                  name={entry.phone ? 'chatbubble-outline' : 'mail-outline'}
-                  size={16}
-                  color={colors.textMuted}
-                />
-                <View style={styles.suggestText}>
-                  <Text style={styles.suggestName} numberOfLines={1}>{p.name}</Text>
-                  <Text style={styles.suggestEmail} numberOfLines={1}>{inviteeKey(entry)}</Text>
-                </View>
-              </TouchableOpacity>
+      {/* Two zones, each titled for what it DOES and each carrying its
+          explanation behind the ⓘ (mobile/CLAUDE.md: hints are disclosed,
+          always — a screen that stacks prose above its controls reads as
+          broken). Notifying a housemate and inviting an outsider are different
+          acts on different people, so they get separate headings rather than
+          one "Invitees" wall. */}
+      {hhMembers.length > 0 ? (
+        <View style={styles.section}>
+          <HintDisclosure
+            label="Notify household members"
+            labelStyle={styles.sectionHeading}
+            hintStyle={styles.zoneHint}
+            hint="Housemates already see this event. Selecting someone asks them to accept or decline and notifies them right away — declining doesn’t remove the event from their calendar."
+            accessibilityLabel="About notifying household members"
+          />
+          <GroupCard>
+            {hhMembers.map((m, i) => (
+              <React.Fragment key={m._id}>
+                {i > 0 ? <CardDivider /> : null}
+                {memberRow(m)}
+              </React.Fragment>
             ))}
-          </View>
-        ) : null}
-      </RevealWrap>
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+          </GroupCard>
+        </View>
+      ) : null}
 
-      <View style={styles.list}>
+      <View style={styles.section}>
+        <HintDisclosure
+          label="Invite others"
+          labelStyle={styles.sectionHeading}
+          hintStyle={styles.zoneHint}
+          hint={
+            isDraft
+              ? 'Add someone outside your household by email address or phone number — press return after each. Invitations go out when you save the event.'
+              : 'Add someone outside your household by email address or phone number — press return after each. Invitations go out when you tap the check mark.'
+          }
+          accessibilityLabel="About inviting people outside your household"
+        />
+
+        {/* The dropdown renders below the input, which the keyboard-aware
+            scroll keeps just above the keyboard — RevealWrap scrolls the pair
+            clear when it opens (a direct useRevealOnOpen call here would read a
+            null scroll context, since this component renders Screen itself). */}
+        <RevealWrap open={suggestOpen} count={suggestions.length} style={styles.inputWrap}>
+          <GroupCard>
+            <View style={styles.inputRow}>
+              <Input
+                placeholder="Email or phone number"
+                value={input}
+                onChangeText={(v) => { setInput(v); setError(''); setSuggestOpen(true); }}
+                onSubmitEditing={commitInput}
+                blurOnSubmit={false}
+                returnKeyType="done"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                containerStyle={[fs.headField, styles.inputGrow]}
+                style={fs.headInput}
+              />
+              {inputCommittable ? (
+                <TouchableOpacity
+                  style={[styles.commitBtn, { backgroundColor: calColor }]}
+                  hitSlop={HIT_SLOP}
+                  onPress={commitInput}
+                >
+                  <Ionicons name="checkmark-sharp" size={16} color="#fff" />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          </GroupCard>
+          {suggestOpen && suggestions.length > 0 ? (
+            <View style={styles.dropdown}>
+              {suggestions.map(({ person: p, entry }) => (
+                <TouchableOpacity
+                  key={p._id}
+                  style={styles.suggestRow}
+                  onPress={() => {
+                    setStaged((s) => [...s, entry]);
+                    // Keep the pieces before the one just completed.
+                    setInput(input.split(/[,;\n]+/).slice(0, -1).map((s) => s.trim()).filter(Boolean).join(', '));
+                    setSuggestOpen(false);
+                  }}
+                >
+                  <Ionicons
+                    name={entry.phone ? 'chatbubble-outline' : 'mail-outline'}
+                    size={16}
+                    color={colors.textMuted}
+                  />
+                  <View style={styles.suggestText}>
+                    <Text style={styles.suggestName} numberOfLines={1}>{p.name}</Text>
+                    <Text style={styles.suggestEmail} numberOfLines={1}>{inviteeKey(entry)}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : null}
+        </RevealWrap>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        {/* Where each outside invitee stands. These are the quiet uppercase
+            eyebrows (SectionHeader) NESTED under the zone heading above — the
+            two levels must stay visually distinct or the screen reads flat. */}
         {sections.map((s) => (
-          <View key={s.title}>
-            <Text style={styles.sectionTitle}>{s.title}</Text>
+          <View key={s.title} style={styles.statusGroup}>
+            <SectionHeader>{s.title}</SectionHeader>
             <GroupCard>
               {s.rows.map((r, i) => (
                 <React.Fragment key={i}>
@@ -416,29 +566,68 @@ export default function EventInviteesScreen() {
             </GroupCard>
           </View>
         ))}
+        {/* A quiet status line, NOT the shared EmptyState: this is a sub-zone
+            inside a form, not a list screen, and EmptyState's 52px icon block
+            stands ~158px tall against the ~80px the first invitee row occupies
+            — so the zone visibly SHRANK on adding someone, which reads as the
+            layout breaking rather than as progress. One muted line holds the
+            space the row will take. */}
         {sections.length === 0 ? (
-          <View style={styles.empty}>
-            <Ionicons name="people-outline" size={36} color={colors.textMuted} />
-            <Text style={styles.emptyText}>No one invited yet.</Text>
-          </View>
+          <Text style={styles.emptyLine}>No one outside your household yet.</Text>
         ) : null}
       </View>
 
-      <GroupCard style={styles.optionCard}>
-        <View style={fs.groupPad}>
-          <SwitchRow label="Guests can see guest list" value={guestListVisible} onValueChange={toggleGuestList} color={calColor} />
+      {/* A setting, not a people list — its own zone so it isn't mistaken for
+          another row of invitees. The switch says what it does; the ⓘ says what
+          turning it off costs, so the heading and label don't repeat. Shown
+          only once there IS an outside invitee to govern: on a household-only
+          event it decides nothing, and a dead control at the end of the screen
+          invites the user to reason about a guest list that will never exist. */}
+      {hasOutsideInvitees ? (
+        <View style={styles.section}>
+          <HintDisclosure
+            label="Guest list"
+            labelStyle={styles.sectionHeading}
+            hintStyle={styles.zoneHint}
+            hint="When off, invitees can’t see who else is invited — only you can."
+            accessibilityLabel="About the guest list"
+          />
+          <GroupCard>
+            <View style={fs.groupPad}>
+              <SwitchRow label="Guests can see who’s invited" value={guestListVisible} onValueChange={toggleGuestList} color={calColor} />
+            </View>
+          </GroupCard>
         </View>
-      </GroupCard>
-      <Text style={styles.optionHint}>
-        When off, invitees can’t see who else is invited — only you can.
-      </Text>
+      ) : null}
       {emailSheet}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  hint: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md },
+  // A titled zone: its heading + ⓘ, then the cards it governs.
+  section: { marginBottom: spacing.lg },
+  // The zone heading — the bold in-form heading role (SectionTitle's weight),
+  // one step above the uppercase SectionHeader eyebrows nested inside it. Its
+  // own margins are zero: HintDisclosure pads the row, and the zone owns the
+  // spacing below.
+  sectionHeading: { fontSize: 15, fontWeight: '700', color: colors.text },
+  // The revealed hint's spacing, stated HERE rather than left to the shared
+  // default: `Hint`'s base style carries a 16pt bottom margin sized for a
+  // standalone helper line, which left the explanation floating mid-air
+  // between its heading and the card it describes. `hintStyle` is the last
+  // entry in HintDisclosure's style array, so this is the value that wins.
+  // Tight to the card below (8) so heading + hint + card read as one group.
+  zoneHint: { marginTop: spacing.xs, marginBottom: spacing.sm },
+  statusGroup: { marginTop: spacing.sm },
+  // Sits where the first status group would, at the same top offset, so adding
+  // someone swaps a line for a card instead of collapsing the zone's height.
+  emptyLine: { fontSize: 13, color: colors.textMuted, marginTop: spacing.sm, paddingHorizontal: spacing.xs },
+  memberAvatar: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  memberInitial: { fontSize: 13, fontWeight: '600', color: colors.text },
   // Contact autocomplete under the input (mirrors PlacesAutocomplete)
   inputWrap: { position: 'relative' },
   inputRow: { flexDirection: 'row', alignItems: 'center' },
@@ -459,19 +648,10 @@ const styles = StyleSheet.create({
   suggestName: { fontSize: 14, color: colors.text },
   suggestEmail: { fontSize: 12, color: colors.textMuted },
   error: { color: colors.error, marginTop: spacing.sm },
-  list: { marginTop: spacing.sm },
-  sectionTitle: {
-    fontSize: 13, fontWeight: '600', color: colors.textMuted,
-    textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: spacing.xs,
-  },
   row: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
     paddingHorizontal: 14, paddingVertical: spacing.sm, minHeight: 46,
   },
   email: { flex: 1, fontSize: 14, color: colors.text },
   remove: { padding: 2 },
-  empty: { alignItems: 'center', paddingVertical: spacing.xl, gap: spacing.sm },
-  emptyText: { color: colors.textMuted },
-  optionCard: { marginTop: spacing.sm, marginBottom: spacing.xs },
-  optionHint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs, paddingHorizontal: spacing.xs },
 });

@@ -35,7 +35,8 @@
     "nodemailer": "^9.0.0",
     "pdf-parse": "^2.4.5",
     "sharp": "^0.35.3",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.2.0",

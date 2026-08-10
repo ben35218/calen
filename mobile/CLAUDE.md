@@ -63,6 +63,25 @@ its rule, is drift.
 - Scroll content bottom padding: `spacing.xl` by default; `96` only when a FAB
   overlaps the list.
 
+## Text-input keyboard hints
+
+Every text field sets `autoCapitalize` to match what it holds; anything else is
+drift. The mapping:
+
+- **Prose & titles** (event/chore/task titles, notes, descriptions, chat,
+  feedback) → the default `sentences`; don't set anything. Matches Apple
+  Calendar — titles are *not* title-cased.
+- **Proper nouns** (person first/last/full names, trip & household names,
+  city/place fields) → `autoCapitalize="words"`, plus the matching
+  `textContentType` (`givenName` / `familyName` / `name`) so iOS QuickType can
+  autofill.
+- **Machine input** (email, URL, username, password, invite fields) →
+  `autoCapitalize="none"` + `autoCorrect={false}` + the matching `keyboardType`.
+- **Search fields** (every search pill/input) → `autoCapitalize="none"` +
+  `autoCorrect={false}` — matching is case-insensitive, so a shifted first
+  letter is pure friction.
+- **Short codes** (recovery codes, PINs) → `autoCapitalize="characters"`.
+
 ## The section accent
 
 Each feature area has an accent colour from `useCalendarColors().colors.<area>`
@@ -133,6 +152,14 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
 - **Bottom sheet** (custom picker / action / confirm sheet) → `<BottomSheet visible onClose title? style? avoidKeyboard? onShow?>`. `avoidKeyboard` when it holds text inputs; `onShow` to position content on open (Select's initial scroll). Don't hand-roll a `Modal` + backdrop + slide-up `Pressable` — the shared sheet is what supplies the slide-up, the grabber, drag-to-dismiss, the home-indicator inset, and the scrim fade, and a hand-rolled one silently drops all five. `Select`, `DateField`/`TimeField`, and `PhoneField`'s country picker all render through it.
   - Its drag lives on the **grabber/title strip only**, so a sheet holding a
     scrolling list keeps its scroll. Content sits below that strip.
+  - **A picker sheet commits on dismissal.** A sheet whose content is a wheel,
+    a date/time picker, or a list of options saves what it is showing when the
+    user taps the scrim, drags it down, or presses Android back — the same value
+    a Done button would save. The sheet is chrome around a picker, not a form to
+    submit, so tapping away accepts (`DateField`/`TimeField` and the custom
+    alert sheet both do this). The exception is a sheet the user never touched:
+    it opens on a seeded value, and a seed is not a choice, so an untouched
+    dismissal writes nothing.
   - **Who closes it decides whether it animates.** A *user* dismissal (scrim,
     grabber drag, Android back) slides out and then reports `onClose`. The
     *caller* dropping `visible` tears it down in that commit, with no exit
@@ -148,7 +175,26 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
 - **Leading disc on a row** → `<IconAvatar icon/mdiIcon bg size={44} />`
   (`radius` for a rounded-square instead of a circle).
 - **Settings-style tappable row** (inside an InfoCard/GroupCard) → `<ListRow icon title subtitle onPress right />`.
-- **Standalone list card** (its own tappable Card: avatar + title + subtitle + trailing) → `<CardRow leading title subtitle right onPress titleRight />`. `subtitle` may be a node (icon-studded meta row); `right` falls back to a chevron when `onPress` is set. Keep a raw Card for bespoke cards (expandable, swipeable, flush colour-bar).
+- **Standalone list card** (its own tappable Card: avatar + title + subtitle + trailing) → `<CardRow leading title subtitle right onPress titleRight />`. `subtitle` may be a node (icon-studded meta row); `right` falls back to a chevron when `onPress` is set. Keep a raw Card for bespoke cards (expandable, flush colour-bar).
+- **Deleting a row from a list** → wrap it in `<SwipeableRow onDelete label? actionStyle? accessibilityLabel? />`
+  and let the swipe be the only affordance. Never park a persistent ✕ / trash
+  glyph on the row: it's a permanent target for a mistap on something the user
+  overwhelmingly wants to *open*, and it competes with the row's real tap. The
+  revealed action travels with the content (not parked behind it), so the row
+  underneath may be transparent — a bare row inside a Card works, not just an
+  opaque Card. Pass the geometry through `actionStyle` so the action looks like
+  it slid out of that particular thing: a standalone card passes its outer corner
+  radius + the row gap its `marginBottom` leaves; an interior row passes a small
+  radius on both edges. `onDelete` fires on tap and MUST raise the native confirm
+  (below) — the swipe reveals, the confirm commits.
+  The action's *contents* aren't a choice the caller makes: the row measures
+  itself and shows the trash glyph over the word only when there's room for both
+  (≥56pt), the word alone below that. Don't hand-tune it per screen.
+  **A reveal is always undoable in place** — swiping back, or tapping the open
+  row, puts it away. That undo swipe runs straight into the screen's own
+  back-gesture zone, so an open row suspends `gestureEnabled` until it closes;
+  without that, swiping right to undo pops the user out of the whole screen.
+  Any new horizontal-drag affordance owes the same courtesy.
 - **Phone number** → `<PhoneField value onChangeText label? highlight? containerStyle? fieldStyle? />`
   (country picker with flag/dial code + as-you-type formatting; emits canonical
   E.164 for storage). Never a bare `<Input keyboardType="phone-pad" />`. For a
@@ -187,7 +233,17 @@ Alert.alert('Delete X?', 'This cannot be undone.', [
 ]);
 ```
 
-Do not build a custom `<Modal>` confirm dialog.
+Do not build a custom `<Modal>` confirm dialog. On a list row the trigger is
+`SwipeableRow` rather than a `Button`, but the confirm is the same and is not
+optional — a swipe is easy to make by accident, so nothing destructive commits
+on the swipe itself.
+
+**Say what actually gets destroyed.** Removing a scheduled meal from a day is
+not deleting the recipe, and the prompt has to draw that line ("will be taken
+off this day's plan. The recipe stays in your library.") — otherwise the safe
+action reads as the dangerous one and the user backs out of it. Word the action
+to match: `Remove` when something is being detached, `Delete` when the record
+itself goes.
 
 ## Unsaved-changes guard
 

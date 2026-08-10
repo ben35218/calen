@@ -1,7 +1,7 @@
 ---
 title: Release & build
 status: current
-last-verified: d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
+last-verified: ddaa21b+ (2026-08-10); the manual pre-release pass moved out of a markdown checklist and into the admin portal — a Release record per build, per-device test runs, and a **sign-off gate that refuses while a blocker case is unexecuted or failing**; `docs/PRE-RELEASE-TEST-PLAN.md` stays the authoring source and is imported (mechanics in [features/release-qa.md](../features/release-qa.md)) (2026-08-10); d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
 code:
   - mobile/RELEASE.md
   - mobile/eas.json
@@ -42,6 +42,33 @@ eas build --profile production --platform all
 eas submit --profile production --platform ios       # TestFlight / App Store
 eas submit --profile production --platform android   # Play internal track
 ```
+
+## The pre-release test pass (tracked, not remembered)
+
+The full manual pass is authored in
+[`docs/PRE-RELEASE-TEST-PLAN.md`](../../docs/PRE-RELEASE-TEST-PLAN.md) — the
+source of truth for what gets tested — and **executed in the admin portal**
+(Quality → Releases). The loop, per public build:
+
+1. **Import** the plan into the case library (portal → Test cases → Import, or
+   `node src/scripts/importTestCases.js docs/PRE-RELEASE-TEST-PLAN.md --commit`).
+   The import is dry-run first and shows what it would add/update/retire.
+2. **Open a Release** for the build (version + build number + the
+   `testflight/<version>-<buildNumber>` tag this doc's tooling anchors) and move
+   it to `testing`.
+3. **Run it** — one run per device in the plan's matrix, recording
+   pass/fail/blocked/skipped/NA per case. Partial runs are expected: the plan
+   deliberately puts the full pass on the primary device and the smoke subset on
+   the rest.
+4. **Sign off.** The gate **refuses while any blocker case is unexecuted or
+   failing**, naming them. It is the machine-checked half of the plan's own exit
+   criteria ("every ⛔ BLOCKER case passes; zero open S1/S2"); the rest stays the
+   release owner's judgement.
+5. Ship, then anchor the build: `npm run release:notes -- --tag <version>-<buildNumber>`.
+
+Mechanics — import semantics, the retire-never-delete rule, run/result shapes,
+and the exact gate — are owned by
+[features/release-qa.md](../features/release-qa.md).
 
 ## Pre-submit smoke pass
 

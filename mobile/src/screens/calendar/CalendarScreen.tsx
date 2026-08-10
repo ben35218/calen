@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, useWindowDimensions
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { CalendarData, CalendarEvent, CalendarOccasion, Chore, Task } from '../../api';
 import { expandCalendarRange, loadCalendarWindowSources } from '../../lib/calendarData';
@@ -16,11 +16,12 @@ import { MonthJumpHeaderButton } from './MonthJumpSheet';
 import { loadPassiveForecast } from '../../lib/weatherSource';
 import WeatherIcon from '../../components/WeatherIcon';
 import { useAuth } from '../../store/auth';
-import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell } from '../../lib/calendar';
+import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell, GROCERY_ICON, RECIPE_ICON } from '../../lib/calendar';
 import { occasionIcon, occasionFocusFrom } from '../../lib/occasions';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors, useMonthDensity, MonthDensity } from '../../lib/calendarPrefs';
 import { mdiName } from '../../lib/recurrence';
+import { tintedChip } from '../../lib/color';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
@@ -34,6 +35,10 @@ import { useCallEventStatus } from '../../lib/callStatus';
 import { useE2eeLocked } from '../../hooks/useE2eeLocked';
 import { TodayHandle } from './todayHandle';
 import CalendarListView from './CalendarListView';
+import {
+  CHROME_ZOOM, CONTENT_ZOOM, isMonthZoomed, monthDepth, openDayView, resetMonthDepth, settleMonth,
+  useReduceMotion, zoomRange,
+} from './dayTransition';
 
 // The three grid densities (the fourth mode, 'list', is a separate layer).
 type GridDensity = Exclude<MonthDensity, 'list'>;
@@ -743,7 +748,7 @@ const WeekRow = React.memo(function WeekRow({
             key={cell.date}
             style={[styles.dayCell, week.isMonthStart && styles.monthStartCell, { width: cellSize, height: week.height }]}
             activeOpacity={0.7}
-            onPress={() => navigation.navigate('CalendarDay', { date: cell.date })}
+            onPress={() => openDayView(navigation, cell.date)}
             // Short-press an (empty part of a) day to start a new event on it.
             onLongPress={() => navigation.navigate('EventForm', { date: cell.date })}
             delayLongPress={LONG_PRESS_MS}
@@ -804,13 +809,18 @@ const WeekRow = React.memo(function WeekRow({
             <View style={styles.cellItems}>
               {/* Event chips open that event; holiday/birthday chips fall back to
                   the day view (they have no detail screen). */}
-              {c.chips.slice(0, CHIP_MAX).map((chip) => (
+              {c.chips.slice(0, CHIP_MAX).map((chip) => {
+                // Apple's tinted styling: a translucent wash of the calendar's
+                // colour behind the calendar's colour as text (lightened to
+                // clear the contrast floor — see lib/color).
+                const tint = tintedChip(chip.color);
+                return (
                 <TouchableOpacity
                   key={chip.key}
                   activeOpacity={0.7}
                   style={[
                     styles.chip,
-                    { backgroundColor: chip.color, height: chipHeight(chipRows(charsPerLine, chip)) - 2 },
+                    { backgroundColor: tint.fill, height: chipHeight(chipRows(charsPerLine, chip)) - 2 },
                     // A resolved call fades the chip; a confirmed cancellation
                     // also strikes the title (see chipText below).
                     chip.cancelled ? styles.chipCancelled : chip.reschedulePending ? styles.chipRescheduled : null,
@@ -818,7 +828,7 @@ const WeekRow = React.memo(function WeekRow({
                   onPress={() =>
                     chip.eventId
                       ? navigation.navigate('EventDetail', { eventId: chip.eventId, date: cell.date })
-                      : navigation.navigate('CalendarDay', { date: cell.date })
+                      : openDayView(navigation, cell.date)
                   }
                   // Long-press jumps straight to the edit form. Holiday/birthday
                   // chips have no eventId (nothing to edit) → start a new event on the day.
@@ -829,12 +839,13 @@ const WeekRow = React.memo(function WeekRow({
                   }
                   delayLongPress={LONG_PRESS_MS}
                 >
-                  <Text style={[styles.chipText, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(charsPerLine, chip.label)} ellipsizeMode="clip">{chip.label}</Text>
+                  <Text style={[styles.chipText, { color: tint.label }, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(charsPerLine, chip.label)} ellipsizeMode="clip">{chip.label}</Text>
                   {/* numberOfLines={1} keeps the time on one line; ellipsizeMode "clip"
                       cuts off overflow (e.g. "10:30A") with no "…" and no wrapped "M". */}
-                  {chip.time ? <Text style={styles.chipTime} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text> : null}
+                  {chip.time ? <Text style={[styles.chipTime, { color: tint.time }]} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text> : null}
                 </TouchableOpacity>
-              ))}
+                );
+              })}
               {c.chips.length > CHIP_MAX ? <Text style={styles.moreText}>+{c.chips.length - CHIP_MAX} more</Text> : null}
               {showSkeleton && !c.chips.length ? <CellSkeleton date={cell.date} density={density} /> : null}
 
@@ -858,13 +869,13 @@ const WeekRow = React.memo(function WeekRow({
                     onPress={() =>
                       c.tasks.length === 1
                         ? navigation.navigate('TaskDetail', { id: c.tasks[0]._id, date: cell.date })
-                        : navigation.navigate('CalendarDay', { date: cell.date })
+                        : openDayView(navigation, cell.date)
                     }
                     // Long-press edits the single task; several stacked → day view to pick one.
                     onLongPress={() =>
                       c.tasks.length === 1
                         ? navigation.navigate('TaskForm', { id: c.tasks[0]._id, date: cell.date })
-                        : navigation.navigate('CalendarDay', { date: cell.date })
+                        : openDayView(navigation, cell.date)
                     }
                     delayLongPress={LONG_PRESS_MS}
                   >
@@ -896,22 +907,28 @@ const WeekRow = React.memo(function WeekRow({
                     onPress={() => {
                       const t = recipeIconTarget(c.recipes, cell.date);
                       if (t.screen === 'RecipeDetail') navigation.navigate('RecipeDetail', t.params);
-                      else navigation.navigate('CalendarDay', t.params);
+                      else openDayView(navigation, t.params.date);
                     }}
                     // Long-press edits the single scheduled recipe; several → day view to pick one.
                     onLongPress={() => {
                       const id = c.recipes.length === 1 ? c.recipes[0].recipeId : undefined;
                       if (id) navigation.navigate('RecipeForm', { id });
-                      else navigation.navigate('CalendarDay', { date: cell.date });
+                      else openDayView(navigation, cell.date);
                     }}
                     delayLongPress={LONG_PRESS_MS}
                   >
-                    <IconChip count={c.recipes.length} icon="silverware-fork-knife" color={calColors.recipes} />
+                    <IconChip count={c.recipes.length} icon={RECIPE_ICON} color={calColors.recipes} />
                   </TouchableOpacity>
                 ) : null}
                 {c.grocery ? (
-                  <TouchableOpacity hitSlop={6} onPress={() => navigation.navigate('KitchenHome', { pane: 'grocery', weekStart: cell.date })}>
-                    <MaterialCommunityIcons name="cart" size={16} color={calColors.recipes} />
+                  <TouchableOpacity
+                    hitSlop={6}
+                    // Opens the shopping list for that day's period, and leaves
+                    // the day itself queued for the Planner pane — flipping over
+                    // to it lands on the shopping day, highlighted.
+                    onPress={() => navigation.navigate('KitchenHome', { pane: 'grocery', weekStart: cell.date, scrollToDate: cell.date })}
+                  >
+                    <MaterialCommunityIcons name={GROCERY_ICON as any} size={16} color={calColors.recipes} />
                   </TouchableOpacity>
                 ) : null}
               </View>
@@ -966,7 +983,7 @@ const WeekRow = React.memo(function WeekRow({
             }
             const offset = Math.floor(e.nativeEvent.locationX / cellSize);
             const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
-            navigation.navigate('CalendarDay', { date: week.cells[col].date });
+            openDayView(navigation, week.cells[col].date);
           }}
           // Long-press a spanning bar to edit the event/trip it represents.
           onLongPress={(e) => {
@@ -979,7 +996,7 @@ const WeekRow = React.memo(function WeekRow({
             }
             const offset = Math.floor(e.nativeEvent.locationX / cellSize);
             const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
-            navigation.navigate('CalendarDay', { date: week.cells[col].date });
+            openDayView(navigation, week.cells[col].date);
           }}
           delayLongPress={LONG_PRESS_MS}
           style={[
@@ -1059,6 +1076,38 @@ export default function CalendarScreen() {
     }).start();
   }, [isList, progress]);
 
+  // ── The month ⇄ day zoom (see dayTransition) ──
+  // Opening a day sends this whole surface away — content and TOP pills only.
+  // The bottom pill and the FAB are left out on purpose: the day view draws
+  // them at the same coordinates, so leaving both copies still reads as one
+  // set of buttons that never moved.
+  const reduced = useReduceMotion();
+  // A FRESH month instance is never a return trip — the day view is pushed on
+  // top of this one, so coming back never remounts it. Anything left over is a
+  // navigator rebuild (sign-out, lock) that would otherwise mount the month
+  // invisible.
+  useEffect(() => resetMonthDepth(), []);
+  useFocusEffect(
+    useCallback(() => {
+      // Regaining focus while zoomed away means the day view just went — resume
+      // the same move backwards. (Focus after any other screen leaves depth at
+      // 0, so this is a no-op there.)
+      if (isMonthZoomed()) settleMonth();
+    }, []),
+  );
+  const zoomAway = {
+    opacity: monthDepth.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+    transform: [
+      { scale: monthDepth.interpolate({ inputRange: [0, 1], outputRange: zoomRange(1, CONTENT_ZOOM, reduced) }) },
+    ],
+  };
+  const chromeZoomAway = {
+    opacity: monthDepth.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+    transform: [
+      { scale: monthDepth.interpolate({ inputRange: [0, 1], outputRange: zoomRange(1, CHROME_ZOOM, reduced) }) },
+    ],
+  };
+
   const gridLayer = {
     opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
     transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0.97] }) }],
@@ -1098,29 +1147,31 @@ export default function CalendarScreen() {
 
   return (
     <View style={styles.screen}>
-      <Animated.View style={[StyleSheet.absoluteFill, gridLayer]} pointerEvents={isList ? 'none' : 'auto'}>
-        <CalendarGrid
-          ref={gridRef}
-          density={gridDensity}
-          active={!isList}
-          getViewedMonth={getViewedMonth}
-          onViewedMonth={onViewedMonth}
-        />
-      </Animated.View>
-      {listMounted ? (
-        <Animated.View style={[StyleSheet.absoluteFill, listLayer]} pointerEvents={isList ? 'auto' : 'none'}>
-          <CalendarListView
-            ref={listRef}
-            active={isList}
+      <Animated.View style={[StyleSheet.absoluteFill, zoomAway]}>
+        <Animated.View style={[StyleSheet.absoluteFill, gridLayer]} pointerEvents={isList ? 'none' : 'auto'}>
+          <CalendarGrid
+            ref={gridRef}
+            density={gridDensity}
+            active={!isList}
             getViewedMonth={getViewedMonth}
             onViewedMonth={onViewedMonth}
           />
         </Animated.View>
-      ) : null}
+        {listMounted ? (
+          <Animated.View style={[StyleSheet.absoluteFill, listLayer]} pointerEvents={isList ? 'auto' : 'none'}>
+            <CalendarListView
+              ref={listRef}
+              active={isList}
+              getViewedMonth={getViewedMonth}
+              onViewedMonth={onViewedMonth}
+            />
+          </Animated.View>
+        ) : null}
+      </Animated.View>
 
       {/* ── Top row: avatar + view-switcher/search/add (shared by both layers) ── */}
-      <View
-        style={[styles.topChrome, { paddingTop: insets.top, height: insets.top + TOP_BAR_ROW }]}
+      <Animated.View
+        style={[styles.topChrome, chromeZoomAway, { paddingTop: insets.top, height: insets.top + TOP_BAR_ROW }]}
         pointerEvents="box-none"
       >
         <TouchableOpacity
@@ -1157,11 +1208,20 @@ export default function CalendarScreen() {
           <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('CalendarSearch')}>
             <Ionicons name="search" size={20} color={BTN_FG} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.pillBtn} onPress={() => navigation.navigate('EventForm', {})}>
+          <TouchableOpacity
+            style={styles.pillBtn}
+            onPress={() => {
+              // In List mode a day is always selected, so the new event starts
+              // on the day the user is looking at; the grid family has no
+              // selected day, so the form defaults to today.
+              const date = isList ? listRef.current?.getSelectedDate?.() : null;
+              navigation.navigate('EventForm', date ? { date } : {});
+            }}
+          >
             <Ionicons name="add" size={26} color={BTN_FG} />
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
 
       <AnchoredMenu
         visible={menuOpen}
@@ -1171,11 +1231,20 @@ export default function CalendarScreen() {
       />
 
       {/* ── Bottom-left: Today | Calendars (labelled — Calendars is a primary
-          destination, and a calendar glyph inside a calendar app is ambiguous) ── */}
+          destination, and a calendar glyph inside a calendar app is ambiguous).
+          Not part of the zoom: the day view draws this same pill in this same
+          place, so it stays put while everything around it moves. ── */}
       <View style={[styles.pill, styles.bottomLeft, { bottom: insets.bottom + 16 }]}>
         <TouchableOpacity
           style={styles.todayBtn}
-          onPress={() => (isList ? listRef : gridRef).current?.scrollToToday(true)}
+          // Today OPENS today — the day view, in whichever day mode was last
+          // used. It also re-centres the layer underneath first, so coming back
+          // out lands on today rather than wherever the user had scrolled to.
+          onPress={() => {
+            (isList ? listRef : gridRef).current?.scrollToToday(false);
+            openDayView(navigation, ymd(new Date()));
+          }}
+          accessibilityLabel="Today"
         >
           <Text style={styles.todayText}>Today</Text>
         </TouchableOpacity>
@@ -1288,9 +1357,11 @@ const styles = StyleSheet.create({
   stackBar: { height: STACK_BAR_H - 3, borderRadius: 2, marginBottom: 2, marginHorizontal: 1 },
   chipCancelled: { opacity: 0.45 },
   chipRescheduled: { opacity: 0.6 },
-  chipText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
+  // Chip title/time colours are per-chip (the calendar's tint, see lib/color);
+  // these carry only the metrics, with a safe default colour.
+  chipText: { fontSize: 12, lineHeight: 13, color: colors.text, fontWeight: '600' },
   chipTextCancelled: { textDecorationLine: 'line-through' },
-  chipTime: { fontSize: 10, lineHeight: 12, color: 'rgba(255,255,255,0.85)', fontWeight: '600', marginTop: 1 },
+  chipTime: { fontSize: 10, lineHeight: 12, color: colors.textMuted, fontWeight: '600', marginTop: 1 },
   moreText: { fontSize: 11, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
   iconRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 3, marginBottom: 2 },
   iconChip: { flexDirection: 'row', alignItems: 'center', gap: 1 },

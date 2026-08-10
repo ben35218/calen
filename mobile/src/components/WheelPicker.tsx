@@ -88,6 +88,9 @@ export default function WheelPicker<T extends string | number>({
     <View style={{ height: WHEEL_ITEM_H * WHEEL_VISIBLE, width }}>
       <Animated.ScrollView
         ref={ref}
+        // Named so a test can settle the wheel the way a real scroll does
+        // (the same role `sheet-scrim` plays for the bottom sheet).
+        testID="wheel"
         showsVerticalScrollIndicator={false}
         snapToInterval={WHEEL_ITEM_H}
         decelerationRate="fast"

@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
@@ -33,7 +33,6 @@ function KitchenHome() {
   const [pane, setPane] = useState<KitchenPane>('planner');
   const navigation = useNavigation<Nav>();
   const params = useRoute<RouteProp<KitchenStackParamList, 'KitchenHome'>>().params;
-  const scrollToDate = params?.scrollToDate;
   const paneParam = params?.pane;
   const weekStartParam = params?.weekStart;
   const accent = useCalendarColors().colors.recipes;
@@ -75,14 +74,11 @@ function KitchenHome() {
     }
   }, [weekStartParam, settingsLoaded, groceryDay, frequency, anchor, navigation]);
 
-  // Landing here to reveal a freshly-scheduled recipe: make sure the Planner
-  // is the active pane so PlannerPane can scroll there.
-  useEffect(() => {
-    if (scrollToDate) setPane('planner');
-  }, [scrollToDate]);
-
-  // Direct pane requests (e.g. the calendar's shopping-day row → grocery);
-  // clear the param so returning here later doesn't re-apply it.
+  // The pane is chosen by the `pane` param alone (see types.ts) — never inferred
+  // from `scrollToDate`. That separation is what lets the calendar's grocery cart
+  // open the shopping list *and* leave a planner highlight waiting: PlannerPane
+  // isn't mounted yet, so it consumes the day whenever the user flips over.
+  // Clear the param so returning here later doesn't re-apply it.
   useEffect(() => {
     if (paneParam) {
       setPane(paneParam);
@@ -95,7 +91,6 @@ function KitchenHome() {
     navigation.setOptions({
       headerRight: () => (
         <TouchableOpacity style={styles.recipesBtn} onPress={() => navigation.navigate('Recipes')}>
-          <MaterialCommunityIcons name="book-open-variant" size={15} color="#fff" />
           <Text style={styles.recipesBtnText}>Recipes</Text>
         </TouchableOpacity>
       ),
@@ -160,8 +155,10 @@ const styles = StyleSheet.create({
   scheduleCardTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
   scheduleCardSummary: { fontSize: 13, color: colors.textMuted, marginTop: 1 },
   segmentWrap: { padding: spacing.md, paddingBottom: spacing.sm },
-  // Transparent header button, white like the rest of the header chrome.
-  recipesBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 6, paddingHorizontal: 4 },
+  // Transparent text-only header button, white like the rest of the header
+  // chrome. No glyph: the word carries it, and a book icon beside "Recipes"
+  // only repeats the label.
+  recipesBtn: { paddingVertical: 6, paddingHorizontal: 4 },
   recipesBtnText: { fontSize: 14, fontWeight: '600', color: '#fff' },
   // The chevrons' own touch padding (navBtn) renders as part of the gap, so
   // only a small top margin is needed to match the stack's vertical rhythm.

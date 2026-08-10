@@ -386,6 +386,62 @@ describe('save scope decision', () => {
     expect(itemSaveScopeDecision(chore(), payload({ title: 'x' })).kind).toBe('both');
   });
 
+  // The payload diff ignores `nextDueDate` (the rule reseeds it), so the form
+  // reports a user-moved occurrence date explicitly. "Do the Aug 20 chore on
+  // Aug 22 instead" is an occurrence-level change and must offer This … Only —
+  // without the signal it saved silently as a whole-series re-anchor.
+  it('offers both choices when the occurrence date was moved', () => {
+    const d = itemSaveScopeDecision(chore(), payload(), { occurrenceDateMoved: true });
+    expect(d.kind).toBe('both');
+    expect(itemSaveChoices('chore', d).map((c) => c.text)).toEqual([
+      'Save for This Chore Only',
+      'Save for Future Chores',
+    ]);
+  });
+
+  it('a moved date plus a repeat-rule change still resolves to future-only', () => {
+    const d = itemSaveScopeDecision(
+      chore(),
+      payload({ recurrence: { type: 'interval', intervalUnit: 'weeks', intervalValue: 2 } }),
+      { occurrenceDateMoved: true },
+    );
+    expect(d.kind).toBe('futureOnly');
+  });
+
+  it('a moved date on a one-time item stays silent', () => {
+    const c = chore({ recurrence: { type: 'one-time' } });
+    expect(itemSaveScopeDecision(c, payload(), { occurrenceDateMoved: true }).kind).toBe('none');
+  });
+
+  // skipDates/until live INSIDE the sealed recurrence, and the form rebuilds
+  // the rule from the Repeat screen without them — one previously skipped day
+  // must not make every later edit read as a rule change (reported: a date-only
+  // move on a weekly chore offered only "Save for Future Chores").
+  it('ignores skip/until bookkeeping inside the recurrence', () => {
+    const c = chore({
+      recurrence: { ...CONTENT.recurrence, skipDates: ['2026-02-01'], until: '2026-12-31' },
+    });
+    expect(itemSaveScopeDecision(c, payload(), { occurrenceDateMoved: true }).kind).toBe('both');
+    expect(itemSaveScopeDecision(c, payload({ title: 'x' })).kind).toBe('both');
+    expect(itemSaveScopeDecision(c, payload()).kind).toBe('none');
+  });
+
+  it('still sees a real rule change under the bookkeeping', () => {
+    const c = chore({ recurrence: { ...CONTENT.recurrence, skipDates: ['2026-02-01'] } });
+    const d = itemSaveScopeDecision(
+      c,
+      payload({ recurrence: { type: 'interval', intervalUnit: 'weeks', intervalValue: 2 } }));
+    expect(d.kind).toBe('futureOnly');
+  });
+
+  // The rule builders emit `months: []` where records written by other paths
+  // (templates, assistant drafts, older rows) omit the key entirely — shape
+  // noise, not an edit.
+  it('treats an absent list and an empty one as the same rule', () => {
+    const p = payload({ recurrence: { ...CONTENT.recurrence, months: [] } });
+    expect(itemSaveScopeDecision(chore(), p).kind).toBe('none');
+  });
+
   it('uses task nouns in its choices', () => {
     const d = itemSaveScopeDecision(chore(), payload({ title: 'x' }));
     expect(itemSaveChoices('task', d).map((c) => c.text)).toEqual([

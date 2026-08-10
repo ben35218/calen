@@ -1,4 +1,4 @@
-import type { InvitationEventSnapshot, Item, PersonLabeledValue, PersonRelatedName, ProposedTask, Recipe } from '../api';
+import type { InvitationEventSnapshot, Item, PersonLabeledValue, PersonRelatedName, ProposedTask, Recipe, TravelMode } from '../api';
 import type { RepeatRule } from '../lib/eventRepeat';
 import type { AssistantId } from '../screens/chat/assistantTabs';
 
@@ -161,7 +161,7 @@ export type RootStackParamList = {
   EventInvitees: { eventId?: string; snapshot: InvitationEventSnapshot };
   // The event form's travel-time settings (switch / starting location / manual
   // duration). Edits flow back to the form via lib/travelDraft.
-  EventTravelTime: { enabled: boolean; fromAddress: string; manualMinutes: number | null };
+  EventTravelTime: { enabled: boolean; fromAddress: string; mode: TravelMode; manualMinutes: number | null };
   // The event form's custom repeat rule (frequency / every N / weekday / month
   // patterns). Edits flow back to the form via lib/repeatDraft. `date` = the
   // event's start date, seeding pattern defaults.
@@ -218,13 +218,19 @@ export type RootStackParamList = {
   ChoreTemplates: undefined;
 
   // ----- Kitchen / meal planner -----
-  // `scrollToDate` (YYYY-MM-DD): open the Planner pane and scroll to that day —
-  // used after scheduling a freshly-created recipe so the user lands on it.
-  // `pane`: open a specific Meals pane — e.g. shopping-day rows on the
-  // calendar jump straight to the Grocery pane.
-  // `weekStart` (YYYY-MM-DD): a date within the shopping period to show — the
-  // calendar's grocery icon passes its day so the pane opens on that period
-  // rather than the current one.
+  // Three independent params; pass whichever the arrival actually means.
+  // `pane`: which Meals pane to show. Say it explicitly — it is the ONLY thing
+  // that selects a pane, so a `scrollToDate` never drags the user off the pane
+  // the caller asked for.
+  // `weekStart` (YYYY-MM-DD): a date within the shopping period to show, so the
+  // view opens on that period rather than the current one.
+  // `scrollToDate` (YYYY-MM-DD): a day for the Planner pane to scroll to and
+  // highlight. It is consumed by `PlannerPane`, so it survives until that pane
+  // is actually on screen — the calendar's grocery cart opens the Grocery pane
+  // with all three, and the highlight is waiting when the user flips over to
+  // the planner. Pass `weekStart` alongside it whenever the day may sit outside
+  // the current period: the pane ignores (and leaves unconsumed) a scrollToDate
+  // outside the period it is showing.
   KitchenHome: { scrollToDate?: string; pane?: KitchenPane; weekStart?: string } | undefined;
   // The recipe library (list/search/manage); reached from the Meals view's
   // Recipes button rather than a segmented pane.

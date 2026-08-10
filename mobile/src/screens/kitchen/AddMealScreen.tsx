@@ -27,6 +27,8 @@ function HeaderSearch({ onChangeText }: { onChangeText: (t: string) => void }) {
         placeholderTextColor={colors.textMuted}
         onChangeText={onChangeText}
         autoFocus
+        autoCapitalize="none"
+        autoCorrect={false}
         returnKeyType="search"
         style={styles.headerSearchInput}
       />

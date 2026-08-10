@@ -81,7 +81,7 @@ export default function ChoreTemplatesScreen() {
     <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={styles.screen} contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={templatesQ.isRefetching} onRefresh={templatesQ.refetch} />}
     >
-      <Input placeholder="Search templates…" value={search} onChangeText={setSearch} />
+      <Input placeholder="Search templates…" value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false} />
 
       {Object.entries(grouped).map(([cat, items]) => (
         <View key={cat} style={styles.group}>

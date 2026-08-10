@@ -13,6 +13,13 @@ export const CALENDAR_COLORS: Record<string, string> = {
   'canadian-holidays': '#D32F2F',
 };
 
+// Glyphs (MaterialCommunityIcons) for the calendar concepts that appear on more
+// than one surface. One constant per concept so a meal looks like a meal on the
+// month grid, in the list and day views, in search, and on the meal planner —
+// four screens that each used to spell the name out.
+export const RECIPE_ICON = 'silverware-fork-knife';
+export const GROCERY_ICON = 'cart';
+
 // User colour overrides (loaded/persisted by calendarPrefs). `colorOf` resolves
 // the effective colour for a calendar id so chips/bars/icons reflect overrides.
 let colorOverrides: Record<string, string> = {};
@@ -206,6 +213,46 @@ export function alertsForAllDay(
   };
 }
 
+// The second alert is only ever the SECOND one: clearing the first promotes it
+// into that slot rather than leaving it set behind a row the form no longer
+// shows (the Second Alert field renders only while a first alert exists). Set
+// two alerts, then clear the first, and the survivor is the one the user still
+// wants — hiding it while keeping it set means an alert they can't see or edit,
+// and dropping it silently discards a setting they never withdrew.
+//
+// Returns a FRESH four-key object every time, never the argument — same reason
+// as `alertsForAllDay`: callers spread it over a form patch, and a wider object
+// handed in would spread its own stale fields back on top.
+export function promoteSecondAlert(alerts: {
+  reminderMinutes: number | null;
+  alert2Minutes: number | null;
+  alertAnchor?: AlertAnchor | null;
+  alert2Anchor?: AlertAnchor | null;
+}): {
+  reminderMinutes: number | null;
+  alert2Minutes: number | null;
+  alertAnchor: AlertAnchor;
+  alert2Anchor: AlertAnchor;
+} {
+  const alertAnchor = alerts.alertAnchor ?? 'event';
+  const alert2Anchor = alerts.alert2Anchor ?? 'event';
+  if (alerts.reminderMinutes != null || alerts.alert2Minutes == null) {
+    return {
+      reminderMinutes: alerts.reminderMinutes,
+      alert2Minutes: alerts.alert2Minutes,
+      alertAnchor,
+      alert2Anchor,
+    };
+  }
+  // The survivor keeps its own framing as it moves up (see the anchor note).
+  return {
+    reminderMinutes: alerts.alert2Minutes,
+    alert2Minutes: null,
+    alertAnchor: alert2Anchor,
+    alert2Anchor: 'event',
+  };
+}
+
 // An all-day event's alert as the picker and the detail view word it, naming
 // the hour it fires at: "On the day (9:00 AM)", "1 day before (9:00 AM)". A
 // value off the day grid — set before all-day alerts were day-based, or by an
@@ -219,6 +266,97 @@ export function allDayAlertLabel(minutes: number, dayAlertTime?: string | null):
       ? `${days / 7} week${days === 7 ? '' : 's'} before`
       : `${days} day${days === 1 ? '' : 's'} before`;
   return `${base} (${dayAlertClock(dayAlertTime)})`;
+}
+
+// ── Departure-anchored alerts ───────────────────────────────────────────────
+// A timed event with a drive time can hang its alert off DEPARTURE instead of
+// off the start: "30 min before leaving" fires half an hour before the user has
+// to set off. The stored field is still `reminderMinutes` — minutes before the
+// event — so scheduling, the record and the seal are untouched; `alertAnchor`
+// records only which of the two framings the user actually chose.
+//
+// That flag is load-bearing because both framings can name the same instant:
+// with a 23-minute drive, "2 hours before" and "1 hr 37 min before leaving" are
+// the same alert. Inferring the framing from the number alone (what this used to
+// do — any value at or past the drive time was re-worded as departure-relative)
+// silently re-read a plain "2 hours before" as a departure countdown, so the
+// picker showed back a setting the user never made.
+export type AlertAnchor = 'event' | 'leave';
+
+// Canned departure-relative rows, as minutes before leaving. 0 = "Time to leave".
+export const LEAVE_ALERT_BUFFERS = [0, 5, 10, 15, 30];
+
+// Departure anchoring exists only on a timed event whose drive time is known —
+// an all-day event has no start to subtract the drive from, and with no drive
+// time there is no departure to count back from.
+export function canLeaveAnchor(allDay?: boolean, travelMinutes?: number | null): boolean {
+  return !allDay && !!travelMinutes;
+}
+
+// The anchor an alert can honour as the event stands now. Turning the event
+// all-day, or dropping its drive time, leaves the stored minutes-before-event
+// exactly as they are but takes the departure wording away with them.
+export function effectiveAlertAnchor(
+  anchor: AlertAnchor | null | undefined,
+  allDay?: boolean,
+  travelMinutes?: number | null,
+): AlertAnchor {
+  return anchor === 'leave' && canLeaveAnchor(allDay, travelMinutes) ? 'leave' : 'event';
+}
+
+// Minutes before DEPARTURE for a leave-anchored alert — the buffer the user set.
+export function leaveAlertBuffer(minutes: number, travelMinutes: number): number {
+  return Math.max(0, minutes - travelMinutes);
+}
+
+// The stored minutes-before-event for "`buffer` minutes before leaving".
+export function leaveAlertMinutes(buffer: number, travelMinutes: number): number {
+  return travelMinutes + Math.max(0, buffer);
+}
+
+// The anchor for an event saved before the flag existed. Only the canned
+// departure rows are recognised, so events set from those keep reading the way
+// they always have, while every other value reads as what it literally is —
+// minutes before the event.
+export function inferAlertAnchor(
+  minutes: number | null | undefined,
+  allDay?: boolean,
+  travelMinutes?: number | null,
+): AlertAnchor {
+  if (minutes == null || !canLeaveAnchor(allDay, travelMinutes)) return 'event';
+  return LEAVE_ALERT_BUFFERS.some((b) => minutes === travelMinutes! + b) ? 'leave' : 'event';
+}
+
+// How a TIMED event's alert reads, in the picker and on the detail view.
+// `leaveByTime` (e.g. "8:37 AM") names the departure clock time on the
+// "Time to leave" row when it is known.
+export function timedAlertLabel(
+  minutes: number,
+  anchor: AlertAnchor,
+  travelMinutes?: number | null,
+  leaveByTime?: string | null,
+): string {
+  if (anchor === 'leave' && travelMinutes) {
+    const buffer = leaveAlertBuffer(minutes, travelMinutes);
+    if (buffer === 0) return leaveByTime ? `Time to leave (${leaveByTime})` : 'Time to leave';
+    return `${formatDuration(buffer)} before leaving`;
+  }
+  if (minutes <= 0) return 'At time of event';
+  return `${formatDuration(minutes)} before`;
+}
+
+// A leave-anchored alert keeps its distance from DEPARTURE when the drive time
+// changes: "30 min before leaving" means 30 minutes before the NEW departure, so
+// the stored minutes-before-event move with the drive. An event-anchored alert
+// never moves. Returns the (possibly unchanged) minutes-before-event.
+export function rebaseLeaveAlert(
+  minutes: number | null,
+  anchor: AlertAnchor,
+  prevTravelMinutes: number | null | undefined,
+  nextTravelMinutes: number | null | undefined,
+): number | null {
+  if (minutes == null || anchor !== 'leave' || !prevTravelMinutes || !nextTravelMinutes) return minutes;
+  return leaveAlertMinutes(leaveAlertBuffer(minutes, prevTravelMinutes), nextTravelMinutes);
 }
 
 // ── Occurrence anchoring ────────────────────────────────────────────────────

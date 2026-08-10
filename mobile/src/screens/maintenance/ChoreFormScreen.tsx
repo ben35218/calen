@@ -281,7 +281,17 @@ export default function ChoreFormScreen() {
   const dueDateLabel = editingOccurrence ? 'Date' : 'Next Due Date';
 
   const buildPayload = (frame: 'occurrence' | 'series'): Record<string, unknown> => {
-    const recurrence = ruleToRecurrence(repeatRule);
+    const recurrence: Record<string, unknown> = { ...ruleToRecurrence(repeatRule) };
+    // The Repeat screen edits only the rule; the skip/end bookkeeping sealed
+    // beside it rides along — without this a plain series save resurrects
+    // every skipped day and un-ends an ended series.
+    const prior = decryptedChore.current?.recurrence as
+      | { skipDates?: string[]; until?: string | Date | null }
+      | undefined;
+    if (recurrence.type !== 'one-time' && prior) {
+      if (prior.skipDates?.length) recurrence.skipDates = prior.skipDates;
+      if (prior.until != null) recurrence.until = prior.until;
+    }
     const payload: Record<string, unknown> = {
       title: form.title,
       instructions: form.instructions,
@@ -404,7 +414,12 @@ export default function ChoreFormScreen() {
       save.mutate('series');
       return;
     }
-    const decision = itemSaveScopeDecision(original, buildPayload('series'));
+    // The date field holds the occurrence's day, and the payload diff ignores
+    // `nextDueDate` (the rule reseeds it), so a moved date is reported to the
+    // decision explicitly — otherwise "do this one on Friday instead" saved
+    // silently as a whole-series re-anchor.
+    const occurrenceDateMoved = editingOccurrence && !!form.nextDueDate && form.nextDueDate !== date;
+    const decision = itemSaveScopeDecision(original, buildPayload('series'), { occurrenceDateMoved });
     if (decision.kind === 'none') {
       save.mutate('series');
       return;
@@ -519,9 +534,10 @@ export default function ChoreFormScreen() {
       </GroupCard>
       {/* Names the occurrence being edited. Without it the form looks like the
           whole chore, and the save sheet's "This … Only" choice has no
-          visible referent. */}
+          visible referent. Pinned to the TAPPED day, not the live date field —
+          moving the date must keep naming the occurrence being replaced. */}
       {editingOccurrence ? (
-        <Hint>{`Editing the ${formatCalendarDate(form.nextDueDate)} chore in this repeating series.`}</Hint>
+        <Hint>{`Editing the ${formatCalendarDate(date)} chore in this repeating series.`}</Hint>
       ) : null}
 
       <GroupCard>

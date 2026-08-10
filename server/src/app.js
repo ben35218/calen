@@ -47,6 +47,7 @@ const monetizationConfigRoutes = require('./routes/monetizationConfig');
 const adminRoutes = require('./routes/admin');
 const adminAnalyticsRoutes = require('./routes/adminAnalytics');
 const adminEmailRoutes = require('./routes/adminEmail');
+const adminQaRoutes = require('./routes/adminQa');
 
 // Patch the Anthropic SDK once so one-shot AI calls auto-record token usage
 // against the weekly budget (see services/aiUsage.js). Streaming chat records
@@ -95,6 +96,11 @@ app.use('/api/maintenance/chat', chatJson);
 app.use('/api/maintenance/plan-chat', chatJson);
 app.use('/api/chores/chat', chatJson);
 app.use('/api/trips/chat', chatJson);
+// A test-plan import posts a whole document as text (specs/features/release-qa.md).
+// The repo's plan is ~150 KB today, well over the default 100 KB limit — and like
+// the chat routes, this has to be mounted BEFORE the global parser below, or the
+// global one 413s the request first.
+app.use('/api/admin/qa/cases/import', express.json({ limit: '4mb' }));
 app.use(express.json());
 app.use('/uploads', express.static(path.resolve(process.env.UPLOAD_DIR || './uploads')));
 
@@ -144,6 +150,9 @@ app.use('/api/monetization-config', monetizationConfigRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
 // Admin email surfaces (outbound send log + support@ inbox). requireAdmin-gated.
 app.use('/api/admin/email', adminEmailRoutes);
+// Release QA (test cases, runs, sign-off). requireAdmin-gated. Mounted before
+// the broader /api/admin for the same reason as the two above.
+app.use('/api/admin/qa', adminQaRoutes);
 // Admin-only ops surfaces (users, E2EE readiness, audit log). requireAdmin-gated.
 app.use('/api/admin', adminRoutes);
 

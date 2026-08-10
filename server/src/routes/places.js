@@ -13,6 +13,52 @@ router.use(mapsGuard());
 const BASE = 'https://places.googleapis.com/v1';
 const LEG_FRESH_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+// Build the Places (New) autocomplete request body for a query + field `type`.
+// `includedPrimaryTypes` is a *filter*, not a ranking hint: a type list drops
+// every prediction outside it, so a field that accepts more than one kind of
+// place must either widen the list or omit it entirely.
+function autocompleteBody({ query, type, biasLat, biasLon, region }) {
+  const hasCoords = Number.isFinite(biasLat) && Number.isFinite(biasLon);
+  const body = { input: query };
+  if (hasCoords) {
+    // 50 km is the API's max circle radius — roughly "my metro area".
+    body.locationBias = { circle: { center: { latitude: biasLat, longitude: biasLon }, radius: 50000 } };
+  }
+  if (type === 'address') {
+    body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise'];
+    body.includedRegionCodes = [region ?? 'CA'];
+  } else if (type === 'addressCity') {
+    // Contacts whose home we may only know to the city: precise street
+    // addresses *and* localities, so an address can be as coarse as a city.
+    // (locality is a Table-A type, so it mixes with the street types — unlike
+    // the "(cities)" collection, which can't be combined.) No region filter —
+    // contacts can live anywhere; the location bias still favours nearby.
+    body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise', 'locality'];
+  } else if (type === 'city') {
+    // Cities worldwide (no region restriction) for trip destinations
+    body.includedPrimaryTypes = ['(cities)'];
+  } else if (type === 'airport') {
+    body.includedPrimaryTypes = ['airport'];
+  } else if (type === 'transit') {
+    // Train stations, ferry terminals, etc. for rail/sea journeys (max 5 types)
+    body.includedPrimaryTypes = ['train_station', 'transit_station', 'subway_station', 'light_rail_station', 'ferry_terminal'];
+  } else if (type === 'business') {
+    // Service contacts: match both businesses and street addresses (no
+    // primary-type filter so a plumber name *or* an address resolves).
+    body.includedRegionCodes = [region ?? 'CA'];
+  } else {
+    // Untyped — the "search for a business or address" fields (an event's
+    // Location, a trip item's location). Both kinds must resolve, so there is
+    // NO primary-type filter: the old `['establishment']` list made businesses
+    // the only thing that could ever match, and typing a street address
+    // returned an empty dropdown.
+    // No coords to bias with — restricting to the user's country is the
+    // only locality signal left (keeps "beach" from resolving to India).
+    if (!hasCoords && region) body.includedRegionCodes = [region];
+  }
+  return body;
+}
+
 router.get('/autocomplete', async (req, res) => {
   const { query, type, lat, lon, country } = req.query;
   if (!query || query.trim().length < 2) return res.json({ predictions: [] });
@@ -30,43 +76,10 @@ router.get('/autocomplete', async (req, res) => {
   const qLon = Number(lon);
   const biasLat = Number.isFinite(qLat) ? qLat : hh?.lat;
   const biasLon = Number.isFinite(qLon) ? qLon : hh?.lon;
-  const hasCoords = Number.isFinite(biasLat) && Number.isFinite(biasLon);
   const region = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : null;
 
   try {
-    const body = { input: query };
-    if (hasCoords) {
-      // 50 km is the API's max circle radius — roughly "my metro area".
-      body.locationBias = { circle: { center: { latitude: biasLat, longitude: biasLon }, radius: 50000 } };
-    }
-    if (type === 'address') {
-      body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise'];
-      body.includedRegionCodes = [region ?? 'CA'];
-    } else if (type === 'addressCity') {
-      // Contacts whose home we may only know to the city: precise street
-      // addresses *and* localities, so an address can be as coarse as a city.
-      // (locality is a Table-A type, so it mixes with the street types — unlike
-      // the "(cities)" collection, which can't be combined.) No region filter —
-      // contacts can live anywhere; the location bias still favours nearby.
-      body.includedPrimaryTypes = ['street_address', 'route', 'premise', 'subpremise', 'locality'];
-    } else if (type === 'city') {
-      // Cities worldwide (no region restriction) for trip destinations
-      body.includedPrimaryTypes = ['(cities)'];
-    } else if (type === 'airport') {
-      body.includedPrimaryTypes = ['airport'];
-    } else if (type === 'transit') {
-      // Train stations, ferry terminals, etc. for rail/sea journeys (max 5 types)
-      body.includedPrimaryTypes = ['train_station', 'transit_station', 'subway_station', 'light_rail_station', 'ferry_terminal'];
-    } else if (type === 'business') {
-      // Service contacts: match both businesses and street addresses (no
-      // primary-type filter so a plumber name *or* an address resolves).
-      body.includedRegionCodes = [region ?? 'CA'];
-    } else {
-      body.includedPrimaryTypes = ['establishment'];
-      // No coords to bias with — restricting to the user's country is the
-      // only locality signal left (keeps "beach" from resolving to India).
-      if (!hasCoords && region) body.includedRegionCodes = [region];
-    }
+    const body = autocompleteBody({ query, type, biasLat, biasLon, region });
 
     const { data } = await axios.post(
       `${BASE}/places:autocomplete`,
@@ -151,46 +164,40 @@ router.get('/timezone/:placeId', async (req, res) => {
   }
 });
 
+// Event travel time: origin → destination for a chosen mode. Drive/walk/bike
+// go through the Routes API (traffic-aware where it applies); transit through
+// the Directions API with `departureTime` (the event's start) so the estimate
+// reflects the schedule around the event, not whenever the form happened to
+// recompute.
+const EVENT_TRAVEL_MODES = new Set(['DRIVE', 'WALK', 'BICYCLE', 'TRANSIT']);
+
 router.get('/travel-time', async (req, res) => {
-  const { destination, origin } = req.query;
+  const { destination, origin, departureTime } = req.query;
   if (!destination) return res.status(400).json({ error: 'destination required' });
 
-  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-  if (!apiKey) return res.status(503).json({ error: 'Google Places API key not configured' });
+  const mode = String(req.query.mode || 'DRIVE').toUpperCase();
+  if (!EVENT_TRAVEL_MODES.has(mode)) return res.status(400).json({ error: 'Unsupported travel mode' });
+
+  if (!process.env.GOOGLE_PLACES_API_KEY) return res.status(503).json({ error: 'Google Places API key not configured' });
 
   const homeAddress = origin?.trim() || (req.household || req.user).homeAddress;
   if (!homeAddress) return res.status(400).json({ error: 'No starting address — set one in Settings or type it in the From field' });
 
-  try {
-    const { data } = await axios.post(
-      'https://routes.googleapis.com/directions/v2:computeRoutes',
-      {
-        origin:      { address: homeAddress },
-        destination: { address: destination },
-        travelMode:  'DRIVE',
-        routingPreference: 'TRAFFIC_AWARE',
-      },
-      {
-        headers: {
-          'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters',
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-
-    const route = data.routes?.[0];
-    if (!route) return res.status(404).json({ error: 'No route found' });
-
-    const seconds    = parseInt(route.duration, 10);
-    const minutes    = Math.ceil(seconds / 60);
-    const distanceKm = ((route.distanceMeters ?? 0) / 1000).toFixed(1);
-
-    res.json({ minutes, distanceKm });
-  } catch (err) {
-    const msg = err.response?.data?.error?.message ?? err.message;
-    res.status(500).json({ error: msg });
+  const result = await routeLeg({
+    origin:      { address: homeAddress },
+    destination: { address: destination },
+    mode,
+    departureTime,
+  });
+  if (!result) {
+    // Transit has real coverage gaps (Google doesn't license schedules
+    // everywhere), so name the mode instead of a generic failure.
+    return res.status(404).json({
+      error: mode === 'TRANSIT' ? 'No transit route found between these locations' : 'No route found',
+    });
   }
+
+  res.json({ minutes: result.minutes, distanceKm: result.distanceKm.toFixed(1) });
 });
 
 // Travel time between two bookings (cached). Body: originPlaceId/originAddress,
@@ -274,3 +281,4 @@ router.get('/staticmap', (req, res) => proxyMapImage('staticmap', req, res));
 router.get('/streetview', (req, res) => proxyMapImage('streetview', req, res));
 
 module.exports = router;
+module.exports.autocompleteBody = autocompleteBody;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import {
   Text,
   TextInput,
@@ -24,6 +24,7 @@ import {
   // needs PanResponder, and gesture-handler isn't a dependency of this app.
   Animated as RNAnimated,
   PanResponder,
+  PanResponderGestureState,
 } from 'react-native';
 import { KeyboardAwareScrollView, KeyboardController } from 'react-native-keyboard-controller';
 import type { KeyboardAwareScrollViewRef } from 'react-native-keyboard-controller';
@@ -31,6 +32,10 @@ import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, wit
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+// Read through the *context* rather than `useNavigation()`: SwipeableRow has to
+// work when it's rendered outside a navigator (tests, previews), and the hook
+// throws there while the context just reads back undefined.
+import { NavigationContext } from '@react-navigation/native';
 import { colors, radius, spacing } from '../theme';
 import {
   COUNTRIES,
@@ -945,7 +950,8 @@ export function IconAvatar({
 // a subtitle (a string, or a node for icon-studded meta rows), and trailing
 // content (`right` — a Switch/Badge…; falls back to a chevron when `onPress` is
 // set). The richer sibling of ListRow (which is a bare row inside a card). For
-// bespoke cards (expandable, swipeable, flush colour-bar) keep a raw Card.
+// bespoke cards (expandable, flush colour-bar) keep a raw Card; for swipe-to-
+// delete wrap whatever the row is in SwipeableRow.
 export function CardRow({
   leading,
   title,
@@ -989,6 +995,148 @@ export function CardRow({
     <TouchableOpacity activeOpacity={0.7} onPress={onPress}>{body}</TouchableOpacity>
   ) : (
     body
+  );
+}
+
+// Width of the destructive action revealed behind a swiped row.
+const SWIPE_ACTION_WIDTH = 88;
+// Below this the action is the word alone: a glyph stacked over a label needs
+// ~40pt of its own, and a short interior row (a planner meal is ~28pt) crushes
+// the pair rather than dropping one — the same call UIKit makes when a swipe
+// action can't fit its image.
+const SWIPE_ICON_MIN_HEIGHT = 56;
+
+// The iOS swipe-to-delete row: dragging left slides a red Delete action in from
+// the right edge; tapping it fires `onDelete` (which must put up the native
+// confirm — see the destructive-actions rule in mobile/CLAUDE.md) and springs
+// the row closed. Built on RN's own PanResponder/Animated, like BottomSheet's
+// drag, because gesture-handler isn't a dependency of this app.
+//
+// The action parks *outside* the wrap and travels with the content rather than
+// sitting behind it, so it stays clipped until it's dragged in. That's what lets
+// this wrap transparent content — a bare row inside a card, not just an opaque
+// Card — without the red bleeding through at rest.
+//
+// `actionStyle` carries the geometry, since the action has to look like it
+// belongs to whatever it slid out of: a standalone card passes its corner radius
+// and bottom margin; a row inside a card passes the row's own radius.
+//
+// The action's own contents follow the row's measured height: a tall card gets
+// the trash glyph over the word, a short interior row gets the word alone.
+// Swiping back the other way — or tapping the open row — puts it away.
+export function SwipeableRow({
+  children,
+  onDelete,
+  label = 'Delete',
+  actionStyle,
+  accessibilityLabel,
+}: {
+  children: React.ReactNode;
+  onDelete: () => void;
+  label?: string;
+  actionStyle?: StyleProp<ViewStyle>;
+  accessibilityLabel?: string;
+}) {
+  const translateX = useRef(new RNAnimated.Value(0)).current;
+  const openRef = useRef(false);
+  const [open, setOpen] = useState(false);
+  const [rowHeight, setRowHeight] = useState(0);
+  // While a row is open, its own swipe-right has to beat the screen's
+  // interactive pop: a meal row sits ~28pt in from the left edge, well inside
+  // iOS's back-gesture zone, so closing the row would instead pop the screen —
+  // the user swipes right to undo and lands back out of the view. UIKit
+  // suppresses the pop the same way while a swipe action is revealed. Held for
+  // as long as any row here is open, and released on close/unmount.
+  const nav = useContext(NavigationContext);
+  const navRef = useRef(nav);
+  navRef.current = nav;
+  const setBackGesture = (enabled: boolean) => navRef.current?.setOptions?.({ gestureEnabled: enabled });
+  useEffect(() => () => { if (openRef.current) setBackGesture(true); }, []);
+
+  const snap = (next: boolean) => {
+    if (next !== openRef.current) setBackGesture(!next);
+    openRef.current = next;
+    setOpen(next);
+    RNAnimated.spring(translateX, {
+      toValue: next ? -SWIPE_ACTION_WIDTH : 0,
+      useNativeDriver: true,
+      bounciness: 0,
+    }).start();
+  };
+
+  // Claim the gesture only for a deliberate horizontal drag, so vertical
+  // scrolling and taps still pass through to the list / row. An open row claims
+  // sooner: the swipe that closes it is the one competing with the screen's
+  // back gesture, and losing that race navigates away.
+  const isSwipe = (g: PanResponderGestureState) =>
+    Math.abs(g.dx) > (openRef.current ? 4 : 12) && Math.abs(g.dx) > Math.abs(g.dy) * 1.5;
+
+  const pan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => isSwipe(g),
+      // …and take it *from* a child that already holds the touch: the row's own
+      // Touchable, or the close overlay below, which would otherwise swallow
+      // the very drag that puts the action away.
+      onMoveShouldSetPanResponderCapture: (_, g) => isSwipe(g),
+      // Once the drag is ours, a parent scroll view doesn't get to take it back
+      // mid-swipe and strand the row half-open.
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_, g) => {
+        const base = openRef.current ? -SWIPE_ACTION_WIDTH : 0;
+        translateX.setValue(Math.max(-SWIPE_ACTION_WIDTH, Math.min(0, base + g.dx)));
+      },
+      onPanResponderRelease: (_, g) => {
+        if (openRef.current && Math.abs(g.dx) < 8) return snap(false); // a tap
+        // A flick settles by direction; a slow drag by how far it got. Without
+        // the velocity test a quick right-flick that travels less than half the
+        // action's width springs back open, which reads as "it won't let me".
+        if (Math.abs(g.vx) > 0.3) return snap(g.vx < 0);
+        const base = openRef.current ? -SWIPE_ACTION_WIDTH : 0;
+        snap(base + g.dx < -SWIPE_ACTION_WIDTH / 2);
+      },
+      onPanResponderTerminate: () => snap(openRef.current),
+    })
+  ).current;
+
+  return (
+    <View style={styles.swipeWrap} onLayout={(e) => setRowHeight(e.nativeEvent.layout.height)}>
+      <RNAnimated.View style={[styles.swipeAction, actionStyle, { transform: [{ translateX }] }]}>
+        <TouchableOpacity
+          style={styles.swipeActionBtn}
+          onPress={() => {
+            snap(false);
+            onDelete();
+          }}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel ?? label}
+        >
+          {rowHeight >= SWIPE_ICON_MIN_HEIGHT ? (
+            <>
+              <Ionicons name="trash-outline" size={22} color="#fff" />
+              <Text style={styles.swipeActionText}>{label}</Text>
+            </>
+          ) : (
+            <Text style={[styles.swipeActionText, styles.swipeActionTextAlone]}>{label}</Text>
+          )}
+        </TouchableOpacity>
+      </RNAnimated.View>
+      <RNAnimated.View style={{ transform: [{ translateX }] }} {...pan.panHandlers}>
+        {children}
+        {/* An open row is inert: tapping it closes the action rather than
+            opening whatever the row points at (UIKit does the same). A
+            Pressable rather than a responder-capture, so a vertical drag still
+            hands off to the list's scroll. */}
+        {open ? (
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => snap(false)}
+            accessibilityLabel="Close"
+            accessibilityRole="button"
+          />
+        ) : null}
+      </RNAnimated.View>
+    </View>
   );
 }
 
@@ -1762,7 +1910,7 @@ export function PhoneField({
           what scrolls — it can never collapse to a sliver that hides the one
           matching row. */}
       <BottomSheet visible={pickerOpen} onClose={closePicker} title="Country" avoidKeyboard style={styles.phonePickerSheet}>
-        <Input placeholder="Search" value={search} onChangeText={setSearch} autoFocus containerStyle={styles.phoneSearch} />
+        <Input placeholder="Search" value={search} onChangeText={setSearch} autoFocus autoCapitalize="none" autoCorrect={false} containerStyle={styles.phoneSearch} />
         <ScrollView ref={listRef} style={styles.phoneCountryList} keyboardShouldPersistTaps="handled">
           {filtered.map((c) => (
             <TouchableOpacity key={c.code} style={styles.optionRow} onPress={() => pickCountry(c.code)}>
@@ -1917,6 +2065,26 @@ const styles = StyleSheet.create({
   cardRowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
   cardRowSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   cardRowSubtitleRow: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 4, flexWrap: 'wrap' },
+
+  // Swipe-to-delete. The action parks just past the right edge and is clipped by
+  // the wrap until the same translate that moves the content drags it into view;
+  // callers pass the geometry (radius / insets) via actionStyle.
+  swipeWrap: { position: 'relative', overflow: 'hidden' },
+  swipeAction: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: -SWIPE_ACTION_WIDTH,
+    width: SWIPE_ACTION_WIDTH,
+    backgroundColor: colors.error,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swipeActionBtn: { flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
+  swipeActionText: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 2 },
+  // Carrying the action on its own, the word takes the glyph's weight.
+  swipeActionTextAlone: { fontSize: 14, marginTop: 0 },
+
   accordion: { marginBottom: spacing.md },
   accordionHeader: {
     flexDirection: 'row',

@@ -407,6 +407,8 @@ export default function PersonFormScreen() {
             value={form.name}
             onChangeText={set('name')}
             placeholder="Name"
+            autoCapitalize="words"
+            textContentType="organizationName"
             editable={!isSelf}
             containerStyle={fs.headField}
             style={[fs.headInput, assist.changed.has('name') && fs.headInputHighlight]}
@@ -418,6 +420,8 @@ export default function PersonFormScreen() {
               value={form.firstName}
               onChangeText={set('firstName')}
               placeholder="First name"
+              autoCapitalize="words"
+              textContentType="givenName"
               containerStyle={fs.headField}
               style={[fs.headInput, assist.changed.has('firstName') && fs.headInputHighlight]}
             />
@@ -426,6 +430,8 @@ export default function PersonFormScreen() {
               value={form.lastName}
               onChangeText={set('lastName')}
               placeholder="Last name"
+              autoCapitalize="words"
+              textContentType="familyName"
               containerStyle={fs.headField}
               style={[fs.headInput, assist.changed.has('lastName') && fs.headInputHighlight]}
             />
@@ -627,6 +633,8 @@ export default function PersonFormScreen() {
                 // now-moot reciprocal label).
                 onChangeText={(v) => patch({ value: v, personId: undefined, reciprocalLabel: undefined })}
                 placeholder="Name"
+                autoCapitalize="words"
+                textContentType="name"
                 containerStyle={fs.headField}
                 style={editorField}
               />

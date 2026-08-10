@@ -6,7 +6,7 @@
 // server/src/jobs/scheduler.test.js; delivery is on-device.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { startDb, stopDb, request, registerUser } = require('./harness');
+const { startDb, stopDb, request, registerUser, enrollKeys, joinHousehold, b64u, fakeEnc } = require('./harness');
 
 // Deterministic "web push not configured" regardless of the local .env —
 // services/push.js reads these at module load (on first request). Empty
@@ -104,4 +104,100 @@ test('local-reminders flag round-trips (the server cron skips on-device schedule
     .set('Authorization', u.auth).send({ enabled: false });
   assert.equal(off.status, 200);
   assert.equal((await User.findById(u.user._id).lean()).localReminders, false);
+});
+
+// ── Household event notify relay (stateless push for invite/RSVP) ────────────
+// The server can't read the sealed event; it relays client-chosen strings after
+// verifying the event Record exists in the caller's household and every
+// recipient is a housemate. Nothing is stored. Delivery itself no-ops in tests
+// (recipients have no push subscriptions), so `sent` is asserted as 0 — the
+// contract under test is validation + membership, not Expo transport.
+
+// Owner + member in one household with one opaque event Record.
+async function setupHouseholdWithEvent() {
+  const owner = await registerUser({ firstName: 'Ada', lastName: 'Owner' });
+  const member = await registerUser({ firstName: 'Ben', lastName: 'Member' });
+  await enrollKeys(owner.auth);
+  await enrollKeys(member.auth);
+  await request().post('/api/household/key')
+    .set('Authorization', owner.auth).send({ keyVersion: 1, wrappedHDK: b64u(96) });
+  await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
+  const created = await request().post('/api/records')
+    .set('Authorization', owner.auth).send({ enc: fakeEnc(), keyVersion: 1 });
+  assert.equal(created.status, 201);
+  return { owner, member, eventId: created.body._id };
+}
+
+const eventRequest = (auth, body) =>
+  request().post('/api/notifications/event-request').set('Authorization', auth).send(body);
+const eventResponse = (auth, body) =>
+  request().post('/api/notifications/event-response').set('Authorization', auth).send(body);
+
+test('event-request validates recipients, strings, and the event record', async () => {
+  const { owner, member, eventId } = await setupHouseholdWithEvent();
+  const base = { toUserIds: [member.user._id], title: 'Event invitation', eventId };
+
+  for (const bad of [
+    { ...base, toUserIds: [] },                                   // no recipients
+    { ...base, toUserIds: Array.from({ length: 20 }, () => member.user._id) }, // too many
+    { ...base, title: undefined },                                // no title
+    { ...base, title: 'x'.repeat(121) },                          // title too long
+    { ...base, body: 'x'.repeat(201) },                           // body too long
+    { ...base, eventId: undefined },                              // no event
+    { ...base, toUserIds: ['64b000000000000000000000'] },         // unknown recipient
+  ]) {
+    const res = await eventRequest(owner.auth, bad);
+    assert.equal(res.status, 400, JSON.stringify(bad).slice(0, 80));
+  }
+
+  // An eventId outside the caller's household is indistinguishable from absent.
+  const stranger = await registerUser({ firstName: 'Sam' });
+  const foreign = await request().post('/api/records')
+    .set('Authorization', stranger.auth).send({ enc: fakeEnc(), keyVersion: 1 });
+  const res = await eventRequest(owner.auth, { ...base, eventId: foreign.body._id });
+  assert.equal(res.status, 404);
+});
+
+test('event-request rejects cross-household recipients outright', async () => {
+  const { owner, member, eventId } = await setupHouseholdWithEvent();
+  const stranger = await registerUser({ firstName: 'Sam', lastName: 'Stranger' });
+  // One bad recipient fails the whole request — never a silent partial send.
+  const res = await eventRequest(owner.auth, {
+    toUserIds: [member.user._id, stranger.user._id], title: 'Event invitation', eventId,
+  });
+  assert.equal(res.status, 400);
+});
+
+test('event-request succeeds for housemates, skipping the sender', async () => {
+  const { owner, member, eventId } = await setupHouseholdWithEvent();
+  // Including the sender is harmless — they're skipped, not an error.
+  const res = await eventRequest(owner.auth, {
+    toUserIds: [member.user._id, owner.user._id],
+    title: 'Event invitation',
+    body: 'Ada invited you to “Lake day” — accept or decline',
+    eventId,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.sent, 0, 'no push subscriptions in tests — validated and no-oped');
+});
+
+test('event-response relays to one housemate and enforces the same membership rules', async () => {
+  const { owner, member, eventId } = await setupHouseholdWithEvent();
+
+  const ok = await eventResponse(member.auth, {
+    toUserId: owner.user._id, title: 'Invitation accepted',
+    body: 'Ben accepted “Lake day”', eventId,
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.sent, 0);
+
+  const stranger = await registerUser({ firstName: 'Sam' });
+  const cross = await eventResponse(stranger.auth, {
+    toUserId: owner.user._id, title: 'Invitation accepted', eventId,
+  });
+  // The stranger's household doesn't contain the event → 404 before membership.
+  assert.equal(cross.status, 404);
+
+  const missing = await eventResponse(member.auth, { title: 'Invitation accepted', eventId });
+  assert.equal(missing.status, 400, 'toUserId is required');
 });

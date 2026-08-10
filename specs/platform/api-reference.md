@@ -1,13 +1,14 @@
 ---
 title: API reference
 status: current
-last-verified: c2d18c0+ (2026-08-04); `PUT/GET /settings` accepts/echoes `calendarPrefs` — the user's calendar arrangement (colours / order / hidden / deleted built-ins / muted alerts), merged field-by-field so a partial payload can't blank the rest, validated (hex colours, string ids, 500-entry cap) with 400 on malformed input, `null` = never configured (2026-08-04); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04)
+last-verified: ddaa21b+ (2026-08-09); documented the `/places/autocomplete` `type` contract and fixed the untyped lane — it filtered to `includedPrimaryTypes: ['establishment']`, so the "business or address" fields (event Location, trip-item location) could never match a street address; body-building extracted to the pure `autocompleteBody()` helper with unit coverage (2026-08-09); ddaa21b+ (2026-08-08); added the `/api/records/ws` record-change poke WebSocket (poke-and-pull: content-blind `{"type":"changed"}` frames on household record writes, session-auth'd upgrade, writer-session excluded; fed by `services/recordChanges.js` — write-route announcements + a Mongo change stream where a replica set exists) (2026-08-08); ddaa21b+ (2026-08-06); `/api/notifications` gained the stateless household event notify relay (`POST event-request`/`event-response` — client-chosen push strings, membership-validated, rate-limited, nothing stored; behavior owned by features/notifications.md) (2026-08-06); c2d18c0+ (2026-08-04); `PUT/GET /settings` accepts/echoes `calendarPrefs` — the user's calendar arrangement (colours / order / hidden / deleted built-ins / muted alerts), merged field-by-field so a partial payload can't blank the rest, validated (hex colours, string ids, 500-entry cap) with 400 on malformed input, `null` = never configured (2026-08-04); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
   - server/src/routes/records.js
 tests:
   - server/src/test/         # every integration suite boots the real app over in-memory MongoDB
+  - server/src/routes/places.test.js   # Places autocomplete: which field `type`s may narrow includedPrimaryTypes
 ---
 
 # API reference
@@ -47,6 +48,7 @@ client-**sealed** blob in a single server collection, reached through
 | POST | `/api/records` | Create a sealed record. |
 | PUT | `/api/records/:id` | Replace a sealed record (LWW). |
 | DELETE | `/api/records/:id` | Delete → tombstone. |
+| WS | `/api/records/ws` | The **record-change poke socket** (poke-and-pull). Not an Express route — an HTTP upgrade handled on the same server (`services/recordSocket.js`). Auth mirrors `requireAuth`'s session semantics: Bearer token in the `Authorization` header (React Native WebSocket supports headers) or `?token=`; a sid-carrying token is rejected once its session row is revoked. The server pushes `{"type":"changed"}` when a record in the caller's channel (household, else solo user) changes — **never content or record ids**; the client responds by re-running `GET /records/sync`. Writes are announced by the write routes via `services/recordChanges.js` (coalesced ~250ms, the writer's own session excluded) plus a MongoDB **change stream** for writes from other instances/scripts (requires a replica set — Atlas yes; standalone dev/test mongod degrades to local-only announcements). Behavior owned by [features/calendar.md](../features/calendar.md) (Live household sync). |
 
 - The server stores ciphertext plus a small set of **plaintext scope fields** it
   must act on (household/owner, collection tag, sharing/scheduling metadata). It
@@ -111,6 +113,22 @@ See `app.js` for exact paths. Grouped for orientation:
   sit behind `middleware/aiConsent.js` (`requireAiEnabled` → 403 when
   `User.aiEnabled` is false; the flag syncs from the device via `PUT /settings`
   and is returned by `GET /settings`).
+  - `GET /places/autocomplete` takes `query` plus an optional **`type`** naming
+    the *kind of field* asking, and an optional `lat`/`lon`/`country` locality
+    bias. `type` selects the Places `includedPrimaryTypes` list, which **filters**
+    predictions rather than ranking them — anything outside the list is dropped,
+    so a field accepting more than one kind of place must widen the list or omit
+    it. The lanes: `address` (street types, region-restricted), `addressCity`
+    (street types **+ `locality`**, unrestricted — a contact's home may only be
+    known to the city), `city` (`(cities)`), `airport`, `transit` (≤5 station
+    types), `business` (**no** type filter — a business name *or* an address —
+    region-restricted), and **untyped** (**no** type filter, for the
+    "business or address" fields: an event's Location, a trip item's location;
+    the region code is added only when no coords were resolved, so a generic
+    query like "beach" still stays local). Coords bias a 50 km circle (the API
+    max) and come from the client post-drop, since the server can't read an
+    encrypted home address. Body-building is the pure `autocompleteBody()`
+    helper, unit-tested in `server/src/routes/places.test.js`.
 - **Billing:** `/api/billing` (`webhook` — public, secret-verified, RC
   `app_user_id` = USER id; `status` — the per-user app unlock (`unlocked`),
   the free-viewer-mode signal (`viewer: { calendarCollaborations,
@@ -127,6 +145,15 @@ See `app.js` for exact paths. Grouped for orientation:
   [features/billing-plans.md](../features/billing-plans.md).
 - **Misc:** `/api/weather`, `/api/notifications`, `/api/settings`,
   `/api/moderation`, `/api/health` (public).
+  - `/api/notifications` additionally carries the **stateless household event
+    notify relay**: `POST /notifications/event-request` (`{ toUserIds[], title,
+    body?, eventId }`) and `POST /notifications/event-response` (`{ toUserId,
+    title, body?, eventId }`) push client-chosen strings to housemates for the
+    calendar's in-household invite/RSVP flow — validated (length caps, ≤19
+    recipients, the `eventId` must name a live Record in the caller's household
+    → 404, every recipient must be a housemate → 400, sender skipped),
+    rate-limited, nothing stored. See
+    [features/notifications.md](../features/notifications.md).
   - `/api/weather` geocodes the home address via the Google Geocoding API when
     `GOOGLE_PLACES_API_KEY` is set, falling back to Nominatim (and remains
     Nominatim-only without a key). E2EE households bypass this route entirely

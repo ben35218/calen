@@ -1,5 +1,6 @@
 import { CalendarEvent, CalendarOccasion } from '../../../api';
-import { DayItems, eventColor, ymd } from '../../../lib/calendar';
+import { DayItems, GROCERY_ICON, RECIPE_ICON, eventColor, ymd } from '../../../lib/calendar';
+import { formatDuration } from '../../../lib/format';
 import { occasionTitle, occasionIcon } from '../../../lib/occasions';
 import type { EventStatus } from '../../../lib/callStatus';
 
@@ -28,13 +29,21 @@ export type TimedBlock = {
   startMin: number;
   endMin: number;
   eventId: string;
+  // Set only when the event carries a drive time, so the block can mark that
+  // its start already has travel factored in (see `blockDetail`).
+  travelMinutes?: number;
   faded?: boolean;
   strike?: boolean;
 };
 
 export type LaidBlock = TimedBlock & {
+  // `top`/`height` cover the block's whole occupied span — the travel lead-in
+  // included, since the drive holds that time as surely as the event does.
   top: number;
   height: number;
+  // Px of leading travel band inside that span (0 without a drive time). The
+  // event's own body is `height - travelHeight`.
+  travelHeight: number;
   leftFrac: number;
   widthFrac: number;
 };
@@ -64,12 +73,10 @@ export type AllDayItem = {
 
 export type DayLayout = { allDay: AllDayItem[]; blocks: LaidBlock[] };
 
-// Matches the month grid's grocery cart tint.
-export const GROCERY_COLOR = '#F9A825';
-
 // Generic calendar glyph (MaterialCommunityIcons) for a plain event, so events
 // read as calendar items alongside the icon-badged chores/occasions.
 export const EVENT_ICON = 'calendar-blank-outline';
+
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -148,6 +155,7 @@ export function normalizeDay(
       startMin,
       endMin: Math.min(endMin, DAY_MIN),
       eventId: e._id,
+      ...(e.travelMinutes ? { travelMinutes: e.travelMinutes } : null),
       faded,
       strike,
     });
@@ -162,23 +170,40 @@ export function normalizeDay(
   for (const c of day.chores) {
     allDay.push({ key: `chore-${c._id}`, title: c.title, color: calColors.chores, kind: 'chore', id: c._id, icon: c.icon });
   }
+  // Meals and the shopping day carry the same glyphs the month grid and the list
+  // view use for them, so a recipe reads as a recipe in every calendar surface.
   for (let i = 0; i < day.recipes.length; i++) {
     const r = day.recipes[i];
-    allDay.push({ key: `recipe-${i}-${r.recipeId ?? r.title}`, title: r.title, color: calColors.recipes, kind: 'recipe', id: r.recipeId });
+    allDay.push({ key: `recipe-${i}-${r.recipeId ?? r.title}`, title: r.title, color: calColors.recipes, kind: 'recipe', id: r.recipeId, icon: RECIPE_ICON });
   }
   if (day.grocery) {
-    allDay.push({ key: 'grocery', title: 'Grocery shopping', color: GROCERY_COLOR, kind: 'grocery' });
+    // The Meals calendar's own colour (user overrides included), like the month
+    // grid's cart and the List view's row — the shopping day belongs to that
+    // calendar, so a colour of its own would read as a separate one.
+    allDay.push({ key: 'grocery', title: 'Grocery shopping', color: calColors.recipes, kind: 'grocery', icon: GROCERY_ICON });
   }
 
   return { allDay, timed };
 }
 
+// The minutes of travel that actually render above a block: the event's drive
+// time, clipped at midnight (a drive starting on the previous day is shown
+// from the top of this column, like any other clipped span).
+export function travelLead(b: Pick<TimedBlock, 'startMin' | 'travelMinutes'>): number {
+  return Math.min(Math.max(0, b.travelMinutes ?? 0), b.startMin);
+}
+
 // ── Lane packing (ported from TripTimeline's cluster-flush greedy) ──────────
 // Overlapping blocks split a cluster's width evenly: first-fit lanes within
-// each overlap cluster, every member sized 1/clusterLanes wide.
+// each overlap cluster, every member sized 1/clusterLanes wide. A block's span
+// starts at its DEPARTURE, not its start time — you can't be driving to one
+// event and sitting in another, so a travel band collides like any other
+// occupied time.
 export function packLanes(timedBlocks: TimedBlock[]): LaidBlock[] {
   if (!timedBlocks.length) return [];
-  const blocks = timedBlocks.map((b) => ({ b, s: b.startMin, e: b.endMin, lane: 0, lanes: 1 }));
+  const blocks = timedBlocks.map((b) => ({
+    b, s: b.startMin - travelLead(b), e: b.endMin, lane: 0, lanes: 1, travel: travelLead(b),
+  }));
   let cluster: typeof blocks = [];
   let clusterEnd = -1;
   const flush = () => {
@@ -204,6 +229,7 @@ export function packLanes(timedBlocks: TimedBlock[]): LaidBlock[] {
     ...x.b,
     top: x.s * PX_PER_MIN,
     height: (x.e - x.s) * PX_PER_MIN,
+    travelHeight: x.travel * PX_PER_MIN,
     leftFrac: x.lane / x.lanes,
     widthFrac: 1 / x.lanes,
   }));
@@ -250,13 +276,18 @@ export function selectionCols(anchorStr: string, dayCount: 1 | 2): number[] {
 // days → 8 AM. Clamped to the scrollable range.
 export function initialScrollY(
   nowMin: number | null,
-  blocks: { startMin: number }[],
+  blocks: { startMin: number; travelMinutes?: number }[],
   viewportH: number
 ): number {
   const max = Math.max(0, DAY_MIN * PX_PER_MIN - viewportH);
   const clamp = (y: number) => Math.min(Math.max(0, y), max);
   if (nowMin != null) return clamp(nowMin * PX_PER_MIN - viewportH * 0.3);
-  if (blocks.length) return clamp((Math.min(...blocks.map((b) => b.startMin)) - 30) * PX_PER_MIN);
+  // "The first event" means the top of its block — a travel band is part of it,
+  // so a long drive can't open the day with its own lead-in above the fold.
+  if (blocks.length) {
+    const first = Math.min(...blocks.map((b) => b.startMin - travelLead(b)));
+    return clamp((first - 30) * PX_PER_MIN);
+  }
   return clamp(8 * 60 * PX_PER_MIN);
 }
 
@@ -322,6 +353,61 @@ export function timeLabel(min: number): string {
   const h24 = Math.floor(min / 60) % 24;
   const h = h24 % 12 === 0 ? 12 : h24 % 12;
   return `${h}:${pad(min % 60)} ${h24 < 12 ? 'AM' : 'PM'}`;
+}
+
+// A block's start–end line, Apple-compact: on-the-hour drops the minutes and
+// the two sides share one meridiem when they fall in the same half of the day
+// ("9 – 11AM", "11:30AM – 1PM"). Space is the scarcest thing in a day column,
+// so the label spends none of it repeating what the reader can infer.
+export function timeRangeLabel(startMin: number, endMin: number): string {
+  const clock = (min: number) => {
+    const h24 = Math.floor(min / 60) % 24;
+    const h = h24 % 12 === 0 ? 12 : h24 % 12;
+    return min % 60 === 0 ? `${h}` : `${h}:${pad(min % 60)}`;
+  };
+  const meridiem = (min: number) => (Math.floor(min / 60) % 24 < 12 ? 'AM' : 'PM');
+  const same = meridiem(startMin) === meridiem(endMin);
+  const start = same ? clock(startMin) : `${clock(startMin)}${meridiem(startMin)}`;
+  return `${start} – ${clock(endMin)}${meridiem(endMin)}`;
+}
+
+// How much a block says, chosen by how tall it is rendered — the same
+// progressive disclosure Apple's day view uses, so a 30-minute event never
+// tries to stack three lines into 30px.
+//   full   → title + location + time range
+//   medium → title + time range
+//   compact→ title only
+// The thresholds are rendered pixel heights (1px = 1min) derived from
+// DayColumn's line heights: 6px of vertical padding, a 15px title line and a
+// 14px meta row (13 + 1 margin). `full` starts at the point all three fit
+// (6 + 15 + 14 + 14 = 49, with headroom so a one-hour block qualifies), and a
+// title only takes a second line where one still fits above the meta rows.
+export type BlockDetail = 'compact' | 'medium' | 'full';
+
+export function blockDetail(height: number): BlockDetail {
+  if (height >= 56) return 'full';
+  if (height >= 38) return 'medium';
+  return 'compact';
+}
+
+export const blockTitleLines = (height: number) => (height >= 78 ? 2 : 1);
+
+// The shortest travel band that can carry its label without clipping it
+// (11px line + the band's 2px of padding).
+export const TRAVEL_LABEL_MIN = 14;
+
+// What the travel band says. It names travel outright — the band's position
+// above the block says *when*, but only the word says *what* — and falls
+// silent when the drive is too short to print a line, leaving the band itself
+// as the marker.
+export function travelBandLabel(travelMinutes: number, bandHeight: number): string | null {
+  if (bandHeight < TRAVEL_LABEL_MIN || travelMinutes <= 0) return null;
+  return `${formatDuration(travelMinutes)} travel`;
+}
+
+// The spoken version, which always has room to be explicit.
+export function travelAccessibilityLabel(travelMinutes: number, startMin: number): string {
+  return `${formatDuration(travelMinutes)} travel time before this event — leave by ${timeLabel(startMin - travelMinutes)}`;
 }
 
 // Minutes since local midnight for an instant, on today's date.

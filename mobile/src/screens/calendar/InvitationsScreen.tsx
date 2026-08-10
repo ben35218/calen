@@ -20,6 +20,10 @@ import {
   ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint,
 } from '../../lib/e2ee';
 import { sealAcceptedCopy } from '../../lib/invitees';
+import {
+  listMyHouseholdEventRequests, respondToHouseholdEvent, type HouseholdEventRequest,
+} from '../../lib/householdRsvp';
+import { useAuth } from '../../store/auth';
 import { Button, SegmentedControl, Badge } from '../../components/ui';
 import { SecurityCode } from '../../components/SecurityCode';
 import { colors, spacing } from '../../theme';
@@ -65,7 +69,11 @@ type Row =
   // key changed, and only I can decide whether that's really them.
   | { kind: 'accessRequest'; inv: CalendarAccessRequest }
   | { kind: 'notice'; inv: HouseholdNotice }
-  | { kind: 'call'; inv: PhoneCallRecord };
+  | { kind: 'call'; inv: PhoneCallRecord }
+  // A housemate asked me to accept/decline one of the household's own events.
+  // Derived from the synced replica (sealed householdInvitees + my EventRsvp),
+  // not from a server feed — the server can't read who's invited.
+  | { kind: 'householdEvent'; inv: HouseholdEventRequest };
 
 // "Monday, July 13, 2026" or "Jul 13, 3:00 PM – 4:00 PM" style when-line.
 function whenLabel(e: InvitationEventSnapshot): string {
@@ -188,6 +196,24 @@ export default function InvitationsScreen() {
     queryFn: listAccessRequests,
     refetchInterval: 5000,
   });
+  // Household event invites aimed at me, derived from the replica. The queryFn
+  // does an inline record pull, so the 5s poll is what makes a request visible
+  // seconds after the creator's push (or without any push at all).
+  const hhEventQ = useQuery({
+    queryKey: ['calendar', 'householdEventRequests'],
+    queryFn: listMyHouseholdEventRequests,
+    refetchInterval: 5000,
+  });
+  // Member names for the "X invited you" line and the response push.
+  const { user } = useAuth();
+  const membersQ = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await householdApi.get()).data,
+  });
+  const memberName = (id?: string) => {
+    const m = membersQ.data?.members?.find((x) => x._id === id);
+    return m ? [m.firstName, m.lastName].filter(Boolean).join(' ').trim() || m.email || 'A housemate' : 'A housemate';
+  };
 
   // Approving seals the current HDK to the joiner's key, so we need this
   // session's household key ready and its version. Unlock it once on open.
@@ -379,6 +405,25 @@ export default function InvitationsScreen() {
     onError: (e: any) => setError(e.response?.data?.error || 'Something went wrong'),
   });
 
+  // Accept/decline a household event invite: seals my own EventRsvp record and
+  // pushes the reply to the creator (lib/householdRsvp). A locked vault can't
+  // seal — the lib's "Unlock…" message surfaces here instead of a silent no-op.
+  const respondHH = useMutation({
+    mutationFn: ({ req, action }: { req: HouseholdEventRequest; action: 'accepted' | 'declined' }) =>
+      respondToHouseholdEvent({
+        eventId: req.eventId,
+        status: action,
+        eventTitle: req.title,
+        creatorId: req.creatorId,
+        myName: [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'A housemate',
+      }),
+    onSuccess: () => {
+      setError('');
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+    },
+    onError: (e: any) => setError(e.response?.data?.error || e.message || 'Something went wrong'),
+  });
+
   const items = useMemo<Row[]>(() => {
     const wantPending = tab === 'new';
     // Pending join requests are only ever actionable — they live in "New" only.
@@ -406,13 +451,16 @@ export default function InvitationsScreen() {
     const events: Row[] = (invQ.data ?? [])
       .filter((i) => (i.status === 'pending') === wantPending)
       .map((inv) => ({ kind: 'event', inv }));
+    const hhEvents: Row[] = (hhEventQ.data ?? [])
+      .filter((r) => (r.myStatus === 'pending') === wantPending)
+      .map((inv) => ({ kind: 'householdEvent', inv }));
     // Finished calls with a judged outcome: "New" until dismissed, then history.
     const calls: Row[] = (callsQ.data ?? [])
       .filter((c) => (c.status === 'ended' || c.status === 'failed') && c.outcome)
       .filter((c) => c.acknowledged !== wantPending)
       .map((inv) => ({ kind: 'call', inv }));
-    return [...joinReqs, ...accessReqs, ...notices, ...calls, ...hh, ...cals, ...trips, ...events];
-  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, joinReqQ.data, accessReqQ.data, noticesQ.data, callsQ.data, tab]);
+    return [...joinReqs, ...accessReqs, ...notices, ...calls, ...hh, ...cals, ...trips, ...hhEvents, ...events];
+  }, [invQ.data, calInvQ.data, tripInvQ.data, hhInvQ.data, joinReqQ.data, accessReqQ.data, noticesQ.data, callsQ.data, hhEventQ.data, tab]);
 
   // Outcome of a phone call Calen placed (e.g. the event view's Call to
   // Cancel). The notice card has no inline action — tapping it opens the full
@@ -769,6 +817,70 @@ export default function InvitationsScreen() {
     );
   };
 
+  // A housemate's "please accept/decline" on a household event. The event is
+  // already on this user's calendar (household sync) — tapping the card opens
+  // it; the buttons answer the request. Declining never removes access.
+  const renderHouseholdEventItem = (item: HouseholdEventRequest) => {
+    const busy = respondHH.isPending && respondHH.variables?.req.eventId === item.eventId;
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        activeOpacity={0.7}
+        onPress={() => navigation.navigate('EventDetail', { eventId: item.eventId })}
+      >
+        <Text style={styles.from}>
+          {memberName(item.creatorId)}
+          <Text style={styles.fromSub}> invited you</Text>
+        </Text>
+        <Text style={styles.title}>{item.title}</Text>
+        {item.startDate ? (
+          <View style={styles.metaRow}>
+            <Ionicons name="time-outline" size={14} color={colors.textMuted} />
+            <Text style={styles.meta}>
+              {whenLabel({ title: item.title, startDate: item.startDate, endDate: item.endDate, allDay: item.allDay })}
+            </Text>
+          </View>
+        ) : null}
+        <View style={styles.metaRow}>
+          <Ionicons name="home-outline" size={14} color={colors.textMuted} />
+          <Text style={styles.meta}>Already on your household calendar — they’d like your answer.</Text>
+        </View>
+        {item.myStatus === 'pending' ? (
+          <View style={styles.actions}>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Accept"
+                loading={busy && respondHH.variables?.action === 'accepted'}
+                onPress={() => respondHH.mutate({ req: item, action: 'accepted' })}
+              />
+            </View>
+            <View style={styles.actionBtn}>
+              <Button
+                title="Decline"
+                variant="ghost"
+                color={colors.error}
+                loading={busy && respondHH.variables?.action === 'declined'}
+                onPress={() => respondHH.mutate({ req: item, action: 'declined' })}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.statusRow}>
+            <Badge
+              label={item.myStatus === 'accepted' ? 'Accepted' : 'Declined'}
+              color={item.myStatus === 'accepted' ? colors.success : colors.error}
+            />
+            {item.respondedAt ? (
+              <Text style={styles.meta}>
+                {new Date(item.respondedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </Text>
+            ) : null}
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
   const renderEventItem = (item: EventInvitation) => {
     const busy = respond.isPending && respond.variables?.id === item._id;
     const ev = item.event;
@@ -878,7 +990,11 @@ export default function InvitationsScreen() {
           // row kind that isn't a document with an `_id`.
           keyExtractor={(row) => (row.kind === 'accessRequest'
             ? `accessRequest-${row.inv.calendarKey}-${row.inv.userId}`
-            : `${row.kind}-${row.inv._id}`)}
+            // A household event request is derived (not a document) — keyed by
+            // the event it asks about.
+            : row.kind === 'householdEvent'
+              ? `householdEvent-${row.inv.eventId}`
+              : `${row.kind}-${row.inv._id}`)}
           renderItem={({ item }) =>
             item.kind === 'call' ? renderCallItem(item.inv)
               : item.kind === 'calendar' ? renderCalendarItem(item.inv)
@@ -887,7 +1003,8 @@ export default function InvitationsScreen() {
                     : item.kind === 'joinRequest' ? renderJoinRequestItem(item.inv)
                       : item.kind === 'accessRequest' ? renderAccessRequestItem(item.inv)
                         : item.kind === 'notice' ? renderNoticeItem(item.inv)
-                          : renderEventItem(item.inv)}
+                          : item.kind === 'householdEvent' ? renderHouseholdEventItem(item.inv)
+                            : renderEventItem(item.inv)}
           contentContainerStyle={styles.list}
         />
       )}

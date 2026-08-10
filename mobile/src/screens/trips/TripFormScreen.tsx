@@ -399,6 +399,7 @@ export default function TripFormScreen() {
           value={form.name}
           onChangeText={(v) => set({ name: v })}
           placeholder="Trip Name"
+          autoCapitalize="words"
           containerStyle={fs.headField}
           style={[fs.headInput, assist.changed.has('name') && fs.headInputHighlight]}
         />

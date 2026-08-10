@@ -168,8 +168,13 @@ export default function AppNavigator() {
       <Stack.Screen name="CalendarHome" component={CalendarScreen} options={{ headerShown: false }} />
       {/* Headerless: the day view draws its own floating chrome (back pill,
           view switcher). Native swipe-back stays off so horizontal swipes page
-          between days instead of popping to the month. */}
-      <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ headerShown: false, gestureEnabled: false }} />
+          between days instead of popping to the month.
+          animation 'none' is load-bearing, not a preference: month and day are
+          the same canvas with the same bottom pills in the same place, so the
+          move between them is drawn as a zoom by the two screens themselves
+          (screens/calendar/dayTransition) — a native slide would throw that
+          shared furniture across the screen and back. */}
+      <Stack.Screen name="CalendarDay" component={CalendarDayScreen} options={{ headerShown: false, gestureEnabled: false, animation: 'none' }} />
       <Stack.Screen name="EventDetail" component={EventDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Event' }} />
       {/* In-app attachment preview (WebView: images + PDFs). Dark modal — a
           media viewer keeps the pure-black chrome rather than the app

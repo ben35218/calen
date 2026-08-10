@@ -308,6 +308,7 @@ export default function PeopleScreen() {
               placeholder="Search"
               placeholderTextColor={colors.textMuted}
               returnKeyType="search"
+              autoCapitalize="none"
               autoCorrect={false}
               clearButtonMode="never"
             />

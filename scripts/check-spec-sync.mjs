@@ -48,12 +48,12 @@ const RULES = [
     tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/(lib\/__tests__\/(passkeys|deviceKey|deviceLink|e2ee)\.|screens\/auth\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/(safetyNumbers|shareInvite|joinCarryover|records)\.ts|mobile\/src\/hooks\/useRosterSuggestions\.ts|mobile\/src\/components\/EmailAppSheet\.tsx)/, specs: ['specs/features/households-sharing.md'],
     tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|householdCarryover|keyHygiene|recoveryMandate|rekeyRecovery)\.|mobile\/src\/(lib\/__tests__\/(safetyNumbers|guardianRecovery|shareInvite|joinCarryover|records)|hooks\/__tests__\/useRosterSuggestions)\.)/ },
-  { re: /^(server\/src\/routes\/(calendars|calendarChat|eventAttachments|invitations)\.js|mobile\/src\/screens\/calendar\/|mobile\/src\/lib\/(calendar|calendarData|eventRepeat|calendarKeys|holidays)\.ts|shared\/calendar\/)/, specs: ['specs/features/calendar.md'],
-    tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/(lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat|eventAlerts|eventSave|eventWhen|weatherSource|addons)\.|screens\/calendar\/__tests__\/))/ },
-  { re: /^(server\/src\/routes\/(recipes|recipeSchedule)\.js|mobile\/src\/screens\/kitchen\/|mobile\/src\/lib\/grocery)/, specs: ['specs/features/kitchen.md'],
-    tests: /^(server\/src\/test\/kitchen\.|mobile\/src\/(lib\/__tests__\/(groceryList|groceryAggregate|recipeIconTarget|addons)\.|screens\/kitchen\/__tests__\/))/ },
+  { re: /^(server\/src\/routes\/(calendars|calendarChat|eventAttachments|invitations)\.js|mobile\/src\/screens\/calendar\/|mobile\/src\/lib\/(calendar|calendarData|eventRepeat|calendarKeys|holidays|householdRsvp)\.ts|shared\/calendar\/)/, specs: ['specs/features/calendar.md'],
+    tests: /^(server\/src\/test\/(calendarKeys|customCalendars|authorHiding|drop|reDrop|invitations)\.|shared\/calendar\/index\.test\.js$|mobile\/src\/(lib\/__tests__\/(calendarFeeds|calendarPrefs|calendarKeys|holidays|recurrence|tz|eventRepeat|eventAlerts|eventSave|eventWhen|weatherSource|addons|householdRsvp)\.|screens\/calendar\/__tests__\/))/ },
+  { re: /^(server\/src\/routes\/(recipes|recipeSchedule)\.js|mobile\/src\/screens\/kitchen\/|mobile\/src\/lib\/(grocery|mealSchedule))/, specs: ['specs/features/kitchen.md'],
+    tests: /^(server\/src\/test\/kitchen\.|mobile\/src\/(lib\/__tests__\/(groceryList|groceryAggregate|mealSchedule|recipeIconTarget|addons)\.|screens\/kitchen\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(items|tasks|chores|odometer|manuals|taskTemplates|choreTemplates)\.js|mobile\/src\/screens\/maintenance\/|mobile\/src\/lib\/choreAssignees\.ts|server\/src\/services\/recurrence\.js|shared\/seed\/)/, specs: ['specs/features/maintenance.md'],
-    tests: /^(server\/src\/test\/maintenance\.|server\/src\/services\/recurrence\.test\.js$|mobile\/src\/lib\/__tests__\/(odometer|diy|addons|choreAssignees)\.)/ },
+    tests: /^(server\/src\/test\/maintenance\.|server\/src\/services\/recurrence\.test\.js$|mobile\/src\/lib\/__tests__\/(odometer|diy|addons|choreAssignees|repeatingItemScope)\.)/ },
   { re: /^(server\/src\/routes\/(trips|tripsChat)\.js|mobile\/src\/screens\/trips\/|mobile\/src\/lib\/tripKeys\.ts|server\/src\/services\/tripSharing\.js)/, specs: ['specs/features/trips.md'],
     tests: /^(server\/src\/test\/(tripKeys|tripShare|tripAttachments)\.|server\/src\/services\/tripSharing\.test\.js$|mobile\/src\/lib\/__tests__\/(tripKeys|addons|shareInvite)\.)/ },
   { re: /^(server\/src\/routes\/people\.js|mobile\/src\/screens\/profile\/(People|Person|ContactImport))/, specs: ['specs/features/people-contacts.md'],
@@ -68,11 +68,17 @@ const RULES = [
   { re: /^(server\/src\/(services\/(mailer|emailCatalog)|models\/(EmailLog|EmailLifecycleConfig|EmailSuppression)|jobs\/emailReconcile)\.js|admin\/src\/views\/Email(Lifecycle|Log)View\.vue)/,
     specs: ['specs/features/email-lifecycle.md'],
     tests: /^server\/src\/test\/email(Lifecycle|Reconcile)\./ },
+  // Release QA: the test-case library, releases, runs and the sign-off gate.
+  // Ordered BEFORE the admin rule (same reason as the email + feedback rules)
+  // so its four views and its router map to their own spec.
+  { re: /^(server\/src\/(routes\/adminQa|services\/qa(Import|Summary)|models\/(Release|TestCase|TestRun|TestResult)|scripts\/importTestCases)\.js|admin\/src\/views\/(Releases|ReleaseDetail|TestRun|TestCases)View\.vue)/,
+    specs: ['specs/features/release-qa.md'],
+    tests: /^(server\/src\/test\/qa\.|server\/src\/services\/qa(Import|Summary)\.test\.js$)/ },
   { re: /^(admin\/|server\/src\/routes\/(admin|adminHelpers|adminAnalytics|adminAnalyticsHelpers|adminEmail)\.js)/, specs: ['specs/features/admin-portal.md'],
     tests: /^(server\/src\/test\/admin\.|server\/src\/routes\/admin(Analytics)?Helpers\.test\.js$)/ },
   { re: /^(server\/src\/routes\/(billing|monetizationConfig)\.js|mobile\/src\/screens\/plan\/|mobile\/src\/lib\/(purchases|addons|unlock|viewerAccess)\.ts|mobile\/src\/hooks\/useBilling\.ts|mobile\/src\/screens\/viewer\/|mobile\/src\/navigation\/ViewerNavigator\.tsx)/, specs: ['specs/features/billing-plans.md'],
     tests: /^(server\/src\/test\/billingWebhook\.|server\/src\/routes\/billing\.test\.js$|mobile\/src\/(lib\/__tests__\/(addons|unlock|viewerAccess)\.|screens\/plan\/__tests__\/|screens\/viewer\/__tests__\/|hooks\/__tests__\/useBilling\.))/ },
-  { re: /^(server\/src\/routes\/notifications\.js|server\/src\/jobs\/scheduler\.js|server\/src\/services\/(push|notify)\.js|mobile\/src\/(lib\/(notifications|push|backgroundRefresh)\.ts|hooks\/useReminderScheduler\.ts|screens\/profile\/RemindersScreen\.tsx))/, specs: ['specs/features/notifications.md'],
+  { re: /^(server\/src\/routes\/notifications\.js|server\/src\/jobs\/scheduler\.js|server\/src\/services\/(push|notify)\.js|mobile\/src\/(lib\/(notifications|push|backgroundRefresh)\.ts|hooks\/(useReminderScheduler|usePushNotifications)\.ts|screens\/profile\/RemindersScreen\.tsx))/, specs: ['specs/features/notifications.md'],
     tests: /^(server\/src\/test\/notifications\.|server\/src\/jobs\/scheduler\.test\.js$|mobile\/src\/lib\/__tests__\/(notifications|rescheduleReminders)\.)/ },
   // In-app feedback (questions/bugs/ideas): plaintext model + submit route + the
   // mobile screen + admin triage view. Ordered BEFORE the admin rule so the

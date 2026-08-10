@@ -35,8 +35,17 @@ jest.mock('@tanstack/react-query', () => ({
 }));
 
 jest.mock('../../../api', () => ({ settingsApi: { get: jest.fn() } }));
-jest.mock('../PlannerPane', () => () => null);
-jest.mock('../GroceryPane', () => () => null);
+// Panes render a marker so the test can see which one is mounted.
+jest.mock('../PlannerPane', () => {
+  const { Text } = require('react-native');
+  const RealReact = require('react');
+  return () => RealReact.createElement(Text, null, 'PLANNER');
+});
+jest.mock('../GroceryPane', () => {
+  const { Text } = require('react-native');
+  const RealReact = require('react');
+  return () => RealReact.createElement(Text, null, 'GROCERY');
+});
 jest.mock('../../../lib/calendarPrefs', () => ({ useCalendarColors: () => ({ colors: { recipes: '#00897B' } }) }));
 // The Meals add-on gate: owned, so the screen under test renders its content.
 jest.mock('../../../lib/addons', () => ({
@@ -102,5 +111,32 @@ describe('KitchenScreen grocery weekStart param', () => {
     await waitFor(() => {
       expect(screen.queryByText('This Week')).toBeTruthy();
     });
+  });
+
+  // The calendar's grocery cart sends all three params at once. `scrollToDate`
+  // must NOT drag the user onto the Planner — it's the Planner's highlight,
+  // queued until they flip over, and `pane` is the only thing that picks a pane.
+  it('stays on the requested pane when a scrollToDate rides along', async () => {
+    const clicked = localYmd(periodStartOf(new Date(), GROCERY_DAY, 'weekly', null));
+    mockStore.params = { pane: 'grocery', weekStart: clicked, scrollToDate: clicked };
+
+    render(<KitchenScreen />);
+
+    await waitFor(() => expect(screen.queryByText('GROCERY')).toBeTruthy());
+    expect(screen.queryByText('PLANNER')).toBeNull();
+    // ...and the highlight is left in the params for PlannerPane to consume.
+    // (Asserted on the store, not the spy: jest's call matcher ignores
+    // undefined-valued keys, so `{weekStart: undefined}` would match a
+    // `{scrollToDate: undefined}` expectation.)
+    expect(mockStore.params.scrollToDate).toBe(clicked);
+  });
+
+  it('opens the Planner when that is the pane asked for', async () => {
+    mockStore.params = { pane: 'planner', scrollToDate: localYmd(new Date()) };
+
+    render(<KitchenScreen />);
+
+    await waitFor(() => expect(screen.queryByText('PLANNER')).toBeTruthy());
+    expect(screen.queryByText('GROCERY')).toBeNull();
   });
 });

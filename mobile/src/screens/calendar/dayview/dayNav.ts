@@ -32,7 +32,9 @@ export function openAllDayItem(navigation: DayNav, item: AllDayItem, date: strin
       else navigation.navigate('KitchenHome');
       break;
     case 'grocery':
-      navigation.navigate('KitchenHome', { pane: 'grocery' });
+      // Shopping list for this day's period, with the day queued for the
+      // Planner pane (see KitchenHome's params in navigation/types.ts).
+      navigation.navigate('KitchenHome', { pane: 'grocery', weekStart: date, scrollToDate: date });
       break;
     default:
       break;

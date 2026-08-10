@@ -252,7 +252,9 @@ export default function RecipeFormScreen() {
         // Pop the whole create flow (AddMeal → RecipeForm → assistant → …) off the
         // stack until we're back on the existing Meals view — so the user doesn't
         // have to back out manually — and tell it to scroll to the scheduled day.
-        navigation.dispatch(StackActions.popTo('KitchenHome', { scrollToDate: scheduleDate }, { merge: true }));
+        navigation.dispatch(
+          StackActions.popTo('KitchenHome', { pane: 'planner', scrollToDate: scheduleDate }, { merge: true }),
+        );
         return;
       }
       if (!isEdit && newId) navigation.replace('RecipeDetail', { id: newId });

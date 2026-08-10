@@ -7,6 +7,7 @@ const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { stampHousehold, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 const { canWriteCalendarType } = require('../services/calendarSharing');
 const { reapEventAttachments } = require('../services/eventAttachmentReaper');
+const { recordTouched } = require('../services/recordChanges');
 
 // Signal-parity C3 — the unified opaque-record API. Replaces the per-collection
 // content routes (tasks/chores/events/people/…): the server stores/serves uniform
@@ -107,6 +108,9 @@ router.post('/', async (req, res) => {
       data.userId = req.user._id;
     }
     const record = await Record.create(data);
+    // Poke-and-pull: tell the household's other devices something changed
+    // (content-blind — they just re-run their sync cursor). Fire-and-forget.
+    recordTouched({ householdId: record.householdId, userId: req.user._id, sessionId: req.sessionId });
     res.status(201).json(record);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -138,6 +142,7 @@ router.put('/:id', async (req, res) => {
       { new: true, runValidators: true },
     );
     if (!record) return res.status(404).json({ error: 'Not found' });
+    recordTouched({ householdId: record.householdId, userId: req.user._id, sessionId: req.sessionId });
     res.json(record);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -163,6 +168,7 @@ router.delete('/:id', async (req, res) => {
     // C3b: replace the retired per-event delete cascade — reap any file
     // attachments that referenced this record (a no-op unless it was an event).
     await reapEventAttachments(req.params.id).catch(() => {});
+    recordTouched({ householdId: record.householdId, userId: req.user._id, sessionId: req.sessionId });
     res.json({ message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });

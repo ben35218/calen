@@ -1322,9 +1322,15 @@ export const placesApi = {
     }),
   getDetails: (placeId: string) => api.get(`/places/details/${placeId}`),
   getTimezone: (placeId: string) => api.get<{ timeZoneId?: string }>(`/places/timezone/${placeId}`),
-  getTravelTime: (destination: string, origin?: string) =>
+  getTravelTime: (destination: string, origin?: string, mode?: string, departureTime?: string) =>
     api.get<{ minutes: number; distanceKm: string }>('/places/travel-time', {
-      params: { destination, origin: origin || undefined },
+      params: {
+        destination,
+        origin: origin || undefined,
+        // DRIVE is the server default; only transit reads departureTime.
+        mode: mode && mode !== 'DRIVE' ? mode : undefined,
+        departureTime: departureTime || undefined,
+      },
     }),
   routeLeg: (payload: Record<string, unknown>) => api.post('/places/route-leg', payload),
 };
@@ -1537,6 +1543,10 @@ export interface TripInvitation {
 
 // ----- Calendar & billing (foundation; expanded in their waves) --------------
 
+// How the user is getting to an event — the mode its travel time was computed
+// for. Absent on older records, which were always drive times.
+export type TravelMode = 'DRIVE' | 'WALK' | 'TRANSIT' | 'BICYCLE';
+
 export interface CalendarEvent {
   _id: string;
   title: string;
@@ -1550,8 +1560,16 @@ export interface CalendarEvent {
   phone?: string;
   travelMinutes?: number | null;
   travelDistanceKm?: string | null;
+  travelMode?: TravelMode | null;
   reminderMinutes?: number | null;
   alert2Minutes?: number | null;
+  // Which instant each alert's lead time was set against: the event's start
+  // ('event', the default and what an older record without the field means) or
+  // departure ('leave' — "30 min before leaving"). Both are STORED as minutes
+  // before the event; the anchor records the framing the user chose, which the
+  // number alone cannot express. See lib/calendar.
+  alertAnchor?: 'event' | 'leave' | null;
+  alert2Anchor?: 'event' | 'leave' | null;
   // Set when Calen's cancellation call got the business to confirm.
   cancelled?: boolean;
   recurrence?: {
@@ -1574,6 +1592,12 @@ export interface CalendarEvent {
   exceptionDates?: string[];
   // Whether cross-household invitees may see who else is invited (default true).
   guestListVisible?: boolean;
+  // Household members (userIds) asked to accept/decline. Sealed with the event;
+  // each member's response is their own EventRsvp record (lib/householdRsvp).
+  householdInvitees?: string[];
+  // Sealed author userId folded in by lib/e2ee.withAuthor (C4) — readable
+  // on-device after decrypt; the server's plaintext userId column is nulled.
+  author?: string;
   // Set when this event is a copy accepted from a cross-household invitation —
   // the form shows "Leave event" instead of Delete.
   invitationId?: string;
@@ -1687,6 +1711,11 @@ export const calendarApi = {
   // helpers below.
   setGuestListVisible: (id: string, v: boolean) =>
     resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { guestListVisible: v }),
+  // Household members asked to accept/decline (sealed; responses are per-member
+  // EventRsvp records — see lib/householdRsvp).
+  setHouseholdInvitees: (id: string, userIds: string[]) =>
+    resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id,
+      { householdInvitees: userIds.length ? userIds : undefined }),
   cancelEvent: (id: string) =>
     resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { cancelled: true }),
   // Recurring-event deletes (Apple-style). The server can't edit sealed content,
@@ -2138,6 +2167,12 @@ export const notificationsApi = {
   // skips this user (Phase 5).
   setLocalReminders: (enabled: boolean) =>
     api.post('/notifications/local-reminders', { enabled }),
+  // Stateless household-event notify relay: the server verifies membership and
+  // pushes the client-chosen strings; it stores nothing and can't read the event.
+  eventRequest: (body: { toUserIds: string[]; title: string; body?: string; eventId: string }) =>
+    api.post<{ sent: number }>('/notifications/event-request', body),
+  eventResponse: (body: { toUserId: string; title: string; body?: string; eventId: string }) =>
+    api.post<{ sent: number }>('/notifications/event-response', body),
 };
 
 // ----- AI form-fill assistant (server: routes/formAssist.js) -----------------

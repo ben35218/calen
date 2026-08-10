@@ -231,7 +231,7 @@ export default function TaskTemplatesScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.searchWrap}>
-        <Input placeholder="Search all templates…" value={search} onChangeText={setSearch} />
+        <Input placeholder="Search all templates…" value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false} />
       </View>
 
       {showRail ? (

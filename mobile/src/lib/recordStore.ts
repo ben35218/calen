@@ -34,8 +34,11 @@ const runSync = () => require('./records').syncRecords as () => Promise<unknown>
 // remember it: editing a contact's occasion dates repainted the Occasions list
 // (it reads ['people']) but left the month grid showing the old dates until the
 // next sync pass, because the person form only invalidated ['people'].
+// `Recipe` is in the set even though no recipe is itself a calendar item: the
+// calendar joins each scheduled meal's title out of the Recipe replica
+// (lib/calendarData), so renaming a recipe changes what the grid renders.
 const CALENDAR_COLLECTIONS = new Set([
-  'CalendarEvent', 'MaintenanceTask', 'Chore', 'Person', 'RecipeSchedule',
+  'CalendarEvent', 'MaintenanceTask', 'Chore', 'Person', 'RecipeSchedule', 'EventRsvp', 'Recipe',
 ]);
 
 // Coalesce bursts (a bulk contact import writes one record per contact) into a
@@ -73,7 +76,13 @@ export async function refresh(): Promise<void> {
 
 // List a collection from the replica, applying any equality filters passed as
 // query params (itemId/categoryId/active/type/…): the server no longer filters by
-// content, so the client does. Unknown/undefined params are ignored.
+// content, so the client does. Undefined/null params are ignored.
+//
+// **Equality only.** A param naming a field no record carries — the pre-C3b
+// `{ start, end }` date range the meal planner still passed — matches NOTHING
+// and the caller silently gets an empty list. Range/predicate selection is the
+// caller's job, over the decrypted rows (see lib/mealSchedule); the dev warning
+// below is there so the next one surfaces instead of reading as "no data".
 export async function list<T = Rec>(
   collection: string,
   params?: Record<string, unknown>,
@@ -83,6 +92,13 @@ export async function list<T = Rec>(
   if (params) {
     const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null);
     if (entries.length) {
+      if (__DEV__ && rows.length) {
+        for (const [k] of entries) {
+          if (!rows.some((r) => (r as Rec)[k] !== undefined)) {
+            console.warn(`[recordStore] list('${collection}') filtered on '${k}', a field no record carries — this yields an empty list.`);
+          }
+        }
+      }
       rows = rows.filter((r) => entries.every(([k, v]) => String((r as Rec)[k] ?? '') === String(v)));
     }
   }

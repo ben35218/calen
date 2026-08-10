@@ -7,7 +7,8 @@ import * as Sharing from 'expo-sharing';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, useFocusEffect, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { calendarApi, callsApi, invitationsApi, eventAttachmentsApi, settingsApi, EventAttachment, CalendarEvent, PhoneCallRecord } from '../../api';
+import { calendarApi, callsApi, householdApi, invitationsApi, eventAttachmentsApi, settingsApi, EventAttachment, CalendarEvent, PhoneCallRecord } from '../../api';
+import { rsvpsForEvent } from '../../lib/householdRsvp';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
@@ -16,10 +17,12 @@ import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoade
 import {
   EVENT_CALENDAR_TYPES, eventWhenFromStored, eventStoredFromWhen, shiftEventWhen, occurrenceShiftDays,
   DEFAULT_DAY_ALERT_TIME, allDayAlertLabel,
+  effectiveAlertAnchor, inferAlertAnchor, timedAlertLabel,
 } from '../../lib/calendar';
 import { useCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { formatDuration } from '../../lib/format';
+import { normalizeTravelMode, travelModeLabel } from '../../lib/travelModes';
 import { RepeatRule, repeatSummary } from '../../lib/eventRepeat';
 import { promptEventDelete } from '../../lib/eventDelete';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
@@ -504,6 +507,37 @@ export default function EventDetailScreen() {
   });
   const invitees = inviteesQ.data ?? [];
 
+  // Household invitees (sealed on the event) + their accept/decline responses
+  // (per-member EventRsvp records in the replica) — shown as chips beside the
+  // outside invitees, names first.
+  const hasHouseholdInvitees = !!event?.householdInvitees?.length;
+  const rsvpQ = useQuery({
+    queryKey: ['calendar', 'rsvps', eventId],
+    queryFn: () => rsvpsForEvent(eventId),
+    enabled: hasHouseholdInvitees && !readOnly,
+  });
+  const householdQ = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await householdApi.get()).data,
+    enabled: hasHouseholdInvitees && !readOnly,
+  });
+  const inviteeChips = useMemo(() => {
+    const hh = (event?.householdInvitees ?? []).map((id) => {
+      const m = householdQ.data?.members?.find((x) => x._id === id);
+      return {
+        key: `hh-${id}`,
+        label: m ? [m.firstName, m.lastName].filter(Boolean).join(' ').trim() || m.email || 'Member' : 'Member',
+        status: rsvpQ.data?.[id]?.status ?? 'pending',
+      };
+    });
+    const outside = invitees.map((i) => ({
+      key: i._id,
+      label: i.toEmail || i.toPhone || '',
+      status: i.status,
+    }));
+    return [...hh, ...outside];
+  }, [event?.householdInvitees, householdQ.data, rsvpQ.data, invitees]);
+
   const attachmentsQ = useQuery({
     queryKey: ['calendar', 'attachments', eventId],
     queryFn: async () => (await eventAttachmentsApi.list(eventId)).data,
@@ -577,19 +611,55 @@ export default function EventDetailScreen() {
     return `${fmtDay(start)}, ${fmtTime(start)}${end ? ` – ${fmtTime(end)}` : ''}`;
   }, [event, occurrenceStart, occurrenceEnd]);
 
+  // Travel time: the drive duration plus the clock time to leave by (start −
+  // drive time) when the event is timed and the departure lands on the same day.
+  // Sits above the alert labels because a departure-anchored alert names that
+  // same "leave by" clock time.
+  const travelLabel = useMemo(() => {
+    if (event?.travelMinutes == null) return null;
+    const start = new Date(occurrenceStart ?? event.startDate);
+    let leaveBy: string | null = null;
+    if (event.allDay === false) {
+      const dep = new Date(start.getTime() - event.travelMinutes * 60000);
+      if (dep.toDateString() === start.toDateString()) {
+        leaveBy = dep.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+      }
+    }
+    // Name the mode only when it says something a reader wouldn't assume: an
+    // auto-computed non-drive time. Manual durations (no stored distance) and
+    // pre-mode records read as plain drive times.
+    const mode = normalizeTravelMode(event.travelMode);
+    const modeName = mode !== 'DRIVE' && event.travelDistanceKm != null ? travelModeLabel(mode) : null;
+    return { duration: formatDuration(event.travelMinutes), leaveBy, modeName };
+  }, [event, occurrenceStart]);
+
   // An all-day event's alerts are whole days off the day-alert hour, so they
   // read the way the form offers them ("1 day before (9:00 AM)") rather than as
   // minutes before a start time the event doesn't have.
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
   const dayAlertTime = settingsQ.data?.dayAlertTime || DEFAULT_DAY_ALERT_TIME;
-  const fmtAlert = (m: number | null | undefined) => {
+  // A timed event's alert reads in the framing it was set in — "2 hours before"
+  // or "15 min before leaving" — which is what the stored anchor records; the
+  // number alone can't tell the two apart (lib/calendar). An event saved before
+  // the anchor existed falls back to the same reading the form gives it.
+  const fmtAlert = (m: number | null | undefined, anchor: 'event' | 'leave' | null | undefined) => {
     if (m == null) return null;
     if (event?.allDay) return allDayAlertLabel(m, dayAlertTime);
-    if (m <= 0) return 'At time of event';
-    return `${formatDuration(m)} before`;
+    const resolved = effectiveAlertAnchor(
+      anchor ?? inferAlertAnchor(m, event?.allDay, event?.travelMinutes),
+      event?.allDay,
+      event?.travelMinutes,
+    );
+    return timedAlertLabel(m, resolved, event?.travelMinutes, travelLabel?.leaveBy);
   };
-  const alertLabel = useMemo(() => fmtAlert(event?.reminderMinutes) ?? 'None', [event, dayAlertTime]);
-  const alert2Label = useMemo(() => fmtAlert(event?.alert2Minutes), [event, dayAlertTime]);
+  const alertLabel = useMemo(
+    () => fmtAlert(event?.reminderMinutes, event?.alertAnchor) ?? 'None',
+    [event, dayAlertTime, travelLabel],
+  );
+  const alert2Label = useMemo(
+    () => fmtAlert(event?.alert2Minutes, event?.alert2Anchor),
+    [event, dayAlertTime, travelLabel],
+  );
 
   // "Repeats weekly" / "Repeats every 2 weeks on Monday until Jul 29, 2027" —
   // the recurrence summary, mirroring the form's Repeat + End Repeat rows.
@@ -613,21 +683,6 @@ export default function EventDetailScreen() {
     }
     return s;
   }, [event]);
-
-  // Travel time: the drive duration plus the clock time to leave by (start −
-  // drive time) when the event is timed and the departure lands on the same day.
-  const travelLabel = useMemo(() => {
-    if (event?.travelMinutes == null) return null;
-    const start = new Date(occurrenceStart ?? event.startDate);
-    let leaveBy: string | null = null;
-    if (event.allDay === false) {
-      const dep = new Date(start.getTime() - event.travelMinutes * 60000);
-      if (dep.toDateString() === start.toDateString()) {
-        leaveBy = dep.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
-      }
-    }
-    return { duration: formatDuration(event.travelMinutes), leaveBy };
-  }, [event, occurrenceStart]);
 
   const openInMaps = () => {
     if (!event?.location) return;
@@ -728,7 +783,7 @@ export default function EventDetailScreen() {
           }
         />
 
-        {invitees.length ? (
+        {inviteeChips.length ? (
           <CardRow
             title="Invitees"
             onPress={() =>
@@ -747,22 +802,22 @@ export default function EventDetailScreen() {
             }
             right={
               <View style={styles.rightRow}>
-                <Text style={styles.rightValue}>{invitees.length}</Text>
+                <Text style={styles.rightValue}>{inviteeChips.length}</Text>
                 <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
               </View>
             }
             subtitle={
               <View style={styles.inviteeRow}>
-                {invitees.slice(0, 4).map((i) => {
-                  const s = INVITEE_STATUS[i.status] ?? INVITEE_STATUS.pending;
+                {inviteeChips.slice(0, 4).map((c) => {
+                  const s = INVITEE_STATUS[c.status] ?? INVITEE_STATUS.pending;
                   return (
-                    <View key={i._id} style={styles.inviteeChip}>
+                    <View key={c.key} style={styles.inviteeChip}>
                       <Ionicons name={s.icon} size={13} color={s.color} />
-                      <Text style={styles.inviteeName} numberOfLines={1}>{i.toEmail || i.toPhone}</Text>
+                      <Text style={styles.inviteeName} numberOfLines={1}>{c.label}</Text>
                     </View>
                   );
                 })}
-                {invitees.length > 4 ? <Text style={styles.inviteeName}>+{invitees.length - 4}</Text> : null}
+                {inviteeChips.length > 4 ? <Text style={styles.inviteeName}>+{inviteeChips.length - 4}</Text> : null}
               </View>
             }
           />
@@ -771,7 +826,11 @@ export default function EventDetailScreen() {
         {travelLabel ? (
           <CardRow
             title="Travel Time"
-            subtitle={travelLabel.leaveBy ? `Leave by ${travelLabel.leaveBy}` : undefined}
+            subtitle={
+              [travelLabel.modeName, travelLabel.leaveBy ? `Leave by ${travelLabel.leaveBy}` : null]
+                .filter(Boolean)
+                .join(' · ') || undefined
+            }
             right={<Text style={styles.rightValue}>{travelLabel.duration}</Text>}
           />
         ) : null}
