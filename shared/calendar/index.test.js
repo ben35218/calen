@@ -339,7 +339,7 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
       { _id: 't2', title: 'Inactive', active: false, nextDueDate: new Date('2026-01-16T12:00:00'), recurrence: { type: 'one-time' } },
     ],
     chores: [],
-    people: [
+    contacts: [
       { _id: 'p1', name: 'Me', accountId: 'u1', birthday: new Date('1990-01-20'),
         dates: [{ label: 'anniversary', value: '2015-01-10' }, { label: 'Graduation', value: '2008-06-01' }] },
       { _id: 'p2', name: 'NoBday' },
@@ -371,7 +371,7 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
   // A custom-labeled date keeps its raw label as the kind's display name.
   const custom = assembleCalendarData({
     fromDate: new Date('2026-06-01'), toDate: new Date('2026-06-30'),
-    people: [{ _id: 'p1', name: 'Me', dates: [{ label: 'Graduation', value: '2008-06-01' }] }],
+    contacts: [{ _id: 'p1', name: 'Me', dates: [{ label: 'Graduation', value: '2008-06-01' }] }],
   }).occasions;
   assert.equal(custom.length, 1);
   assert.equal(custom[0].kind, 'custom');
@@ -380,7 +380,7 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
   // A contact with occasionsHidden contributes no occasions.
   const hidden = assembleCalendarData({
     fromDate: new Date('2026-01-01'), toDate: new Date('2026-12-31'),
-    people: [{ _id: 'p1', name: 'Hidden', occasionsHidden: true, birthday: new Date('1990-03-03'),
+    contacts: [{ _id: 'p1', name: 'Hidden', occasionsHidden: true, birthday: new Date('1990-03-03'),
       dates: [{ label: 'anniversary', value: '2015-04-04' }] }],
   }).occasions;
   assert.equal(hidden.length, 0);

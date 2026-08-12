@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking, Switch } from 'react-native';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, AppState, Linking, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -7,22 +7,47 @@ import { useQueryClient } from '@tanstack/react-query';
 // expo-contacts 56 deprecated its function API on the package root; the same
 // functions (getContactsAsync/requestPermissionsAsync/Fields) live under /legacy.
 import * as Contacts from 'expo-contacts/legacy';
-import { peopleApi, ImportContact, Person } from '../../api';
+import { contactsApi, ImportContact, Contact } from '../../api';
 import { openRecord } from '../../lib/e2ee';
-import { buildImportedMatcher } from '../../lib/personFields';
+import { buildImportedMatcher } from '../../lib/contactFields';
 import { canonicalizePhoneForStorage } from '../../lib/phone';
-import { BottomSheet, Button, Input, Hint } from '../../components/ui';
+import { BottomSheet, Button, EmptyState, HeaderIconButton, Input, SkeletonList } from '../../components/ui';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { useBilling } from '../../hooks/useBilling';
 import { ASSISTANT_NAME } from '../../config';
-import { colors, spacing } from '../../theme';
-import type { PersonPrefill } from '../../navigation/types';
+import { colors, radius, spacing } from '../../theme';
+import type { ContactPrefill } from '../../navigation/types';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
 type Rt = RouteProp<ProfileStackParamList, 'ContactImport'>;
 type Method = 'direct' | 'ai';
 type ApplyMode = 'auto' | 'review';
+
+// Below this many device contacts the list is scannable at a glance, so the
+// search field is dropped rather than sitting there as dead chrome.
+const SEARCH_MIN_ROWS = 10;
+
+// expo-contacts 56.0.9's in-app access picker (`presentAccessPickerAsync`) is
+// unusable on device, so "Choose more contacts" deep-links to Settings instead.
+// Two native defects, neither of which has a JS-side workaround:
+//
+//  1. `ContactAccessPicker.present` mounts a `UIHostingController` and adds its
+//     view as a full-screen subview of the current view controller. That view's
+//     background is opaque, and it is only hidden because Apple's picker sheet
+//     sits on top of it — so the moment the sheet stops covering it (the
+//     keyboard animating in when you type in the picker's search field) the app
+//     is replaced by a black rectangle.
+//  2. The hosting controller is tracked in a **static** that is cleared only by
+//     the picker's completion handler. Abandon that black screen and the static
+//     stays set for the life of the process, so every later call rejects with
+//     `AccessPickerAlreadyPresentedException` — the in-app picker is dead until
+//     the app is force-quit, and the catch below silently redirects to Settings.
+//
+// The Settings route is reliable and, with the foreground re-read below, now
+// picks up the widened selection on return. Flip this back on once upstream
+// fixes both (expo/expo — no fix as of 56.0.9).
+const IN_APP_ACCESS_PICKER = false;
 
 type Labeled = { label: string; value: string };
 type Row = {
@@ -52,10 +77,10 @@ type Row = {
   alreadyImported: boolean;
 };
 
-// The mobile-native equivalent of web PeopleView's .vcf import. Reads the device
+// The mobile-native equivalent of the retired web client's .vcf import. Reads the device
 // address book, then offers two paths — Direct (you tag each) or AI-assisted
 // (Calen categorizes + pre-fills, web-searching professionals) — and lets you
-// import everything at once or review each in the person form first.
+// import everything at once or review each in the contact form first.
 //
 // AI-assisted classification necessarily ships contact names/companies to the
 // model, so it is consent-gated (spec: ai-assistant.md) on BOTH the AI master
@@ -95,6 +120,10 @@ export default function ContactImportScreen() {
   const [method, setMethod] = useState<Method>('direct');
   const [applyMode, setApplyMode] = useState<ApplyMode>('review');
   const [optionsOpen, setOptionsOpen] = useState(false);
+  // "How importing works" lives behind the header ⓘ rather than as standing
+  // prose above the list — the list is the screen, and two stacked explainer
+  // bands were pushing it off the bottom of a small phone.
+  const [aboutOpen, setAboutOpen] = useState(false);
   // Each option switch's explanation stays hidden behind an info button until
   // the user asks to see it (progressive disclosure).
   const [reviewHintShown, setReviewHintShown] = useState(false);
@@ -102,6 +131,27 @@ export default function ContactImportScreen() {
   const [busy, setBusy] = useState(false);
   // Guards the one-shot auto-select for limited access below.
   const autoSelectedRef = useRef(false);
+
+  // With the in-app picker disabled, "choose more" and "full access" both just
+  // open Settings — so the limited-access UI collapses to a single action.
+  // Offering two links that do exactly the same thing reads as a bug.
+  const canPickInApp =
+    IN_APP_ACCESS_PICKER && typeof (Contacts as any).presentAccessPickerAsync === 'function';
+
+  // Non-accented area, so the header action is a transparent white icon rather
+  // than a primary-coloured disc (mobile/CLAUDE.md's header-action rule).
+  useLayoutEffect(() => {
+    nav.setOptions({
+      headerRight: () => (
+        <HeaderIconButton
+          icon="information-circle-outline"
+          size={24}
+          accessibilityLabel="About importing"
+          onPress={() => setAboutOpen(true)}
+        />
+      ),
+    });
+  }, [nav]);
 
   // Read the device address book and map it into rows, flagging already-imported
   // contacts. Re-callable after the user widens limited access, preserving any
@@ -119,21 +169,21 @@ export default function ContactImportScreen() {
       ],
     });
     // The decrypted roster, for flagging re-imports. Ensure it's actually
-    // loaded (same queryFn as the People list) rather than trusting the shared
+    // loaded (same queryFn as the Contacts list) rather than trusting the shared
     // cache — this screen can be reached before the roster has ever fetched, and
     // an empty cache read would silently flag nothing. A failed fetch (offline)
     // degrades to whatever is cached.
     const existing = await qc
-      .ensureQueryData<Person[]>({
-        queryKey: ['people'],
+      .ensureQueryData<Contact[]>({
+        queryKey: ['contacts'],
         queryFn: async () => {
-          const people = (await peopleApi.list()).data;
-          return Promise.all(people.map((p) => openRecord('Person', p)));
+          const contacts = (await contactsApi.list()).data;
+          return Promise.all(contacts.map((p) => openRecord('Contact', p)));
         },
       })
-      .catch(() => qc.getQueryData<Person[]>(['people']) || []);
+      .catch(() => qc.getQueryData<Contact[]>(['contacts']) || []);
     // Matches by the stored deviceContactId link, falling back to phone/email/
-    // name identity — roster people imported before the link existed (or added
+    // name identity — roster contacts imported before the link existed (or added
     // by hand) carry no deviceContactId and would otherwise never be flagged.
     const isImported = buildImportedMatcher(existing);
 
@@ -196,12 +246,12 @@ export default function ContactImportScreen() {
     })();
   }, [loadContacts]);
 
-  // iOS 18+: re-present Apple's contact picker so the user can add contacts to
-  // the shared set without leaving the app, then re-read. Older iOS / Android
-  // have no in-app picker, so fall back to the system Settings deep-link.
+  // Widen the shared set. The in-app picker is disabled (see
+  // IN_APP_ACCESS_PICKER above), so this deep-links to Settings → Calen →
+  // Contacts; the foreground listener below is what brings the result back.
   const chooseMore = useCallback(async () => {
     const present = (Contacts as any).presentAccessPickerAsync;
-    if (typeof present !== 'function') {
+    if (!IN_APP_ACCESS_PICKER || typeof present !== 'function') {
       Linking.openSettings();
       return;
     }
@@ -212,6 +262,33 @@ export default function ContactImportScreen() {
       Linking.openSettings();
     }
   }, [loadContacts]);
+
+  // Access is widened *outside* the app — in Settings, or via the system
+  // picker — so returning to the foreground is the only signal we get that the
+  // shared set may have changed. Without this the newly shared contacts don't
+  // show up until the screen is popped and pushed again, and `access` stays
+  // 'limited' even after the user switches to full access. Re-read the
+  // privileges too, not just the contacts: the limited-access footnote and
+  // empty-state CTA both key off it.
+  const refreshAccess = useCallback(async () => {
+    // getPermissionsAsync, never request — this fires on every foreground and
+    // must not re-prompt.
+    const perm = await Contacts.getPermissionsAsync();
+    if (perm.status !== 'granted') {
+      setStatus('denied');
+      return;
+    }
+    setAccess(perm.accessPrivileges === 'limited' ? 'limited' : 'all');
+    await loadContacts();
+    setStatus('ready');
+  }, [loadContacts]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') refreshAccess();
+    });
+    return () => sub.remove();
+  }, [refreshAccess]);
 
   // Fall back to Direct if consent is revoked or credits run out (or either
   // resolves late after mount).
@@ -244,7 +321,12 @@ export default function ContactImportScreen() {
     );
   }, [rows, search, hideImported]);
 
-  const importedCount = rows.filter((r) => r.alreadyImported).length;
+  // A search field over three contacts is pure chrome, and under iOS limited
+  // access a shared subset that small is the norm. Gate on the raw row count,
+  // never the filtered one — filtering on a typed query would pull the field
+  // out from under the user mid-search.
+  const showSearch = rows.length >= SEARCH_MIN_ROWS;
+
   const selected = rows.filter((r) => r.selected);
   const selectedCount = selected.length;
   const dupCount = selected.filter((r) => r.alreadyImported).length;
@@ -260,8 +342,69 @@ export default function ContactImportScreen() {
     setRows((rs) => rs.map((r) => (keys.has(r.key) ? { ...r, selected: next } : r)));
   }
 
+  // An empty list has three distinct causes and a different fix for each, so a
+  // single "No contacts found." pointed the user at the wrong thing — most
+  // often under limited access, where the fix (Choose Contacts) was stranded in
+  // a banner above the message. Each state names its own way out.
+  function renderEmpty() {
+    if (search.trim()) {
+      return (
+        <EmptyState
+          icon="search-outline"
+          title="No matches"
+          message={`No contacts match “${search.trim()}”.`}
+        />
+      );
+    }
+    // Nothing left to show while rows exist means Hide imported swallowed them.
+    const allImported = rows.length > 0;
+    if (access === 'limited') {
+      return (
+        <EmptyState
+          icon="people-outline"
+          title={allImported ? 'Nothing left to import' : 'Only some contacts shared'}
+          message={
+            allImported
+              ? `Every contact you've shared with ${ASSISTANT_NAME} is already in your roster. Share more to import them.`
+              : canPickInApp
+                ? `${ASSISTANT_NAME} can only see the contacts you picked in iOS. Choose more to import them here.`
+                : `${ASSISTANT_NAME} can only see the contacts you picked in iOS. In Settings you can share more of them, or switch to full access.`
+          }
+          actionLabel={canPickInApp ? 'Choose Contacts' : 'Open Settings'}
+          onAction={chooseMore}
+        >
+          {canPickInApp ? (
+            <TouchableOpacity
+              onPress={() => Linking.openSettings()}
+              accessibilityRole="button"
+              style={styles.emptyLink}
+            >
+              <Text style={styles.mutedLink}>Full access in Settings</Text>
+            </TouchableOpacity>
+          ) : null}
+        </EmptyState>
+      );
+    }
+    if (allImported) {
+      return (
+        <EmptyState
+          icon="checkmark-circle-outline"
+          title="Nothing left to import"
+          message="Every contact on this device is already in your roster. Turn off Hide imported to see them."
+        />
+      );
+    }
+    return (
+      <EmptyState
+        icon="people-outline"
+        title="No contacts found"
+        message="There are no contacts in this device's address book."
+      />
+    );
+  }
+
   // Turn selected rows into prefills — via the AI classifier or a direct 1:1 map.
-  async function buildPrefills(): Promise<PersonPrefill[]> {
+  async function buildPrefills(): Promise<ContactPrefill[]> {
     if (method === 'direct' || !aiImportAllowed) {
       return selected.map((r) => ({
         type: r.type,
@@ -287,7 +430,7 @@ export default function ContactImportScreen() {
     }));
     // Choosing AI-assisted cleanup implies the professional web lookup — no
     // separate opt-in toggle (spec: ai-assistant.md); the sheet hint discloses it.
-    const { data } = await peopleApi.classify(contacts, true);
+    const { data } = await contactsApi.classify(contacts, true);
     const byKey = new Map(data.results.map((c) => [c.key, c]));
     return selected.map((r) => {
       const c = byKey.get(r.key);
@@ -325,14 +468,14 @@ export default function ContactImportScreen() {
     try {
       const prefills = await buildPrefills();
       if (applyMode === 'review') {
-        // Step through the person form for each, starting at the first. Flag an
+        // Step through the contact form for each, starting at the first. Flag an
         // AI-assisted review so the form keeps the "Ask Calen" panel; a Direct
         // import hides it (nothing to re-derive — details came from the phone).
-        nav.replace('PersonForm', { prefills, queueIndex: 0, aiReview: method === 'ai' && aiImportAllowed });
+        nav.replace('ContactForm', { prefills, queueIndex: 0, aiReview: method === 'ai' && aiImportAllowed });
         return;
       }
-      await peopleApi.bulk(prefills.map((p) => ({ ...p })));
-      qc.invalidateQueries({ queryKey: ['people'] });
+      await contactsApi.bulk(prefills.map((p) => ({ ...p })));
+      qc.invalidateQueries({ queryKey: ['contacts'] });
       nav.goBack();
     } catch (e: any) {
       Alert.alert('Import failed', e?.response?.data?.error || 'Something went wrong. Please try again.');
@@ -357,11 +500,7 @@ export default function ContactImportScreen() {
   }
 
   if (status === 'loading') {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
+    return <SkeletonList />;
   }
 
   if (status === 'denied') {
@@ -387,15 +526,24 @@ export default function ContactImportScreen() {
 
   return (
     <View style={styles.container}>
+      {/* With no rows at all, both controls are no-ops — the empty state below
+          is the whole screen. It stays up when rows merely *filter* to nothing,
+          though: Hide imported is what the user needs to reach to undo that. */}
+      {rows.length > 0 ? (
       <View style={styles.toolbar}>
-        <Input value={search} onChangeText={setSearch} placeholder="Search contacts" autoCapitalize="none" autoCorrect={false} style={styles.search} />
-        <View style={styles.toolbarRow}>
-          <TouchableOpacity onPress={toggleAll}>
+        {showSearch ? (
+          <Input value={search} onChangeText={setSearch} placeholder="Search contacts" autoCapitalize="none" autoCorrect={false} style={styles.search} />
+        ) : null}
+        {/* Two controls, not three — the selected count was a duplicate of the
+            footer button's own "Review N" label. */}
+        <View style={[styles.toolbarRow, !showSearch && styles.toolbarRowBare]}>
+          <TouchableOpacity onPress={toggleAll} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}>
             <Text style={styles.selectAll}>{allFilteredSelected ? 'Deselect all' : 'Select all'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setHideImported((v) => !v)}
             style={styles.hideToggle}
+            hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
             accessibilityRole="switch"
             accessibilityState={{ checked: hideImported }}
           >
@@ -406,33 +554,8 @@ export default function ContactImportScreen() {
             />
             <Text style={styles.hideToggleLabel}>Hide imported</Text>
           </TouchableOpacity>
-          <Text style={styles.count}>{selectedCount} selected</Text>
         </View>
       </View>
-
-      <View style={styles.introHint}>
-        <Hint>
-          Nothing is imported automatically — pick the contacts you want, then tap the button below to add just those to {ASSISTANT_NAME}.
-        </Hint>
-      </View>
-
-      {access === 'limited' ? (
-        <View style={styles.banner}>
-          <Ionicons name="information-circle-outline" size={20} color={colors.primary} />
-          <View style={styles.bannerBody}>
-            <Text style={styles.bannerText}>
-              You've shared only some contacts with {ASSISTANT_NAME}. Add more to import them here.
-            </Text>
-            <View style={styles.bannerActions}>
-              <TouchableOpacity onPress={chooseMore}>
-                <Text style={styles.bannerLink}>Choose more contacts</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => Linking.openSettings()}>
-                <Text style={styles.bannerLinkMuted}>Full access in Settings</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
       ) : null}
 
       <FlatList
@@ -468,7 +591,43 @@ export default function ContactImportScreen() {
             </View>
           </TouchableOpacity>
         )}
-        ListEmptyComponent={<Text style={styles.emptyText}>No contacts found.</Text>}
+        ListEmptyComponent={renderEmpty()}
+        // Limited access is a statement about *which rows exist*, so it travels
+        // with the list rather than floating in a pinned banner above it. With
+        // rows on screen it heads the list — the user reads why the list is
+        // short before scanning it, not after; with none, the empty state
+        // carries it instead and the way out becomes the primary CTA.
+        ListHeaderComponent={
+          access === 'limited' && filtered.length > 0 ? (
+            <View style={styles.limitedNote}>
+              <Text style={styles.limitedNoteText}>
+                {`${ASSISTANT_NAME} can only see the ${rows.length} contact${rows.length !== 1 ? 's' : ''} you shared.`}
+              </Text>
+              <View style={styles.limitedActions}>
+                <TouchableOpacity onPress={chooseMore} accessibilityRole="button" style={styles.limitedAction}>
+                  <Ionicons
+                    name={canPickInApp ? 'person-add-outline' : 'settings-outline'}
+                    size={16}
+                    color={colors.primary}
+                  />
+                  <Text style={styles.limitedLink}>
+                    {canPickInApp ? 'Choose more contacts' : 'Manage in Settings'}
+                  </Text>
+                </TouchableOpacity>
+                {canPickInApp ? (
+                  <TouchableOpacity
+                    onPress={() => Linking.openSettings()}
+                    accessibilityRole="button"
+                    style={styles.limitedAction}
+                  >
+                    <Ionicons name="settings-outline" size={16} color={colors.textMuted} />
+                    <Text style={styles.mutedLink}>Full access in Settings</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+          ) : null
+        }
       />
 
       <View style={styles.footer}>
@@ -477,20 +636,38 @@ export default function ContactImportScreen() {
             {dupCount} selected already imported — importing again may create duplicates.
           </Text>
         ) : null}
-        <TouchableOpacity
-          style={styles.optionsBar}
-          onPress={() => setOptionsOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Import options"
-        >
-          <Ionicons name="options-outline" size={16} color={colors.textMuted} />
-          <Text style={styles.optionsBarText} numberOfLines={1}>
-            Import options
-          </Text>
-          <Ionicons name="chevron-up" size={16} color={colors.textMuted} />
-        </TouchableOpacity>
-        <Button title={busyLabel} onPress={onConfirm} loading={busy} disabled={selectedCount === 0} />
+        {/* One line, not two stacked bars: the commit action takes the width it
+            needs and the set-once options sit beside it as an icon. */}
+        <View style={styles.footerRow}>
+          <View style={styles.footerPrimary}>
+            <Button title={busyLabel} onPress={onConfirm} loading={busy} disabled={selectedCount === 0} />
+          </View>
+          <TouchableOpacity
+            style={styles.optionsBtn}
+            onPress={() => setOptionsOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Import options"
+          >
+            <Ionicons name="options-outline" size={22} color={colors.text} />
+          </TouchableOpacity>
+        </View>
       </View>
+
+      <BottomSheet visible={aboutOpen} onClose={() => setAboutOpen(false)} title="About importing">
+        <Text style={styles.sheetHint}>
+          {`Nothing is imported automatically — pick the contacts you want, then tap the button at the bottom to add just those to ${ASSISTANT_NAME}.`}
+        </Text>
+        {access === 'limited' ? (
+          <Text style={styles.sheetHint}>
+            {canPickInApp
+              ? `You've shared only some of your contacts with ${ASSISTANT_NAME}, so only those can appear in this list. Choose more, or switch to full access in Settings, to import anyone else.`
+              : `You've shared only some of your contacts with ${ASSISTANT_NAME}, so only those can appear in this list. To import anyone else, open Settings → ${ASSISTANT_NAME} → Contacts, where you can share more of them or switch to full access. The list updates as soon as you come back.`}
+          </Text>
+        ) : null}
+        <View style={styles.sheetDone}>
+          <Button title="Done" onPress={() => setAboutOpen(false)} />
+        </View>
+      </BottomSheet>
 
       <BottomSheet visible={optionsOpen} onClose={() => setOptionsOpen(false)} title="Import options">
         {outOfCredits ? (
@@ -584,25 +761,20 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg, backgroundColor: colors.background },
   deniedText: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.md, lineHeight: 20 },
   deniedAction: { marginTop: spacing.lg },
-  toolbar: { padding: spacing.md, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
-  introHint: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
-  banner: {
-    flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    backgroundColor: colors.primary + '12',
-    borderBottomWidth: 1, borderBottomColor: colors.border,
+  // Tight: the toolbar is chrome above the real content, so it takes the least
+  // height that still leaves both controls comfortably tappable (hitSlop makes
+  // up the touch target the padding no longer provides).
+  toolbar: {
+    paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.sm,
+    backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  bannerBody: { flex: 1 },
-  bannerText: { fontSize: 13, color: colors.text, lineHeight: 18 },
-  bannerActions: { flexDirection: 'row', gap: spacing.lg, marginTop: spacing.xs },
-  bannerLink: { fontSize: 13, fontWeight: '700', color: colors.primary },
-  bannerLinkMuted: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   hideToggle: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   hideToggleLabel: { fontSize: 13, color: colors.textMuted },
-  search: { marginBottom: 0, marginTop: spacing.xs },
+  search: { marginBottom: 0, marginTop: 0 },
   toolbarRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm },
+  // No search field above it → no gap to close.
+  toolbarRowBare: { marginTop: 0 },
   selectAll: { color: colors.primary, fontWeight: '600', fontSize: 14 },
-  count: { color: colors.textMuted, fontSize: 13 },
   list: { padding: spacing.md },
   row: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface,
@@ -618,14 +790,26 @@ const styles = StyleSheet.create({
     borderRadius: 5, overflow: 'hidden',
   },
   rowSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  emptyText: { textAlign: 'center', color: colors.textMuted, marginTop: spacing.xl },
+  emptyLink: { marginTop: spacing.md, paddingVertical: spacing.xs },
+  mutedLink: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
+  // The limited-access note, heading the list above the first contact row.
+  limitedNote: { paddingBottom: spacing.md },
+  limitedNoteText: { fontSize: 13, color: colors.textMuted, lineHeight: 18 },
+  // Stacked, not side by side: "Full access in Settings" ran off the edge of a
+  // narrow screen when both links shared a row.
+  limitedActions: { gap: spacing.sm, marginTop: spacing.sm, alignItems: 'flex-start' },
+  limitedAction: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 },
+  limitedLink: { fontSize: 13, fontWeight: '700', color: colors.primary },
   footer: { padding: spacing.md, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface },
   dupWarn: { fontSize: 12, color: colors.warning, marginBottom: spacing.sm, textAlign: 'center' },
-  optionsBar: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingVertical: spacing.sm, marginBottom: spacing.sm,
+  footerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  footerPrimary: { flex: 1 },
+  // Square, matching the primary button's height so the footer reads as one row.
+  optionsBtn: {
+    width: 48, height: 48, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background,
   },
-  optionsBarText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
   sheetHint: { fontSize: 12, color: colors.textMuted, lineHeight: 17, marginTop: spacing.xs },
   switchInfoRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

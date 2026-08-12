@@ -44,6 +44,27 @@ const defaultDeps: RecordSyncDeps = {
   myHouseholdId: () => require('./e2ee').currentHouseholdId(),
 };
 
+// One-shot per session: re-bucket replica rows left under a pre-rename
+// collection name (Person → Contact). Rows already synced sit under the old
+// bucket and the cursor will never resend them, so an upgraded install would
+// show an empty roster until a full resync. Runs before every sync pass but
+// short-circuits after the first (and is itself idempotent — a drained bucket
+// moves nothing). Best-effort: a failure here must never block the sync.
+let legacyBucketsMigrated = false;
+async function migrateLegacyBuckets(): Promise<void> {
+  if (legacyBucketsMigrated) return;
+  legacyBucketsMigrated = true;
+  try {
+    const { LEGACY_COLLECTION_PAIRS } = require('./e2ee');
+    const replica = require('./replica');
+    for (const [from, to] of LEGACY_COLLECTION_PAIRS as [string, string][]) {
+      await replica.migrateCollection(from, to);
+    }
+  } catch {
+    legacyBucketsMigrated = false; // let the next pass retry
+  }
+}
+
 export interface RecordSyncResult {
   upserted: number;
   removed: number;
@@ -77,6 +98,7 @@ export interface RecordSyncResult {
 // household, at which point they arrive decryptable through the normal lane.
 export async function syncRecords(deps: Partial<RecordSyncDeps> = {}): Promise<RecordSyncResult> {
   const d = { ...defaultDeps, ...deps };
+  await migrateLegacyBuckets();
   const since = await d.getCursor();
   const { records, serverTime } = await d.fetch(since);
   const mine = d.myHouseholdId();

@@ -1,17 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipeScheduleApi, settingsApi } from '../../api';
 import { loadPlannerMeals, scheduleRecipeId, PlannerMeal } from '../../lib/mealSchedule';
-import { Card, SwipeableRow } from '../../components/ui';
+import { Card, Skeleton, SwipeableRow } from '../../components/ui';
 import { RECIPE_ICON } from '../../lib/calendar';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, radius, spacing } from '../../theme';
-import { DAY_NAMES, GroceryFrequency, iso, periodDaysOf } from './constants';
+import { GroceryFrequency, dayStart, iso, periodDaysOf, shoppingDayState } from './constants';
 
 type Nav = NativeStackNavigationProp<KitchenStackParamList, 'KitchenHome'>;
 
@@ -50,12 +50,25 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
     queryFn: () => loadPlannerMeals(start, end),
   });
 
+  // `dayStart` normalises to local midnight before `iso` reads the UTC date —
+  // see constants.ts. Which shopping day this period's is comes from the same
+  // shared helper the Grocery pane names its trip with; a marker that has been
+  // and gone says so rather than posing as the trip ahead.
+  const today = iso(dayStart(new Date()));
+  const shoppingState = shoppingDayState(weekStart, periodDays);
+  const shoppingAhead = shoppingState === 'next' || shoppingState === 'today';
+
   const days = Array.from({ length: periodDays }, (_, i) => {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + i);
     const dateStr = iso(d);
     return {
-      date: dateStr, dayName: DAY_NAMES[d.getDay()], dayNum: d.getDate(), isToday: dateStr === iso(new Date()),
+      // "Sat, Aug 29" — one `toLocaleDateString`, so the comma and the field
+      // order follow the reader's locale (matching the period caption's trip
+      // date, which is the same day when it's the shopping card).
+      date: dateStr,
+      label: d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+      isToday: dateStr === today,
       // Only the period's first day is a shopping day (a biweekly period spans
       // two occurrences of the weekday, but only the first gets shopped).
       isGroceryDay: i === 0,
@@ -103,7 +116,7 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
     ]);
 
   if (schedulesQ.isLoading) {
-    return <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.xl }} />;
+    return <PlannerSkeleton />;
   }
 
   return (
@@ -119,16 +132,28 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
             style={[
               styles.dayCard,
               day.isToday && styles.todayCard,
+              // The trip you're preparing for gets a standing highlight. Listed
+              // before the focus highlight so a deep-linked day still wins the
+              // border — that one is transient and answers "the day you tapped".
+              day.isGroceryDay && shoppingAhead
+                && [styles.nextShopCard, { borderColor: accent, backgroundColor: `${accent}0F` }],
               day.date === focusDate && [styles.focusCard, { borderColor: accent, backgroundColor: `${accent}1A` }],
             ]}
           >
             <View style={styles.dayHeader}>
-              <Text style={styles.dayName}>{day.dayName} {day.dayNum}</Text>
+              <Text style={styles.dayName}>{day.label}</Text>
               <View style={styles.dayHeaderRight}>
                 {day.isGroceryDay ? (
-                  <TouchableOpacity onPress={() => navigation.navigate('GrocerySchedule')}>
-                    <Text style={[styles.grocDayText, { color: accent }]}>Grocery Shopping Day</Text>
-                  </TouchableOpacity>
+                  // Plain text, not a link: editing the schedule lives in the
+                  // Meals options menu now, with the rest of the configuration.
+                  <Text
+                    style={[
+                      styles.grocDayText,
+                      shoppingState === 'past' ? styles.grocDayPast : { color: accent },
+                    ]}
+                  >
+                    {shoppingState === 'past' ? 'Shopped' : shoppingAhead ? 'Next Shopping Day' : 'Shopping Day'}
+                  </Text>
                 ) : null}
                 {day.isToday ? <Text style={styles.todayLabel}>Today</Text> : null}
               </View>
@@ -137,15 +162,16 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
               <SwipeableRow
                 key={s._id}
                 label="Remove"
-                accessibilityLabel={`Remove ${s.title} from ${day.dayName} ${day.dayNum}`}
+                accessibilityLabel={`Remove ${s.title} from ${day.label}`}
                 actionStyle={styles.schedSwipeAction}
                 onDelete={() => confirmRemove(s)}
               >
                 <TouchableOpacity style={styles.schedRow} onPress={() => navigation.navigate('RecipeDetail', { id: scheduleRecipeId(s) })}>
                   {/* The calendar's meal glyph, so a planned meal looks the same
                       here as it does on the month grid and in the day view. */}
-                  <MaterialCommunityIcons name={RECIPE_ICON as any} size={16} color="#fff" />
-                  <Text style={styles.schedTitle}>{s.title}</Text>
+                  <MaterialCommunityIcons name={RECIPE_ICON as any} size={16} color="#fff" style={styles.schedIcon} />
+                  {/* The planned flavor variation is part of what's being cooked. */}
+                  <Text style={styles.schedTitle}>{s.variation ? `${s.title} — ${s.variation}` : s.title}</Text>
                 </TouchableOpacity>
               </SwipeableRow>
             ))}
@@ -161,6 +187,36 @@ export default function PlannerPane({ weekStart }: { weekStart: Date }) {
   );
 }
 
+// Placeholder day cards for the first schedule load — the kitchen's version of
+// the calendar's loading cells. Each card mirrors the real day layout (header
+// line, a couple of meal rows with their leading glyph disc, the add row) so
+// the week settles into the same shape it shimmers in. Meal-row counts vary per
+// card the way a real week does.
+function PlannerSkeleton() {
+  const mealCounts = [2, 1, 2, 1];
+  return (
+    <ScrollView style={styles.pane} contentContainerStyle={styles.content}>
+      {mealCounts.map((meals, i) => (
+        <Card key={i} style={styles.dayCard}>
+          <View style={styles.dayHeader}>
+            <Skeleton width={'38%'} height={14} />
+          </View>
+          {Array.from({ length: meals }).map((_, j) => (
+            <View key={j} style={styles.schedRow}>
+              <Skeleton width={16} height={16} radius={8} />
+              <Skeleton width={j % 2 ? '48%' : '62%'} height={14} style={styles.skelRowLine} />
+            </View>
+          ))}
+          <View style={styles.addRow}>
+            <Skeleton width={16} height={16} radius={8} />
+            <Skeleton width={72} height={13} />
+          </View>
+        </Card>
+      ))}
+    </ScrollView>
+  );
+}
+
 const styles = StyleSheet.create({
   pane: { flex: 1 },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
@@ -171,16 +227,27 @@ const styles = StyleSheet.create({
   // section accent (applied inline — the accent is a user-overridable prefs
   // value, not a constant).
   focusCard: { borderWidth: 2 },
+  // Lighter than the focus ring on purpose: this one is always on screen while
+  // the trip is ahead, so it marks without shouting over the day's meals.
+  nextShopCard: { borderWidth: 1.5 },
   dayHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },
   dayHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   dayName: { fontSize: 14, fontWeight: '700', color: colors.text },
   grocDayText: { fontSize: 12, fontWeight: '600' },
+  // A trip already taken is a fact about the past, not a thing to act on.
+  grocDayPast: { color: colors.textMuted, fontWeight: '500' },
   todayLabel: { fontSize: 12, fontWeight: '700', color: colors.primary },
-  schedRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 6 },
-  schedTitle: { flex: 1, fontSize: 14, color: colors.text },
+  // Top-aligned so a long title can wrap to more lines while the meal glyph
+  // stays on the first one (the nudge centres the 16px glyph in that line).
+  schedRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, paddingVertical: 6 },
+  schedIcon: { marginTop: 1.5 },
+  schedTitle: { flex: 1, fontSize: 14, lineHeight: 19, color: colors.text },
   // The meal row sits inside the day card, so both of the revealed Remove's
   // edges are interior — round them equally rather than matching a card corner.
   schedSwipeAction: { borderRadius: radius.sm },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6 },
   addText: { fontSize: 13, fontWeight: '600', color: '#fff' },
+  // Centres the shimmer line against the glyph disc the way schedTitle's
+  // lineHeight centres real text against the 16px icon.
+  skelRowLine: { marginTop: 1 },
 });

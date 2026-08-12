@@ -79,7 +79,7 @@ export default function UnlockPaywallScreen() {
             onPress={buy}
           />
           <Text style={styles.terms}>
-            One-time purchase, per person · tied to your account, not a subscription
+            One-time purchase, per contact · tied to your account, not a subscription
           </Text>
           {activation.state === 'timeout' ? (
             <Text style={styles.timeoutNote}>Payment received — unlocking shortly.</Text>

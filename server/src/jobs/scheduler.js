@@ -4,7 +4,7 @@ const MaintenanceTask = require('../models/MaintenanceTask');
 const Chore = require('../models/Chore');
 const User = require('../models/User');
 const Household = require('../models/Household');
-const Person = require('../models/Person');
+const Contact = require('../models/Contact');
 const CalendarEvent = require('../models/CalendarEvent');
 const ECard = require('../models/ECard');
 const { pushToUser } = require('../services/notify');
@@ -114,10 +114,10 @@ async function runDailyCheckForHousehold(hh) {
   if (!due.length) return;
 
   const memberIds = members.map(m => m._id);
-  const [tasks, chores, persons] = await Promise.all([
+  const [tasks, chores, contacts] = await Promise.all([
     MaintenanceTask.find({ userId: { $in: memberIds }, active: true, nextDueDate: { $ne: null } }).populate('itemId', 'name').lean(),
     Chore.find({ userId: { $in: memberIds }, active: true, nextDueDate: { $ne: null } }).lean(),
-    Person.find({ userId: { $in: memberIds }, birthday: { $ne: null } }).lean(),
+    Contact.find({ userId: { $in: memberIds }, birthday: { $ne: null } }).lean(),
   ]);
 
   // Fire each due member's alerts, with due/today evaluated in their zone.
@@ -146,7 +146,7 @@ async function runDailyCheckForHousehold(hh) {
 
     // Birthdays — always, to everyone.
     const [, mo, day] = todayStr.split('-');
-    for (const p of persons) {
+    for (const p of contacts) {
       const b = new Date(p.birthday);
       const bMo = String(b.getUTCMonth() + 1).padStart(2, '0');
       const bDay = String(b.getUTCDate()).padStart(2, '0');
@@ -155,7 +155,7 @@ async function runDailyCheckForHousehold(hh) {
       await pushToUser(u, {
         title: '🎂 Birthday today',
         body: turning > 0 ? `${p.name} turns ${turning} today` : `${p.name}'s birthday is today`,
-        url: `${APP_URL()}/people`, tag: `bday-${p._id}-${todayStr}`,
+        url: `${APP_URL()}/contacts`, tag: `bday-${p._id}-${todayStr}`,
       });
       console.log(`[Scheduler] Birthday alert: ${p._id} → user ${u._id}`);
     }

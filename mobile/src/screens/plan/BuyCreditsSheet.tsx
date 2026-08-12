@@ -1,9 +1,9 @@
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import { Text, ScrollView, StyleSheet } from 'react-native';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-import { Button, Card } from '../../components/ui';
+import { Button, Card, CenteredLoader } from '../../components/ui';
 import { isPurchasesConfigured } from '../../lib/purchases';
 import type { RootStackParamList } from '../../navigation/types';
 import { colors, spacing } from '../../theme';
@@ -22,11 +22,7 @@ export default function BuyCreditsSheet() {
   const loaded = Boolean(billing.data);
 
   if (!loaded) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
+    return <CenteredLoader />;
   }
 
   const title = reason === 'out' ? "You're out of AI credits" : "You're running low on AI credits";
@@ -78,7 +74,6 @@ export default function BuyCreditsSheet() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   title: { fontSize: 22, fontWeight: '700', color: colors.text, marginBottom: spacing.sm },
   subtitle: { fontSize: 14, color: colors.textMuted, lineHeight: 20, marginBottom: spacing.md },
   card: { marginBottom: spacing.md },

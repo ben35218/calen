@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { calendarApi, householdApi, invitationsApi, peopleApi, EventInvitation, HouseholdMember, Person } from '../../api';
+import { calendarApi, householdApi, invitationsApi, contactsApi, EventInvitation, HouseholdMember, Contact } from '../../api';
 import {
   Badge, HintDisclosure, Input, RevealWrap, Screen, SectionHeader, SwitchRow,
   useHeaderCheckButton,
@@ -15,12 +15,13 @@ import {
   getQueuedHouseholdInvitees, setQueuedHouseholdInvitees,
 } from '../../lib/inviteeDraft';
 import { notifyHouseholdInvitees, rsvpsForEvent } from '../../lib/householdRsvp';
+import { eventInvitationExpired } from '../../lib/inviteAlerts';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import {
   InviteeEntry, inviteeKey, normalizePhone, composeSmsInvite, sendInvitations, eventInviteEmailContent,
 } from '../../lib/invitees';
 import { useEmailComposer } from '../../components/EmailAppSheet';
-import { normalizePerson, NormalizedPerson } from '../../lib/personFields';
+import { normalizeContact, NormalizedContact } from '../../lib/contactFields';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { openRecord } from '../../lib/e2ee';
 import { useAuth } from '../../store/auth';
@@ -149,11 +150,11 @@ export default function EventInviteesScreen() {
     setHhSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   // Contacts (decrypted on-device) back the field's autocomplete.
-  const peopleQ = useQuery({
-    queryKey: ['people', 'decrypted'],
+  const contactsQ = useQuery({
+    queryKey: ['contacts', 'decrypted'],
     queryFn: async () => {
-      const rows = (await peopleApi.list()).data;
-      return Promise.all(rows.map((p) => openRecord('Person', p)));
+      const rows = (await contactsApi.list()).data;
+      return Promise.all(rows.map((p) => openRecord('Contact', p)));
     },
   });
 
@@ -171,9 +172,9 @@ export default function EventInviteesScreen() {
 
   // What a contact suggestion would stage: their primary email, unless the typed
   // text is digit-y and they have a number (or email is all they're missing).
-  // Reads the multi-value fields (via normalizePerson) so contacts stored as
+  // Reads the multi-value fields (via normalizeContact) so contacts stored as
   // emails[]/phones[] arrays — not just the legacy single scalars — resolve.
-  const entryFor = (n: NormalizedPerson, queryIsDigits: boolean): InviteeEntry | null => {
+  const entryFor = (n: NormalizedContact, queryIsDigits: boolean): InviteeEntry | null => {
     const email = n.emails[0]?.value.trim().toLowerCase();
     const phone = n.phones[0]?.value ? normalizePhone(n.phones[0].value) : null;
     const emailOk = !!email && EMAIL_RE.test(email) && !taken.has(email);
@@ -191,9 +192,9 @@ export default function EventInviteesScreen() {
     if (!q) return [];
     const qDigits = q.replace(/[^\d]/g, '');
     const queryIsDigits = qDigits.length > 0 && qDigits.length >= q.replace(/[\s()+.-]/g, '').length;
-    return (peopleQ.data ?? [])
-      .map((p: Person) => ({ person: p, n: normalizePerson(p) }))
-      .filter(({ person: p, n }) => {
+    return (contactsQ.data ?? [])
+      .map((p: Contact) => ({ contact: p, n: normalizeContact(p) }))
+      .filter(({ contact: p, n }) => {
         if (!entryFor(n, queryIsDigits)) return false;
         if ((p.name ?? '').toLowerCase().includes(q)) return true;
         if (n.emails.some((e) => e.value.toLowerCase().includes(q))) return true;
@@ -201,8 +202,8 @@ export default function EventInviteesScreen() {
         return false;
       })
       .slice(0, 5)
-      .map(({ person, n }) => ({ person, entry: entryFor(n, queryIsDigits)! }));
-  }, [peopleQ.data, input, taken]);
+      .map(({ contact, n }) => ({ contact, entry: entryFor(n, queryIsDigits)! }));
+  }, [contactsQ.data, input, taken]);
 
   // The inline ✓ inside the field shows once the text parses cleanly — a
   // tap-friendly stand-in for the return key.
@@ -437,7 +438,7 @@ export default function EventInviteesScreen() {
 
   const sent = inviteesQ.data ?? [];
   // The guest list is a cross-household concern only — housemates aren't part
-  // of it, and it governs nothing until at least one outside person is staged
+  // of it, and it governs nothing until at least one outside contact is staged
   // or already invited. Staged counts: the switch must be settable BEFORE the
   // ✓/save that actually sends, since each invitation is stamped with the flag
   // as it goes out.
@@ -455,9 +456,13 @@ export default function EventInviteesScreen() {
           explanation behind the ⓘ (mobile/CLAUDE.md: hints are disclosed,
           always — a screen that stacks prose above its controls reads as
           broken). Notifying a housemate and inviting an outsider are different
-          acts on different people, so they get separate headings rather than
+          acts on different contacts, so they get separate headings rather than
           one "Invitees" wall. */}
-      {hhMembers.length > 0 ? (
+      {/* The household zone is pure RSVP — housemates already see the event —
+          so it disappears once the event has ended: asking someone to accept
+          or decline history is noise. Outside invites stay available (the
+          record-share lane: the recipient gets Add to Calendar). */}
+      {hhMembers.length > 0 && !eventInvitationExpired(snapshot) ? (
         <View style={styles.section}>
           <HintDisclosure
             label="Notify household members"
@@ -487,7 +492,7 @@ export default function EventInviteesScreen() {
               ? 'Add someone outside your household by email address or phone number — press return after each. Invitations go out when you save the event.'
               : 'Add someone outside your household by email address or phone number — press return after each. Invitations go out when you tap the check mark.'
           }
-          accessibilityLabel="About inviting people outside your household"
+          accessibilityLabel="About inviting contacts outside your household"
         />
 
         {/* The dropdown renders below the input, which the keyboard-aware
@@ -523,7 +528,7 @@ export default function EventInviteesScreen() {
           </GroupCard>
           {suggestOpen && suggestions.length > 0 ? (
             <View style={styles.dropdown}>
-              {suggestions.map(({ person: p, entry }) => (
+              {suggestions.map(({ contact: p, entry }) => (
                 <TouchableOpacity
                   key={p._id}
                   style={styles.suggestRow}
@@ -577,7 +582,7 @@ export default function EventInviteesScreen() {
         ) : null}
       </View>
 
-      {/* A setting, not a people list — its own zone so it isn't mistaken for
+      {/* A setting, not a contacts list — its own zone so it isn't mistaken for
           another row of invitees. The switch says what it does; the ⓘ says what
           turning it off costs, so the heading and label don't repeat. Shown
           only once there IS an outside invitee to govern: on a household-only

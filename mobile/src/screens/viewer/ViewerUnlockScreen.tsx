@@ -108,8 +108,8 @@ export default function ViewerUnlockScreen() {
   const requestPending = shared.some((c) => c.accessRequestedAt);
   // Does this account have any content of its own to lose? A user who has never
   // bought the unlock has never been able to make any: the app is behind a hard
-  // paywall, so the only Record on their account is the "You" Person the client
-  // auto-seeds at boot (lib/selfPerson) — which the server's data-loss guard
+  // paywall, so the only Record on their account is the "You" Contact the client
+  // auto-seeds at boot (lib/selfContact) — which the server's data-loss guard
   // dutifully counts, producing "1 items you saved in Calen" for someone who
   // saved nothing. Warning them that re-keying destroys data they neither
   // created nor can read is a scare with no decision behind it, so this
@@ -283,7 +283,7 @@ export default function ViewerUnlockScreen() {
     }
   }
 
-  // ── Sent. The wait is on another person, so say that plainly. ──
+  // ── Sent. The wait is on another contact, so say that plainly. ──
   //
   // Every element is centred on one axis — icon, title, body, the ⓘ line, the
   // way out — because there is nothing to scan or compare here, only a status
@@ -318,7 +318,7 @@ export default function ViewerUnlockScreen() {
               </View>
             }
             accessibilityLabel="Why the owner has to approve"
-            hint="Only the person who shared it can give access back — not us. They’ll see your request next time they open Calen."
+            hint="Only the contact who shared it can give access back — not us. They’ll see your request next time they open Calen."
             style={styles.doneWhy}
             hintStyle={styles.centeredHint}
           />

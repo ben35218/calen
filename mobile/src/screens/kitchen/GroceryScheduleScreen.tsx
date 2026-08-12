@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { settingsApi } from '../../api';
-import { Card, SectionHeader } from '../../components/ui';
+import { Card, SectionHeader, Skeleton } from '../../components/ui';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
 import { DAY_NAMES_FULL, GroceryFrequency, iso, startOfWeek } from './constants';
@@ -38,6 +38,9 @@ export default function GroceryScheduleScreen() {
     },
   });
   const pending = update.isPending;
+  // The row whose tap started the save — it carries the accent spinner while
+  // the others dim, so the brief no-tap window reads as saving, not a dead UI.
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
 
   // Anchor to the week containing today so the current week stays a shopping
   // week when the cadence or day changes.
@@ -70,15 +73,29 @@ export default function GroceryScheduleScreen() {
   };
   const dateLabel = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 
-  const checkRow = (label: string, selected: boolean, onPress: () => void, first: boolean, key?: string) => (
-    <TouchableOpacity key={key ?? label} style={[styles.row, !first && styles.rowBorder]} onPress={onPress} disabled={pending}>
-      <Text style={[styles.rowLabel, selected && { color: accent, fontWeight: '700' }]}>{label}</Text>
-      {selected ? <Ionicons name="checkmark" size={20} color={accent} /> : null}
-    </TouchableOpacity>
-  );
+  const checkRow = (label: string, selected: boolean, onPress: () => void, first: boolean, key?: string) => {
+    const k = key ?? label;
+    // A tap on the current value is a no-op (the setters bail), so a stale
+    // pendingKey never shows a spinner — it only reads while `pending` is true.
+    return (
+      <TouchableOpacity
+        key={k}
+        style={[styles.row, !first && styles.rowBorder, pending && k !== pendingKey && styles.rowDimmed]}
+        onPress={() => { setPendingKey(k); onPress(); }}
+        disabled={pending}
+      >
+        <Text style={[styles.rowLabel, selected && { color: accent, fontWeight: '700' }]}>{label}</Text>
+        {pending && k === pendingKey ? (
+          <ActivityIndicator size="small" color={accent} />
+        ) : selected ? (
+          <Ionicons name="checkmark" size={20} color={accent} />
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
 
   if (settingsQ.isLoading) {
-    return <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.xl }} />;
+    return <ScheduleSkeleton />;
   }
 
   return (
@@ -110,6 +127,28 @@ export default function GroceryScheduleScreen() {
   );
 }
 
+// The screen's fixed shape while settings load: hint line, then the grouped
+// cards (cadence / day / anchor) each as an eyebrow plus a few check rows.
+function ScheduleSkeleton() {
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <Skeleton width={'78%'} height={13} style={styles.hintSkel} />
+      {[2, 4, 2].map((rows, g) => (
+        <View key={g}>
+          <Skeleton width={72} height={12} style={styles.groupHeader} />
+          <Card style={styles.card}>
+            {Array.from({ length: rows }).map((_, i) => (
+              <View key={i} style={[styles.row, i > 0 && styles.rowBorder]}>
+                <Skeleton width={i % 2 ? '34%' : '46%'} height={15} />
+              </View>
+            ))}
+          </Card>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
@@ -118,5 +157,9 @@ const styles = StyleSheet.create({
   card: { paddingVertical: 0 },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13 },
   rowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  // Fade the untouched rows while a save is in flight — the tapped one keeps
+  // full strength and carries the spinner.
+  rowDimmed: { opacity: 0.4 },
   rowLabel: { fontSize: 15, color: colors.text },
+  hintSkel: { marginBottom: spacing.sm },
 });

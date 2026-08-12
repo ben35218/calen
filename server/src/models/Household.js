@@ -24,8 +24,8 @@ const householdSchema = new mongoose.Schema({
   lastKeyRotationAt: { type: Date },
   // Per-household "plaintext is dead" signal. Flips true only at the §9 plaintext
   // drop, after which the server must not create readable content (the client
-  // seeds encrypted records instead). Gates Person.ensureSelf + the onboarding
-  // self-Person seed. Defaults false → identical pre-drop behavior.
+  // seeds encrypted records instead). Gates Contact.ensureSelf + the onboarding
+  // self-Contact seed. Defaults false → identical pre-drop behavior.
   e2eeActive: { type: Boolean, default: false },
   // The DROP_FIELDS schema version this household's plaintext was last nulled at
   // (services/dropReadiness.DROP_FIELDS_VERSION). A committed drop stamps the
@@ -59,7 +59,7 @@ const householdSchema = new mongoose.Schema({
 
   // --- Monetization (all per-USER now — see User.js) ---
   // LEGACY (no longer written): add-on ownership before it moved to User.addons.
-  // Storing it here detached the entitlement from the person who bought it — a
+  // Storing it here detached the entitlement from the contact who bought it — a
   // household is a container you can leave, and leaving minted a fresh one with
   // an empty set, silently dropping add-ons the departing member had paid for
   // themselves (recoverable only by tapping Restore). Ownership now lives on

@@ -1,15 +1,16 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { settingsApi } from '../../api';
-import { Card, CenteredLoader, SegmentedControl } from '../../components/ui';
+import { BottomSheet, Card, CenteredLoader, HeaderIconButton, SegmentedControl } from '../../components/ui';
 import PlannerPane from './PlannerPane';
 import GroceryPane from './GroceryPane';
-import { GroceryFrequency, iso, periodDaysOf, periodStartOf, scheduleSummary, startOfWeek } from './constants';
+import { GroceryFrequency, iso, periodDaysOf, periodLabel, periodStartOf, relativeDay, scheduleSummary, shoppingDayState, startOfWeek } from './constants';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { RECIPE_ICON } from '../../lib/calendar';
 import { useOwnedAddons } from '../../lib/addons';
 import AddonLockedView from '../plan/AddonLockedView';
 import { colors, spacing } from '../../theme';
@@ -31,6 +32,7 @@ export default function KitchenScreen() {
 
 function KitchenHome() {
   const [pane, setPane] = useState<KitchenPane>('planner');
+  const [menuOpen, setMenuOpen] = useState(false);
   const navigation = useNavigation<Nav>();
   const params = useRoute<RouteProp<KitchenStackParamList, 'KitchenHome'>>().params;
   const paneParam = params?.pane;
@@ -86,48 +88,87 @@ function KitchenHome() {
     }
   }, [paneParam, navigation]);
 
-  // The recipe library entry point lives in the header's top-right corner.
+  // A single header action. The recipe library used to sit here as a wide
+  // "Recipes" text button, which pushed the "Meals" title off centre — every
+  // other view in the app centres its title, so the destination moved into the
+  // overflow menu with the rest of this screen's entry points.
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity style={styles.recipesBtn} onPress={() => navigation.navigate('Recipes')}>
-          <Text style={styles.recipesBtnText}>Recipes</Text>
-        </TouchableOpacity>
+        <HeaderIconButton
+          icon="ellipsis-horizontal"
+          onPress={() => setMenuOpen(true)}
+          accessibilityLabel="Meals options"
+        />
       ),
     });
   }, [navigation]);
 
   const endDate = new Date(weekStart);
   endDate.setDate(endDate.getDate() + periodDays - 1);
-  // The current and next periods read as words; anything further shows dates.
+  // Every period reads as its distance from the one you're in — "This Week",
+  // "Next Week", "Three Weeks", "Three Weeks Ago" — so the label answers
+  // "where am I?" without the reader parsing dates. The concrete date lives in
+  // the caption below, where it belongs to the trip.
   const currentStart = periodStartOf(new Date(), groceryDay, frequency, anchor);
-  const nextStart = new Date(currentStart);
-  nextStart.setDate(nextStart.getDate() + periodDays);
-  const onCurrent = iso(weekStart) === iso(currentStart);
-  const weekLabel = onCurrent ? 'This Week'
-    : iso(weekStart) === iso(nextStart) ? 'Next Week'
-    : `${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${endDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  const md = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const dateRange = `${md(weekStart)} – ${md(endDate)}`;
+  const weekLabel = periodLabel(weekStart, currentStart);
   const shiftWeek = (dir: number) => setWeekStart((w) => { const n = new Date(w); n.setDate(n.getDate() + dir * periodDays); return n; });
+
+  // The caption is the trip that opens this period, and how far off it is:
+  // "Shop Sat, Aug 15 (in 4 days)". The span the period covers is deliberately
+  // NOT here — a period starts on its shopping day, so the range only ever
+  // restated the trip date and then added an end date nobody shops by. What a
+  // shopper needs from this line is when to go, and how soon that is.
+  //
+  // "Sat, Aug 15" comes from one `toLocaleDateString`, so the comma and the
+  // field order follow the reader's locale rather than a hand-joined format.
+  // Past tense once the trip has been and gone, which is what lets last
+  // period's list explain its own checked boxes.
+  const tripState = shoppingDayState(weekStart, periodDays);
+  const tripDate = weekStart.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const trip = `${tripState === 'past' ? 'Shopped' : 'Shop'} ${tripDate} (${relativeDay(weekStart)})`;
+  // Until a shopping day is configured there is no honest trip to name — the
+  // period maths falls back to Saturday, and announcing a day nobody chose
+  // would be a lie the setup card above is busy asking them to fix. The range
+  // stands in, since the label is relative and carries no date of its own.
+  const periodCaption = configuredDay != null ? trip : dateRange;
 
   return (
     <View style={styles.screen}>
-      <TouchableOpacity activeOpacity={0.85} style={styles.scheduleWrap} onPress={() => navigation.navigate('GrocerySchedule')}>
-        <Card style={styles.scheduleCard}>
-          <Ionicons name="calendar-outline" size={18} color={accent} />
-          <View style={styles.scheduleCardText}>
-            <Text style={styles.scheduleCardTitle}>Grocery Schedule</Text>
-            <Text style={styles.scheduleCardSummary}>{scheduleSummary(configuredDay, frequency)}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-        </Card>
-      </TouchableOpacity>
-      <View style={styles.weekNav}>
+      {/* Unset, the schedule is a real call to action and earns a card — the
+          whole screen's period maths hangs off the answer. Once it's configured
+          the card would only echo a setting, so it goes; editing it lives in the
+          nav bar's options menu with the rest of this screen's configuration. */}
+      {configuredDay == null ? (
+        <TouchableOpacity activeOpacity={0.85} style={styles.scheduleWrap} onPress={() => navigation.navigate('GrocerySchedule')}>
+          <Card style={styles.scheduleCard}>
+            <Ionicons name="calendar-outline" size={18} color={accent} />
+            <View style={styles.scheduleCardText}>
+              <Text style={styles.scheduleCardTitle}>Grocery Shopping Schedule</Text>
+              <Text style={styles.scheduleCardSummary}>{scheduleSummary(configuredDay, frequency)}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </Card>
+        </TouchableOpacity>
+      ) : null}
+      {/* The period, and nothing else. "This Week" is the fast read; the caption
+          beneath carries the facts it stands for — and the reason the caption is
+          not a tap target is that it describes what you're looking at rather
+          than offering to change something. */}
+      <View style={[styles.weekNav, configuredDay != null && styles.weekNavTop]}>
         <TouchableOpacity onPress={() => shiftWeek(-1)} style={styles.navBtn}><Ionicons name="chevron-back" size={22} color="#fff" /></TouchableOpacity>
-        <TouchableOpacity onPress={() => setWeekStart(currentStart)}>
+        {/* The caption is its own element, so VoiceOver reads the dates and the
+            trip once — the button announces only what tapping it does. */}
+        <TouchableOpacity onPress={() => setWeekStart(currentStart)} accessibilityRole="button" accessibilityLabel={`${weekLabel}. Go to the current period`}>
           <Text style={styles.weekLabel}>{weekLabel}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => shiftWeek(1)} style={styles.navBtn}><Ionicons name="chevron-forward" size={22} color="#fff" /></TouchableOpacity>
       </View>
+      {periodCaption ? (
+        <Text style={styles.periodDates}>{periodCaption}</Text>
+      ) : null}
       <View style={styles.segmentWrap}>
         <SegmentedControl<KitchenPane>
           value={pane}
@@ -143,6 +184,64 @@ function KitchenHome() {
           ? <GroceryPane weekStart={weekStart} onShowPlanner={() => setPane('planner')} />
           : <PlannerPane weekStart={weekStart} />}
       </View>
+      {/* Everything this screen leads to, in one place: the recipe library and
+          the two settings. All three used to be scattered — Recipes as a header
+          button wide enough to shove the title off centre, the schedule as a
+          hero card above the list, the section order as an unlabelled glyph on
+          the grocery card. Closing is caller-driven (flip `visible` before
+          navigating) so the sheet leaves instantly instead of animating out over
+          the pushed screen. */}
+      {/* No sheet title: the nav bar behind it already says "Meals", and every
+          row states what it is and where it goes. "Meals options" also promised
+          settings and then opened with a destination. The `⋯` button keeps that
+          wording as its accessibility label, where it describes the control
+          rather than the contents. */}
+      <BottomSheet visible={menuOpen} onClose={() => setMenuOpen(false)}>
+        {/* The destination comes first; the settings are what you reach for
+            less often. Each row is announced as one button — without an explicit
+            label VoiceOver reads a title and its value as unrelated strings. */}
+        <TouchableOpacity
+          style={styles.menuRow}
+          onPress={() => { setMenuOpen(false); navigation.navigate('Recipes'); }}
+          accessibilityRole="button"
+          accessibilityLabel="Recipes, your recipe library"
+        >
+          <MaterialCommunityIcons name={RECIPE_ICON} size={22} color={colors.text} />
+          <View style={styles.menuRowText}>
+            <Text style={styles.menuLabel}>Recipes</Text>
+            <Text style={styles.menuValue}>Your recipe library</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.menuRow}
+          onPress={() => { setMenuOpen(false); navigation.navigate('GrocerySchedule'); }}
+          accessibilityRole="button"
+          accessibilityLabel={`Grocery Shopping Schedule, ${scheduleSummary(configuredDay, frequency)}`}
+        >
+          <Ionicons name="calendar-outline" size={22} color={colors.text} />
+          <View style={styles.menuRowText}>
+            <Text style={styles.menuLabel}>Grocery Shopping Schedule</Text>
+            <Text style={styles.menuValue}>{scheduleSummary(configuredDay, frequency)}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.menuRow}
+          onPress={() => { setMenuOpen(false); navigation.navigate('MealPlannerSettings'); }}
+          accessibilityRole="button"
+          accessibilityLabel="Grocery List Sections, the order Organize walks your store"
+        >
+          <MaterialCommunityIcons name="sort" size={22} color={colors.text} />
+          <View style={styles.menuRowText}>
+            {/* Named for the screen it opens, not for what it does — a menu row
+                whose words don't match the title it lands on reads as a wrong turn. */}
+            <Text style={styles.menuLabel}>Grocery List Sections</Text>
+            <Text style={styles.menuValue}>The order Organize walks your store</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
+      </BottomSheet>
     </View>
   );
 }
@@ -155,15 +254,22 @@ const styles = StyleSheet.create({
   scheduleCardTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
   scheduleCardSummary: { fontSize: 13, color: colors.textMuted, marginTop: 1 },
   segmentWrap: { padding: spacing.md, paddingBottom: spacing.sm },
-  // Transparent text-only header button, white like the rest of the header
-  // chrome. No glyph: the word carries it, and a book icon beside "Recipes"
-  // only repeats the label.
-  recipesBtn: { paddingVertical: 6, paddingHorizontal: 4 },
-  recipesBtnText: { fontSize: 14, fontWeight: '600', color: '#fff' },
   // The chevrons' own touch padding (navBtn) renders as part of the gap, so
   // only a small top margin is needed to match the stack's vertical rhythm.
   weekNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, marginTop: spacing.sm },
+  // With the card gone the week nav is the first thing under the header, so it
+  // takes over the top padding the card used to supply.
+  weekNavTop: { marginTop: spacing.md },
   navBtn: { padding: spacing.sm },
   weekLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
+  // A caption on the period, not a second heading and not a control: centred
+  // under the label, muted, and deliberately not tappable.
+  periodDates: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: -2 },
+  menuRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: 14, paddingHorizontal: spacing.xs },
+  menuRowText: { flex: 1 },
+  menuLabel: { fontSize: 16, color: colors.text },
+  // Each row states its current value, so the menu answers "when do I shop?"
+  // without the user having to open the screen behind it.
+  menuValue: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   body: { flex: 1 },
 });

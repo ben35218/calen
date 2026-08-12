@@ -5,15 +5,18 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi } from '../../api';
-import { openRecord, sealNew } from '../../lib/e2ee';
+import { sealNew } from '../../lib/e2ee';
+import { openRecipe } from '../../lib/recipeNames';
+import { recipeImageUri } from '../../lib/recipePhoto';
 import { featuredSchedule } from '../../lib/mealSchedule';
+import { ingredientRuns, pickVariation } from '../../lib/recipeVariations';
 import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
-import { Button, Card, Screen, Divider, Badge, DateField, CenteredLoader, ScreenTitle, HeaderIconButton } from '../../components/ui';
+import { Button, Card, Chip, Screen, Divider, Badge, DateField, CenteredLoader, ScreenTitle, HeaderIconButton, Skeleton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { ymd } from '../../lib/calendar';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
-import { colors, spacing } from '../../theme';
+import { colors, radius, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<KitchenStackParamList, 'RecipeDetail'>;
 type Rt = RouteProp<KitchenStackParamList, 'RecipeDetail'>;
@@ -26,15 +29,22 @@ export default function RecipeDetailScreen() {
   const accent = useCalendarColors().colors.recipes;
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  // Flavor variation the meal is planned as; null until the user picks (the
+  // first variation is the effective default when the recipe has any).
+  const [variation, setVariation] = useState<string | null>(null);
+  // The dish photo streams from the API; shimmer its frame until it paints so
+  // the hero doesn't pop in over blank space.
+  const [heroLoaded, setHeroLoaded] = useState(false);
 
-  const recipeQ = useQuery({ queryKey: ['recipes', id], queryFn: async () => openRecord('Recipe', (await recipesApi.get(id)).data) });
+  const recipeQ = useQuery({ queryKey: ['recipes', id], queryFn: async () => openRecipe((await recipesApi.get(id)).data) });
   const schedulesQ = useQuery({ queryKey: ['recipe-schedule', 'forRecipe', id], queryFn: async () => (await recipeScheduleApi.forRecipe(id)).data });
   const recipe = recipeQ.data;
 
   const schedule = useMutation({
     // Sealed create (Signal-parity D5): schedule notes are content.
     mutationFn: async () => {
-      const payload = { recipeId: id, scheduledDate: date };
+      const chosen = variation ?? recipe?.variations?.[0] ?? null;
+      const payload = { recipeId: id, scheduledDate: date, ...(chosen ? { variation: chosen } : {}) };
       return recipeScheduleApi.schedule(await sealNew('RecipeSchedule', payload, RECIPE_SCHEDULE_ENC(payload)));
     },
     onSuccess: () => {
@@ -61,9 +71,10 @@ export default function RecipeDetailScreen() {
       ...(recipe.description ? ['', recipe.description] : []),
       '',
       'Ingredients:',
-      ...(recipe.ingredients ?? []).map(
-        (ing) => `• ${[ing.amount, ing.unit, ing.name].filter(Boolean).join(' ')}`,
-      ),
+      ...ingredientRuns(recipe.ingredients ?? [], recipe.variations).flatMap((run) => [
+        ...(run.group ? [`${run.group}${run.isVariation ? ' (variation — pick one)' : ''}:`] : []),
+        ...run.items.map(({ ing }) => `• ${[ing.amount, ing.unit, ing.name].filter(Boolean).join(' ')}`),
+      ]),
       '',
       'Instructions:',
       ...(recipe.instructions ?? []).map((step, i) => `${i + 1}. ${step}`),
@@ -101,6 +112,8 @@ export default function RecipeDetailScreen() {
   }
 
   const total = (recipe.prepTimeMins || 0) + (recipe.cookTimeMins || 0);
+  // Stored as a server path; the API host is joined at display time (lib/recipePhoto).
+  const heroUri = recipeImageUri(recipe.imageUrl);
   const feat = featuredSchedule(schedulesQ.data ?? [], ymd(new Date()));
   // A still-to-come meal is somewhere the user can go: tapping the date opens
   // the Meals view on the shopping period containing it, with that day scrolled
@@ -117,7 +130,12 @@ export default function RecipeDetailScreen() {
   return (
     <View style={{ flex: 1 }}>
       <Screen>
-        {recipe.imageUrl ? <Image source={{ uri: recipe.imageUrl }} style={styles.hero} /> : null}
+        {heroUri ? (
+          <View style={styles.hero}>
+            {!heroLoaded ? <Skeleton height={200} radius={radius.md} style={styles.heroSkeleton} /> : null}
+            <Image source={{ uri: heroUri }} style={styles.heroImg} onLoad={() => setHeroLoaded(true)} />
+          </View>
+        ) : null}
 
         <ScreenTitle style={styles.recipeTitle}>{recipe.title}</ScreenTitle>
 
@@ -156,19 +174,40 @@ export default function RecipeDetailScreen() {
           {scheduleOpen ? (
             <View style={styles.schedulePad}>
               <DateField label="Date" value={date} onChange={setDate} />
+              {recipe.variations?.length ? (
+                <View>
+                  <Text style={styles.variationLabel}>Variation — the grocery list buys only this one</Text>
+                  <View style={styles.variationChips}>
+                    {recipe.variations.map((v) => (
+                      <Chip key={v} label={v} color={accent} selected={(variation ?? recipe.variations![0]) === v} onPress={() => setVariation(v)} />
+                    ))}
+                  </View>
+                </View>
+              ) : null}
               <Button title="Add to Planner" color={accent} loading={schedule.isPending} onPress={() => schedule.mutate()} />
             </View>
           ) : null}
         </Card>
 
-        {/* Ingredients */}
+        {/* Ingredients — grouped into their sections; variation groups are the
+            mutually exclusive flavor kits picked when scheduling. */}
         <Card style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Ingredients</Text>
           <Divider />
-          {recipe.ingredients?.map((ing, i) => (
-            <View key={i} style={styles.ingRow}>
-              <Text style={styles.ingAmount}>{[ing.amount, ing.unit].filter(Boolean).join(' ')}</Text>
-              <Text style={styles.ingName}>{ing.name}</Text>
+          {ingredientRuns(recipe.ingredients ?? [], recipe.variations).map((run, r) => (
+            <View key={r}>
+              {run.group ? (
+                <View style={styles.groupHeaderRow}>
+                  <Text style={styles.groupHeader}>{run.group}</Text>
+                  {run.isVariation ? <Badge label="Variation" color={accent} /> : null}
+                </View>
+              ) : null}
+              {run.items.map(({ ing, index }) => (
+                <View key={index} style={styles.ingRow}>
+                  <Text style={styles.ingAmount}>{[ing.amount, ing.unit].filter(Boolean).join(' ')}</Text>
+                  <Text style={styles.ingName}>{ing.name}</Text>
+                </View>
+              ))}
             </View>
           ))}
         </Card>
@@ -177,14 +216,24 @@ export default function RecipeDetailScreen() {
         <Card style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Instructions</Text>
           <Divider />
-          {recipe.instructions?.map((step, i) => (
-            <View key={i} style={styles.stepRow}>
-              <View style={[styles.stepBadge, { backgroundColor: accent }]}>
-                <Text style={styles.stepNum}>{i + 1}</Text>
+          {recipe.instructions?.map((step, i) => {
+            // A step tagged to specific variations says so — cooking mode
+            // will drop it for the kits it doesn't belong to.
+            const only = recipe.instructionVariations?.[i];
+            return (
+              <View key={i} style={styles.stepRow}>
+                <View style={[styles.stepBadge, { backgroundColor: accent }]}>
+                  <Text style={styles.stepNum}>{i + 1}</Text>
+                </View>
+                <View style={styles.stepBody}>
+                  <Text style={styles.stepText}>{step}</Text>
+                  {only?.length ? (
+                    <Text style={[styles.stepOnly, { color: accent }]}>{only.join(' / ')} only</Text>
+                  ) : null}
+                </View>
               </View>
-              <Text style={styles.stepText}>{step}</Text>
-            </View>
-          ))}
+            );
+          })}
         </Card>
       </Screen>
 
@@ -192,7 +241,17 @@ export default function RecipeDetailScreen() {
         <Button
           title="Start Cooking"
           color={accent}
-          onPress={() => navigation.navigate('CookingMode', { id })}
+          onPress={async () => {
+            // A recipe with flavor variations cooks as ONE of them: cooking
+            // mode shows only that kit's steps and ingredients. Cancel = don't
+            // start (same contract as adding a meal from the planner).
+            const cookAs = await pickVariation(
+              recipe,
+              `Which variation are you making? You'll only see that variation's steps and ingredients.`,
+            );
+            if (cookAs === undefined) return;
+            navigation.navigate('CookingMode', { id, ...(cookAs ? { variation: cookAs } : {}) });
+          }}
           disabled={!recipe.instructions?.length}
         />
       </View>
@@ -206,7 +265,11 @@ const styles = StyleSheet.create({
   // Left spacer mirrors the share icon's width so the title stays centered.
   titleSpacer: { width: 30 },
   titleActions: { flexDirection: 'row', alignItems: 'center', width: 30 },
-  hero: { width: '100%', height: 200, borderRadius: 12, marginBottom: spacing.md },
+  hero: { width: '100%', height: 200, marginBottom: spacing.md },
+  heroImg: { width: '100%', height: '100%', borderRadius: radius.md },
+  // Sits behind the image and stretches with it; the image fades it out by
+  // covering it once decoded.
+  heroSkeleton: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   recipeTitle: { marginBottom: spacing.sm },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: spacing.md },
   desc: { fontSize: 15, color: colors.textMuted, marginBottom: spacing.md, lineHeight: 21 },
@@ -219,10 +282,16 @@ const styles = StyleSheet.create({
   schedulePad: { marginTop: spacing.md, gap: spacing.sm },
   sectionCard: { padding: 0, paddingTop: spacing.md, marginBottom: spacing.md },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, paddingHorizontal: spacing.md, marginBottom: spacing.sm },
+  groupHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: 2 },
+  groupHeader: { fontSize: 14, fontWeight: '700', color: colors.text },
+  variationLabel: { fontSize: 12, color: colors.textMuted, marginBottom: spacing.xs },
+  variationChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   ingRow: { flexDirection: 'row', paddingHorizontal: spacing.md, paddingVertical: 8 },
   ingAmount: { width: 80, fontSize: 14, fontWeight: '600', color: colors.textMuted },
   ingName: { flex: 1, fontSize: 15, color: colors.text },
   stepRow: { flexDirection: 'row', paddingHorizontal: spacing.md, paddingVertical: 8, gap: spacing.md },
+  stepBody: { flex: 1 },
+  stepOnly: { fontSize: 12, fontWeight: '700', marginTop: 2 },
   stepBadge: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
   stepNum: { color: '#fff', fontWeight: '700', fontSize: 13 },
   stepText: { flex: 1, fontSize: 15, color: colors.text, lineHeight: 22 },

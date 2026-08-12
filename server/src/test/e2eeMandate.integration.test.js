@@ -53,7 +53,7 @@ async function activateOwner(firstName) {
 test('write-guard: the opaque store is enc-only; the shared-trip plaintext lane is preserved', async () => {
   const owner = await onboardOwner('Ada');
 
-  // Signal-parity C3b: the 9 content collections (people/events/chores/tasks/items/
+  // Signal-parity C3b: the 9 content collections (contacts/events/chores/tasks/items/
   // recipes/odometer/meal-plan/categories) all write through the unified opaque
   // store, which is STRUCTURALLY enc-only — a no-enc create is rejected with the
   // mandate message; an enc-bearing one succeeds. The collection type is inside the

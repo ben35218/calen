@@ -4,7 +4,7 @@
 // Contacts, Mail, and messaging apps all import it. Shares the same field set as
 // the device-address-book export (lib/deviceContacts); like it, this is a local,
 // user-initiated export of the user's own decrypted contact.
-import type { LabeledValue } from './personFields';
+import type { LabeledValue } from './contactFields';
 
 export interface VCardInput {
   name: string;

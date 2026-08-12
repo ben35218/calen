@@ -34,7 +34,9 @@
       <v-card-text>
         <v-skeleton-loader v-if="list.loading.value" type="table-row@6" />
         <template v-else>
-          <div v-for="c in list.items.value" :key="c._id" class="tc-row py-3">
+          <div
+            v-for="c in list.items.value" :key="c._id" class="tc-row py-3"
+            role="button" tabindex="0" @click="openCase(c)" @keyup.enter="openCase(c)">
             <div class="d-flex align-center flex-wrap mb-1" style="gap: 8px">
               <span class="font-weight-bold text-mono">{{ c.caseId }}</span>
               <v-chip size="x-small" variant="tonal" :color="priorityColor(c.priority)">{{ c.priority }}</v-chip>
@@ -43,6 +45,7 @@
               <span class="text-caption text-medium-emphasis">{{ c.section }}</span>
               <v-spacer />
               <span v-if="c.specPath" class="text-caption text-medium-emphasis">{{ specLabel(c.specPath) }}</span>
+              <v-icon icon="mdi-chevron-right" size="16" class="text-medium-emphasis" />
             </div>
             <div class="text-body-2">{{ c.steps || c.title }}</div>
             <div v-if="c.expected" class="text-body-2 text-medium-emphasis mt-1">
@@ -136,17 +139,99 @@
       </v-card>
     </v-dialog>
 
+    <!--
+      Case detail: what to do, what to expect, and a place to record the result
+      against a run that's in progress — so a tester browsing the library never
+      has to hunt for the matching row on the run screen. Recording here uses
+      the same upsert the run screen does, so the two can't disagree.
+    -->
+    <v-dialog v-model="detailOpen" max-width="720">
+      <v-card v-if="detail" rounded="lg">
+        <v-card-title class="d-flex align-center flex-wrap" style="gap: 8px">
+          <span class="text-mono font-weight-bold">{{ detail.caseId }}</span>
+          <v-chip size="x-small" variant="tonal" :color="priorityColor(detail.priority)">{{ detail.priority }}</v-chip>
+          <v-chip v-if="!detail.active" size="x-small" variant="tonal">retired</v-chip>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" size="small" @click="detailOpen = false" />
+        </v-card-title>
+        <v-card-text>
+          <p class="text-caption text-medium-emphasis mb-3">{{ detail.section }}</p>
+
+          <div class="text-overline">What to do</div>
+          <p class="text-body-2 mb-3">{{ detail.steps || detail.title }}</p>
+          <template v-if="detail.expected">
+            <div class="text-overline">What you should see</div>
+            <p class="text-body-2 mb-3">{{ detail.expected }}</p>
+          </template>
+          <p v-if="detail.source === 'repo'" class="text-caption text-medium-emphasis mb-4">
+            This case comes from <span class="text-mono">{{ detail.sourceDoc }}</span> — to reword it, edit the
+            document and re-import.
+            <span v-if="detail.specPath">Behavior owned by <span class="text-mono">{{ specLabel(detail.specPath) }}</span>.</span>
+          </p>
+
+          <v-divider class="mb-4" />
+
+          <!-- Record a result -->
+          <template v-if="detail.active">
+            <div class="text-overline">Record a result</div>
+            <template v-if="openRuns.length">
+              <v-select
+                v-model="recordRunId" :items="runOptions" item-title="label" item-value="id"
+                label="Which test run" density="comfortable" variant="outlined" class="mb-2" hide-details />
+              <v-btn-toggle v-model="recordStatus" density="comfortable" variant="outlined" class="mb-2">
+                <v-btn value="pass" size="small" color="success">Pass</v-btn>
+                <v-btn value="fail" size="small" color="error">Fail</v-btn>
+                <v-btn value="blocked" size="small" color="warning">Blocked</v-btn>
+                <v-btn value="na" size="small">N/A</v-btn>
+              </v-btn-toggle>
+              <v-textarea
+                v-if="recordStatus === 'fail' || recordStatus === 'blocked'"
+                v-model="recordNote" label="What happened?" rows="2" density="comfortable" variant="outlined"
+                class="mb-2" hide-details />
+              <v-btn
+                color="primary" variant="flat" size="small" :disabled="!recordStatus || !recordRunId"
+                :loading="recordBusy" @click="saveRecord">Save result</v-btn>
+            </template>
+            <p v-else class="text-body-2 text-medium-emphasis">
+              No test run is in progress. Open <router-link to="/releases">Releases</router-link>, pick your
+              release, and start a run — then results can be recorded here or on the run screen.
+            </p>
+          </template>
+
+          <v-divider class="my-4" />
+
+          <!-- History -->
+          <div class="text-overline">History</div>
+          <v-skeleton-loader v-if="historyLoading" type="list-item-two-line@2" />
+          <template v-else>
+            <div v-for="h in history" :key="h._id" class="d-flex align-center py-1" style="gap: 8px">
+              <v-chip size="x-small" variant="tonal" :color="statusColor(h.status)">{{ h.status }}</v-chip>
+              <span class="text-caption">
+                {{ h.release ? `${h.release.version} (${h.release.buildNumber})` : '' }}
+                <span v-if="h.run"> · {{ h.run.device || h.run.name }}</span>
+              </span>
+              <span v-if="h.note" class="text-caption text-medium-emphasis">— {{ h.note }}</span>
+              <v-spacer />
+              <span class="text-caption text-medium-emphasis"><Timestamp :date="h.at" /></span>
+            </div>
+            <p v-if="!history.length" class="text-body-2 text-medium-emphasis">Never run yet.</p>
+          </template>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
     <SnackbarHost :snack="snack" />
   </v-container>
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { qaApi } from '../services/api';
 import { useSnackbar } from '../composables/useSnackbar';
 import { usePagedList } from '../composables/usePagedList';
 import { downloadCsv } from '../lib/csv';
 import SnackbarHost from '../components/SnackbarHost.vue';
+import Timestamp from '../components/Timestamp.vue';
 
 const PRIORITIES = ['blocker', 'critical', 'major', 'minor'];
 const ACTIVE_OPTIONS = [
@@ -188,6 +273,81 @@ function priorityColor(p) {
 
 // "../specs/features/calendar.md" → "calendar.md"
 const specLabel = (p) => String(p).split('/').pop();
+
+function statusColor(s) {
+  if (s === 'pass') return 'success';
+  if (s === 'fail') return 'error';
+  if (s === 'blocked') return 'warning';
+  return 'default';
+}
+
+// --- Case detail ------------------------------------------------------------
+
+const detailOpen = ref(false);
+const detail = ref(null);
+const history = ref([]);
+const historyLoading = ref(false);
+const openRuns = ref([]);           // in-progress runs, newest first
+const releasesById = ref({});       // releaseId → { version, buildNumber }
+const recordRunId = ref(null);
+const recordStatus = ref(null);
+const recordNote = ref('');
+const recordBusy = ref(false);
+
+const runOptions = computed(() => openRuns.value.map((r) => {
+  const rel = releasesById.value[String(r.releaseId)];
+  const device = r.environment?.device || r.name || 'Run';
+  return { id: r._id, label: rel ? `${device} — ${rel.version} (${rel.buildNumber})` : device };
+}));
+
+async function openCase(c) {
+  detail.value = c;
+  detailOpen.value = true;
+  recordStatus.value = null;
+  recordNote.value = '';
+  historyLoading.value = true;
+  try {
+    const [hist, runs, rels] = await Promise.all([
+      qaApi.caseHistory(c._id),
+      qaApi.runs(),
+      qaApi.releases({ page: 1, pageSize: 25 }),
+    ]);
+    history.value = hist.data.results;
+    releasesById.value = Object.fromEntries(rels.data.items.map((r) => [String(r._id), r]));
+    openRuns.value = runs.data.items.filter((r) => r.status === 'in_progress');
+    recordRunId.value = openRuns.value[0]?._id || null;
+  } catch (e) {
+    fromError(e, 'Failed to load the case');
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+// Picking a run pre-fills the answer already recorded on it, so re-opening a
+// case shows (and lets you correct) what you said, rather than looking blank.
+watch(recordRunId, (runId) => {
+  const prev = history.value.find((h) => String(h.runId) === String(runId));
+  recordStatus.value = prev?.status || null;
+  recordNote.value = prev?.note || '';
+});
+
+async function saveRecord() {
+  recordBusy.value = true;
+  try {
+    await qaApi.saveResults(recordRunId.value, [{
+      caseId: detail.value.caseId,
+      status: recordStatus.value,
+      note: recordNote.value || '',
+    }]);
+    success('Result saved.');
+    const hist = await qaApi.caseHistory(detail.value._id);
+    history.value = hist.data.results;
+  } catch (e) {
+    fromError(e, 'Could not save the result');
+  } finally {
+    recordBusy.value = false;
+  }
+}
 
 // --- Import ---------------------------------------------------------------
 
@@ -291,6 +451,8 @@ async function exportCsv() {
 </script>
 
 <style scoped>
+.tc-row { border-radius: 8px; cursor: pointer; }
 .tc-row + .tc-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12); }
+.tc-row:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
 .text-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>

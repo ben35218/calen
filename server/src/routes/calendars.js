@@ -485,7 +485,7 @@ router.post('/:key/keys/approve', async (req, res) => {
     const seat = (cal.collaborators || [])
       .find((c) => String(c.userId || c) === String(userId));
     if (!seat || !seat.keyChangedAt) {
-      return res.status(409).json({ error: 'No pending access request for that person' });
+      return res.status(409).json({ error: 'No pending access request for that contact' });
     }
 
     const n = await writeMemberWraps(cal.key, keyVersion, [{ userId, wrappedKey }], req.user._id, userId);
@@ -609,7 +609,7 @@ router.get('/keys/pending', async (req, res) => {
           .map((u) => ({ userId: u._id, identityPublicKey: u.identityPublicKey })),
         // The owner's approval queue: re-keyed collaborators who asked for
         // access back. `identityPublicKey` is the NEW one — the owner's device
-        // shows its safety number so the person approving can check they're
+        // shows its safety number so the contact approving can check they're
         // re-granting to who they think they are.
         reapprovals: awaitingApproval
           .filter((c) => byId.get(String(c.userId)))

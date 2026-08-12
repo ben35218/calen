@@ -29,7 +29,7 @@ const STATUS_LABEL: Record<string, string> = {
   failed: 'Failed',
 };
 
-// Vapi endedReason codes → something a person would say.
+// Vapi endedReason codes → something a contact would say.
 function endedReasonLabel(reason: string | null): string | null {
   if (!reason) return null;
   const map: Record<string, string> = {

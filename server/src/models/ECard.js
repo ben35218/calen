@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 // A scheduled occasion e-card.
 //
-// PRIVACY NOTE — deliberate plaintext exception to E2EE. Unlike Person/event
+// PRIVACY NOTE — deliberate plaintext exception to E2EE. Unlike Contact/event
 // content, an ECard is stored in PLAINTEXT (no encFields): the recipient emails
 // and the card message must be readable by the server so the scheduler can
 // deliver them on the occasion's date while the app is closed. This mirrors the
@@ -27,8 +27,8 @@ const ecardSchema = new mongoose.Schema({
   // Author — drives the household scope and the send timezone.
   userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   householdId: { type: mongoose.Schema.Types.ObjectId, ref: 'Household', index: true },
-  // The occasion's subject person (routing/dedupe only — opaque to the server).
-  personId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },
+  // The occasion's subject contact (routing/dedupe only — opaque to the server).
+  contactId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Contact' },
   kind:        { type: String, enum: ['birthday', 'anniversary', 'marriage', 'death', 'custom'], default: 'custom' },
   // Display noun / custom label carried into the email copy (author-written).
   occasionLabel: { type: String, trim: true },

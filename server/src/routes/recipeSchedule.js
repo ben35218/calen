@@ -7,6 +7,7 @@ const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter } = require('../middleware/usageMeter');
 const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent } = require('../services/e2eePolicy');
+const { normalizeOrganizedList } = require('../services/groceryNames');
 
 const client = new Anthropic();
 
@@ -92,7 +93,15 @@ router.post('/organize-grocery-list', meter('aiHelper'), requireAiEnabled, async
       max_tokens: 4096,
       messages: [{
         role: 'user',
-        content: `Organize this grocery list. Consolidate duplicate ingredients and combine amounts where possible. ${sectionConstraint} ${storeContext} Clean up verbose descriptions.
+        content: `Organize this grocery list. Consolidate duplicate ingredients and combine amounts where possible. ${sectionConstraint} ${storeContext}
+
+Rewrite every item name as it would be read while walking a store aisle, not as a recipe writes it:
+- Title Case each name ("garlic cloves" -> "Garlic Cloves").
+- Drop preparation instructions and anything after a comma ("garlic cloves, minced" -> "Garlic Cloves"; "onion, finely diced" -> "Onion").
+- Drop filler descriptors that don't change what gets bought — "fresh", "freshly", "chopped", "divided", "to taste", "for garnish" — and herb form words ("fresh basil leaves" -> "Basil").
+- Keep words that DO change what gets bought: "ground beef", "smoked paprika", "unsalted butter", "boneless chicken thighs", "whole milk".
+- Keep the amount in the "amount" field, never in the name.
+- Abbreviate spoon units in the amount: write "tbsp" for tablespoons and "tsp" for teaspoons ("2 tablespoons" -> "2 tbsp").
 
 Raw list:
 ${rawList}
@@ -120,7 +129,9 @@ Respond with ONLY valid JSON (no markdown):
       console.error('[organize-grocery-list] JSON parse failed. stop_reason:', message.stop_reason, '\nRaw response:', raw);
       throw parseErr;
     }
-    res.json(organized);
+    // The prompt asks for shopper-facing names; this makes them so regardless of
+    // what the model returned (services/groceryNames.js).
+    res.json(normalizeOrganizedList(organized));
   } catch (err) {
     if (err instanceof SyntaxError) {
       return res.status(422).json({ error: 'Could not organize the list. Try again.' });

@@ -155,7 +155,7 @@ const DEFAULTS = {
       recipes:     { label: 'Meals',       price: 2.99, description: 'Meal planner, recipes and the grocery schedule on your calendar' },
       maintenance: { label: 'Maintenance', price: 2.99, description: 'Home and vehicle maintenance tasks on your calendar' },
       trips:       { label: 'Trips',       price: 2.99, description: 'Trip planning with legs, expenses and calendar overlays' },
-      birthdays:   { label: 'Occasions',   price: 0,    description: 'Birthdays, anniversaries, and other dates from your people — on the calendar every year, with e-cards' },
+      birthdays:   { label: 'Occasions',   price: 0,    description: 'Birthdays, anniversaries, and other dates from your contacts — on the calendar every year, with e-cards' },
       chores:      { label: 'Chores',      price: 0,    description: 'Recurring household chores the family shares' },
     },
     bundle: { label: 'All add-ons', price: 7.99, description: 'Every paid feature calendar in one purchase' },

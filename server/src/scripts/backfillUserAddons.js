@@ -28,7 +28,7 @@
  *                    the effect is the union across members — the difference is
  *                    only who KEEPS it on leaving. Right when the owner is the
  *                    buyer, which is the normal case for a household that formed
- *                    around one person's purchase, and it avoids gifting a
+ *                    around one contact's purchase, and it avoids gifting a
  *                    permanent paid entitlement to someone who joined later
  *                    (an invited relative, a beta tester).
  *

@@ -455,6 +455,24 @@ export function itemsForDate(data: CalendarData | undefined, dateStr: string): D
   return { events, tasks, chores, recipes, trips, occasions, grocery };
 }
 
+// A day's items with every hidden calendar's contribution removed. Calendar
+// visibility (Calendars manager → tap a row) is a display filter that has to
+// hold on EVERY surface, so any view that renders itemsForDate output pipes it
+// through here rather than re-deriving the per-collection → calendar-id
+// mapping. `visible` is `(id) => visibility[id] !== false`.
+export function visibleDayItems(day: DayItems, visible: (id: string) => boolean): DayItems {
+  return {
+    events: day.events.filter((e) => visible(e.calendarType)),
+    tasks: visible('maintenance') ? day.tasks : [],
+    chores: visible('chores') ? day.chores : [],
+    recipes: visible('recipes') ? day.recipes : [],
+    trips: visible('trips') ? day.trips : [],
+    occasions: visible('birthdays') ? day.occasions : [],
+    // The shopping day belongs to the Meals calendar, like the meals themselves.
+    grocery: visible('recipes') ? day.grocery : false,
+  };
+}
+
 // Up-to-`max` dot colors for a day cell.
 export function dayDots(data: CalendarData | undefined, dateStr: string, max = 4): string[] {
   const d = itemsForDate(data, dateStr);

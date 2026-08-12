@@ -6,7 +6,7 @@ import {
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-import { Badge, Button, Card, Hint, SectionTitle } from '../../components/ui';
+import { Badge, Button, Card, Hint, SectionTitle, Skeleton, SkeletonRows } from '../../components/ui';
 import { isPurchasesConfigured } from '../../lib/purchases';
 import { deriveAiPlanState } from '../../lib/planState';
 import type { RootStackParamList } from '../../navigation/types';
@@ -94,8 +94,8 @@ export default function CreditsScreen() {
   const data = billing.data;
   if (!data) {
     return (
-      <View style={styles.loading}>
-        <ActivityIndicator color={colors.primary} />
+      <View style={[styles.container, styles.content]}>
+        <CreditsSkeleton />
       </View>
     );
   }
@@ -396,10 +396,38 @@ export default function CreditsScreen() {
   );
 }
 
+// A shimmering placeholder in the shape of the screen the billing status is
+// about to fill — the balance hero (big number + caption), the pack-store
+// tiles, then a price-list card. Built from the shared Skeleton pulse (same
+// one the recipe-import skeleton uses).
+function CreditsSkeleton() {
+  return (
+    <View>
+      <Card style={styles.card}>
+        <Skeleton width={96} height={13} />
+        <Skeleton width={'42%'} height={34} style={styles.skelGap} />
+        <Skeleton width={'86%'} height={12} style={styles.skelGap} />
+        <Skeleton width={'58%'} height={12} style={styles.skelGapSm} />
+      </Card>
+      <Card style={styles.card}>
+        <Skeleton width={88} height={16} />
+        <View style={styles.skelTiles}>
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} height={96} radius={radius.md} style={styles.skelTile} />
+          ))}
+        </View>
+      </Card>
+      <Card style={styles.card}>
+        <Skeleton width={110} height={13} />
+        <SkeletonRows count={4} style={styles.skelGapSm} />
+      </Card>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   card: { marginBottom: spacing.md },
 
   heading: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 2 },
@@ -478,4 +506,10 @@ const styles = StyleSheet.create({
   },
   legalLink: { color: colors.primary, fontSize: 12, textDecorationLine: 'underline' },
   legalDot: { color: colors.textMuted, fontSize: 12 },
+
+  // CreditsSkeleton shapes — the tile row mirrors PackStore's `tiles` metrics.
+  skelGap: { marginTop: spacing.sm },
+  skelGapSm: { marginTop: 6 },
+  skelTiles: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  skelTile: { flex: 1 },
 });

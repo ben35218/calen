@@ -116,7 +116,7 @@ test('aiEnabled off: every model/call endpoint refuses; read-only bookkeeping do
     ['/api/maintenance/plan-chat', { messages: [{ role: 'user', content: 'hi' }] }],
     ['/api/trips/chat', { messages: [{ role: 'user', content: 'hi' }] }],
     ['/api/form-assist', { field: 'title', text: 'hi' }],
-    ['/api/people/classify', { contacts: [] }],
+    ['/api/contacts/classify', { contacts: [] }],
     ['/api/recipes/suggest-recipes', {}],
     ['/api/calls/cancel-event', {}],
     ['/api/calls/event-action', {}],
@@ -181,7 +181,7 @@ test('household roster reaches the model name-only, via the tool, never the syst
   scriptedTurns = [toolTurn('get_household_members'), endTurn('Your household is small.')];
   const res = await chat(u.auth, {
     messages: [{ role: 'user', content: 'Who is in my household?' }],
-    people: roster,
+    contacts: roster,
   });
   assert.equal(res.status, 200);
   assert.equal(anthropicCalls.length, 2, 'initial call + tool round-trip');
@@ -214,7 +214,7 @@ test('includePersonalInfo:false withholds the roster from the model entirely', a
   scriptedTurns = [toolTurn('get_household_members'), endTurn()];
   const res = await chat(u.auth, {
     messages: [{ role: 'user', content: 'Who is in my household?' }],
-    people: roster,
+    contacts: roster,
     includePersonalInfo: false,
   });
   assert.equal(res.status, 200);
@@ -281,7 +281,7 @@ test('includePersonalInfo:false refuses a record tool even if the model calls it
     includePersonalInfo: false,
     calendarSources: {
       events: [{ _id: 'ev1', title: 'Confidential meeting', calendarType: 'appointments', startDate: '2026-07-10T15:00:00.000Z', allDay: false }],
-      tasks: [], chores: [], people: [], trips: [], recipeSchedules: [],
+      tasks: [], chores: [], contacts: [], trips: [], recipeSchedules: [],
     },
   });
   assert.equal(res.status, 200);
@@ -311,7 +311,7 @@ test('phone numbers are presence flags: focused event and list_events never leak
         phone: '+15550008888', description: 'Bring vaccination records',
       },
     ],
-    tasks: [], chores: [], people: [], trips: [], recipeSchedules: [],
+    tasks: [], chores: [], contacts: [], trips: [], recipeSchedules: [],
   };
 
   scriptedTurns = [toolTurn('list_events', { from: '2026-07-20', to: '2026-07-31' }), endTurn()];

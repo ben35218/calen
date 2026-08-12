@@ -13,7 +13,7 @@ const {
 } = require('./harness');
 
 const Household = require('../models/Household');
-const Person = require('../models/Person');
+const Contact = require('../models/Contact');
 const CalendarEvent = require('../models/CalendarEvent');
 const Trip = require('../models/Trip');
 const TripItem = require('../models/TripItem');
@@ -77,13 +77,13 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
   await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
 
   // Legacy per-collection dual-write rows (enc + plaintext) the drop must null:
-  // an author-hidden event + person, a private trip, and a SHARED trip + booking
+  // an author-hidden event + contact, a private trip, and a SHARED trip + booking
   // that must STAY plaintext for outside collaborators.
   const event = await CalendarEvent.create({
     userId: owner.user._id, householdId, calendarType: 'appointments', title: 'Dentist',
     startDate: new Date('2026-08-10'), enc: fakeEnc(), keyVersion: 1,
   });
-  const person = await Person.create({
+  const contact = await Contact.create({
     userId: owner.user._id, householdId, type: 'friend', name: 'Neighbor', enc: fakeEnc(), keyVersion: 1,
   });
   const privateTrip = await Trip.create({
@@ -153,11 +153,11 @@ test('the whole drop journey: seal → readiness → dry run → commit → post
   assert.equal(eventAfter.title, undefined);
   assert.equal(eventAfter.userId, undefined, 'author (plaintext userId) is nulled at the drop');
   assert.ok(eventAfter.enc?.ct);
-  const personAfter = await Person.findById(person._id).lean();
-  assert.equal(personAfter.name, undefined);
-  assert.equal(personAfter.userId, undefined, 'author sealed inside enc, plaintext nulled');
-  assert.equal(String(personAfter.householdId), String(householdId), 'attributed to the household');
-  assert.ok(personAfter.enc?.ct);
+  const contactAfter = await Contact.findById(contact._id).lean();
+  assert.equal(contactAfter.name, undefined);
+  assert.equal(contactAfter.userId, undefined, 'author sealed inside enc, plaintext nulled');
+  assert.equal(String(contactAfter.householdId), String(householdId), 'attributed to the household');
+  assert.ok(contactAfter.enc?.ct);
   const privAfter = await Trip.findById(privateTrip._id).lean();
   assert.equal(privAfter.name, undefined);
   assert.ok(privAfter.enc?.ct);

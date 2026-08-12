@@ -34,7 +34,7 @@ const LINK_TARGETS: Record<string, keyof CalendarStackParamList> = {
 };
 
 // Where a custom calendar sorts: Just me (no sharing), Household (everyone),
-// or Shared (specific members / outside people, incl. calendars shared to us).
+// or Shared (specific members / outside contacts, incl. calendars shared to us).
 function customGroup(cal: CustomCalendar): 'justMe' | 'household' | 'shared' {
   if (cal.sharedWithHousehold) return 'household';
   if (!cal.mine || cal.sharedWith.length > 0 || cal.sharedWithOutside.length > 0) return 'shared';
@@ -199,7 +199,7 @@ export default function CalendarsScreen() {
     const direction = !cal.mine
       ? 'Shared with you'
       : !cal.sharedWithHousehold && sharedCount > 0
-      ? `Shared by you · ${sharedCount} ${sharedCount === 1 ? 'person' : 'people'}`
+      ? `Shared by you · ${sharedCount} ${sharedCount === 1 ? 'contact' : 'contacts'}`
       : null;
     const subtitle = [kind, direction].filter(Boolean).join(' · ') || null;
     return (

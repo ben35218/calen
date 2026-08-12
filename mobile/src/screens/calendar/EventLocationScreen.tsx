@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Image, Text, TouchableOpacity, StyleSheet, Alert, Linking } from 'react-native';
+import { View, Image, Text, TouchableOpacity, StyleSheet, Alert, Linking, StyleProp, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -10,7 +10,7 @@ import { getCachedToken } from '../../lib/secureToken';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
 import { setLocationDraft } from '../../lib/locationDraft';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
-import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader, SetupCallout } from '../../components/ui';
+import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader, SetupCallout, Skeleton } from '../../components/ui';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing, radius } from '../../theme';
@@ -49,6 +49,21 @@ function addressWithoutName(addr: string, nm: string): string {
     return a.slice(n.length).replace(/^[\s,]+/, '');
   }
   return a;
+}
+
+// The static-map preview is a network image with no intrinsic size or cache, so
+// it pops in — a map-shaped shimmer holds its place until onLoad fires. `style`
+// carries the map's dimensions and sizes the wrapper; the image fills it. A new
+// uri (manual address edits regenerate it) re-shims while the fresh tiles load.
+function MapImage({ uri, style }: { uri: string; style: StyleProp<ViewStyle> }) {
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { setLoaded(false); }, [uri]);
+  return (
+    <View style={style}>
+      {!loaded ? <Skeleton width={'100%'} radius={0} style={styles.mapSkeleton} /> : null}
+      <Image source={{ uri }} style={StyleSheet.absoluteFill} onLoad={() => setLoaded(true)} />
+    </View>
+  );
 }
 
 // The event's Location view (Apple Calendar-style). One input model at a time:
@@ -244,7 +259,7 @@ export default function EventLocationScreen() {
               accessibilityRole="button"
               accessibilityLabel="Open in Maps"
             >
-              <Image source={{ uri: mapUri }} style={styles.placeMap} />
+              <MapImage uri={mapUri} style={styles.placeMap} />
             </TouchableOpacity>
           ) : null}
           <View style={styles.placeBody}>
@@ -280,7 +295,7 @@ export default function EventLocationScreen() {
               accessibilityRole="button"
               accessibilityLabel="Open in Maps"
             >
-              <Image source={{ uri: mapUri }} style={styles.mapImage} />
+              <MapImage uri={mapUri} style={styles.mapImage} />
             </TouchableOpacity>
           ) : null}
         </>
@@ -335,4 +350,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg, backgroundColor: colors.surface,
   },
   mapImage: { width: '100%', height: '100%' },
+  // Fills the MapImage wrapper (Skeleton's height prop is numeric-only).
+  mapSkeleton: { height: '100%' },
 });

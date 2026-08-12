@@ -99,7 +99,7 @@ describe('normalizeDay routing', () => {
   it('badges occasions with their kind icon in the birthdays colour', () => {
     const day = emptyDay();
     day.occasions = [
-      { id: 'o1', kind: 'birthday', name: 'Ada', label: 'Birthday', date: '2026-07-27', personId: 'p1' },
+      { id: 'o1', kind: 'birthday', name: 'Ada', label: 'Birthday', date: '2026-07-27', contactId: 'p1' },
     ] as any;
     const { allDay } = normalizeDay(day, [], '2026-07-27', CAL_COLORS, NO_STATUS);
     const occ = allDay.find((a) => a.kind === 'occasion');

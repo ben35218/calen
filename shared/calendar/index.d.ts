@@ -9,7 +9,7 @@ export interface AssembleInput {
   events?: AnyRecord[];
   tasks?: AnyRecord[];
   chores?: AnyRecord[];
-  people?: AnyRecord[];
+  contacts?: AnyRecord[];
   recipeSchedules?: AnyRecord[];
   trips?: AnyRecord[];
   fromDate: Date | string | number;
@@ -30,7 +30,7 @@ export interface CalendarOccasion {
    *  contact date label for custom kinds. */
   label: string;
   date: string;
-  personId: string;
+  contactId: string;
   relationship?: string;
   /** The original year the occasion happened, when a real year is on file. */
   year?: number | null;

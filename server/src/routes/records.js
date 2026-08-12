@@ -7,10 +7,11 @@ const { isObjectId, pickRecordEnc } = require('../services/householdKey');
 const { stampHousehold, E2EE_REQUIRED_MESSAGE } = require('../services/e2eePolicy');
 const { canWriteCalendarType } = require('../services/calendarSharing');
 const { reapEventAttachments } = require('../services/eventAttachmentReaper');
+const { reapRecipePhotos } = require('../services/recipePhotoReaper');
 const { recordTouched } = require('../services/recordChanges');
 
 // Signal-parity C3 — the unified opaque-record API. Replaces the per-collection
-// content routes (tasks/chores/events/people/…): the server stores/serves uniform
+// content routes (tasks/chores/events/contacts/…): the server stores/serves uniform
 // records keyed on householdId + updatedAt, never knowing a row's type. Reads are
 // a single LWW sync pull; writes are opaque create/update/delete. See the C3
 // decision doc in docs/SIGNAL-PARITY-PLAN.md.
@@ -165,9 +166,12 @@ router.delete('/:id', async (req, res) => {
       { new: true, timestamps: true },
     );
     if (!record) return res.status(404).json({ error: 'Not found' });
-    // C3b: replace the retired per-event delete cascade — reap any file
-    // attachments that referenced this record (a no-op unless it was an event).
+    // C3b: replace the retired per-event delete cascade — reap any files that
+    // referenced this record. Each is a no-op unless the record was of the type
+    // that owns those files (an event's attachments, a recipe's photo); the
+    // server stays content-blind and simply asks both.
     await reapEventAttachments(req.params.id).catch(() => {});
+    await reapRecipePhotos(req.params.id).catch(() => {});
     recordTouched({ householdId: record.householdId, userId: req.user._id, sessionId: req.sessionId });
     res.json({ message: 'Deleted' });
   } catch (err) {

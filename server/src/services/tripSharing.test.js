@@ -23,7 +23,7 @@ test('excludeSharedFilter: Trip excludes by _id, TripItem by tripId', () => {
 });
 
 test('excludeSharedFilter: other collections and empty id lists are no-ops', () => {
-  assert.deepEqual(excludeSharedFilter('Person', ['t1']), {});
+  assert.deepEqual(excludeSharedFilter('Contact', ['t1']), {});
   assert.deepEqual(excludeSharedFilter('Trip', []), {});
   assert.deepEqual(excludeSharedFilter('TripItem', undefined), {});
 });

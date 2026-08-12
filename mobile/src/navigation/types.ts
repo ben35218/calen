@@ -1,4 +1,4 @@
-import type { InvitationEventSnapshot, Item, PersonLabeledValue, PersonRelatedName, ProposedTask, Recipe, TravelMode } from '../api';
+import type { InvitationEventSnapshot, Item, ContactLabeledValue, ContactRelatedName, ProposedTask, Recipe, TravelMode } from '../api';
 import type { RepeatRule } from '../lib/eventRepeat';
 import type { AssistantId } from '../screens/chat/assistantTabs';
 
@@ -32,8 +32,8 @@ export interface ViewerEventSnapshot {
 }
 
 // A contact prefilled from device import (direct or AI-assisted), fed into
-// PersonForm in review mode. All fields optional except type + name.
-export interface PersonPrefill {
+// ContactForm in review mode. All fields optional except type + name.
+export interface ContactPrefill {
   type: 'family' | 'friend' | 'service';
   name: string;
   // Structured name from a device import (expo-contacts firstName/lastName);
@@ -50,12 +50,12 @@ export interface PersonPrefill {
   phone?: string;
   email?: string;
   // Multi-value fields from a device/AI import (fold in alongside the singles).
-  phones?: PersonLabeledValue[];
-  emails?: PersonLabeledValue[];
-  addresses?: PersonLabeledValue[];
-  dates?: PersonLabeledValue[];
-  urls?: PersonLabeledValue[];
-  relatedNames?: PersonRelatedName[];
+  phones?: ContactLabeledValue[];
+  emails?: ContactLabeledValue[];
+  addresses?: ContactLabeledValue[];
+  dates?: ContactLabeledValue[];
+  urls?: ContactLabeledValue[];
+  relatedNames?: ContactRelatedName[];
   deviceContactId?: string;
 }
 
@@ -116,7 +116,7 @@ export type RootStackParamList = {
   // occasion on the calendar) scrolls the list to that occasion and highlights it.
   Birthdays: {
     focus?: {
-      personId: string;
+      contactId: string;
       kind: 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
       month: number;
       day: number;
@@ -126,8 +126,8 @@ export type RootStackParamList = {
   // Schedule (or edit) an e-card for one occasion. Context comes from the
   // occasion row; `ecardId` opens an already-scheduled card for edit/cancel.
   ECardForm: {
-    personId?: string;
-    personName?: string;
+    contactId?: string;
+    contactName?: string;
     kind: 'birthday' | 'anniversary' | 'marriage' | 'death' | 'custom';
     occasionLabel?: string;
     month: number;
@@ -243,7 +243,9 @@ export type RootStackParamList = {
   // `scheduleDate` (YYYY-MM-DD): when the recipe originated from the planner's
   // "Add recipe" for a date, schedule it to that date on save and return to Meals.
   RecipeForm: { id?: string; initial?: Partial<Recipe>; scheduleDate?: string };
-  CookingMode: { id: string };
+  // `variation` = the flavor kit being cooked (picked at Start Cooking when the
+  // recipe has variations); cooking mode shows only that kit's steps/ingredients.
+  CookingMode: { id: string; variation?: string };
   RecipeAssistant: { scheduleDate?: string } | undefined;
   MealPlannerSettings: undefined;
   AddMeal: { date: string };
@@ -279,9 +281,9 @@ export type RootStackParamList = {
   // the locked user requests + finishes with their PIN; 'approve' = the guardian
   // hands over the PIN-locked key. See specs/features/guardian-recovery.md.
   GuardianRecovery: { mode?: 'setup' | 'recover' | 'approve' } | undefined;
-  People: undefined;
-  PersonDetail: { id: string };
-  PersonForm: {
+  Contacts: undefined;
+  ContactDetail: { id: string };
+  ContactForm: {
     id?: string;
     isSelf?: boolean;
     type?: 'family' | 'friend' | 'service';
@@ -291,7 +293,7 @@ export type RootStackParamList = {
     focus?: 'dates' | 'phone' | 'related';
     // Review-mode import: a queue of prefilled contacts to step through. The
     // form saves the one at `queueIndex`, then advances to the next.
-    prefills?: PersonPrefill[];
+    prefills?: ContactPrefill[];
     queueIndex?: number;
     // True when the review queue came from an AI-assisted import: the AI already
     // pre-sorted, so the "Ask Calen" form-assist panel stays available. A direct

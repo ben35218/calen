@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const User = require('../models/User');
 const Household = require('../models/Household');
-const Person = require('../models/Person');
+const Contact = require('../models/Contact');
 const Category = require('../models/Category');
 const { requireAuth, signToken } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
@@ -84,10 +84,10 @@ router.post('/register', registerLimiter, async (req, res) => {
     sendWelcome(user).catch(() => {});
 
     // Signal-parity C3b: the server no longer seeds PLAINTEXT content (default
-    // categories + subcategories + the self-Person) into per-collection tables —
+    // categories + subcategories + the self-Contact) into per-collection tables —
     // those tables are gone, and content lives in the opaque store. The client
     // seeds them ENCRYPTED after first unlock (lib/categories.ensureDefaultCategories
-    // + the self-Person createSelf via /records), so a fresh mandated household is
+    // + the self-Contact createSelf via /records), so a fresh mandated household is
     // born with no plaintext content and no stragglers to seal.
 
     res.status(201).json(await sessionResponse(user, req, { quiet: true }));

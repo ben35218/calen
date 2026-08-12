@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { View, Text, SectionList, StyleSheet, RefreshControl } from 'react-native';
 import type { CreditLedgerEntry } from '../../api';
-import { CenteredLoader, EmptyState, SectionHeader } from '../../components/ui';
+import { EmptyState, SectionHeader, SkeletonList } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 import { useCreditLedger, shortDate, ledgerAmount, LEDGER_LABEL } from './shared';
 
@@ -38,7 +38,7 @@ export default function CreditHistoryScreen() {
   }, [ledger.data]);
 
   if (ledger.isLoading && !ledger.data) {
-    return <CenteredLoader />;
+    return <SkeletonList />;
   }
 
   return (

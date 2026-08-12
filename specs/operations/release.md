@@ -45,10 +45,14 @@ eas submit --profile production --platform android   # Play internal track
 
 ## The pre-release test pass (tracked, not remembered)
 
-The full manual pass is authored in
+The manual pass is authored in
 [`docs/PRE-RELEASE-TEST-PLAN.md`](../../docs/PRE-RELEASE-TEST-PLAN.md) — the
-source of truth for what gets tested — and **executed in the admin portal**
-(Quality → Releases). The loop, per public build:
+source of truth for what gets tested, written in plain language for a
+non-technical tester — and **executed in the admin portal** (Quality →
+Releases). The engineering-only checks (server audits, App Store readiness,
+deploy ops) live in
+[`docs/ENGINEERING-TEST-PLAN.md`](../../docs/ENGINEERING-TEST-PLAN.md), run by
+the engineer outside the portal. The loop, per public build:
 
 1. **Import** the plan into the case library (portal → Test cases → Import, or
    `node src/scripts/importTestCases.js docs/PRE-RELEASE-TEST-PLAN.md --commit`).
@@ -104,7 +108,7 @@ run before its prerequisite (see the headers of
 3. **Drop the legacy content tables**:
    `node src/scripts/dropContentCollections.js --commit` — removes the
    pre-cutover rows the app no longer reads (~364 rows incl. deleted users'
-   plaintext categories/people and 6 legacy calendar events). Do NOT migrate
+   plaintext categories/contacts and 6 legacy calendar events). Do NOT migrate
    these rows into `Record` first — they lack `householdId` and are stale;
    they are meant to die here.
 4. **Delete the 4 zero-member orphan households** (test/deleted-account

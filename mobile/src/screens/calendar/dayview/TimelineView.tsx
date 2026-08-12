@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Animated, Dimensions } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { loadCalendarData } from '../../../lib/calendarData';
 import { loadPassiveForecast } from '../../../lib/weatherSource';
-import { itemsForDate, ymd } from '../../../lib/calendar';
+import { itemsForDate, visibleDayItems, ymd } from '../../../lib/calendar';
 import { getHolidays } from '../../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../../lib/calendarPrefs';
 import { useCallEventStatus } from '../../../lib/callStatus';
@@ -102,11 +102,15 @@ const TimelineView = forwardRef<
 
   const layouts: DayLayout[] = useMemo(() => {
     const status = callStatus;
+    const visible = (id: string) => visibility[id] !== false;
     return dates.map((d) => {
-      const { allDay, timed } = normalizeDay(itemsForDate(calQ.data, d), holidaysByDate[d] ?? [], d, calColors, status);
+      // Hidden calendars drop out here, so a toggled-off calendar puts nothing
+      // on the hour grid or in the all-day lane.
+      const items = visibleDayItems(itemsForDate(calQ.data, d), visible);
+      const { allDay, timed } = normalizeDay(items, holidaysByDate[d] ?? [], d, calColors, status);
       return { allDay, blocks: packLanes(timed) };
     });
-  }, [dates, calQ.data, holidaysByDate, calColors, callStatus]);
+  }, [dates, calQ.data, holidaysByDate, calColors, callStatus, visibility]);
 
   // Directional slide between day windows, ported from the old day screen:
   // slide out in the swipe direction, swap the anchor, slide back in.

@@ -45,7 +45,7 @@ jest.mock('@react-navigation/native', () => ({
 }));
 
 // Queries resolve synchronously from fixtures, keyed the same way the screen
-// keys them; the people rows are what openRecord would have yielded.
+// keys them; the contacts rows are what openRecord would have yielded.
 const mockHouseholdData = {
   _id: 'hh',
   name: 'Polk',
@@ -62,7 +62,7 @@ const mockRoster = [
 jest.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     if (queryKey[0] === 'household') return { data: mockHouseholdData };
-    if (queryKey[0] === 'people') return { data: mockRoster };
+    if (queryKey[0] === 'contacts') return { data: mockRoster };
     return { data: [] };
   },
 }));
@@ -101,7 +101,7 @@ const mockLookup = jest.fn();
 jest.mock('../../../api', () => ({
   householdApi: {},
   ecardsApi: {},
-  peopleApi: {},
+  contactsApi: {},
   // Deref lazily — the factory runs during module require, before the const
   // initializers above it; a direct reference would freeze `undefined`.
   invitationsApi: { lookup: (...args: unknown[]) => mockLookup(...args) },

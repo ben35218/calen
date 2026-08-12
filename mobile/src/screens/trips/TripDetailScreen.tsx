@@ -7,7 +7,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { loadWeatherForAddress, loadDailyClimate, geocodePlace } from '@household/weather';
 import { tripsApi, Trip, TripItem, TripStatus } from '../../api';
-import { Card, Badge, Divider, RoundIconButton, SectionHeader, CenteredLoader, Fab } from '../../components/ui';
+import { Card, Badge, Divider, RoundIconButton, SectionHeader, SkeletonDetail, Fab } from '../../components/ui';
 import WeatherIcon from '../../components/WeatherIcon';
 import { weatherCardColors } from '../../lib/weatherTheme';
 import HourlyForecast from '../../components/HourlyForecast';
@@ -247,7 +247,11 @@ export default function TripDetailScreen() {
   }, [navigation, id, trip?.name, trip?.status, dayIndex, dayList]);
 
   if (tripQ.isLoading || !trip) {
-    return <CenteredLoader color={accent} />;
+    return (
+      <View style={styles.screen}>
+        <SkeletonDetail />
+      </View>
+    );
   }
 
   const selectedDate = dayIndex != null ? dayList[dayIndex] : null;

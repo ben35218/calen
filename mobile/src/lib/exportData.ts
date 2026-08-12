@@ -12,7 +12,7 @@ import * as replica from './replica';
 // The dual-write collections whose records the replica caches. Kept in sync with
 // the server CONTENT_MODELS / DROP_FIELDS map.
 const EXPORT_COLLECTIONS = [
-  'CalendarEvent', 'Person', 'MaintenanceTask', 'Chore', 'Recipe',
+  'CalendarEvent', 'Contact', 'MaintenanceTask', 'Chore', 'Recipe',
   'Trip', 'TripItem', 'Item',
 ];
 

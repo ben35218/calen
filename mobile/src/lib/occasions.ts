@@ -2,9 +2,9 @@
 // occasion KIND comes from the shared calendar engine (occasionKindFromLabel);
 // these map a kind + label to the title, icon, and noun the calendar screens,
 // search, print, notifications, and the Occasions list all render consistently.
-import type { CalendarOccasion, Person } from '../api';
+import type { CalendarOccasion, Contact } from '../api';
 import { occasionKindFromLabel } from '@household/calendar';
-import { normalizePerson } from './personFields';
+import { normalizeContact } from './contactFields';
 
 export type OccasionKind = CalendarOccasion['kind'];
 
@@ -46,10 +46,10 @@ export function occasionTitle(o: Pick<CalendarOccasion, 'kind' | 'name' | 'label
 }
 
 // A stable identity for one occasion, shared by the calendar (which knows the
-// CalendarOccasion) and the Occasions list (which rebuilds items from People) so
+// CalendarOccasion) and the Occasions list (which rebuilds items from Contacts) so
 // a tapped occasion can be located + highlighted in the list.
 export interface OccasionFocus {
-  personId: string;
+  contactId: string;
   kind: OccasionKind;
   month: number; // 1-based
   day: number;
@@ -60,7 +60,7 @@ export interface OccasionFocus {
 // occurrence — we key on month/day, which is year-independent).
 export function occasionFocusFrom(o: CalendarOccasion): OccasionFocus {
   return {
-    personId: o.personId,
+    contactId: o.contactId,
     kind: o.kind,
     month: Number(String(o.date).slice(5, 7)),
     day: Number(String(o.date).slice(8, 10)),
@@ -70,7 +70,7 @@ export function occasionFocusFrom(o: CalendarOccasion): OccasionFocus {
 
 // The match key both surfaces compute to line a tapped occasion up with its list row.
 export function occasionFocusKey(f: OccasionFocus): string {
-  return `${f.personId}|${f.kind}|${f.month}|${f.day}|${f.label}`;
+  return `${f.contactId}|${f.kind}|${f.month}|${f.day}|${f.label}`;
 }
 
 // --- Occasions list windowing ---------------------------------------------
@@ -86,14 +86,14 @@ export const PAST_WINDOW_DAYS = 7;
 export const COMING_UP_DAYS = 60;
 
 export interface Occasion {
-  person: Person;
+  contact: Contact;
   kind: OccasionKind;
   label: string;   // 'Birthday' or the raw contact date label
   month: number;   // 1-based
   day: number;
   offset: number;  // signed days to the nearest relevant occurrence: <0 recently passed, 0 today, >0 upcoming
   years: number | null; // age / years since, as of the occurrence in view
-  hidden: boolean; // the person is excluded from the Occasions calendar
+  hidden: boolean; // the contact is excluded from the Occasions calendar
 }
 
 // Parse a YYYY-MM-DD value; returns null when it isn't a real month/day.
@@ -108,11 +108,11 @@ function parseYmd(value: string | undefined): { y: number; mo: number; d: number
 // offset), today (0), otherwise the next upcoming one (positive offset). Sorted
 // chronologically so the list reads recently-passed → today → upcoming. `now` is
 // injectable for testing.
-export function collectOccasions(people: Person[], now: Date = new Date()): Occasion[] {
+export function collectOccasions(contacts: Contact[], now: Date = new Date()): Occasion[] {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const todayMs = today.getTime();
   const out: Occasion[] = [];
-  const add = (person: Person, kind: OccasionKind, label: string, value: string | undefined) => {
+  const add = (contact: Contact, kind: OccasionKind, label: string, value: string | undefined) => {
     const p = parseYmd(value);
     if (!p) return;
     const thisYear = new Date(today.getFullYear(), p.mo - 1, p.d);
@@ -127,15 +127,15 @@ export function collectOccasions(people: Person[], now: Date = new Date()): Occa
     else if (daysSince <= PAST_WINDOW_DAYS) { offset = -daysSince; occ = past; }
     else { offset = daysUntil; occ = future; }
     const years = p.y > 1900 && p.y <= occ.getFullYear() ? occ.getFullYear() - p.y : null;
-    out.push({ person, kind, label, month: p.mo, day: p.d, offset, years, hidden: Boolean(person.occasionsHidden) });
+    out.push({ contact, kind, label, month: p.mo, day: p.d, offset, years, hidden: Boolean(contact.occasionsHidden) });
   };
-  for (const person of people) {
-    if (person.birthday) add(person, 'birthday', 'Birthday', String(person.birthday).slice(0, 10));
-    for (const entry of normalizePerson(person).dates) {
-      add(person, occasionKindFromLabel(entry.label), entry.label || 'Date', entry.value);
+  for (const contact of contacts) {
+    if (contact.birthday) add(contact, 'birthday', 'Birthday', String(contact.birthday).slice(0, 10));
+    for (const entry of normalizeContact(contact).dates) {
+      add(contact, occasionKindFromLabel(entry.label), entry.label || 'Date', entry.value);
     }
   }
-  return out.sort((a, b) => a.offset - b.offset || a.person.name.localeCompare(b.person.name));
+  return out.sort((a, b) => a.offset - b.offset || a.contact.name.localeCompare(b.contact.name));
 }
 
 // Relative label for an occasion's offset: "Yesterday" / "3 days ago" / "Today"

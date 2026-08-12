@@ -63,7 +63,7 @@ const GROUPS: { header: string; items: Section[] }[] = [
     header: 'Shared with your household',
     items: [
       { route: 'Household', label: 'Household', icon: 'home-outline' },
-      { route: 'People', label: 'Contacts', icon: 'people-outline' },
+      { route: 'Contacts', label: 'Contacts', icon: 'people-outline' },
     ],
   },
   {

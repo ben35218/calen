@@ -16,13 +16,13 @@ import { useNavigation } from '@react-navigation/native';
 import { WeatherData } from '../../../api';
 import { loadCalendarData } from '../../../lib/calendarData';
 import { loadPassiveForecast } from '../../../lib/weatherSource';
-import { itemsForDate, ymd } from '../../../lib/calendar';
+import { itemsForDate, visibleDayItems, ymd } from '../../../lib/calendar';
 import { getHolidays } from '../../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../../lib/calendarPrefs';
 import { useCallEventStatus } from '../../../lib/callStatus';
 import { mdiName } from '../../../lib/recurrence';
 import WeatherIcon from '../../../components/WeatherIcon';
-import { EmptyState } from '../../../components/ui';
+import { EmptyState, SkeletonList } from '../../../components/ui';
 import { colors, spacing } from '../../../theme';
 import { TodayHandle } from '../todayHandle';
 import { DayNav, openAllDayItem } from './dayNav';
@@ -117,6 +117,7 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
   });
 
   const todayStr = ymd(new Date());
+  const visible = useCallback((id: string) => visibility[id] !== false, [visibility]);
 
   const holidaysByDate = useMemo(() => {
     const from = new Date(window.start + 'T12:00:00');
@@ -144,7 +145,10 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
     let hasItems = false;
     for (let i = 0; i <= days; i++) {
       const d = addDays(window.start, i);
-      const { allDay, timed } = normalizeDay(itemsForDate(calQ.data, d), holidaysByDate[d] ?? [], d, calColors, status);
+      // Hidden calendars drop out here, so a toggled-off calendar contributes
+      // no rows (and no day section of its own) to the agenda.
+      const items = visibleDayItems(itemsForDate(calQ.data, d), visible);
+      const { allDay, timed } = normalizeDay(items, holidaysByDate[d] ?? [], d, calColors, status);
       const isToday = d === todayStr;
       if (!allDay.length && !timed.length && !isToday) continue;
       if (allDay.length || timed.length) hasItems = true;
@@ -156,7 +160,7 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
       out.push({ date: d, title: dayHeaderLabel(d), isToday, wx, data: rows });
     }
     return hasItems ? out : [];
-  }, [calQ.data, window, holidaysByDate, calColors, callStatus, weatherOn, weatherQ.data, todayStr]);
+  }, [calQ.data, window, holidaysByDate, calColors, callStatus, visible, weatherOn, weatherQ.data, todayStr]);
 
   // Infinite scroll upward: reaching the top prepends the previous stretch.
   // `maintainVisibleContentPosition` anchors the visible day so the inserted
@@ -296,6 +300,10 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
       ListHeaderComponent={
         <View style={styles.earlier}>{earlierLoading ? <ActivityIndicator color={colors.textMuted} /> : null}</View>
       }
+      // First-ever load with an empty replica: calQ.data is still undefined, so
+      // sections is [] and the list would paint blank — skeleton rows until the
+      // pull lands. Loaded-but-empty returns the EmptyState above instead.
+      ListEmptyComponent={!calQ.data ? <SkeletonList /> : null}
       contentContainerStyle={styles.content}
       style={styles.list}
     />

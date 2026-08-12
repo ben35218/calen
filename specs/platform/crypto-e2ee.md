@@ -1,7 +1,7 @@
 ---
 title: Cryptography & E2EE
 status: current
-last-verified: c2d18c0+ (2026-08-04); **joining a household moves no ciphertext** — the record AAD binds `householdId`, so a joiner's existing records stay sealed to the household they left and only a device still holding THAT household's envelope can re-seal them across (the server holds no key and cannot). `lib/e2ee` gained the two helpers that make the carry-over possible — `unwrapForeignHDKs` (unwrap a left household's envelopes with our identity key) and `openForeignRecord` (open a row against an explicitly-passed householdId + key instead of the session globals, which now point at the destination); resource-sealed rows are excluded, since keying off `scope.resource` is exactly what already lets them cross households. Product flow in features/households-sharing.md → "Join carry-over" (2026-08-04); 9282d82+ (2026-08-02); **re-key no longer prompts for a password it already has** — new memory-only `sessionPassword` in mobile/src/lib/e2ee.ts (`rememberSessionPassword` / `hasSessionPassword`, cleared by `lock()`, so sign-out and the re-key itself drop it; never persisted, never in the keychain), fed by the two paths that verify a password server-side and STILL end up locked (`resetPassword` in store/auth, `ensureEnrolledOnLogin`'s failed-unlock branch), and `rekeyIdentity(password: string | null)` falls back to it — throwing when neither exists rather than minting an identity with no password factor. The password remains load-bearing (it is what `createPasswordFactor` seals the new private half under, and dropping it would leave a recovery-code-only identity that re-locks on the next relaunch); what changed is only WHO supplies it. Documented tradeoff: a re-key no longer re-authenticates the holder of an already-unlocked phone (2026-08-02); 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29); documented the recovery-code confirmation gate (dual-stored until `recoverySetupAt`) and the soft re-surface of a freshly minted one-time code on the next unlock when recovery is still unconfirmed — the recovery from force-quitting the modal before saving the code (71f3baf, 2026-07-30); **`POST /keys/rekey`** added — the narrow, audited exception to "keys are never replaced": a new identity keypair for an account that can no longer open its old one, recovering ACCESS (what a calendar owner can re-share) and never DATA (anything sealed to the abandoned identity stays sealed). Guarded by a `409 confirm_data_loss` when the caller's household holds records, it deletes the caller's dead HDK/resource envelopes, clears `recoverySetupAt` + any armed guardian, and stamps every calendar collaboration `keyChangedAt` so the owner's automatic re-wrap is SUPPRESSED until they approve — closing the mailbox-takeover → reset → re-key path into someone else's calendar (9282d82+, 2026-08-02)
+last-verified: 3cd3b36+ (2026-08-12); **re-key now settles the household ("start fresh")** — `POST /keys/rekey` no longer leaves the caller's household stranded on a dead HDK: after the envelope purge the server checks who ELSE holds a `HouseholdKeyEnvelope` (the same test now drives the 409's `recoverableByHousehold`, replacing raw member count). Peers exist → `keyRotationPending` is flagged so the next unlocked member's lazy rotation wraps v(N+1) to the caller's new key (previously nothing triggered this and a re-keyed member stayed `pending` forever); no peers (solo) → the permanently unreadable Records are erased, household envelopes + household-wrapped resource keys dropped, and `currentKeyVersion` reset to 0 (`hdk_reset` audited, `householdReset` in the response) so the ordinary owner mint issues a fresh HDK and the account can SAVE again — the post-password-reset dead end this closes. Client: `rekeyIdentity` fires the household-changed teardown (replica/cursor/pref wipe) on success, and Privacy & security's locked box gained the full-user entry point ("No way back in? Start fresh with a new key" → confirm → optional password prompt → re-key), which the free-viewer shell alone had (2026-08-12); c2d18c0+ (2026-08-04); **joining a household moves no ciphertext** — the record AAD binds `householdId`, so a joiner's existing records stay sealed to the household they left and only a device still holding THAT household's envelope can re-seal them across (the server holds no key and cannot). `lib/e2ee` gained the two helpers that make the carry-over possible — `unwrapForeignHDKs` (unwrap a left household's envelopes with our identity key) and `openForeignRecord` (open a row against an explicitly-passed householdId + key instead of the session globals, which now point at the destination); resource-sealed rows are excluded, since keying off `scope.resource` is exactly what already lets them cross households. Product flow in features/households-sharing.md → "Join carry-over" (2026-08-04); 9282d82+ (2026-08-02); **re-key no longer prompts for a password it already has** — new memory-only `sessionPassword` in mobile/src/lib/e2ee.ts (`rememberSessionPassword` / `hasSessionPassword`, cleared by `lock()`, so sign-out and the re-key itself drop it; never persisted, never in the keychain), fed by the two paths that verify a password server-side and STILL end up locked (`resetPassword` in store/auth, `ensureEnrolledOnLogin`'s failed-unlock branch), and `rekeyIdentity(password: string | null)` falls back to it — throwing when neither exists rather than minting an identity with no password factor. The password remains load-bearing (it is what `createPasswordFactor` seals the new private half under, and dropping it would leave a recovery-code-only identity that re-locks on the next relaunch); what changed is only WHO supplies it. Documented tradeoff: a re-key no longer re-authenticates the holder of an already-unlocked phone (2026-08-02); 55bfc65+ (2026-07-28); added scheduled occasion e-cards to the deliberate plaintext exceptions (2026-07-28); e-card exception extended to attached card photos (plaintext files in the upload store) (2026-07-28); file attachments always seal on-device before upload — removed the plaintext-upload fallback that handed RN's FormData a raw picked URI (some iOS photo URIs uploaded an empty part → server "No file uploaded"); upload now ensures the household key is loaded, encrypts, and refuses with an unlock prompt if locked (2026-07-29); `alertHousehold` gained an `excludeUserId` option (skip the just-approved joiner from the household-wide "new member" alert) (2026-07-29); documented the recovery-code confirmation gate (dual-stored until `recoverySetupAt`) and the soft re-surface of a freshly minted one-time code on the next unlock when recovery is still unconfirmed — the recovery from force-quitting the modal before saving the code (71f3baf, 2026-07-30); **`POST /keys/rekey`** added — the narrow, audited exception to "keys are never replaced": a new identity keypair for an account that can no longer open its old one, recovering ACCESS (what a calendar owner can re-share) and never DATA (anything sealed to the abandoned identity stays sealed). Guarded by a `409 confirm_data_loss` when the caller's household holds records, it deletes the caller's dead HDK/resource envelopes, clears `recoverySetupAt` + any armed guardian, and stamps every calendar collaboration `keyChangedAt` so the owner's automatic re-wrap is SUPPRESSED until they approve — closing the mailbox-takeover → reset → re-key path into someone else's calendar (9282d82+, 2026-08-02)
 code:
   - shared/crypto/src/core.ts
   - shared/crypto/src/enrollment.ts
@@ -62,6 +62,18 @@ stays shut. Re-wrapping to their *existing* public key would achieve nothing
 the owner to wrap to. A viewer loses nothing by taking it: the events belong to
 the calendar's owner.
 
+It is also the **"start fresh"** path for a full user in the same spot — reset
+password, no passkey, recovery code lost. For them the point isn't what others
+can re-share but that the account can *encrypt and save again at all*: without
+re-keying they are locked out of writing forever, since every write must seal
+under an HDK their dead identity can't unwrap. The entry point is the locked
+box on Privacy & security ("No way back in? Start fresh with a new key" —
+confirm dialog, then the account password if the session isn't already holding
+a verified one, then the data-loss confirm below). What happens to the
+household's existing data is the "settled, not stranded" rule below; a fresh
+one-time recovery code surfaces through the mandatory app-root modal either
+way.
+
 Rules, all enforced server-side:
 
 - **The data-loss guard.** With any un-tombstoned `Record` in the caller's
@@ -78,6 +90,32 @@ Rules, all enforced server-side:
   reset the password → re-key* a way to inherit someone else's calendar. Access
   returns only via the request → approve pair in
   [features/households-sharing.md](../features/households-sharing.md).
+- **The household is settled, not stranded.** The caller's copy of the HDK died
+  with the old identity, so after the envelope purge the server looks at who
+  else still holds one (`HouseholdKeyEnvelope` rows other than the caller's —
+  membership rows alone don't count, a never-enrolled member can re-seal
+  nothing; the same test now drives the 409's `recoverableByHousehold`):
+  - **Someone does** → the data survives them. The household is flagged
+    `keyRotationPending`, exactly as a departure does, so the next unlocked
+    member's lazy-rotation pass wraps HDK v(N+1) to every enrolled member —
+    the caller's new key included. That flag is what re-admits an *existing*
+    member; without it the caller sat `pending` indefinitely, waiting for a
+    rotation nothing would trigger.
+  - **Nobody does** → every record is sealed under a key that no longer exists
+    anywhere. Keeping that ciphertext — and a `currentKeyVersion` pointing at
+    it — would strand the account: the v1 mint is guarded to version 0, so the
+    session would unlock but never save again. The caller has already confirmed
+    the loss, so the dead records are erased, the household's envelopes and
+    household-wrapped resource keys dropped, and `currentKeyVersion` reset
+    to 0 (`hdk_reset` audited, `householdReset: true` in the response). The
+    client's ordinary `ensureHouseholdKey` then mints a fresh HDK v1 and the
+    account starts clean. Orphaned attachment files fall to the upload store's
+    sweep. `e2eeActive` is untouched — the household stays born-encrypted.
+- **The device forgets what the key forgot.** After a successful re-key the
+  client fires the same household-changed teardown a join/leave does (replica +
+  cursors + pref caches wiped, refilled once keys are ready): the decrypted
+  replica rows must not outlive the key that produced them, and server-side
+  they were either purged or are pending a member's re-wrap.
 - **Recovery is unconfirmed again.** `recoverySetupAt` is cleared and any armed
   guardian dropped (it was armed against the old identity and can never open the
   new one), so the mandatory recovery-code modal re-runs and the born-encrypted
@@ -215,7 +253,7 @@ server-visible set, nothing more. See [operations/transparency.md](../operations
 
 Content leaves encryption **only** where a chosen feature requires it: things
 **shared outside** the household (trips/calendars — the collaborator lacks the
-HDK), **event invitations** to non-account people (a readable event snapshot for
+HDK), **event invitations** to non-account contacts (a readable event snapshot for
 the email + `.ics`), **AI phone calls** (the event essentials needed to place
 the call), and **scheduled occasion e-cards** (the recipient emails, the card
 message + framing lines, and any **attached card photos** — text stored

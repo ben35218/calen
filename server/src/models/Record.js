@@ -4,7 +4,7 @@ const { encFields } = require('./encFields');
 // Signal-parity C3 (opaque record envelopes) — the unified content store.
 //
 // ONE physical Mongo collection holds every content record (a task, an event, a
-// person, a recipe, …), so the server no longer learns a row's collection TYPE
+// contact, a recipe, …), so the server no longer learns a row's collection TYPE
 // from the table it lives in. The type and all content fields ride INSIDE the
 // opaque `enc` blob (the v2 envelope — see shared/crypto: the collection moved
 // out of the AAD and into the sealed payload). Only routing metadata is

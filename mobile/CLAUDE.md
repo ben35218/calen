@@ -91,10 +91,24 @@ default those to `colors.primary` inside an accented area.
 
 ## Loading & empty & error states
 
+**The loading rule: a content-shaped area load gets a skeleton in the shape of
+what's coming; an action or wait gets a spinner.** If the user is waiting for a
+region of known shape to fill in (a list, a detail page, a planner grid, an AI
+result with a known layout — the recipe import's `ImportSkeleton` is the model),
+shimmer that shape with `Skeleton` blocks. If they're waiting on something they
+triggered (button submit, inline row action, upload, purchase/IAP or approval
+wait, pull-to-refresh, pagination) or on a branch whose resolved shape is
+unknown (entitlement gates, the bootstrap splash), spin.
+
 | Need | Use | Notes |
 | --- | --- | --- |
 | List loading | `<SkeletonList />` | Skeleton rows, not a spinner |
-| Detail/other loading | `<CenteredLoader color={accent} />` | |
+| Section loading inside a rendered card | `<SkeletonRows count />` | Bare staggered lines; `SkeletonList` is too heavy in a card interior |
+| Detail screen with a visible fetch | `<SkeletonDetail />` | Deep-link / push-notification entries, uncached pulls |
+| Bespoke canvas (planner grid, weather, hero + cards) | compose `<Skeleton />` blocks | Mirror the real layout — see `ImportSkeleton` (RecipeForm) and `CellSkeleton` (CalendarScreen) |
+| Long AI wait producing a known shape | skeleton of the result | The recipe-import precedent; a button spinner alone under-signals a multi-second wait |
+| Edit-form seed, entitlement gate, unknown-shape branch | `<CenteredLoader color={accent} />` | Replica-fast seeds flash too briefly for a skeleton to help |
+| Image pop-in (hero photo, static map) | `<Skeleton />` behind the image until `onLoad` | |
 | Empty list | `<EmptyState icon/mdiIcon title message actionLabel onAction accent />` | `variant="inline"` inside a populated scroll view; `children` for extra links |
 | Form/validation error | `<FormError>{error}</FormError>` | Renders null when empty |
 | Explainer text above content | `<Hint>…</Hint>` | The muted 13px helper line |
@@ -138,6 +152,27 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
   `<HeaderIconButton icon="add" size={30} accessibilityLabel />` (transparent white).
 - **Header action on a detail screen** (edit pencil / share / print) → `<HeaderIconButton icon onPress accessibilityLabel />` in `headerRight`.
 - **Floating action button** (detail screen adds a sub-item, or the AI assistant) → `<Fab icon onPress bg={accent} />` (or `<Fab>` with a custom glyph child).
+- **AI assistant on an add/edit form** → `<FormAssist>` at the top of the form;
+  never hand-roll the card. Its header is fixed chrome — CalenChatIcon +
+  "Ask Calen" + a trailing chevron — and it **defaults collapsed** (the form is
+  the screen's job; the assistant is an accelerator). Pass `defaultExpanded`
+  only when the user arrives from a flow whose expected next step *is* the
+  assistant (a just-completed recipe import). In an accented area pass
+  `accent` to tint the action button; the card chrome stays app-primary (it is
+  Calen's, not the section's). `onSubmit` swaps the `/form-assist` fill for a
+  screen-specific AI action (the recipe form's `/edit-with-ai`), with
+  `actionLabel` naming what it does ("Apply changes" vs "Fill in the form").
+  Icon vocabulary — three marks, don't cross them:
+  - **`<CalenGlyph>`, the gradient "C", means "this is Calen"** — the calendar's
+    assistant FAB and the "Ask Calen" card header both wear it. Its blue
+    gradient is baked in and is **never tinted**, so it needs a dark/neutral
+    surface behind it.
+  - **`<CalenChatIcon>`** is the white-on-colour fallback for the same idea,
+    used only where Calen sits on an accent-FILLED disc (the chores /
+    maintenance / trips assistant FABs) and the mark must go flat white to hold
+    contrast.
+  - **sparkles** means a *generic* AI action, not Calen (grocery Organize,
+    feature marketing rows).
 - **Grouped info rows on a detail screen** → `<InfoCard>` wrapping `ListRow`s (InfoCard = a Card that hands its padding to the rows).
 - **Form save/close chrome** → `useHeaderCheckButton(navigation, { onPress, loading, color: accent })`.
   Pass `color={accent}` in an accented feature area for the tinted save disc;

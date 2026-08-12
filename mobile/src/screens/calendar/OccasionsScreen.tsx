@@ -5,7 +5,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
-import { peopleApi, ecardsApi, Person, OccasionKind, ECard } from '../../api';
+import { contactsApi, ecardsApi, Contact, OccasionKind, ECard } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import {
@@ -13,7 +13,7 @@ import {
   collectOccasions, whenLabel, Occasion, COMING_UP_DAYS,
 } from '../../lib/occasions';
 import { CALENDAR_COLORS } from '../../lib/calendar';
-import { Card, CenteredLoader, EmptyState, Hint, IconAvatar, HeaderIconButton, SectionHeader } from '../../components/ui';
+import { Card, CenteredLoader, EmptyState, Hint, IconAvatar, HeaderIconButton, SectionHeader, SkeletonList } from '../../components/ui';
 import { useOwnedAddons } from '../../lib/addons';
 import AddonLockedView from '../plan/AddonLockedView';
 import { colors, spacing } from '../../theme';
@@ -33,8 +33,8 @@ function yearsLabel(kind: OccasionKind, years: number | null): string {
 }
 
 // The Occasions calendar's drill-in from My Calendars: everyone's birthday plus
-// labeled contact dates (anniversary/marriage/death/custom) from People, ordered
-// by who's next. Rows open the person (dates are edited there); the card button
+// labeled contact dates (anniversary/marriage/death/custom) from Contacts, ordered
+// by who's next. Rows open the contact (dates are edited there); the card button
 // schedules an e-card for that occasion. Free add-on gate: Occasions is opt-in
 // (see billing-plans spec) — until claimed, every entry path lands on the locked
 // view (add-on key stays `birthdays`).
@@ -72,18 +72,18 @@ function OccasionsHome() {
     });
   }, [nav]);
 
-  // Same offline-first fetch as PeopleScreen (shared query key, so the roster
+  // Same offline-first fetch as ContactsScreen (shared query key, so the roster
   // cache is reused): sync the replica, decrypt content over plaintext.
-  const { data: people, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['people'],
+  const { data: contacts, isLoading, refetch, isRefetching } = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
       try {
-        const rows = (await peopleApi.list()).data;
-        replica.upsert('Person', rows as any).catch(() => {});
-        return Promise.all(rows.map((p) => openRecord('Person', p)));
+        const rows = (await contactsApi.list()).data;
+        replica.upsert('Contact', rows as any).catch(() => {});
+        return Promise.all(rows.map((p) => openRecord('Contact', p)));
       } catch (e) {
-        const cached = await replica.getAll<Person>('Person');
-        if (cached.length) return Promise.all(cached.map((p) => openRecord('Person', p)));
+        const cached = await replica.getAll<Contact>('Contact');
+        if (cached.length) return Promise.all(cached.map((p) => openRecord('Contact', p)));
         throw e;
       }
     },
@@ -95,31 +95,31 @@ function OccasionsHome() {
     queryFn: () => ecardsApi.list().then((r) => r.data),
   });
 
-  if (isLoading || !people) {
-    return <CenteredLoader color={ACCENT} />;
+  if (isLoading || !contacts) {
+    return <SkeletonList />;
   }
 
   // Match an occasion to a scheduled card by contact + kind + month/day. ACTIVE
   // cards drive the upcoming "schedule/edit" envelope; a card that already sent
   // (active:false, sentAt set) instead marks its recently-passed row as "Sent".
-  const cardKey = (personId: string, kind: string, month: number, day: number) => `${personId}|${kind}|${month}|${day}`;
+  const cardKey = (contactId: string, kind: string, month: number, day: number) => `${contactId}|${kind}|${month}|${day}`;
   const activeCard = new Map<string, ECard>();
   const sentCard = new Map<string, ECard>();
   for (const c of ecards ?? []) {
-    if (!c.personId) continue;
-    const k = cardKey(String(c.personId), c.kind, c.month, c.day);
+    if (!c.contactId) continue;
+    const k = cardKey(String(c.contactId), c.kind, c.month, c.day);
     if (c.active) activeCard.set(k, c);
     else if (c.sentAt) sentCard.set(k, c);
   }
 
   // Contacts hidden from the Occasions calendar (occasionsHidden) are omitted
   // entirely — they don't appear anywhere in this list.
-  const visible = collectOccasions(people).filter((o) => !o.hidden);
+  const visible = collectOccasions(contacts).filter((o) => !o.hidden);
   const recentlyPassed = visible.filter((o) => o.offset < 0);
   const comingUp = visible.filter((o) => o.offset >= 0 && o.offset <= COMING_UP_DAYS);
   const later = visible.filter((o) => o.offset > COMING_UP_DAYS);
 
-  const occKey = (o: Occasion) => occasionFocusKey({ personId: o.person._id, kind: o.kind, month: o.month, day: o.day, label: o.label });
+  const occKey = (o: Occasion) => occasionFocusKey({ contactId: o.contact._id, kind: o.kind, month: o.month, day: o.day, label: o.label });
   // Auto-expand "Later this year" when the occasion tapped from the calendar lives there.
   const focusInLater = Boolean(focusKey && later.some((o) => focusKey === occKey(o)));
   const laterOpen = showLater || focusInLater;
@@ -136,28 +136,28 @@ function OccasionsHome() {
   };
 
   const renderRow = (o: Occasion, i: number, variant: 'past' | 'upcoming' | 'later') => {
-    const isSelf = Boolean(o.person.accountId && String(o.person.accountId) === selfId);
+    const isSelf = Boolean(o.contact.accountId && String(o.contact.accountId) === selfId);
     const isPast = variant === 'past';
     const isToday = o.offset === 0;
     // "Later" rows drop the "in N days" cue and lean on the month/day; near-term
     // rows carry the relative when-label.
     const when = variant === 'later' ? '' : whenLabel(o.offset);
-    const key = cardKey(o.person._id, o.kind, o.month, o.day);
+    const key = cardKey(o.contact._id, o.kind, o.month, o.day);
     const active = activeCard.get(key);
     const sent = sentCard.get(key);
     const isFocused = Boolean(focusKey && focusKey === occKey(o));
     return (
       <TouchableOpacity
-        key={`${o.person._id}-${o.kind}-${o.month}-${o.day}-${i}`}
+        key={`${o.contact._id}-${o.kind}-${o.month}-${o.day}-${i}`}
         activeOpacity={0.7}
         onLayout={isFocused ? onFocusRowLayout : undefined}
-        onPress={() => nav.navigate('PersonForm', { id: o.person._id, isSelf: isSelf || undefined, focus: 'dates' })}
+        onPress={() => nav.navigate('ContactForm', { id: o.contact._id, isSelf: isSelf || undefined, focus: 'dates' })}
       >
         <Card style={[styles.row, isToday && styles.todayRow, isPast && styles.pastRow, isFocused && styles.focusedRow]}>
           <IconAvatar mdiIcon={occasionIcon(o.kind)} bg={isPast ? `${ACCENT}99` : ACCENT} size={40} />
           <View style={styles.main}>
             <Text style={styles.name}>
-              {o.person.name}
+              {o.contact.name}
               {isSelf ? ' (you)' : ''}
             </Text>
             <Text style={styles.date}>
@@ -181,8 +181,8 @@ function OccasionsHome() {
               hitSlop={8}
               style={styles.cardBtn}
               onPress={() => nav.navigate('ECardForm', {
-                personId: o.person._id,
-                personName: o.person.name,
+                contactId: o.contact._id,
+                contactName: o.contact.name,
                 kind: o.kind,
                 occasionLabel: o.label,
                 month: o.month,
@@ -251,7 +251,7 @@ function OccasionsHome() {
           message="Dates you add to a contact — birthdays, anniversaries, and more — show up here. Open a contact and add a date to get started."
           accent={ACCENT}
         >
-          <TouchableOpacity style={styles.emptyBtn} onPress={() => nav.navigate('People')}>
+          <TouchableOpacity style={styles.emptyBtn} onPress={() => nav.navigate('Contacts')}>
             <Ionicons name="calendar-outline" size={16} color={colors.primary} />
             <Text style={styles.emptyBtnText}>Add dates in Contacts</Text>
           </TouchableOpacity>

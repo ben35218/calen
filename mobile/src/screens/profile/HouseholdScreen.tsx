@@ -3,8 +3,8 @@ import { View, Text, StyleSheet, Alert, ActivityIndicator, TouchableOpacity, Key
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { householdApi, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
-import { Button, Card, Input, RevealWrap, Screen, SectionTitle, SetupCallout } from '../../components/ui';
+import { householdApi, settingsApi, HouseholdMember, HouseholdInvitation, JoinRequestForApprover, JoinRequestMine } from '../../api';
+import { Button, Card, Input, RevealWrap, Screen, SectionTitle, SetupCallout, SkeletonList } from '../../components/ui';
 import { ensureHouseholdKey, activateBornEncryptedHousehold, getHDK, wrapHDKForJoiner, publicKeyFingerprint, myIdentityPublicKey, openRecord, sealUpdate } from '../../lib/e2ee';
 import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { loadSafetyNumbers, markVerified, MemberSafety } from '../../lib/safetyNumbers';
@@ -64,8 +64,19 @@ export default function HouseholdScreen() {
   );
   const [respondingInvite, setRespondingInvite] = useState<string | null>(null);
 
+  // My own saved phone, so the self contact card ("You" in Contacts) can't be
+  // offered by number the way a member's card could — the account `user` carries
+  // only the email. Shares the Account screen's cache.
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: async () => (await settingsApi.get()).data,
+  });
+
   // Everyone already in the household, already invited, or yourself — hidden from
-  // suggestions (the server rejects re-inviting these anyway).
+  // suggestions (the server rejects re-inviting these anyway). One hit anywhere on
+  // a contact card removes that CONTACT from the dropdown, not just the address
+  // that matched (see matchRoster) — a member's other numbers reach the same
+  // contact and can't be invited either.
   const taken = useMemo(() => {
     const set = new Set<string>();
     for (const m of household?.members ?? []) if (m.email) set.add(m.email.toLowerCase());
@@ -75,8 +86,9 @@ export default function HouseholdScreen() {
       if (inv.toPhone) set.add(inv.toPhone.toLowerCase());
     }
     if (user?.email) set.add(user.email.toLowerCase());
+    if (settings?.phone) set.add(settings.phone.toLowerCase());
     return set;
-  }, [household?.members, sentInvites, user?.email]);
+  }, [household?.members, sentInvites, user?.email, settings?.phone]);
 
   // Roster contacts matching what's typed, resolved to the recipient a tap
   // would invite — the shared autocomplete behind every share/invite field.
@@ -161,8 +173,8 @@ export default function HouseholdScreen() {
     Alert.alert(
       changed ? 'Safety number changed!' : `Verify ${who}`,
       (changed
-        ? `${who}'s security code is different from the one you verified. This can mean they re-installed or re-enrolled — or that someone else holds their account. Compare the new code with them in person or over a call before trusting it:\n\n`
-        : 'Compare this security code with the one on their device (in person or over a call). If they match, you know your encrypted data is shared with the right person:\n\n')
+        ? `${who}'s security code is different from the one you verified. This can mean they re-installed or re-enrolled — or that someone else holds their account. Compare the new code with them in contact or over a call before trusting it:\n\n`
+        : 'Compare this security code with the one on their device (in contact or over a call). If they match, you know your encrypted data is shared with the right contact:\n\n')
         + s.fingerprint,
       [
         { text: 'Not now', style: 'cancel' },
@@ -216,7 +228,7 @@ export default function HouseholdScreen() {
       const what = `the ${household?.name || 'family'} household`;
       // A recipient who's already on Calen needs no outreach from this device:
       // the server pushed their registered devices and the invite is in their
-      // in-app Invitations inbox — the composer only opens when the person
+      // in-app Invitations inbox — the composer only opens when the contact
       // isn't on Calen yet (they can't be reached any other way). The Remind
       // button on the pending row re-opens the composer on demand (the escape
       // hatch for an account holder who never sees the push).
@@ -329,7 +341,7 @@ export default function HouseholdScreen() {
   }
 
   function reject(r: JoinRequestForApprover) {
-    Alert.alert('Reject request?', 'This person will not be able to join.', [
+    Alert.alert('Reject request?', 'This contact will not be able to join.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Reject',
@@ -421,11 +433,7 @@ export default function HouseholdScreen() {
   }
 
   if (isLoading || !household) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
+    return <SkeletonList />;
   }
 
   return (
@@ -479,9 +487,9 @@ export default function HouseholdScreen() {
         <Card style={styles.card}>
           <SectionTitle>Requests to join</SectionTitle>
           <Text style={styles.caption}>
-            Before approving, confirm the security code below matches the one the person sees on
+            Before approving, confirm the security code below matches the one the contact sees on
             their own Household screen while they wait — this proves you're granting access to the
-            right person.
+            right contact.
           </Text>
           {!hdkReady ? (
             <Text style={styles.warn}>Your device is still unlocking the household key — reopen this screen if this persists.</Text>
@@ -598,15 +606,15 @@ export default function HouseholdScreen() {
           </View>
           {suggestOpen && suggestions.length > 0 ? (
             <View style={styles.dropdown}>
-              {suggestions.map(({ p, entry }) => (
-                <TouchableOpacity key={p._id} style={styles.suggestRow} onPress={() => invite(entry)}>
+              {suggestions.map(({ key, p, entry, label, display }) => (
+                <TouchableOpacity key={key} style={styles.suggestRow} onPress={() => invite(entry)}>
                   <View style={styles.suggestAvatar}>
                     <Text style={styles.memberInitial}>{(p.name || '?').charAt(0).toUpperCase()}</Text>
                   </View>
                   <View style={styles.memberText}>
                     <Text style={styles.memberName} numberOfLines={1}>{p.name}</Text>
                     <Text style={styles.memberEmail} numberOfLines={1}>
-                      {'email' in entry ? entry.email : entry.phone}
+                      {label ? `${label} · ${display}` : display}
                     </Text>
                   </View>
                   <Ionicons
@@ -720,7 +728,6 @@ export default function HouseholdScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   card: { marginBottom: spacing.md },
   cancelRow: { marginTop: spacing.sm },
   caption: { fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 17 },

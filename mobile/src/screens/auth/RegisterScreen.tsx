@@ -12,7 +12,7 @@ import type { AuthStackParamList } from '../../navigation/AuthNavigator';
 
 // Registration establishes the account's primary unlock factor. A passkey is the
 // preferred path (no password to remember, and it silently unlocks E2EE after a
-// relaunch/logout); a password is the alternative for people who want one or on
+// relaunch/logout); a password is the alternative for contacts who want one or on
 // devices without a passkey. Either way the recovery code (shown right after) is
 // the backstop. See docs/PASSWORDLESS-E2EE-PLAN.md.
 export default function RegisterScreen() {

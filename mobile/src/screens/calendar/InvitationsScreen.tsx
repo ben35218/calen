@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity, Alert, RefreshControl } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/types';
@@ -10,7 +10,7 @@ import {
   tripsApi, TripInvitation, householdApi, HouseholdInvitation, JoinRequestForApprover, HouseholdNotice,
   callsApi, PhoneCallRecord,
 } from '../../api';
-import { refreshCustomCalendars } from '../../lib/calendarPrefs';
+import { refreshCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import {
   ensureSharedCalendarKeys, listAccessRequests, approveAccessRequest,
   type CalendarAccessRequest,
@@ -18,29 +18,26 @@ import {
 import {
   myIdentityPublicKey, openInvitationSnapshot, sealInvitationSnapshot,
   ensureHouseholdKey, getHDK, wrapHDKForJoiner, publicKeyFingerprint,
+  isUnlocked, subscribeLockState, subscribeKeysReady,
 } from '../../lib/e2ee';
 import { sealAcceptedCopy } from '../../lib/invitees';
 import {
   listMyHouseholdEventRequests, respondToHouseholdEvent, type HouseholdEventRequest,
 } from '../../lib/householdRsvp';
+import { invitationLapsed, isEventRecordShare } from '../../lib/inviteAlerts';
 import { useAuth } from '../../store/auth';
-import { Button, SegmentedControl, Badge } from '../../components/ui';
+import { Button, SegmentedControl, Badge, SkeletonList, Card, IconAvatar, EmptyState } from '../../components/ui';
+import { EVENT_INVITATIONS_KEY, fetchEventInvitations } from '../../lib/eventInvitations';
 import { SecurityCode } from '../../components/SecurityCode';
 import { colors, spacing } from '../../theme';
 
 // D3: an event invitation may arrive sealed (its snapshot encrypted to this
-// user's identity key). Decrypt those into the plaintext `event` shape the rows
-// render from; a plaintext invite passes through unchanged. Best-effort — a
-// locked vault (or a blob not sealed to us) leaves `event` undefined.
-async function decryptEventInvitations(rows: EventInvitation[]): Promise<EventInvitation[]> {
-  return Promise.all(
-    rows.map(async (inv) => {
-      if (inv.event?.title || !inv.sealedEvent) return inv;
-      const snap = await openInvitationSnapshot<InvitationEventSnapshot>(inv.sealedEvent);
-      return snap ? { ...inv, event: snap } : inv;
-    }),
-  );
-}
+// user's identity key), so the rows this screen renders need it opened first.
+// That decrypt lives in lib/eventInvitations, NOT here, because it belongs to
+// the `['invitations']` cache key rather than to this screen — three surfaces
+// read that key, and when this screen owned the only decrypting fetcher, any
+// refetch driven by one of the others replaced the cache with undecrypted rows
+// and this inbox showed padlocks with the vault wide open.
 
 // Invitations inbox (event sharing across households). Opened from the
 // bottom-right floating button on the Calendar and Events views; presented as
@@ -75,24 +72,62 @@ type Row =
   // not from a server feed — the server can't read who's invited.
   | { kind: 'householdEvent'; inv: HouseholdEventRequest };
 
-// "Monday, July 13, 2026" or "Jul 13, 3:00 PM – 4:00 PM" style when-line.
-function whenLabel(e: InvitationEventSnapshot): string {
-  const start = new Date(e.startDate);
-  if (e.allDay !== false) {
-    // All-day records are stored at noon UTC → read the date in UTC.
-    const opts = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' } as const;
-    const s = start.toLocaleDateString(undefined, opts);
-    if (e.endDate) {
-      const end = new Date(e.endDate).toLocaleDateString(undefined, opts);
-      if (end !== s) return `${s} – ${end}`;
-    }
-    return s;
-  }
-  const day = start.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  const t1 = start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
-  if (!e.endDate) return `${day}, ${t1}`;
+// The event cards' two-line when. Clock row: the time — "3:00 PM – 4:00 PM",
+// or "All Day" when the event has no start instant. Calendar row below: the
+// full date, year-free — "Wednesday, August 26" (a multi-day event shows the
+// date range).
+type WhenFields = Pick<InvitationEventSnapshot, 'startDate' | 'endDate' | 'allDay'>;
+
+function timeLabel(e: WhenFields): string {
+  if (e.allDay !== false) return 'All Day';
+  const t1 = new Date(e.startDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+  if (!e.endDate) return t1;
   const t2 = new Date(e.endDate).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
-  return `${day}, ${t1} – ${t2}`;
+  return t2 === t1 ? t1 : `${t1} – ${t2}`;
+}
+
+function dateLabel(e: WhenFields): string {
+  const opts: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric' };
+  // All-day records are stored at noon UTC → read the date in UTC.
+  if (e.allDay !== false) opts.timeZone = 'UTC';
+  const s = new Date(e.startDate).toLocaleDateString(undefined, opts);
+  if (e.endDate) {
+    const end = new Date(e.endDate).toLocaleDateString(undefined, opts);
+    if (end !== s) return `${s} – ${end}`;
+  }
+  return s;
+}
+
+// "(today)" / "(tomorrow)" / "(in 3 days)" — and the Replied tab's past events
+// read "(yesterday)" / "(3 days ago)". Calendar-day distance to the START:
+// an all-day date reads in UTC (noon-UTC storage), a timed one in local time,
+// and both compare against today's local calendar date.
+function relativeDayPhrase(e: WhenFields, now: Date = new Date()): string {
+  const start = new Date(e.startDate);
+  const eventDay = e.allDay !== false
+    ? Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())
+    : Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const todayDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const diff = Math.round((eventDay - todayDay) / 86400000);
+  if (diff === 0) return 'today';
+  if (diff === 1) return 'tomorrow';
+  if (diff === -1) return 'yesterday';
+  return diff > 0 ? `in ${diff} days` : `${-diff} days ago`;
+}
+
+function WhenRows({ event }: { event: WhenFields }) {
+  return (
+    <>
+      <View style={styles.metaRow}>
+        <Ionicons name="time-outline" size={14} color={colors.textMuted} />
+        <Text style={styles.meta}>{timeLabel(event)}</Text>
+      </View>
+      <View style={styles.metaRow}>
+        <Ionicons name="calendar-outline" size={14} color={colors.textMuted} />
+        <Text style={styles.meta}>{`${dateLabel(event)} (${relativeDayPhrase(event)})`}</Text>
+      </View>
+    </>
+  );
 }
 
 const GUEST_STATUS_LABEL: Record<string, string> = {
@@ -113,7 +148,9 @@ function GuestList({ invitation }: { invitation: EventInvitation }) {
     enabled: open,
   });
   return (
-    <View>
+    // The bottom margin keeps the toggle (and an expanded list) clear of the
+    // Accept/Decline row that follows it on the invitation card.
+    <View style={styles.guestsBlock}>
       <TouchableOpacity style={styles.guestsToggle} onPress={() => setOpen((v) => !v)} activeOpacity={0.7}>
         <Ionicons name={open ? 'chevron-down' : 'chevron-forward'} size={14} color={colors.textMuted} />
         <Text style={styles.guestsToggleText}>See who’s invited</Text>
@@ -144,15 +181,69 @@ function GuestList({ invitation }: { invitation: EventInvitation }) {
   );
 }
 
+// The shared shell every inbox card renders through: the app-standard Card
+// chrome (radius.lg + hairline border, via components/ui) headed by the
+// list-row leading disc (IconAvatar, tinted per kind — a shared calendar's
+// disc carries that calendar's colour) beside the "«who» «did what»" eyebrow
+// and the bold title. Kind-specific meta rows, security codes, and the
+// Accept/Decline (shared Button) or Badge status row render as children below.
+// A tappable card (household event → its event, a call → the Interaction)
+// gets the CardRow trailing chevron.
+function InviteCard({
+  icon,
+  mdiIcon,
+  accent = colors.primary,
+  from,
+  fromSub,
+  title,
+  onPress,
+  children,
+}: {
+  icon?: keyof typeof Ionicons.glyphMap;
+  mdiIcon?: string;
+  accent?: string;
+  from?: string;
+  fromSub?: string;
+  title?: string;
+  onPress?: () => void;
+  children?: React.ReactNode;
+}) {
+  const body = (
+    <Card style={styles.card}>
+      <View style={styles.headRow}>
+        <IconAvatar icon={icon} mdiIcon={mdiIcon} bg={accent} />
+        <View style={styles.headText}>
+          {from ? (
+            <Text style={styles.from} numberOfLines={2}>
+              {from}
+              {fromSub ? <Text style={styles.fromSub}> {fromSub}</Text> : null}
+            </Text>
+          ) : null}
+          {title ? <Text style={styles.title} numberOfLines={2}>{title}</Text> : null}
+        </View>
+        {onPress ? <Ionicons name="chevron-forward" size={18} color={colors.textMuted} /> : null}
+      </View>
+      {children ? <View style={styles.body}>{children}</View> : null}
+    </Card>
+  );
+  return onPress ? (
+    <TouchableOpacity activeOpacity={0.7} onPress={onPress}>{body}</TouchableOpacity>
+  ) : (
+    body
+  );
+}
+
 export default function InvitationsScreen() {
   const qc = useQueryClient();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('new');
   const [error, setError] = useState('');
+  // Feature accents for the kind discs (a trip invite wears the Trips colour).
+  const { colors: accents } = useCalendarColors();
 
   const invQ = useQuery({
-    queryKey: ['invitations'],
-    queryFn: async () => decryptEventInvitations((await invitationsApi.list()).data),
+    queryKey: EVENT_INVITATIONS_KEY,
+    queryFn: fetchEventInvitations,
   });
   const calInvQ = useQuery({
     queryKey: ['calendarInvitations'],
@@ -166,7 +257,7 @@ export default function InvitationsScreen() {
     queryKey: ['householdInvitations', 'mine'],
     queryFn: async () => (await householdApi.myInvitations()).data,
   });
-  // Approver side: people who accepted an invite and are now waiting for a
+  // Approver side: contacts who accepted an invite and are now waiting for a
   // member of THIS household to confirm them on-device. The server only ever
   // returns pending requests (empty for a solo household), so these are always
   // "New" — an actionable Approve/Reject card, not response history.
@@ -230,6 +321,28 @@ export default function InvitationsScreen() {
     })();
   }, [joinReqQ.data]);
 
+  // A fresh login races this inbox: a sealed event invitation decrypts with the
+  // identity key inside the list queryFn, and that can run a beat BEFORE the
+  // vault finishes unlocking (the invite pop-up isn't affected — it reads the
+  // plaintext lanes — so the user lands here fast). The failed decrypt then
+  // sits in the query cache and the card says "Unlock to view this invitation"
+  // until a manual refresh. Re-list the moment the keys actually land, and
+  // refresh the HDK-dependent approve state with them.
+  useEffect(() => {
+    const relist = () => {
+      if (!isUnlocked()) return;
+      qc.invalidateQueries({ queryKey: EVENT_INVITATIONS_KEY });
+      qc.invalidateQueries({ queryKey: ['calendar', 'householdEventRequests'] });
+      setHdkReady(getHDK() != null);
+    };
+    const unsubLock = subscribeLockState(relist);
+    const unsubKeys = subscribeKeysReady(relist);
+    return () => {
+      unsubLock();
+      unsubKeys();
+    };
+  }, [qc]);
+
   // Safety numbers for out-of-band verification: the approver must confirm this
   // code matches what the joiner sees before granting access (see spec).
   const [fingerprints, setFingerprints] = useState<Record<string, string>>({});
@@ -281,7 +394,7 @@ export default function InvitationsScreen() {
     },
     onSuccess: (_res, { action }) => {
       setError('');
-      qc.invalidateQueries({ queryKey: ['invitations'] });
+      qc.invalidateQueries({ queryKey: EVENT_INVITATIONS_KEY });
       // Accepting adds a copy of the event to this user's calendar.
       if (action === 'accept') qc.invalidateQueries({ queryKey: ['calendar'] });
     },
@@ -308,7 +421,7 @@ export default function InvitationsScreen() {
           sealedAny = true;
         } catch { /* leave it plaintext; retry next session */ }
       }
-      if (sealedAny) qc.invalidateQueries({ queryKey: ['invitations'] });
+      if (sealedAny) qc.invalidateQueries({ queryKey: EVENT_INVITATIONS_KEY });
     })();
   }, [invQ.data, qc]);
 
@@ -394,7 +507,7 @@ export default function InvitationsScreen() {
   });
 
   const confirmReject = (r: JoinRequestForApprover) =>
-    Alert.alert('Reject request?', 'This person will not be able to join.', [
+    Alert.alert('Reject request?', 'This contact will not be able to join.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Reject', style: 'destructive', onPress: () => rejectJoin.mutate(r) },
     ]);
@@ -448,8 +561,13 @@ export default function InvitationsScreen() {
     const trips: Row[] = (tripInvQ.data ?? [])
       .filter((i) => (i.status === 'pending') === wantPending)
       .map((inv) => ({ kind: 'trip', inv }));
+    // A pending pre-event invitation lapses once the event has ended and moves
+    // to Replied as "Expired" (nobody should have to decline history, but the
+    // trace stays findable). One SENT after the event ended is a record-share —
+    // it stays under New with Add to Calendar. Sealed snapshots fail open —
+    // see lib/inviteAlerts.invitationLapsed.
     const events: Row[] = (invQ.data ?? [])
-      .filter((i) => (i.status === 'pending') === wantPending)
+      .filter((i) => (i.status === 'pending' && !invitationLapsed(i)) === wantPending)
       .map((inv) => ({ kind: 'event', inv }));
     const hhEvents: Row[] = (hhEventQ.data ?? [])
       .filter((r) => (r.myStatus === 'pending') === wantPending)
@@ -469,21 +587,13 @@ export default function InvitationsScreen() {
   const renderCallItem = (item: PhoneCallRecord) => {
     const confirmed = item.outcome === 'confirmed';
     return (
-      <TouchableOpacity
-        style={styles.card}
-        activeOpacity={0.7}
+      <InviteCard
+        icon="call"
+        from="Calen"
+        fromSub={`called to ${item.action === 'cancel' ? 'cancel' : 'reschedule'} an appointment`}
+        title={item.eventTitle || 'Appointment'}
         onPress={() => navigation.navigate('Interaction', { id: item._id })}
       >
-        <Text style={styles.from}>
-          Calen
-          <Text style={styles.fromSub}>
-            {' '}called to {item.action === 'cancel' ? 'cancel' : 'reschedule'} an appointment
-          </Text>
-        </Text>
-        <View style={styles.calTitleRow}>
-          <Ionicons name="call" size={16} color={colors.primary} style={{ marginTop: 2 }} />
-          <Text style={styles.title}>{item.eventTitle || 'Appointment'}</Text>
-        </View>
         {item.eventDate ? (
           <View style={styles.metaRow}>
             <Ionicons name="time-outline" size={14} color={colors.textMuted} />
@@ -497,22 +607,20 @@ export default function InvitationsScreen() {
             color={confirmed ? colors.success : colors.warning}
           />
         </View>
-      </TouchableOpacity>
+      </InviteCard>
     );
   };
 
   const renderCalendarItem = (item: CalendarInvitation) => {
     const busy = respondCal.isPending && respondCal.variables?.id === item._id;
     return (
-      <View style={styles.card}>
-        <Text style={styles.from}>
-          {item.fromName || item.fromEmail || 'Someone'}
-          <Text style={styles.fromSub}> shared a calendar</Text>
-        </Text>
-        <View style={styles.calTitleRow}>
-          <View style={[styles.calDot, { backgroundColor: item.color || colors.primary }]} />
-          <Text style={styles.title}>{item.calendarName}</Text>
-        </View>
+      <InviteCard
+        icon="calendar"
+        accent={item.color || colors.primary}
+        from={item.fromName || item.fromEmail || 'Someone'}
+        fromSub="shared a calendar"
+        title={item.calendarName}
+      >
         <Text style={styles.meta}>
           {item.access === 'full'
             ? 'Accepting lets you see, add, and edit this calendar’s events.'
@@ -563,22 +671,20 @@ export default function InvitationsScreen() {
             ) : null}
           </View>
         )}
-      </View>
+      </InviteCard>
     );
   };
 
   const renderTripItem = (item: TripInvitation) => {
     const busy = respondTrip.isPending && respondTrip.variables?.id === item._id;
     return (
-      <View style={styles.card}>
-        <Text style={styles.from}>
-          {item.fromName || item.fromEmail || 'Someone'}
-          <Text style={styles.fromSub}> shared a trip</Text>
-        </Text>
-        <View style={styles.calTitleRow}>
-          <MaterialCommunityIcons name="bag-suitcase" size={16} color={colors.primary} style={{ marginTop: 2 }} />
-          <Text style={styles.title}>{item.tripName}</Text>
-        </View>
+      <InviteCard
+        mdiIcon="bag-suitcase"
+        accent={accents.vacations}
+        from={item.fromName || item.fromEmail || 'Someone'}
+        fromSub="shared a trip"
+        title={item.tripName}
+      >
         {item.destination ? (
           <View style={styles.metaRow}>
             <Ionicons name="location-outline" size={14} color={colors.textMuted} />
@@ -626,7 +732,7 @@ export default function InvitationsScreen() {
             ) : null}
           </View>
         )}
-      </View>
+      </InviteCard>
     );
   };
 
@@ -639,16 +745,11 @@ export default function InvitationsScreen() {
     const busy = dismissNotice.isPending && dismissNotice.variables === item._id;
     const approved = item.kind === 'approved';
     return (
-      <View style={styles.card}>
-        <View style={styles.calTitleRow}>
-          <MaterialCommunityIcons
-            name={approved ? 'home-heart' : 'home-remove'}
-            size={16}
-            color={approved ? colors.success : colors.error}
-            style={{ marginTop: 2 }}
-          />
-          <Text style={styles.title}>{approved ? 'You’re in the household' : 'Removed from a household'}</Text>
-        </View>
+      <InviteCard
+        mdiIcon={approved ? 'home-heart' : 'home-remove'}
+        accent={approved ? colors.success : colors.error}
+        title={approved ? 'You’re in the household' : 'Removed from a household'}
+      >
         <Text style={styles.meta}>
           {approved
             ? `${who} approved your request — you now share the household’s calendar, tasks, trips, and more.`
@@ -665,7 +766,7 @@ export default function InvitationsScreen() {
             </View>
           </View>
         )}
-      </View>
+      </InviteCard>
     );
   };
 
@@ -677,11 +778,7 @@ export default function InvitationsScreen() {
     const busyApprove = approveJoin.isPending && approveJoin.variables?._id === item._id;
     const busyReject = rejectJoin.isPending && rejectJoin.variables?._id === item._id;
     return (
-      <View style={styles.card}>
-        <Text style={styles.from}>
-          {display}
-          <Text style={styles.fromSub}> wants to join your household</Text>
-        </Text>
+      <InviteCard icon="person-add" from={display} fromSub="wants to join your household">
         {item.email ? (
           <View style={styles.metaRow}>
             <Ionicons name="mail-outline" size={14} color={colors.textMuted} />
@@ -720,14 +817,14 @@ export default function InvitationsScreen() {
             />
           </View>
         </View>
-      </View>
+      </InviteCard>
     );
   };
 
   // Someone who lost access to a calendar I own is asking for it back. There is
   // no "Reject" twin: doing nothing IS the refusal (the request stays pending
   // and grants nothing), and a reject button on a request that is usually
-  // innocent — a person who forgot their password — invites a punitive tap.
+  // innocent — a contact who forgot their password — invites a punitive tap.
   const renderAccessRequestItem = (item: CalendarAccessRequest) => {
     const id = `${item.calendarKey}:${item.userId}`;
     const display = item.name || 'Someone';
@@ -735,11 +832,7 @@ export default function InvitationsScreen() {
       && approveAccess.variables?.calendarKey === item.calendarKey
       && approveAccess.variables?.userId === item.userId;
     return (
-      <View style={styles.card}>
-        <Text style={styles.from}>
-          {display}
-          <Text style={styles.fromSub}> lost access to “{item.calendarName}”</Text>
-        </Text>
+      <InviteCard icon="key" from={display} fromSub={`lost access to “${item.calendarName}”`}>
         <Text style={styles.meta}>
           They set up a new encryption key, so their old one can’t read your calendar
           any more. Approving re-shares it with the new key.
@@ -762,25 +855,20 @@ export default function InvitationsScreen() {
             />
           </View>
         </View>
-      </View>
+      </InviteCard>
     );
   };
 
   const renderHouseholdItem = (item: HouseholdInvitation) => {
     const busy = respondHousehold.isPending && respondHousehold.variables?.id === item._id;
     return (
-      <View style={styles.card}>
-        <Text style={styles.from}>
-          {item.fromName || item.fromEmail || 'Someone'}
-          <Text style={styles.fromSub}> invited you to their household</Text>
-        </Text>
-        <View style={styles.calTitleRow}>
-          <MaterialCommunityIcons name="home-heart" size={16} color={colors.primary} style={{ marginTop: 2 }} />
-          {/* Sender-name framing when the household name is sealed (C2). */}
-          <Text style={styles.title}>
-            {item.householdName || `${(item.fromName || 'their').split(' ')[0]}${item.fromName ? '’s' : ''} household`}
-          </Text>
-        </View>
+      <InviteCard
+        mdiIcon="home-heart"
+        from={item.fromName || item.fromEmail || 'Someone'}
+        fromSub="invited you to their household"
+        // Sender-name framing when the household name is sealed (C2).
+        title={item.householdName || `${(item.fromName || 'their').split(' ')[0]}${item.fromName ? '’s' : ''} household`}
+      >
         <Text style={styles.meta}>
           Accepting shares the family calendar, tasks, trips, and more. A member
           then confirms you on their device.
@@ -813,7 +901,7 @@ export default function InvitationsScreen() {
             />
           </View>
         )}
-      </View>
+      </InviteCard>
     );
   };
 
@@ -823,23 +911,15 @@ export default function InvitationsScreen() {
   const renderHouseholdEventItem = (item: HouseholdEventRequest) => {
     const busy = respondHH.isPending && respondHH.variables?.req.eventId === item.eventId;
     return (
-      <TouchableOpacity
-        style={styles.card}
-        activeOpacity={0.7}
+      <InviteCard
+        icon="calendar"
+        from={memberName(item.creatorId)}
+        fromSub="invited you"
+        title={item.title}
         onPress={() => navigation.navigate('EventDetail', { eventId: item.eventId })}
       >
-        <Text style={styles.from}>
-          {memberName(item.creatorId)}
-          <Text style={styles.fromSub}> invited you</Text>
-        </Text>
-        <Text style={styles.title}>{item.title}</Text>
         {item.startDate ? (
-          <View style={styles.metaRow}>
-            <Ionicons name="time-outline" size={14} color={colors.textMuted} />
-            <Text style={styles.meta}>
-              {whenLabel({ title: item.title, startDate: item.startDate, endDate: item.endDate, allDay: item.allDay })}
-            </Text>
-          </View>
+          <WhenRows event={{ startDate: item.startDate, endDate: item.endDate, allDay: item.allDay }} />
         ) : null}
         <View style={styles.metaRow}>
           <Ionicons name="home-outline" size={14} color={colors.textMuted} />
@@ -877,40 +957,40 @@ export default function InvitationsScreen() {
             ) : null}
           </View>
         )}
-      </TouchableOpacity>
+      </InviteCard>
     );
   };
 
   const renderEventItem = (item: EventInvitation) => {
     const busy = respond.isPending && respond.variables?.id === item._id;
     const ev = item.event;
+    // Sent after the event ended = record-share: "shared an event", Add to
+    // Calendar / Dismiss — no RSVP framing for something already over.
+    const shared = isEventRecordShare(item);
     // A sealed invite we can't open yet (vault locked) — show a placeholder
     // rather than crashing; unlocking re-lists and decrypts it.
     if (!ev?.title) {
       return (
-        <View style={styles.card}>
-          <Text style={styles.from}>
-            {item.fromName || item.fromEmail || 'Someone'}
-            <Text style={styles.fromSub}> invited you</Text>
-          </Text>
+        <InviteCard
+          icon="calendar"
+          from={item.fromName || item.fromEmail || 'Someone'}
+          fromSub="invited you"
+        >
           <View style={styles.metaRow}>
             <Ionicons name="lock-closed-outline" size={14} color={colors.textMuted} />
             <Text style={styles.meta}>Unlock to view this invitation.</Text>
           </View>
-        </View>
+        </InviteCard>
       );
     }
     return (
-      <View style={styles.card}>
-        <Text style={styles.from}>
-          {item.fromName || item.fromEmail || 'Someone'}
-          <Text style={styles.fromSub}> invited you</Text>
-        </Text>
-        <Text style={styles.title}>{ev.title}</Text>
-        <View style={styles.metaRow}>
-          <Ionicons name="time-outline" size={14} color={colors.textMuted} />
-          <Text style={styles.meta}>{whenLabel(ev)}</Text>
-        </View>
+      <InviteCard
+        icon="calendar"
+        from={item.fromName || item.fromEmail || 'Someone'}
+        fromSub={shared ? 'shared an event' : 'invited you'}
+        title={ev.title}
+      >
+        <WhenRows event={ev} />
         {ev.location ? (
           <View style={styles.metaRow}>
             <Ionicons name="location-outline" size={14} color={colors.textMuted} />
@@ -923,20 +1003,20 @@ export default function InvitationsScreen() {
 
         <GuestList invitation={item} />
 
-        {item.status === 'pending' ? (
+        {item.status === 'pending' && !invitationLapsed(item) ? (
           <View style={styles.actions}>
             <View style={styles.actionBtn}>
               <Button
-                title="Accept"
+                title={shared ? 'Add to Calendar' : 'Accept'}
                 loading={busy && respond.variables?.action === 'accept'}
                 onPress={() => respond.mutate({ id: item._id, action: 'accept', event: ev })}
               />
             </View>
             <View style={styles.actionBtn}>
               <Button
-                title="Decline"
+                title={shared ? 'Dismiss' : 'Decline'}
                 variant="ghost"
-                color={colors.error}
+                color={shared ? colors.textMuted : colors.error}
                 loading={busy && respond.variables?.action === 'decline'}
                 onPress={() => respond.mutate({ id: item._id, action: 'decline' })}
               />
@@ -944,9 +1024,16 @@ export default function InvitationsScreen() {
           </View>
         ) : (
           <View style={styles.statusRow}>
+            {/* A still-pending invite lands here only once it lapsed (asked
+                before the event, unanswered when it ended) — no buttons:
+                accepting history isn't an action worth offering. Answered
+                record-shares read Added/Dismissed, matching their buttons. */}
             <Badge
-              label={item.status === 'accepted' ? 'Accepted' : item.status === 'left' ? 'Left' : 'Declined'}
-              color={item.status === 'accepted' ? colors.success : item.status === 'left' ? colors.textMuted : colors.error}
+              label={item.status === 'pending' ? 'Expired'
+                : item.status === 'accepted' ? (shared ? 'Added' : 'Accepted')
+                  : item.status === 'left' ? 'Left' : shared ? 'Dismissed' : 'Declined'}
+              color={item.status === 'accepted' ? colors.success
+                : item.status === 'declined' && !shared ? colors.error : colors.textMuted}
             />
             {item.respondedAt ? (
               <Text style={styles.meta}>
@@ -955,7 +1042,7 @@ export default function InvitationsScreen() {
             ) : null}
           </View>
         )}
-      </View>
+      </InviteCard>
     );
   };
 
@@ -975,14 +1062,17 @@ export default function InvitationsScreen() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {invQ.isLoading || calInvQ.isLoading || tripInvQ.isLoading || hhInvQ.isLoading ? (
-        <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
+        <SkeletonList />
       ) : items.length === 0 ? (
-        <View style={styles.center}>
-          <MaterialCommunityIcons name="email-open-outline" size={40} color={colors.textMuted} />
-          <Text style={styles.emptyText}>
-            {tab === 'new' ? 'No new invitations.' : 'No replied invitations yet.'}
-          </Text>
-        </View>
+        <EmptyState
+          mdiIcon="email-open-outline"
+          title={tab === 'new' ? 'No new invitations' : 'No replied invitations yet'}
+          message={
+            tab === 'new'
+              ? 'Event, calendar, trip, and household invitations you receive land here.'
+              : 'Invitations you’ve answered move here.'
+          }
+        />
       ) : (
         <FlatList
           data={items}
@@ -1006,6 +1096,24 @@ export default function InvitationsScreen() {
                           : item.kind === 'householdEvent' ? renderHouseholdEventItem(item.inv)
                             : renderEventItem(item.inv)}
           contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl
+              refreshing={
+                invQ.isRefetching || calInvQ.isRefetching || tripInvQ.isRefetching || hhInvQ.isRefetching
+              }
+              onRefresh={() => {
+                invQ.refetch();
+                calInvQ.refetch();
+                tripInvQ.refetch();
+                hhInvQ.refetch();
+                joinReqQ.refetch();
+                noticesQ.refetch();
+                callsQ.refetch();
+                accessReqQ.refetch();
+                hhEventQ.refetch();
+              }}
+            />
+          }
         />
       )}
     </View>
@@ -1016,13 +1124,16 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   tabs: { paddingHorizontal: spacing.md, paddingTop: spacing.md },
   list: { padding: spacing.md, paddingBottom: spacing.xl },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
-  emptyText: { color: colors.textMuted, marginTop: spacing.sm },
   error: { color: colors.error, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
-  card: { backgroundColor: colors.surface, borderRadius: 12, padding: spacing.md, marginBottom: spacing.md },
+  // The shared Card supplies the chrome (surface, radius, hairline border,
+  // padding); the inbox only owns the stacking gap.
+  card: { marginBottom: spacing.md },
+  headRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  headText: { flex: 1, minWidth: 0 },
+  body: { marginTop: spacing.sm },
   from: { fontSize: 13, fontWeight: '600', color: colors.text },
   fromSub: { fontWeight: '400', color: colors.textMuted },
-  title: { fontSize: 17, fontWeight: '700', color: colors.text, marginTop: 4, marginBottom: 6 },
+  title: { fontSize: 17, fontWeight: '700', color: colors.text, marginTop: 2 },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
   meta: { fontSize: 13, color: colors.textMuted, flexShrink: 1 },
   description: { fontSize: 13, color: colors.textMuted, marginTop: spacing.sm },
@@ -1031,9 +1142,8 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
   fingerprint: { fontSize: 13, letterSpacing: 1, color: colors.primary, marginTop: 6, fontVariant: ['tabular-nums'] },
   warn: { fontSize: 12, color: colors.warning ?? '#b26a00', marginTop: spacing.sm },
-  calTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  calDot: { width: 12, height: 12, borderRadius: 6, marginTop: 2 },
   leaveBtn: { marginLeft: 'auto' },
+  guestsBlock: { marginBottom: spacing.sm },
   guestsToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
   guestsToggleText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   guestsList: { marginTop: spacing.xs, gap: 2 },

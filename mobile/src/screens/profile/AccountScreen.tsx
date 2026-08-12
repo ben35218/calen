@@ -20,7 +20,7 @@ import { HOUSEHOLD_ENC } from '../../lib/encSubsets';
 import { resolveCurrentAddress } from '../../lib/currentLocation';
 import {
   Input, DateField, Screen, useHeaderCheckButton, Card, Button,
-  SectionTitle, SectionHeader, PhoneField, InfoCard, ListRow, SetupCallout,
+  SectionTitle, SectionHeader, PhoneField, InfoCard, ListRow, SetupCallout, Skeleton,
 } from '../../components/ui';
 import { MailAppPickerSheet } from '../../components/EmailAppSheet';
 import {
@@ -222,7 +222,7 @@ export default function AccountScreen() {
       qc.invalidateQueries({ queryKey: ['settings'] });
       invalidatePlaceBias();
       // Saving the identity form completes the task, so dismiss back to the
-      // profile hub automatically (matching PersonFormScreen and the iOS
+      // profile hub automatically (matching ContactFormScreen and the iOS
       // edit-and-done convention) — no blocking "Saved" confirmation to tap
       // through only to land back on a screen the user is finished with.
       allowLeave();
@@ -403,9 +403,9 @@ export default function AccountScreen() {
 
   if (isLoading) {
     return (
-      <View style={fs.center}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
+      <Screen>
+        <SettingsSkeleton />
+      </Screen>
     );
   }
 
@@ -564,10 +564,13 @@ export default function AccountScreen() {
         />
       </GroupCard>
 
-      {/* ── Invites (only when there's a mail app to choose between) ── */}
+      {/* ── Sending invites (only when there's a mail app to choose between) ──
+          Labelled by DIRECTION, not just "Invites": Profile → Invitations is the
+          inbox of invites you received, and this is the mail app that invites you
+          send go out through. Same word for both reads as the same thing. */}
       {mailApps.length >= 2 ? (
         <>
-          <SectionHeader>Invites</SectionHeader>
+          <SectionHeader>Sending invites</SectionHeader>
           <InfoCard style={styles.sectionCard}>
             <ListRow
               icon="mail-outline"
@@ -623,6 +626,35 @@ export default function AccountScreen() {
   );
 }
 
+// A shimmering placeholder in the shape of the grouped settings form the query
+// is about to seed — a section eyebrow over the tall Account card's label/value
+// rows, then two shorter grouped cards. Built from the shared Skeleton pulse.
+function SettingsSkeleton() {
+  return (
+    <View>
+      <Skeleton width={72} height={12} style={styles.skelEyebrow} />
+      <GroupCard style={styles.skelCard}>
+        {[0, 1, 2, 3, 4].map((i) => (
+          <View key={i} style={[styles.skelRow, i > 0 ? styles.skelGap : null]}>
+            <Skeleton width={'32%'} height={14} />
+            <Skeleton width={'44%'} height={14} />
+          </View>
+        ))}
+      </GroupCard>
+      {[0, 1].map((c) => (
+        <GroupCard key={c} style={styles.skelCard}>
+          {[0, 1].map((i) => (
+            <View key={i} style={[styles.skelRow, i > 0 ? styles.skelGap : null]}>
+              <Skeleton width={'38%'} height={14} />
+              <Skeleton width={48} height={14} />
+            </View>
+          ))}
+        </GroupCard>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   cardNote: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.sm, lineHeight: 18 },
   sectionCard: { marginBottom: spacing.md },
@@ -642,4 +674,9 @@ const styles = StyleSheet.create({
   secValue: { fontSize: 15, color: colors.text, marginTop: 2 },
   expand: { marginTop: spacing.sm },
   error: { color: colors.error, fontSize: 13, marginBottom: spacing.sm },
+  // SettingsSkeleton shapes (mirrors the recipe-import skeleton's card rows).
+  skelEyebrow: { marginBottom: spacing.sm },
+  skelCard: { padding: spacing.md },
+  skelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  skelGap: { marginTop: spacing.md },
 });

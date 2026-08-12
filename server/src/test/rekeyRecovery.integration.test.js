@@ -10,10 +10,11 @@
 // (the server verifies shape, never crypto).
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { startDb, stopDb, request, registerUser, enrollKeys, b64u } = require('./harness');
+const { startDb, stopDb, request, registerUser, enrollKeys, joinHousehold, b64u } = require('./harness');
 const CustomCalendar = require('../models/CustomCalendar');
 const ResourceKeyEnvelope = require('../models/ResourceKeyEnvelope');
 const HouseholdKeyEnvelope = require('../models/HouseholdKeyEnvelope');
+const Record = require('../models/Record');
 
 before(startDb);
 after(stopDb);
@@ -284,6 +285,105 @@ test('the calendar list reports the requester’s own pending access request', a
     .body.find((c) => c.key === calendarKey);
   assert.ok(!ownerView.accessRequestedAt && !ownerView.keyChangedAt);
   assert.equal(ownerView.collaborators, undefined);
+});
+
+// ── Start fresh: what a re-key does to the caller's HOUSEHOLD ────────────────
+//
+// A record's shape as clients seal it (v2 envelope).
+const sealedRecord = () => ({
+  enc: { alg: 'xchacha20poly1305-ietf-v2', nonce: b64u(32), ct: b64u(96) },
+  keyVersion: 1,
+});
+
+test('solo re-key starts the household fresh: dead ciphertext purged, key version reset, saving works again', async () => {
+  const user = await registerUser({ firstName: 'Solly' });
+  await enrollKeys(user.auth);
+  const mint = await request().post('/api/household/key').set('Authorization', user.auth)
+    .send({ keyVersion: 1, wrappedHDK: b64u(96) });
+  assert.equal(mint.status, 201);
+  assert.equal(
+    (await request().post('/api/records').set('Authorization', user.auth).send(sealedRecord())).status,
+    201,
+  );
+
+  const res = await request().post('/api/keys/rekey').set('Authorization', user.auth)
+    .send({ ...keyMaterial(), confirmDataLoss: true });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.householdReset, true, 'the household was reset for a fresh start');
+
+  // The records were sealed under a key nobody holds anymore — dead ciphertext,
+  // gone rather than kept as an unreadable monument.
+  const householdId = user.user.householdId;
+  assert.equal(await Record.countDocuments({ householdId }), 0);
+  assert.equal(await HouseholdKeyEnvelope.countDocuments({ householdId }), 0);
+
+  // The key slot is open again: without the version reset the account unlocked
+  // but could never save (v1 mint guarded to version 0 → permanent `pending`).
+  const key = await request().get('/api/household/key').set('Authorization', user.auth);
+  assert.equal(key.body.currentKeyVersion, 0);
+  assert.equal(
+    (await request().post('/api/household/key').set('Authorization', user.auth)
+      .send({ keyVersion: 1, wrappedHDK: b64u(96) })).status,
+    201,
+    'the ordinary owner mint issues a fresh HDK',
+  );
+  assert.equal(
+    (await request().post('/api/records').set('Authorization', user.auth).send(sealedRecord())).status,
+    201,
+    'and the account can save data again',
+  );
+});
+
+test('re-key in a shared household keeps the data and flags the rotation that re-admits the new key', async () => {
+  const owner = await registerUser({ firstName: 'Olive' });
+  await enrollKeys(owner.auth);
+  assert.equal(
+    (await request().post('/api/household/key').set('Authorization', owner.auth)
+      .send({ keyVersion: 1, wrappedHDK: b64u(96) })).status,
+    201,
+  );
+  const member = await registerUser({ firstName: 'Mira' });
+  await enrollKeys(member.auth);
+  await joinHousehold({ joiner: member, approver: owner, keyVersion: 1 });
+  assert.equal(
+    (await request().post('/api/records').set('Authorization', owner.auth).send(sealedRecord())).status,
+    201,
+  );
+
+  // The guard names the household as the way back: a peer HOLDS an envelope.
+  const blocked = await request().post('/api/keys/rekey').set('Authorization', member.auth).send(keyMaterial());
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.recoverableByHousehold, true);
+
+  const res = await request().post('/api/keys/rekey').set('Authorization', member.auth)
+    .send({ ...keyMaterial(), confirmDataLoss: true });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.householdReset, false, 'a shared household is never purged');
+
+  // Nothing destroyed — the owner still holds the HDK — and the rotation is
+  // flagged, which is what gets the re-keyed member back in: nothing else
+  // re-wraps to an EXISTING member.
+  const householdId = owner.user.householdId;
+  assert.equal(await Record.countDocuments({ householdId, deleted: false }), 1);
+  const key = await request().get('/api/household/key').set('Authorization', owner.auth);
+  assert.equal(key.body.currentKeyVersion, 1);
+  assert.equal(key.body.keyRotationPending, true);
+
+  // The owner's lazy-rotation pass wraps v2 to every enrolled member — the
+  // re-keyed member's NEW key included — and the member is readable again.
+  const rotate = await request().post('/api/household/key/rotate').set('Authorization', owner.auth)
+    .send({
+      keyVersion: 2,
+      envelopes: [
+        { userId: owner.user._id, wrappedHDK: b64u(96) },
+        { userId: member.user._id, wrappedHDK: b64u(96) },
+      ],
+    });
+  assert.equal(rotate.status, 200);
+  const memberKey = await request().get('/api/household/key').set('Authorization', member.auth);
+  assert.equal(memberKey.body.keyRotationPending, false);
+  assert.deepEqual(memberKey.body.envelopes.map((e) => e.keyVersion), [2],
+    'only the fresh version — the old envelopes died with the old identity');
 });
 
 // Approval is what ends the wait: it clears both stamps, so the client's poll

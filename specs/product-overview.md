@@ -48,7 +48,7 @@ Each has (or will have) a spec under `features/`:
 - **Kitchen** — recipes, meal planner, grocery lists, cooking mode.
 - **Maintenance** — home items, maintenance tasks, chores, templates, odometer.
 - **Trips** — trips with legs/items, expense settling, and outside sharing.
-- **People & contacts** — household people, the self "You" card, AI-assisted
+- **Contacts** — household contacts, the self "You" card, AI-assisted
   contact import.
 - **Households & sharing** — household model, invitations, join approval,
   membership, roles.

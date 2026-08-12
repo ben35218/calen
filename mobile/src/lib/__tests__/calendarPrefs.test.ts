@@ -553,6 +553,38 @@ describe('useCalendarPrefsReady (first-paint gate)', () => {
     settingsGetMock.mockResolvedValue({ data: {} });
   });
 
+  it('re-arms after an in-session wipe: reloadCalendarPrefs reopens the gate', async () => {
+    // The household-changed teardown (join / leave / removal / re-key "start
+    // fresh") wipes the prefs while the user STAYS signed in, so the hook's
+    // enabled-flip re-arm never fires — the splash held forever until the
+    // teardown learned to call reloadCalendarPrefs (reported 2026-08-12, after
+    // a solo "start fresh"). The mounted gate must go not-ready on the wipe and
+    // ready again once the reload's server pass answers.
+    await signOutAndBackIn();
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    await AsyncStorage.setItem('hc_holiday_cals_migrated', '1');
+    await AsyncStorage.setItem('hc_calendar_colors', JSON.stringify({ chores: '#00897B' }));
+    settingsGetMock.mockResolvedValue({ data: {} });
+
+    const view = await render(React.createElement(Probe));
+    await settle();
+    expect(view.getByText(/ready:true/)).toBeTruthy();
+
+    const prefs = require('../calendarPrefs') as typeof import('../calendarPrefs');
+    await act(async () => {
+      // The teardown pair, exactly as store/auth runs it mid-session.
+      await prefs.resetCalendarPrefs();
+      settingsGetMock.mockResolvedValue({ data: { calendarPrefs: { colors: { chores: '#8E24AA' } } } });
+      await prefs.reloadCalendarPrefs();
+      for (let i = 0; i < 10; i++) await flush();
+    });
+
+    expect(view.getByText(/ready:true/)).toBeTruthy();
+    expect(view.getByText(/chores:#8E24AA/)).toBeTruthy();
+    view.unmount();
+    settingsGetMock.mockResolvedValue({ data: {} });
+  });
+
   it('opens on the cache alone — a warm launch never waits on the network', async () => {
     await signOutAndBackIn();
     const AsyncStorage = require('@react-native-async-storage/async-storage');

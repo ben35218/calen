@@ -1124,7 +1124,7 @@ function normalizeRecipients(list) {
 // `snapshot` = the plaintext { tripName, destination } for the invitation display
 // row. Signal-parity D2: a shared trip's name/destination are sealed under the
 // TripKey, so the server can't read them off the Trip — the owner's device passes
-// them for the invitee's inbox (a bounded disclosure to the person being granted
+// them for the invitee's inbox (a bounded disclosure to the contact being granted
 // access, never written back to the Trip). Falls back to the trip's own plaintext
 // (a non-e2ee / not-yet-migrated trip).
 async function syncTripInvitations(trip, prevEntries, req, snapshot = {}) {

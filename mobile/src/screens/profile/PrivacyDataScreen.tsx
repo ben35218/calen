@@ -12,7 +12,7 @@ import { useAuth } from '../../store/auth';
 import {
   isUnlocked, ensureHouseholdKey, unlockWithPassword, unlockWithPasskey,
   unlockWithRecoveryCode, addPasskeyFactor, hasPasskeyFactor, rewrapForNewPassword,
-  reauthWithBiometric,
+  reauthWithBiometric, rekeyIdentity, hasSessionPassword,
 } from '../../lib/e2ee';
 import { isDeviceKeyEnabled } from '../../lib/deviceKey';
 import { passkeysSupported } from '../../lib/passkeys';
@@ -139,6 +139,77 @@ export default function PrivacyDataScreen() {
     } finally {
       setUnlockBusy(false);
     }
+  }
+
+  // ── Start fresh (every way back in is gone) ─────────────────────────────────
+  // The end of the line for an account that reset its password and holds no
+  // other factor: mint a NEW identity key (rekeyIdentity → POST /keys/rekey) so
+  // the account can encrypt and save again. Server-side, a solo household's
+  // now-unopenable records are erased and its key version reset so a fresh HDK
+  // mints; with other members the data survives and the next unlocked member's
+  // rotation pass re-admits the new key. A fresh one-time recovery code
+  // surfaces through the app-root modal, same as registration.
+  const [freshBusy, setFreshBusy] = useState(false);
+
+  async function runStartFresh(confirmDataLoss: boolean, typedPassword: string | null) {
+    setFreshBusy(true);
+    setUnlockError('');
+    try {
+      const result = await rekeyIdentity(typedPassword, { confirmDataLoss });
+      if (!result.ok) {
+        // The server counted what's at stake — put the real number in front of
+        // the user before the destructive confirm, in items rather than keys.
+        setFreshBusy(false);
+        Alert.alert(
+          'This will erase your saved items',
+          result.recoverableByHousehold
+            ? `${result.recordCount} item${result.recordCount === 1 ? '' : 's'} saved in Calen can only be opened with the key you lost. Starting fresh won’t erase them — another household member’s device will let you back in automatically instead.`
+            : `${result.recordCount} item${result.recordCount === 1 ? '' : 's'} saved in Calen can only be opened with the key you lost, and starting fresh will erase them for good.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: result.recoverableByHousehold ? 'Continue' : 'Erase and start fresh',
+              style: 'destructive',
+              onPress: () => { void runStartFresh(true, typedPassword); },
+            },
+          ],
+        );
+        return;
+      }
+      await afterUnlock();
+    } catch (e: any) {
+      setUnlockError(e?.message || 'Could not start fresh.');
+    } finally {
+      setFreshBusy(false);
+    }
+  }
+
+  function startFresh() {
+    const begin = (typedPassword: string | null) => { void runStartFresh(false, typedPassword); };
+    // The password is the wrapping key for the new identity (see crypto-e2ee
+    // spec). The reset flow usually left this session's verified password in
+    // memory; only ask when nothing is held.
+    const collectPassword = () => Alert.prompt(
+      'Confirm your password',
+      'Your new encryption key is protected with your account password.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Continue', onPress: (pw?: string) => { if (pw) begin(pw); } },
+      ],
+      'secure-text',
+    );
+    Alert.alert(
+      'Start fresh?',
+      'This replaces your encryption key so you can save new data again. Anything already encrypted stays locked to the old key, and you’ll get a new recovery code to write down.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          style: 'destructive',
+          onPress: () => (hasSessionPassword() ? begin(null) : collectPassword()),
+        },
+      ],
+    );
   }
 
   // ── Change password ─────────────────────────────────────────────────────────
@@ -509,6 +580,12 @@ export default function PrivacyDataScreen() {
                 Lost everything? Recover with your household guardian
               </Text>
             ) : null}
+            <Text
+              style={[styles.unlockAltLink, styles.unlockDangerLink]}
+              onPress={freshBusy ? undefined : startFresh}
+            >
+              {freshBusy ? 'Starting fresh…' : 'No way back in? Start fresh with a new key'}
+            </Text>
           </View>
         ) : null}
 
@@ -771,7 +848,7 @@ export default function PrivacyDataScreen() {
           <Text style={styles.switchHint}>
             On, the assistant sees household members and friends by name only (plus a professional’s saved
             business details), and can read your calendar — event titles, details, and trips — to answer and
-            act on them. Off, it sees no people at all, and it can no longer read your calendar: it sees only
+            act on them. Off, it sees no contacts at all, and it can no longer read your calendar: it sees only
             whether you’re free or busy, never the events themselves, and can’t edit or cancel a specific
             event. Form assist won’t use your contacts and contact-based AI import is unavailable.
           </Text>
@@ -838,15 +915,15 @@ export default function PrivacyDataScreen() {
         {transparencyOpen ? (
           <View style={styles.expand}>
             <Text style={styles.cardNote}>
-              Your content — events, people, tasks, recipes, trips, notes, attachments, your home
+              Your content — events, contacts, tasks, recipes, trips, notes, attachments, your home
               address — is end-to-end encrypted with keys we never have. No staff access, no
               backdoor: lose every unlock method and not even we can recover it.{'\n\n'}
               Our servers do see: your email and name, who is in your household, that encrypted
               records exist (and when they change), task due dates, plan & AI usage counts, and
               your signed-in devices.{'\n\n'}
               Deliberate exceptions — readable on our servers because a feature you chose needs
-              it: things you share with people outside your household, event invitations to
-              people without accounts, and the details Calen uses when it phones a business for
+              it: things you share with contacts outside your household, event invitations to
+              contacts without accounts, and the details Calen uses when it phones a business for
               you (never full transcripts).{'\n\n'}
               AI requests are consent-gated and per-request: your device sends only the needed
               content with database identifiers stripped, nothing is stored, and Anthropic
@@ -905,6 +982,7 @@ const styles = StyleSheet.create({
   unlockBox: { marginTop: spacing.md, gap: spacing.sm },
   unlockStaleNote: { color: colors.warning, fontSize: 13, lineHeight: 18 },
   unlockAltLink: { color: colors.primary, fontSize: 13, fontWeight: '600', textAlign: 'center', paddingTop: spacing.xs },
+  unlockDangerLink: { color: colors.error },
   error: { color: colors.error, fontSize: 13, marginBottom: spacing.sm },
   summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   guardianPrompt: { borderWidth: 1, borderColor: colors.primary + '66', backgroundColor: colors.primary + '0D' },

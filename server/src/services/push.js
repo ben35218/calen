@@ -50,6 +50,12 @@ function buildExpoMessage(subscription, payload) {
     title: payload.title,
     body: payload.body,
     data: payload.data || payload,
+    // An alerting push should present like one: audible on iOS, and routed to
+    // the app's Android channel. `priority: 'high'` wakes a Doze-d Android
+    // device for time-sensitive alerts (invites, security); iOS ignores it.
+    sound: 'default',
+    priority: 'high',
+    channelId: 'default',
   };
 }
 
@@ -59,8 +65,12 @@ async function sendToExpo(subscription, payload) {
   const message = buildExpoMessage(subscription, payload);
   const headers = { 'Content-Type': 'application/json' };
   if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
-  const { data } = await axios.post(EXPO_PUSH_URL, message, { headers });
-  const ticket = data?.data;
+  // Always post the array form: the response's `data` is then reliably an
+  // array of tickets. (The old single-object read left ticket errors — e.g.
+  // InvalidCredentials when the APNs key is missing — invisible, so a send
+  // that could never deliver still counted as "sent".)
+  const { data } = await axios.post(EXPO_PUSH_URL, [message], { headers });
+  const ticket = Array.isArray(data?.data) ? data.data[0] : data?.data;
   if (ticket?.status === 'error') {
     const err = new Error(ticket.message || 'Expo push error');
     if (ticket.details?.error === 'DeviceNotRegistered') err.statusCode = 410;

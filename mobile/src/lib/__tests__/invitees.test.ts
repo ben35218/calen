@@ -10,6 +10,11 @@ jest.mock('../e2ee', () => ({
 }));
 jest.mock('../../api', () => ({ invitationsApi: {} }));
 jest.mock('../../config', () => ({ API_URL: 'http://test', WEB_URL: 'http://web.test' }));
+// invitees pulls the expiry rule from inviteAlerts, which stores its
+// prompted-once memory in AsyncStorage — mock the native module away.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 import { sealAcceptedCopy, eventInviteEmailContent } from '../invitees';
 import { ensureHouseholdKey, sealNew } from '../e2ee';

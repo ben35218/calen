@@ -135,7 +135,7 @@ function overlaps(startMs: number | null, endMs: number | null, w: AiWindow): bo
 
 // Filter the decrypted calendar sources to the window. Recurring events/tasks/
 // chores are ALWAYS kept (their occurrences can fall anywhere); one-off dated
-// records outside the window are dropped. People (the roster — birthdays span the
+// records outside the window are dropped. Contacts (the roster — birthdays span the
 // year and it's small + already consent-gated) and recipe schedules are kept as-is.
 export function scopeCalendarSources<T extends Rec>(sources: T, window: AiWindow): T {
   if (!sources) return sources;

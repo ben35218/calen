@@ -12,7 +12,7 @@ const crypto = require('crypto');
 // yields the identity private key.
 //
 // Blind relay: the server only ferries opaque ciphertext. Cross-user (unlike the
-// same-account DeviceLink): `userId` is the person recovering, `guardianUserId`
+// same-account DeviceLink): `userId` is the contact recovering, `guardianUserId`
 // the member approving — both must be in the same household, enforced in routes.
 const schema = new mongoose.Schema({
   requestId: { type: String, unique: true, index: true, default: () => crypto.randomBytes(16).toString('hex') },

@@ -27,12 +27,12 @@ router.use(requireAiEnabled);
 // send them either). Service providers expose name, service, address, phone;
 // nothing else (email, birthday, notes) is ever sent to the model.
 // Signal-parity C3b: contacts are sealed in the opaque store, so the CLIENT
-// sends its own decrypted roster projection. The server no longer reads Person.
+// sends its own decrypted roster projection. The server no longer reads Contact.
 function buildContactsContext(contacts) {
-  const people = (Array.isArray(contacts) ? contacts : []).slice(0, 200);
+  const roster = (Array.isArray(contacts) ? contacts : []).slice(0, 200);
 
   const services = [];
-  for (const p of people) {
+  for (const p of roster) {
     if (!p.name || p.type !== 'service') continue;
     const parts = [p.name];
     if (p.relationship) parts.push(`(${p.relationship})`);

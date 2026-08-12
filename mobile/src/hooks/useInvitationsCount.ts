@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { invitationsApi, customCalendarsApi, tripsApi, householdApi, callsApi } from '../api';
+import { customCalendarsApi, tripsApi, householdApi, callsApi } from '../api';
+import { EVENT_INVITATIONS_KEY, fetchEventInvitations } from '../lib/eventInvitations';
 import { listAccessRequests } from '../lib/calendarKeys';
 import { listMyHouseholdEventRequests } from '../lib/householdRsvp';
+import { invitationLapsed } from '../lib/inviteAlerts';
 
 // The Invitations inbox's pending count — everything the inbox's "New" tab
 // surfaces: an invitation — event, calendar, trip, or household — awaiting a
@@ -13,9 +15,13 @@ import { listMyHouseholdEventRequests } from '../lib/householdRsvp';
 // calendar chrome): the count overlays the calendar's profile avatar, and the
 // same count badges Profile's Invitations row.
 export function useInvitationsCount(): number {
+  // Shared key AND shared queryFn — see lib/eventInvitations. This hook is
+  // mounted on the calendar home and on Profile, so it is nearly always the
+  // observer that refetches `['invitations']`; giving it its own undecrypted
+  // queryFn poisoned the cache the inbox reads.
   const invQ = useQuery({
-    queryKey: ['invitations'],
-    queryFn: async () => (await invitationsApi.list()).data,
+    queryKey: EVENT_INVITATIONS_KEY,
+    queryFn: fetchEventInvitations,
     staleTime: 60_000,
   });
   const calInvQ = useQuery({
@@ -50,7 +56,7 @@ export function useInvitationsCount(): number {
   });
   // Re-key access requests on calendars this user owns. Badged like a join
   // request: only the owner can wrap the key, so an unnoticed request leaves
-  // the person on the other end staring at an empty calendar indefinitely.
+  // the contact on the other end staring at an empty calendar indefinitely.
   const accessReqQ = useQuery({
     queryKey: ['calendarAccessRequests'],
     queryFn: listAccessRequests,
@@ -64,6 +70,13 @@ export function useInvitationsCount(): number {
     staleTime: 60_000,
   });
   const countPending = (rows?: { status: string }[]) => (rows ?? []).filter((i) => i.status === 'pending').length;
+  // Pre-event invitations lapse once the event has ended (the inbox shows them
+  // under Replied as "Expired") — a badge for something un-actionable would
+  // stay lit forever. Record-shares (sent after the event) stay actionable and
+  // keep counting; sealed snapshots fail open, matching the New tab.
+  const eventPending = (invQ.data ?? []).filter(
+    (i) => i.status === 'pending' && !invitationLapsed(i),
+  ).length;
   const callNotices = (callsQ.data ?? []).filter(
     (c) => (c.status === 'ended' || c.status === 'failed') && c.outcome && !c.acknowledged,
   ).length;
@@ -74,7 +87,7 @@ export function useInvitationsCount(): number {
   const accessReqs = (accessReqQ.data ?? []).length;
   const hhEventReqs = (hhEventQ.data ?? []).filter((r) => r.myStatus === 'pending').length;
   return (
-    countPending(invQ.data) + countPending(calInvQ.data) +
+    eventPending + countPending(calInvQ.data) +
     countPending(tripInvQ.data) + countPending(hhInvQ.data) +
     joinReqs + accessReqs + notices + callNotices + hhEventReqs
   );

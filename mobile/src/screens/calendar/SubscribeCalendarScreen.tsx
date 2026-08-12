@@ -70,7 +70,7 @@ const PROVIDER_GUIDES: Record<ProviderKey, { name: string; url?: string; steps: 
 // verify the link, then confirm name/colour/sharing. The subscription saves as
 // a CustomCalendar with a feedUrl — always read-only; each member's device
 // fetches the feed itself (lib/calendarFeeds), so events never touch the
-// server. Sharing is the household model minus per-person access levels and
+// server. Sharing is the household model minus per-contact access levels and
 // outside emails (nobody can edit feed events either way).
 export default function SubscribeCalendarScreen() {
   const nav = useNavigation<NativeStackNavigationProp<CalendarStackParamList>>();

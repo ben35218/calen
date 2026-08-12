@@ -64,7 +64,7 @@ function fakeEnc() {
 }
 
 // Register through the real API: creates the User, their solo Household,
-// seeded categories, and self-Person — exactly like production onboarding.
+// seeded categories, and self-Contact — exactly like production onboarding.
 // Returns { token, user, auth } where auth is the Authorization header value.
 let ipSeq = 0;
 async function registerUser({ email, password = 'test-password-1', firstName = 'Test', lastName = 'User' } = {}) {

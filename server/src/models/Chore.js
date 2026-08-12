@@ -23,7 +23,7 @@ const choreSchema = new mongoose.Schema({
   instructions:         String,
   description:          String, // legacy — superseded by `instructions`
   recurrence:           recurrenceSchema,
-  assignedTo:           { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },
+  assignedTo:           { type: mongoose.Schema.Types.ObjectId, ref: 'Contact' },
   nextDueDate:          Date,
   // Alerts (days before the due date). Default 0 = alert on the due date itself.
   // null = no alert. Delivered via push.

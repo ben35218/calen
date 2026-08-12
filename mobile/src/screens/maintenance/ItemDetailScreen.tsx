@@ -10,17 +10,17 @@ import {
   manualsApi,
   receiptsApi,
   tasksApi,
-  peopleApi,
+  contactsApi,
   Manual,
   ManualCandidate,
   Receipt,
   ExtractedTask,
   Task,
-  Person,
+  Contact,
 } from '../../api';
 import { loadOdometerData, logOdometerReading } from '../../lib/odometer';
 import { createTaskFromManualExtract } from '../../lib/taskTemplates';
-import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, Fab } from '../../components/ui';
+import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton, SkeletonDetail, SkeletonRows, IconAvatar, ScreenTitle, HeaderIconButton, Fab } from '../../components/ui';
 import CalenChatIcon from '../../components/CalenChatIcon';
 import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import { useAiEnabled } from '../../lib/privacyPrefs';
@@ -115,21 +115,21 @@ export default function ItemDetailScreen() {
   });
 
   // Resolve the linked service professional's (decrypted) name from the roster —
-  // the item only stores its ref id (Person names live in the E2EE blob).
+  // the item only stores its ref id (Contact names live in the E2EE blob).
   const proId = item?.serviceProId
     ? typeof item.serviceProId === 'object'
       ? item.serviceProId._id
       : item.serviceProId
     : null;
-  const peopleQ = useQuery({
-    queryKey: ['people'],
+  const contactsQ = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
-      const rows = (await peopleApi.list()).data;
-      return Promise.all(rows.map((p) => openRecord('Person', p))) as Promise<Person[]>;
+      const rows = (await contactsApi.list()).data;
+      return Promise.all(rows.map((p) => openRecord('Contact', p))) as Promise<Contact[]>;
     },
     enabled: !!proId,
   });
-  const servicePro = proId ? peopleQ.data?.find((p) => p._id === proId) : undefined;
+  const servicePro = proId ? contactsQ.data?.find((p) => p._id === proId) : undefined;
   // Decrypted odometer state (Signal-parity D5): readings are sealed content;
   // currentKm/kmPerDay/task estimates all derive on-device.
   const odoQ = useQuery({
@@ -378,7 +378,7 @@ export default function ItemDetailScreen() {
   }, [navigation, id]);
 
   if (itemQ.isLoading || !item) {
-    return <CenteredLoader color={accent} />;
+    return <SkeletonDetail />;
   }
 
   const cfg = itemTypeConfig(item.type);
@@ -422,7 +422,7 @@ export default function ItemDetailScreen() {
             icon="briefcase-outline"
             title="Service Professional"
             subtitle={servicePro.businessName ? `${servicePro.name} · ${servicePro.businessName}` : servicePro.name}
-            onPress={() => navigation.navigate('PersonDetail', { id: servicePro._id })}
+            onPress={() => navigation.navigate('ContactDetail', { id: servicePro._id })}
           />
         </Card>
       ) : null}
@@ -471,13 +471,16 @@ export default function ItemDetailScreen() {
                       autoFocus
                       style={styles.odoInput}
                     />
+                    {/* Dimmed + disabled until the decrypted readings resolve —
+                        logging validates against them, so a premature tap used
+                        to surface as the "still loading" error alert. */}
                     <RoundIconButton
                       icon="add"
                       size={32}
                       bg={accent}
-                      disabled={!odomReading || logOdo.isPending}
+                      disabled={!odomReading || logOdo.isPending || !odoQ.data}
                       onPress={() => logOdo.mutate()}
-                      style={styles.odoLogBtn}
+                      style={[styles.odoLogBtn, !odoQ.data && styles.odoLogPending]}
                     />
                   </View>
                 </View>
@@ -600,10 +603,10 @@ export default function ItemDetailScreen() {
           </View>
         ) : null}
 
-        {/* Lookup */}
+        {/* Lookup — shimmer where the candidate rows (title + domain) will land. */}
         {lookup.state === 'searching' ? (
           <View style={styles.pad}>
-            <ActivityIndicator color={colors.primary} />
+            <SkeletonRows count={4} />
           </View>
         ) : null}
         {lookup.state === 'done' && lookup.candidates.length > 0 ? (
@@ -761,6 +764,8 @@ const styles = StyleSheet.create({
   odoInput: { paddingRight: 48 },
   // top ≈ (field height ~45 − button 32) / 2 to vertically centre on the field.
   odoLogBtn: { position: 'absolute', right: 8, top: 7 },
+  // The pending look while the sealed readings are still decrypting.
+  odoLogPending: { opacity: 0.4 },
   odoLogDate: { fontSize: 13, color: colors.textMuted },
   manualRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: 4 },
   manualTitle: { fontSize: 15, fontWeight: '500', color: colors.text },

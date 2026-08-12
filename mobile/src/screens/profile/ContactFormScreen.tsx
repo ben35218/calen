@@ -3,12 +3,12 @@ import { View, Text, StyleSheet, Alert, ScrollView, TouchableOpacity } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
-import { peopleApi, placesApi, Person, FormAssistField, PlacePrediction } from '../../api';
+import { contactsApi, placesApi, Contact, FormAssistField, PlacePrediction } from '../../api';
 import { sealNew, sealUpdate } from '../../lib/e2ee';
-import { PERSON_ENC } from '../../lib/encSubsets';
+import { CONTACT_ENC } from '../../lib/encSubsets';
 import { CALENDAR_COLORS } from '../../lib/calendar';
 import {
-  normalizePerson,
+  normalizeContact,
   denormalizeForSave,
   reciprocalUpdates,
   relatedNameRemovalsOnDelete,
@@ -29,7 +29,7 @@ import {
   DEFAULT_DATE_LABEL,
   DEFAULT_URL_LABEL,
   DEFAULT_RELATED_LABEL,
-} from '../../lib/personFields';
+} from '../../lib/contactFields';
 import {
   Button, Input, DateField, Screen, SectionTitle, SectionHeader, Select, PhoneTextField,
   BottomSheet, useHeaderCheckButton, SwitchRow, ScrollToSection, SetupCallout, Hint,
@@ -39,12 +39,12 @@ import { form as fs, GroupCard, CardDivider } from '../../components/formStyles'
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
-import { addPersonToDeviceContacts, ContactsPermissionError } from '../../lib/deviceContacts';
+import { addContactToDeviceContacts, ContactsPermissionError } from '../../lib/deviceContacts';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
-type R = RouteProp<ProfileStackParamList, 'PersonForm'>;
+type R = RouteProp<ProfileStackParamList, 'ContactForm'>;
 
 // Set/replace the "primary" (first) entry of a labeled list — used when the AI
 // form assistant fills a single phone/email.
@@ -53,17 +53,17 @@ function setPrimary(list: LabeledValue[], value: string, label: string): Labeled
   return list.map((e, i) => (i === 0 ? { ...e, value } : e));
 }
 
-// Add/edit a person or review an imported contact. The "You" card is edited
+// Add/edit a contact or review an imported contact. The "You" card is edited
 // entirely in Account; the only remaining isSelf entry point is the Birthdays
 // list, where the form just points back to Account (nothing editable).
-export default function PersonFormScreen() {
+export default function ContactFormScreen() {
   const nav = useNavigation();
   const qc = useQueryClient();
   const { params } = useRoute<R>();
   const { id, isSelf, type: initialType, prefills, queueIndex = 0, focus, aiReview } = params || {};
 
-  const people = qc.getQueryData<Person[]>(['people']) || [];
-  const editing = id ? people.find((p) => p._id === id) : undefined;
+  const contacts = qc.getQueryData<Contact[]>(['contacts']) || [];
+  const editing = id ? contacts.find((p) => p._id === id) : undefined;
 
   // Review-mode import: the contact currently being reviewed, and whether more
   // follow it in the queue.
@@ -78,9 +78,9 @@ export default function PersonFormScreen() {
   );
   const isService = type === 'service';
 
-  // Fold the source (a decrypted Person or an import prefill, either shape) into
+  // Fold the source (a decrypted Contact or an import prefill, either shape) into
   // the multi-value form model, migrating any legacy single fields.
-  const norm = useMemo(() => normalizePerson((src ?? {}) as Person), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const norm = useMemo(() => normalizeContact((src ?? {}) as Contact), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scalar fields the AI form assistant fills (kept in `form`); the labeled
   // arrays live in their own state below.
@@ -104,7 +104,7 @@ export default function PersonFormScreen() {
   const [emails, setEmails] = useState<LabeledValue[]>(norm.emails);
   const [addresses, setAddresses] = useState<LabeledValue[]>(norm.addresses);
   // Birthday is presented as the first "Occasion date" row (label "Birthday"),
-  // seeded from the dedicated `Person.birthday` field; on save it splits back out
+  // seeded from the dedicated `Contact.birthday` field; on save it splits back out
   // to that field (see save()). Personal contacts always get the row so it's the
   // default on a new contact; service (business) contacts don't.
   const [dates, setDates] = useState<LabeledValue[]>(() => {
@@ -112,7 +112,7 @@ export default function PersonFormScreen() {
     const bday = src?.birthday ? String(src.birthday).slice(0, 10) : '';
     return [{ label: 'birthday', value: bday }, ...norm.dates];
   });
-  const [occasionsHidden, setOccasionsHidden] = useState<boolean>(Boolean((src as Person | undefined)?.occasionsHidden));
+  const [occasionsHidden, setOccasionsHidden] = useState<boolean>(Boolean((src as Contact | undefined)?.occasionsHidden));
   const [urls, setUrls] = useState<LabeledValue[]>(norm.urls);
   const [relatedNames, setRelatedNames] = useState<RelatedName[]>(norm.relatedNames);
   const [linkIndex, setLinkIndex] = useState<number | null>(null);
@@ -136,11 +136,11 @@ export default function PersonFormScreen() {
   };
   const canDelete = !!editing?._id && !editing.accountId;
 
-  // Household people the current contact can link a related name to (exclude
-  // self and the person being edited).
-  const linkablePeople = useMemo(
-    () => people.filter((p) => !p.accountId && p._id !== editing?._id),
-    [people, editing]
+  // Household contacts the current contact can link a related name to (exclude
+  // self and the contact being edited).
+  const linkableContacts = useMemo(
+    () => contacts.filter((p) => !p.accountId && p._id !== editing?._id),
+    [contacts, editing]
   );
 
   // Schema the AI form assistant fills. `phone`/`email` map onto the primary
@@ -226,7 +226,7 @@ export default function PersonFormScreen() {
     // Save→next and "Skip this contact" both leave the current review copy
     // intentionally — bypass the discard guard.
     allowLeave();
-    if (hasNext) (nav as any).replace('PersonForm', { prefills, queueIndex: queueIndex + 1 });
+    if (hasNext) (nav as any).replace('ContactForm', { prefills, queueIndex: queueIndex + 1 });
     else nav.goBack();
   }
 
@@ -249,7 +249,7 @@ export default function PersonFormScreen() {
       let deviceContactId = prefill?.deviceContactId || undefined;
       if (showSaveToDevice && saveToDevice && !deviceContactId) {
         try {
-          deviceContactId = await addPersonToDeviceContacts({
+          deviceContactId = await addContactToDeviceContacts({
             name: composedName,
             firstName: isService || isSelf ? undefined : form.firstName,
             lastName: isService || isSelf ? undefined : form.lastName,
@@ -294,31 +294,31 @@ export default function PersonFormScreen() {
       // (accountId, deviceContactId) survive the re-seal.
       let savedId = editing?._id;
       if (savedId) {
-        await peopleApi.update(savedId, await sealUpdate('Person', savedId, payload, PERSON_ENC({ ...editing, ...payload })));
+        await contactsApi.update(savedId, await sealUpdate('Contact', savedId, payload, CONTACT_ENC({ ...editing, ...payload })));
       } else {
-        const body = await sealNew('Person', payload, PERSON_ENC(payload));
-        const res = await peopleApi.create(body);
+        const body = await sealNew('Contact', payload, CONTACT_ENC(payload));
+        const res = await contactsApi.create(body);
         savedId = (body._id as string | undefined) || res?.data?._id;
       }
       // Mirror linked related names onto the other contact with the inverse
       // label (spouse↔spouse, mother→child, …), keeping the mirror in sync with a
       // rename, a relabel, or a REMOVAL on this card — see
-      // personFields.reciprocalUpdates. `norm.relatedNames` is this contact's
+      // contactFields.reciprocalUpdates. `norm.relatedNames` is this contact's
       // previously-saved links, letting the mirror tell an intentional relabel
       // from an unrelated re-save and spot dropped links. Best-effort:
-      // this person is already saved, so a failed back-link write must not surface
+      // this contact is already saved, so a failed back-link write must not surface
       // as a save failure.
       if (savedId) {
-        for (const u of reciprocalUpdates({ id: savedId, name: composedName }, relatedNames, people, norm.relatedNames)) {
+        for (const u of reciprocalUpdates({ id: savedId, name: composedName }, relatedNames, contacts, norm.relatedNames)) {
           try {
             const patch = { relatedNames: u.relatedNames };
-            await peopleApi.update(u.person._id, await sealUpdate('Person', u.person._id, patch, PERSON_ENC({ ...u.person, ...patch })));
+            await contactsApi.update(u.contact._id, await sealUpdate('Contact', u.contact._id, patch, CONTACT_ENC({ ...u.contact, ...patch })));
           } catch {
             // best-effort mirror; the next save of either card can retry
           }
         }
       }
-      qc.invalidateQueries({ queryKey: ['people'] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
       if (inQueue) advance();
       else { allowLeave(); nav.goBack(); }
     } catch (e: any) {
@@ -336,19 +336,19 @@ export default function PersonFormScreen() {
         text: 'Remove',
         style: 'destructive',
         onPress: async () => {
-          await peopleApi.delete(editing._id);
+          await contactsApi.delete(editing._id);
           // Clear any related-name links that pointed at this now-deleted contact
           // so the other cards don't keep a dangling relationship. Best-effort:
           // a failed cleanup write must not block the delete.
-          for (const u of relatedNameRemovalsOnDelete(editing._id, people)) {
+          for (const u of relatedNameRemovalsOnDelete(editing._id, contacts)) {
             try {
               const patch = { relatedNames: u.relatedNames };
-              await peopleApi.update(u.person._id, await sealUpdate('Person', u.person._id, patch, PERSON_ENC({ ...u.person, ...patch })));
+              await contactsApi.update(u.contact._id, await sealUpdate('Contact', u.contact._id, patch, CONTACT_ENC({ ...u.contact, ...patch })));
             } catch {
               // best-effort; the next save of that card can retry
             }
           }
-          qc.invalidateQueries({ queryKey: ['people'] });
+          qc.invalidateQueries({ queryKey: ['contacts'] });
           allowLeave();
           nav.goBack();
         },
@@ -390,8 +390,8 @@ export default function PersonFormScreen() {
     <Screen>
       {showAssist ? (
         <FormAssist
-          formType="person / contact"
-          placeholder={'Describe the person, e.g. "my sister Sarah, birthday June 3, lives at 12 Elm St"'}
+          formType="contact / contact"
+          placeholder={'Describe the contact, e.g. "my sister Sarah, birthday June 3, lives at 12 Elm St"'}
           fields={assistFields}
           current={{ ...form, name: composedName, phone: phones[0]?.value ?? '', email: emails[0]?.value ?? '', birthday: dates.find((d) => d.label.trim().toLowerCase() === 'birthday')?.value ?? '' }}
           onApply={applyPatch}
@@ -631,7 +631,7 @@ export default function PersonFormScreen() {
                 value={entry.value}
                 // Typing a name by hand detaches any linked contact (and its
                 // now-moot reciprocal label).
-                onChangeText={(v) => patch({ value: v, personId: undefined, reciprocalLabel: undefined })}
+                onChangeText={(v) => patch({ value: v, contactId: undefined, reciprocalLabel: undefined })}
                 placeholder="Name"
                 autoCapitalize="words"
                 textContentType="name"
@@ -647,9 +647,9 @@ export default function PersonFormScreen() {
                 style={styles.linkBtn}
               >
                 <Ionicons
-                  name={entry.personId ? 'person' : 'person-add-outline'}
+                  name={entry.contactId ? 'person' : 'person-add-outline'}
                   size={20}
-                  color={entry.personId ? colors.primary : colors.textMuted}
+                  color={entry.contactId ? colors.primary : colors.textMuted}
                 />
               </TouchableOpacity>
             )}
@@ -658,7 +658,7 @@ export default function PersonFormScreen() {
             // e.g. link "daughter-in-law", set the reciprocal to "father-in-law".
             // Preset labels derive their inverse automatically, so no control.
             renderBelow={(entry, patch) => {
-              if (!entry.personId) return null;
+              if (!entry.contactId) return null;
               const isPreset = RELATED_LABELS.some((l) => l.toLowerCase() === entry.label.trim().toLowerCase());
               if (isPreset) return null;
               return (
@@ -720,16 +720,16 @@ export default function PersonFormScreen() {
       {/* Shared link-to-contact picker for the related-names field. */}
       <BottomSheet visible={linkIndex != null} onClose={() => setLinkIndex(null)} title="Link to a contact">
         <ScrollView style={styles.linkList}>
-          {linkablePeople.length === 0 ? (
+          {linkableContacts.length === 0 ? (
             <Text style={styles.linkEmpty}>No other contacts to link yet.</Text>
           ) : (
-            linkablePeople.map((p) => (
+            linkableContacts.map((p) => (
               <TouchableOpacity
                 key={p._id}
                 style={styles.linkRow}
                 onPress={() => {
                   setRelatedNames((rn) =>
-                    rn.map((e, idx) => (idx === linkIndex ? { ...e, value: p.name, personId: p._id } : e))
+                    rn.map((e, idx) => (idx === linkIndex ? { ...e, value: p.name, contactId: p._id } : e))
                   );
                   setLinkIndex(null);
                 }}

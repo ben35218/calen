@@ -503,6 +503,7 @@ export default function TripItemFormScreen() {
   return (
     <Screen>
       <FormAssist
+        accent={accent}
         formType="trip booking"
         placeholder={'Describe the booking, e.g. "flight AC123 to Paris June 5 at 6pm, seat 14C, $650 confirmed"'}
         fields={ASSIST_FIELDS}

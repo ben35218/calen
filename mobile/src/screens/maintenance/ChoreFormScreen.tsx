@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { seedDueDate } from '@household/calendar';
-import { choresApi, householdApi, peopleApi, settingsApi, FormAssistField, Chore } from '../../api';
+import { choresApi, householdApi, contactsApi, settingsApi, FormAssistField, Chore } from '../../api';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
 import { CHORE_ENC } from '../../lib/encSubsets';
 import { useAuth } from '../../store/auth';
@@ -137,11 +137,11 @@ export default function ChoreFormScreen() {
     assist.clear(Object.keys(patch));
   };
 
-  // Names are sealed Person content — decrypt so the assignee options read as
-  // names, not ciphertext (and to match the shared ['people'] cache elsewhere).
-  const peopleQ = useQuery({
-    queryKey: ['people'],
-    queryFn: async () => Promise.all((await peopleApi.list()).data.map((p) => openRecord('Person', p))),
+  // Names are sealed Contact content — decrypt so the assignee options read as
+  // names, not ciphertext (and to match the shared ['contacts'] cache elsewhere).
+  const contactsQ = useQuery({
+    queryKey: ['contacts'],
+    queryFn: async () => Promise.all((await contactsApi.list()).data.map((p) => openRecord('Contact', p))),
   });
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
   const memberCount = settingsQ.data?.householdMemberCount ?? 1;
@@ -152,9 +152,9 @@ export default function ChoreFormScreen() {
   // Household members only — a chore belongs to someone who lives here, not to a
   // contact. The picker also carries an existing non-member assignee; the
   // assistant's option list never does, so it can't assign one.
-  const memberOptions = choreAssigneeOptions({ people: peopleQ.data ?? [], memberIds, myId });
+  const memberOptions = choreAssigneeOptions({ contacts: contactsQ.data ?? [], memberIds, myId });
   const assigneeOptions = choreAssigneeOptions({
-    people: peopleQ.data ?? [], memberIds, myId, currentAssigneeId: form.assignedTo,
+    contacts: contactsQ.data ?? [], memberIds, myId, currentAssigneeId: form.assignedTo,
   });
 
   const alertOptions = ALERT_DAY_OPTIONS.map((o) => ({ label: o.label, value: o.value ?? -1 }));
@@ -484,6 +484,7 @@ export default function ChoreFormScreen() {
   return (
     <Screen>
       <FormAssist
+        accent={accent}
         formType="household chore"
         placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
         fields={assistFields}

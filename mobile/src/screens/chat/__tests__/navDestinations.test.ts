@@ -44,9 +44,9 @@ describe('navTargetForView — setup ids deep-link to a screen + field', () => {
     });
   });
 
-  it('setup_contact → Person form phone section', () => {
+  it('setup_contact → Contact form phone section', () => {
     expect(navTargetForView('setup_contact')).toEqual({
-      route: 'PersonForm',
+      route: 'ContactForm',
       params: { type: 'service', focus: 'phone' },
     });
   });

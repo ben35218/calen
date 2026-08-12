@@ -10,7 +10,7 @@ import { sealNew, openRecord } from '../../lib/e2ee';
 import { TASK_ENC, ITEM_ENC } from '../../lib/encSubsets';
 import { loadCategories } from '../../lib/categories';
 import { createTaskFromTemplate } from '../../lib/taskTemplates';
-import { CenteredLoader, SectionHeader, FormError } from '../../components/ui';
+import { SectionHeader, FormError, Skeleton } from '../../components/ui';
 import { GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TYPE_CATEGORY_MATCH } from '../../lib/itemTypes';
@@ -173,7 +173,29 @@ export default function TaskTemplateReviewScreen() {
   });
 
   if (templatesQ.isLoading || itemsQ.isLoading || categoriesQ.isLoading) {
-    return <CenteredLoader />;
+    // The screen's shape while templates/items/categories load: the intro line,
+    // then a couple of grouped cards of selectable item rows.
+    return (
+      <View style={[styles.screen, styles.content]}>
+        <Skeleton width={'88%'} height={14} style={styles.skelIntro} />
+        {[0, 1].map((g) => (
+          <View key={g} style={styles.group}>
+            <Skeleton width={96} height={12} style={styles.skelHeader} />
+            <GroupCard>
+              {[0, 1, 2].map((i) => (
+                <React.Fragment key={i}>
+                  {i > 0 ? <CardDivider /> : null}
+                  <View style={styles.row}>
+                    <Skeleton width={20} height={20} radius={10} style={styles.rowIcon} />
+                    <Skeleton width={i % 2 ? '44%' : '58%'} height={15} />
+                  </View>
+                </React.Fragment>
+              ))}
+            </GroupCard>
+          </View>
+        ))}
+      </View>
+    );
   }
 
   const taskCount = groups.reduce((n, g) => n + groupCount(g), 0);
@@ -264,6 +286,9 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md, paddingBottom: spacing.xl },
   intro: { fontSize: 14, color: colors.textMuted, marginBottom: spacing.md },
   group: { marginBottom: spacing.md },
+  // Skeleton stand-ins for the intro text and each group's eyebrow header.
+  skelIntro: { marginBottom: spacing.md },
+  skelHeader: { marginBottom: spacing.xs },
   count: { color: colors.textMuted, fontWeight: '600' },
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 12 },
   rowIcon: { marginRight: spacing.sm },

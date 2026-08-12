@@ -112,6 +112,8 @@ export const qaApi = {
   cases: (params) => api.get('/admin/qa/cases', { params }),
   createCase: (data) => api.post('/admin/qa/cases', data),
   updateCase: (id, data) => api.put(`/admin/qa/cases/${id}`, data),
+  // A case's results across every run/release — the library detail view.
+  caseHistory: (id) => api.get(`/admin/qa/cases/${id}/history`),
   importCases: (data) => api.post('/admin/qa/cases/import', data),
 
   runs: (params) => api.get('/admin/qa/runs', { params }),

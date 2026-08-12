@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { settingsApi } from '../../api';
-import { Button, Card, Input } from '../../components/ui';
+import { Button, Card, Input, Skeleton } from '../../components/ui';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, spacing } from '../../theme';
 
-const DEFAULT_SECTIONS = ['Produce', 'Deli', 'Bakery', 'Meat & Seafood', 'Dairy', 'Frozen', 'Pantry', 'Other'];
+import { DEFAULT_SECTIONS } from '../../lib/groceryOrganize';
 
 // Mirrors client/src/views/MealPlannerSettingsView.vue.
 export default function MealPlannerSettingsScreen() {
@@ -56,9 +56,20 @@ export default function MealPlannerSettingsScreen() {
   }
 
   if (isLoading) {
+    // The card's shape while settings load: title/subtitle, then the numbered
+    // section rows the saved order will fill.
     return (
-      <View style={styles.center}>
-        <ActivityIndicator color={accent} />
+      <View style={[styles.container, styles.content]}>
+        <Card style={styles.card}>
+          <Skeleton width={'52%'} height={15} />
+          <Skeleton width={'86%'} height={13} style={styles.skelSubtitle} />
+          {(['40%', '32%', '46%', '36%', '42%', '30%'] as const).map((w, i) => (
+            <View key={i} style={styles.sectionRow}>
+              <Skeleton width={18} height={12} />
+              <Skeleton width={w} height={15} />
+            </View>
+          ))}
+        </Card>
       </View>
     );
   }
@@ -105,8 +116,9 @@ export default function MealPlannerSettingsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   card: { marginBottom: spacing.md },
+  // Matches the real subtitle's top/bottom margins so the rows land in place.
+  skelSubtitle: { marginTop: 6, marginBottom: spacing.sm },
   title: { fontSize: 15, fontWeight: '700', color: colors.text },
   subtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2, marginBottom: spacing.sm, lineHeight: 18 },
   sectionRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: 8 },

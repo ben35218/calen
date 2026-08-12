@@ -1,7 +1,7 @@
 ---
 title: API reference
 status: current
-last-verified: ddaa21b+ (2026-08-09); documented the `/places/autocomplete` `type` contract and fixed the untyped lane — it filtered to `includedPrimaryTypes: ['establishment']`, so the "business or address" fields (event Location, trip-item location) could never match a street address; body-building extracted to the pure `autocompleteBody()` helper with unit coverage (2026-08-09); ddaa21b+ (2026-08-08); added the `/api/records/ws` record-change poke WebSocket (poke-and-pull: content-blind `{"type":"changed"}` frames on household record writes, session-auth'd upgrade, writer-session excluded; fed by `services/recordChanges.js` — write-route announcements + a Mongo change stream where a replica set exists) (2026-08-08); ddaa21b+ (2026-08-06); `/api/notifications` gained the stateless household event notify relay (`POST event-request`/`event-response` — client-chosen push strings, membership-validated, rate-limited, nothing stored; behavior owned by features/notifications.md) (2026-08-06); c2d18c0+ (2026-08-04); `PUT/GET /settings` accepts/echoes `calendarPrefs` — the user's calendar arrangement (colours / order / hidden / deleted built-ins / muted alerts), merged field-by-field so a partial payload can't blank the rest, validated (hex colours, string ids, 500-entry cap) with 400 on malformed input, `null` = never configured (2026-08-04); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04)
+last-verified: ddaa21b+ (2026-08-09); documented the `/places/autocomplete` `type` contract and fixed the untyped lane — it filtered to `includedPrimaryTypes: ['establishment']`, so the "business or address" fields (event Location, trip-item location) could never match a street address; body-building extracted to the pure `autocompleteBody()` helper with unit coverage (2026-08-09); ddaa21b+ (2026-08-08); added the `/api/records/ws` record-change poke WebSocket (poke-and-pull: content-blind `{"type":"changed"}` frames on household record writes, session-auth'd upgrade, writer-session excluded; fed by `services/recordChanges.js` — write-route announcements + a Mongo change stream where a replica set exists) (2026-08-08); ddaa21b+ (2026-08-06); `/api/notifications` gained the stateless household event notify relay (`POST event-request`/`event-response` — client-chosen push strings, membership-validated, rate-limited, nothing stored; behavior owned by features/notifications.md) (2026-08-06); c2d18c0+ (2026-08-04); `PUT/GET /settings` accepts/echoes `calendarPrefs` — the user's calendar arrangement (colours / order / hidden / deleted built-ins / muted alerts), merged field-by-field so a partial payload can't blank the rest, validated (hex colours, string ids, 500-entry cap) with 400 on malformed input, `null` = never configured (2026-08-04); `GET /billing/status` gained the free-viewer-mode `viewer` counts, and `/records` now authorizes calendar-lane writes from the plaintext `scope` (403 for `view` collaborators / foreign-scope claims; trips exempt) (2026-07-31); added `/api/ecards` (plaintext occasion e-cards) (2026-07-28); added e-card photo endpoints (upload/serve/delete) (2026-07-28); `PUT/GET /settings` accepts/echoes personal `dayAlertTime` (HH:mm, empty=reset to 9am default; validated) (2026-07-29); `PUT/GET /settings` accepts/echoes `homeCity` — a coarse plaintext household home-area label (city + region/country) derived client-side from the home address (or hand-set) that grounds the calendar assistant's local suggestions without ever exposing the street address (2026-07-30); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04); documented the recipe photo pair (`POST /recipes/photo` upload — no AI, no meter — and `PUT /recipes/:id/photo`, the claim that binds a file to a saved recipe because the sealed `imageUrl` is unreadable server-side) and the record-delete file cascade now reaping recipe photos alongside event attachments (2026-08-11)
 code:
   - server/src/app.js        # the mount table — source of truth for what exists
   - server/src/routes/
@@ -38,7 +38,7 @@ spec explains the shape and the parts that aren't obvious from the mounts.
 
 This is the most important and least obvious part of the API. **Household content
 is not stored through per-entity CRUD routes.** Every content record (calendar
-events, people, tasks, chores, recipes, trips, items, trip items, …) is a
+events, contacts, tasks, chores, recipes, trips, items, trip items, …) is a
 client-**sealed** blob in a single server collection, reached through
 [`server/src/routes/records.js`](../../server/src/routes/records.js):
 
@@ -64,6 +64,10 @@ client-**sealed** blob in a single server collection, reached through
   [features/calendar.md](../features/calendar.md).
 - The mobile client mirrors this into a local replica and drives the UI
   offline-first (`mobile/src/lib/recordStore.ts`, `records.ts`).
+- Tombstoning a record also reaps the files that referenced it — event
+  attachments and recipe photos. The server stays content-blind: it doesn't
+  learn the record's type, it asks both reapers, each a no-op for a record of
+  the other kind.
 
 Legacy per-entity routers (`/api/items`, `/api/tasks`, `/api/chores`,
 `/api/recipes`, …) remain mounted but the live content path folds into the record
@@ -94,9 +98,17 @@ See `app.js` for exact paths. Grouped for orientation:
   `/api/chores`, `/api/chore-templates`, `/api/manuals`, `/api/receipts`,
   `/api/categories`, `/api/properties`, `/api/vehicles/:itemId/odometer`,
   `/api/history`.
-- **Kitchen:** `/api/recipes` (incl. `suggest-recipes`), `/api/recipe-schedule`.
+- **Kitchen:** `/api/recipes` (incl. `suggest-recipes`), `/api/recipe-schedule`,
+  plus the recipe photo pair: `POST /api/recipes/photo` (multipart `photo`; a
+  picture OF the dish, so no AI, no meter, no AI-consent gate — stored
+  downscaled and returned as `{ imageUrl }`) and `PUT /api/recipes/:id/photo`
+  (`{ imageUrl }`, `null` to remove) — the claim that binds a file to a saved
+  recipe and drops that recipe's other photos. The claim exists because a
+  recipe's `imageUrl` is sealed: nothing server-side can read which file is in
+  use. Photo **bytes are plaintext**, as recipe images have always been. See
+  [features/kitchen.md](../features/kitchen.md).
 - **Trips:** `/api/trips`.
-- **People:** `/api/people`.
+- **Contacts:** `/api/contacts`.
 - **Occasion e-cards:** `/api/ecards` (CRUD) + card photos:
   `POST /api/ecards/:id/photos` (multipart `photo`; JPEG/PNG/GIF/WebP, ≤10MB,
   max 3, author-only), `GET /api/ecards/:id/photos/:photoId` (bytes,

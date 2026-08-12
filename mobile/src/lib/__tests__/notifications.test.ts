@@ -27,7 +27,7 @@ function baseData(occasions: CalendarOccasion[]): CalendarData {
 
 const occ = (over: Partial<CalendarOccasion> = {}): CalendarOccasion => ({
   id: 'birthday-p1-x', kind: 'birthday', name: 'Sam', label: 'Birthday',
-  date: dayStr(20), personId: 'p1', ...over,
+  date: dayStr(20), contactId: 'p1', ...over,
 });
 
 describe('computeReminders — occasions', () => {
@@ -232,7 +232,7 @@ describe('computeReminders — over real engine output', () => {
 
   function assemble(over: Record<string, unknown> = {}) {
     return assembleCalendarData({
-      events: [], tasks: [], chores: [chore], people: [], recipeSchedules: [], trips: [],
+      events: [], tasks: [], chores: [chore], contacts: [], recipeSchedules: [], trips: [],
       fromDate: new Date(), toDate: new Date(Date.now() + 21 * 86400000),
       ...over,
     }) as CalendarData;

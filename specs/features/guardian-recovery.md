@@ -1,7 +1,7 @@
 ---
 title: Guardian recovery (dual-control)
 status: current
-last-verified: 55bfc65 (2026-07-27)
+last-verified: 3cd3b36+ (2026-08-12); **an approval no longer dies with the requester's app state** — the ephemeral secret + requestId lived only in module memory and the recover screen ALWAYS started a fresh request on mount, so the shared-device flow (sign out → guardian signs in → approves → sign back in) or an app kill during the wait orphaned the approval unrecoverably (the new request's poll waited forever, the sealed payload sat unclaimable until TTL sweep); the pending request now persists to the keychain per user, the screen resumes it before starting fresh, and the sealed handoff is persisted the moment polling claims it (burn-on-delivery makes the device copy the only copy); same day: **the guardian now finds out** — the request push is typed `guardian_recovery_request` and guardian requests joined the app-open/foreground pop-up lane (presented apart from ordinary invitations, routed at the approve screen; see notifications.md); the approve card's copy was rewritten ("They're locked out … you'll be shown a security code to compare") with real spacing before Review & approve; earlier same day: guardian audit events (`guardian_armed` / `guardian_disarmed` / `guardian_approved`) added to the `AUDIT_EVENTS` enum — arming a guardian 500'd on enum validation because keys.js wrote events the AuditLog model never allowed
 code:
   - shared/crypto/src/core.ts                        # createGuardianEnvelope / unsealGuardianOuter / resealGuardianInner / recoverWithGuardian
   - server/src/routes/keys.js                        # /keys/guardian* endpoints (blind store + relay)
@@ -11,6 +11,7 @@ code:
 tests:
   - shared/crypto/src/core.test.ts                   # guardian envelope: both legs required; wrong PIN/device/guardian rejected
   - mobile/src/lib/__tests__/guardianRecovery.test.ts # arm → request → approve → PIN finish over a blind relay
+  - server/src/test/guardianRecovery.integration.test.js # server lifecycle: membership checks, audit rows, burn-on-delivery
 ---
 
 # Guardian recovery (dual-control)
@@ -125,11 +126,39 @@ has `inner` without the guardian. ✔ dual control.
 - A recovery attempt MUST alert the **user** (all their devices) and be
   rate-limited; the guardian's approval MUST show the requester's safety number
   for out-of-band verification.
+- A recovery request MUST reach the **guardian** two ways: a push notification
+  (typed `guardian_recovery_request` so a foreground arrival still surfaces),
+  and the in-app pop-up lane (`useInviteAlerts`) — on app open / foreground /
+  that push landing, a never-prompted pending request raises the iOS-style
+  alert ("«name» is locked out of their account and asked for your help
+  getting back in.", **Review Request / Not Now**) routed at the Guardian
+  recovery approve screen. Guardian requests present **apart from** ordinary
+  invitations (never folded into the "N new invitations" count — it's a
+  security approval, and requests expire in 30 min) and prompt once per
+  request; a re-request after expiry mints a new `requestId` and prompts
+  afresh. Pop-up mechanics owned by
+  [notifications.md](notifications.md).
 - Disarming MUST delete `User.guardianRecovery` and cancel in-flight requests
   (implemented). Removing the guardian from the household MUST prevent recovery
   through them — currently enforced at **request time** (`POST
   /keys/guardian/request` refuses a non-member guardian); active envelope cleanup
   on member removal is a known gap (see Open questions).
+- An in-flight recovery MUST survive the requesting device losing its app
+  state: approval takes as long as reaching the guardian takes, and on a
+  shared device the requester signs out so the guardian can sign in and
+  approve — only the request's ephemeral secret can open that approval, so
+  losing it orphans the approval unrecoverably. The client persists the
+  pending request (`requestId`, fingerprint, expiry, ephemeral keypair) to
+  the keychain per user (`hc_guardian_recovery_<userId>`,
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY, no biometric gate — resume runs silently on
+  a locked account; survives sign-out, which wipes replica/prefs but not the
+  keychain), and the recover screen resumes it before ever starting a fresh
+  request (a fresh start would mint a new ephemeral key and orphan the old
+  approval). The sealed handoff joins the slot the moment polling claims it —
+  the server burns its copy on delivery, so from then on the device copy is
+  the only one and PIN entry works fully offline. Everything persisted stays
+  PIN-locked (the same 10⁴ offline residual the guardian already holds).
+  Cleared on finish; an expired unapproved slot self-clears on resume.
 - Recovery restores the same identity key, so the client MUST enrol fresh factors
   afterward (new password / recovery code) so the account isn't left relying on
   the guardian alone. The recover UI prompts for this on success.
@@ -157,6 +186,10 @@ has `inner` without the guardian. ✔ dual control.
   - `POST /keys/guardian/approve` — guardian posts the re-sealed `inner`; alerts
     the requester.
   - `GET /keys/guardian/request/:requestId` — requester polls; burned on delivery.
+- **Audit trail:** arm, disarm, and approve each write an `AuditLog` row —
+  `guardian_armed` / `guardian_disarmed` / `guardian_approved` (all in the
+  `AUDIT_EVENTS` enum). Meta carries the guardian's `userId` only — never the
+  PIN, envelope, or key material.
   - No `POST /keys/reenroll` — recovery restores the same key, so existing
     `PUT /keys/factors` re-enrols fresh factors (see the flow note above).
 - **Client:** `GuardianRecoveryScreen` with `mode: setup | recover | approve`;

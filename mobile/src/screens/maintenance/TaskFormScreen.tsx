@@ -460,6 +460,7 @@ export default function TaskFormScreen() {
   return (
     <Screen>
       <FormAssist
+        accent={accent}
         formType="home maintenance task"
         placeholder={'Describe the task, e.g. "replace the furnace filter every 3 months"'}
         fields={assistFields}

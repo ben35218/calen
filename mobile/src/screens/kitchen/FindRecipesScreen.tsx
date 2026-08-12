@@ -5,9 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi } from '../../api';
-import { Button, Card, Chip, Input } from '../../components/ui';
+import { Button, Card, Chip, Input, Skeleton } from '../../components/ui';
 import CreditsBanner from '../../components/CreditsBanner';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { ingredientName } from '../../lib/recipeNames';
 import { colors, spacing } from '../../theme';
 import type { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 
@@ -86,9 +87,12 @@ export default function FindRecipesScreen() {
               <Text style={styles.recipeTitle}>{r.title}</Text>
               {r.description ? <Text style={styles.recipeDesc}>{r.description}</Text> : null}
               {r.time ? <Text style={styles.time}>⏱ {r.time}</Text> : null}
+              {/* Suggestion stubs come back however the model wrote them; the
+                  chips are ingredient names, so they're cased like every other
+                  ingredient name in the app (lib/recipeNames). */}
               <View style={styles.tags}>
-                {(r.usedIngredients ?? []).map((ing) => <Chip key={ing} label={ing} color={colors.success} />)}
-                {(r.needsOther ?? []).map((ing) => <Chip key={ing} label={ing} color={colors.textMuted} />)}
+                {(r.usedIngredients ?? []).map((ing) => <Chip key={ing} label={ingredientName(ing)} color={colors.success} />)}
+                {(r.needsOther ?? []).map((ing) => <Chip key={ing} label={ingredientName(ing)} color={colors.textMuted} />)}
               </View>
               <View style={styles.cardFooter}>
                 {generatingIdx === i ? (
@@ -133,7 +137,33 @@ export default function FindRecipesScreen() {
         color={accent}
         disabled={!queryText.trim()}
       />
+
+      {/* The suggest call runs for several seconds; shimmer the cards the
+          results will land in so the wait reads as loading, not stalling. */}
+      {busy ? <SuggestionsSkeleton /> : null}
     </KeyboardAwareScrollView>
+  );
+}
+
+// Placeholder suggestion cards in the shape the results render: title line,
+// two description lines, then a row of ingredient-chip blocks (same pulse the
+// recipe form's ImportSkeleton uses).
+function SuggestionsSkeleton() {
+  return (
+    <View style={styles.skelWrap}>
+      {[0, 1, 2].map((i) => (
+        <Card key={i} style={styles.card}>
+          <Skeleton width={i === 1 ? '48%' : '62%'} height={16} />
+          <Skeleton width={'92%'} height={13} style={styles.skelGap} />
+          <Skeleton width={'70%'} height={13} style={styles.skelGapSm} />
+          <View style={styles.tags}>
+            {[52, 68, 44].map((w, j) => (
+              <Skeleton key={j} width={w} height={24} radius={12} />
+            ))}
+          </View>
+        </Card>
+      ))}
+    </View>
   );
 }
 
@@ -161,4 +191,7 @@ const styles = StyleSheet.create({
   previewHint: { fontSize: 13, color: colors.textMuted, marginBottom: spacing.md },
   cardFooter: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
   footerLabel: { fontSize: 14, fontWeight: '600' },
+  skelWrap: { marginTop: spacing.md },
+  skelGap: { marginTop: spacing.sm },
+  skelGapSm: { marginTop: 6 },
 });

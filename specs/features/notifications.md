@@ -1,7 +1,7 @@
 ---
 title: Notifications & reminders
 status: current
-last-verified: ddaa21b+ (2026-08-10); **a timed event's reminder body now names what its lead time counts down to** — the body was the bare lead time for every reminder kind, so an event with a drive time fired `23 minutes` at the moment the user had to walk out the door, indistinguishable from a 23-minute heads-up before it starts; a timed event's body now reads `Starts in 23 minutes` / `Starting now` or `Leave in 23 minutes` / `Leave now`, chosen by that slot's own `alertAnchor`/`alert2Anchor` (so one event's two alerts word themselves independently) with the drive subtracted back out of a departure-anchored value and a fallback to start wording when the drive time is gone; day-based reminders (all-day events, chores, tasks, occasions, holidays) keep the bare `Tomorrow`/`2 weeks`, having nothing to count down to; `leadPhrase` is replaced by an exact `durationPhrase`, which fixes a 90-minute lead reading back as `2 hours` now that the Custom sheet's minutes wheel reaches 180 (2026-08-10); ddaa21b+ (2026-08-08); **silent record-change pushes** — the push layer gained a data-only lane for the calendar's live household sync: `buildExpoMessage` (services/push.js) emits a title/body-less `_contentAvailable` message for `silent: true` payloads (web subs skipped), `services/recordChanges.js` debounces the `records_changed` fanout per household, and `lib/pushSync.ts` registers the on-device background task that syncs the replica when one arrives (behavior owned by calendar.md, Live household sync) (2026-08-08); ddaa21b+ (2026-08-06); **remote push registration wired + the household event notify relay** — `registerForPushNotifications()` was dead code (defined, never called: no device ever held a token, so every `pushToUser` reached nobody on mobile); a new `hooks/usePushNotifications` (mounted in RootNavigator) registers the Expo token on sign-in + foreground, sign-out best-effort unregisters the install's token, and notification taps route by `data.type` (invites → Invitations inbox, a household event reply → that event's detail; cold starts via `getLastNotificationResponseAsync`); two new stateless endpoints `POST /notifications/event-request|event-response` relay client-chosen invite/RSVP push strings to housemates after validating the event Record + every recipient's household membership (rate-limited, nothing stored — feature spec: calendar.md Household invitees); adjacent fix: cross-household `notifySender` crashed on sealed invites (`invitation.event.title` on an undefined snapshot — swallowed, so the sender silently got no reply push) and now falls back to a generic body (2026-08-06); **all-day event alerts are whole days off the day-alert hour, not minutes off noon UTC** — an all-day event has no start time, but its Alert pickers still offered 15/30/60-minute lead times and the scheduler counted them back from the stored noon-UTC instant, so every all-day alert landed at whatever local hour the reader's UTC offset produced (5am in Los Angeles, 8am in New York, 2pm in Berlin) and a previously configured minute offset survived the All-day switch untouched; an event alert now counts back from an ALERT ANCHOR (`eventAlertAnchor`, lib/calendar) — its start instant when timed, its own calendar date at `User.dayAlertTime` (9am default) when all-day — the all-day pickers/labels/Custom sheet/AI schemas offer whole days only ("On the day (9:00 AM)"), switching All day ON re-bases the alerts already set instead of dropping or keeping them, and the notification body is day-based (2026-08-04); day-based reminder default moved from 7am to **9am local** (`ALERT_HOUR`) across the server cron + on-device scheduler, and made **per-user configurable** via `User.dayAlertTime` (`PUT /settings`, Reminders screen TimeField) — cron honors the hour, on-device honors HH:mm (2026-07-29); moved the reminders controls (master toggle + day-based time) out of the Account screen into a dedicated Reminders screen off the profile hub (2026-07-29); e-card sends now flow through the mailer's lifecycle gates + delivery outbox (queue/retry) and the `ecard` template is admin-toggleable — see email-lifecycle.md (2026-07-29); calendar-level occasion alerts (noon day-of + 2wk default, on-device) + scheduled e-card server send (2026-07-28); e-card sends at-or-after the send hour on the occasion day (catch-up) (2026-07-28); e-card emails render via the style-gallery card renderer (ecardTemplates.js), template key passed through the scheduler (2026-07-28); scheduler also passes font/framing overrides + photos (embedded as inline CID attachments; missing files skipped, never fatal) (2026-07-28); paired alert slots (event/chore/task/occasion) must hold distinct values — second picker excludes the first's value via `excludeUsedAlert`, preventing duplicate notifications (2026-07-28); the Reminders screen accepts a **`promptEnable`** route param — a Calen assistant "Set up reminders" setup chip (`setup_reminders`, see ai-assistant.md) deep-links here and, while the master toggle is still off, shows a `SetupCallout` nudging the user to turn reminders on (df8c7f3+, 2026-07-31); e-cards are now **one-time** — `runECardCheck` sends a card on its next occurrence then clears `active` + stamps `sentAt` (replacing the annual `lastSentYear` guard), so a sent card never re-fires (df8c7f3+, 2026-07-31); **reminder-delivery repair** — the rolling window is now also recomputed on any `['calendar']` invalidation (an alert set on an event previously never reached the OS until the next background→foreground round trip), the pass is single-flight (overlapping passes double-scheduled the batch), the `localReminders` duplicate guard is claimed only after the OS accepts the batch and released when a pass fails, and the Reminders screen reports OS pending count / next reminder / last-run reason + a test notification (46cd98a+, 2026-08-03); **root cause found on-device** — `pushDayAlerts` called `.slice()` on `nextDueDate`, which the calendar engine emits as a **Date object** for recurring chores/tasks, so one recurring item threw and suppressed the entire reminder window (events included); fixed with a shape-tolerant `dueDateStr`, guarded per-reminder scheduling, stage+frame tagging in the run log, and engine-driven tests replacing the string-only fixtures that missed it (46cd98a+, 2026-08-04); **holiday alerts** — holiday calendars gained the same calendar-level alert config as Occasions (one config shared by ALL holiday calendars, device-local `hc_holiday_alert_prefs`, default OFF), reached from a notifications button on the holidays editor; holidays are computed on-device from `lib/holidays`, so they enter `computeReminders` as a `holidayAlerts` argument and are muted per-calendar by that calendar's Alerts switch (46cd98a+, 2026-08-04); **development-only surfaces removed for launch** — the Reminders screen's Delivery card (pending/next status rows + Send a test notification) and the `getReminderDiagnostics()` / `sendTestNotification()` helpers are gone; the run log survives but is **unrendered** (persisted + `console.warn` only), and its tests now assert the persisted record rather than an accessor (46cd98a+, 2026-08-04); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04); **a reminder body is now the bare lead time** — the fixed `Upcoming event` / `Maintenance due` / `Chore due` labels (and the occasion/holiday `… on 2026-08-20` form) are replaced by `15 minutes` / `Tomorrow` / `2 weeks`, one wording across every reminder kind, via `leadPhrase` + `dayLeadPhrase` in `lib/notifications.ts` (c2d18c0+, 2026-08-04)
+last-verified: 3cd3b36+ (2026-08-12); **guardian recovery requests joined the pop-up lane** — `useInviteAlerts` gathers `keysApi.guardianRequests` and presents them APART from ordinary invitations (own "Recovery Request(s)" alert, presented first, never in the "N new invitations" count), Review Request routing at the Guardian recovery approve screen; `alertUser` gained a `data` passthrough and the request push is typed `guardian_recovery_request` so a foreground arrival triggers the same pop-up (feature spec: guardian-recovery.md) (2026-08-12); **invite pushes made deliverable + the in-app invitation pop-up** — non-silent Expo messages now carry `sound: 'default'`/`priority: 'high'`/`channelId: 'default'` and sends use the array form so ticket errors (InvalidCredentials, DeviceNotRegistered) are actually seen (the single-object read hid them, so a send that could never deliver counted as sent); `eas.json` dropped `promptToConfigurePushNotifications: false`, which had been silently skipping APNs push-key setup on every build — the likely reason invite pushes never arrived (next `eas build` prompts to configure the key); NEW: `hooks/useInviteAlerts` + `lib/inviteAlerts` pop the iOS-style native alert for never-prompted pending invitations of EVERY kind on open/foreground/keys-ready/foreground-push — household event requests get inline Accept / Decline / View Invitation / Not Now (the answer is one sealed EventRsvp write); cross-household event / calendar-share / trip / household invitations and approver-side join requests get their kind's sentence with View Invitation (Review Request) / Not Now, their accept flows staying in the inbox; once per device per user (AsyncStorage `hc_hh_invite_prompted:<userId>`, `kind:id` keys, 300 cap), any multiple collapses to a count routed at the inbox, gated off the viewer/paywall shells (2026-08-12); 3cd3b36+ (2026-08-11); **the reminder window opens at local midnight, so a due-today day-of alert survives intraday reschedules** — the pass opened its calendar window at the current instant, but the engine anchors a date-only occurrence at a fixed wall-clock instant (local noon for interval chores/tasks, midnight for calendar-type and occasions), so any reschedule between that anchor and the alert's own hour dropped today's occurrence from the data and the pass's cancel-all wiped the already-armed alert without replacing it (a weekly chore alerting due-day 5pm + day-before 5pm got Monday's alert and never Tuesday's — any foreground/save/background-fetch pass after noon killed it); `runReschedule` now floors `from` to local midnight, and `computeReminders`' future-only filter keeps the widened window from scheduling anything already past; engine-driven regression test runs the pass at 2pm on the due date (2026-08-11); ddaa21b+ (2026-08-10); **a timed event's reminder body now names what its lead time counts down to** — the body was the bare lead time for every reminder kind, so an event with a drive time fired `23 minutes` at the moment the user had to walk out the door, indistinguishable from a 23-minute heads-up before it starts; a timed event's body now reads `Starts in 23 minutes` / `Starting now` or `Leave in 23 minutes` / `Leave now`, chosen by that slot's own `alertAnchor`/`alert2Anchor` (so one event's two alerts word themselves independently) with the drive subtracted back out of a departure-anchored value and a fallback to start wording when the drive time is gone; day-based reminders (all-day events, chores, tasks, occasions, holidays) keep the bare `Tomorrow`/`2 weeks`, having nothing to count down to; `leadPhrase` is replaced by an exact `durationPhrase`, which fixes a 90-minute lead reading back as `2 hours` now that the Custom sheet's minutes wheel reaches 180 (2026-08-10); ddaa21b+ (2026-08-08); **silent record-change pushes** — the push layer gained a data-only lane for the calendar's live household sync: `buildExpoMessage` (services/push.js) emits a title/body-less `_contentAvailable` message for `silent: true` payloads (web subs skipped), `services/recordChanges.js` debounces the `records_changed` fanout per household, and `lib/pushSync.ts` registers the on-device background task that syncs the replica when one arrives (behavior owned by calendar.md, Live household sync) (2026-08-08); ddaa21b+ (2026-08-06); **remote push registration wired + the household event notify relay** — `registerForPushNotifications()` was dead code (defined, never called: no device ever held a token, so every `pushToUser` reached nobody on mobile); a new `hooks/usePushNotifications` (mounted in RootNavigator) registers the Expo token on sign-in + foreground, sign-out best-effort unregisters the install's token, and notification taps route by `data.type` (invites → Invitations inbox, a household event reply → that event's detail; cold starts via `getLastNotificationResponseAsync`); two new stateless endpoints `POST /notifications/event-request|event-response` relay client-chosen invite/RSVP push strings to housemates after validating the event Record + every recipient's household membership (rate-limited, nothing stored — feature spec: calendar.md Household invitees); adjacent fix: cross-household `notifySender` crashed on sealed invites (`invitation.event.title` on an undefined snapshot — swallowed, so the sender silently got no reply push) and now falls back to a generic body (2026-08-06); **all-day event alerts are whole days off the day-alert hour, not minutes off noon UTC** — an all-day event has no start time, but its Alert pickers still offered 15/30/60-minute lead times and the scheduler counted them back from the stored noon-UTC instant, so every all-day alert landed at whatever local hour the reader's UTC offset produced (5am in Los Angeles, 8am in New York, 2pm in Berlin) and a previously configured minute offset survived the All-day switch untouched; an event alert now counts back from an ALERT ANCHOR (`eventAlertAnchor`, lib/calendar) — its start instant when timed, its own calendar date at `User.dayAlertTime` (9am default) when all-day — the all-day pickers/labels/Custom sheet/AI schemas offer whole days only ("On the day (9:00 AM)"), switching All day ON re-bases the alerts already set instead of dropping or keeping them, and the notification body is day-based (2026-08-04); day-based reminder default moved from 7am to **9am local** (`ALERT_HOUR`) across the server cron + on-device scheduler, and made **per-user configurable** via `User.dayAlertTime` (`PUT /settings`, Reminders screen TimeField) — cron honors the hour, on-device honors HH:mm (2026-07-29); moved the reminders controls (master toggle + day-based time) out of the Account screen into a dedicated Reminders screen off the profile hub (2026-07-29); e-card sends now flow through the mailer's lifecycle gates + delivery outbox (queue/retry) and the `ecard` template is admin-toggleable — see email-lifecycle.md (2026-07-29); calendar-level occasion alerts (noon day-of + 2wk default, on-device) + scheduled e-card server send (2026-07-28); e-card sends at-or-after the send hour on the occasion day (catch-up) (2026-07-28); e-card emails render via the style-gallery card renderer (ecardTemplates.js), template key passed through the scheduler (2026-07-28); scheduler also passes font/framing overrides + photos (embedded as inline CID attachments; missing files skipped, never fatal) (2026-07-28); paired alert slots (event/chore/task/occasion) must hold distinct values — second picker excludes the first's value via `excludeUsedAlert`, preventing duplicate notifications (2026-07-28); the Reminders screen accepts a **`promptEnable`** route param — a Calen assistant "Set up reminders" setup chip (`setup_reminders`, see ai-assistant.md) deep-links here and, while the master toggle is still off, shows a `SetupCallout` nudging the user to turn reminders on (df8c7f3+, 2026-07-31); e-cards are now **one-time** — `runECardCheck` sends a card on its next occurrence then clears `active` + stamps `sentAt` (replacing the annual `lastSentYear` guard), so a sent card never re-fires (df8c7f3+, 2026-07-31); **reminder-delivery repair** — the rolling window is now also recomputed on any `['calendar']` invalidation (an alert set on an event previously never reached the OS until the next background→foreground round trip), the pass is single-flight (overlapping passes double-scheduled the batch), the `localReminders` duplicate guard is claimed only after the OS accepts the batch and released when a pass fails, and the Reminders screen reports OS pending count / next reminder / last-run reason + a test notification (46cd98a+, 2026-08-03); **root cause found on-device** — `pushDayAlerts` called `.slice()` on `nextDueDate`, which the calendar engine emits as a **Date object** for recurring chores/tasks, so one recurring item threw and suppressed the entire reminder window (events included); fixed with a shape-tolerant `dueDateStr`, guarded per-reminder scheduling, stage+frame tagging in the run log, and engine-driven tests replacing the string-only fixtures that missed it (46cd98a+, 2026-08-04); **holiday alerts** — holiday calendars gained the same calendar-level alert config as Occasions (one config shared by ALL holiday calendars, device-local `hc_holiday_alert_prefs`, default OFF), reached from a notifications button on the holidays editor; holidays are computed on-device from `lib/holidays`, so they enter `computeReminders` as a `holidayAlerts` argument and are muted per-calendar by that calendar's Alerts switch (46cd98a+, 2026-08-04); **development-only surfaces removed for launch** — the Reminders screen's Delivery card (pending/next status rows + Send a test notification) and the `getReminderDiagnostics()` / `sendTestNotification()` helpers are gone; the run log survives but is **unrendered** (persisted + `console.warn` only), and its tests now assert the persisted record rather than an accessor (46cd98a+, 2026-08-04); **the two calendar-level alert configs (Occasions + holidays) are now ACCOUNT settings** — `User.occasionAlerts` / `User.holidayAlerts`, carried on `GET`/`PUT /settings`, with the AsyncStorage keys demoted to a cache: that cache is account state wiped at sign-out, so holiday alerts a user set read back fine all session and were silently off again at the next sign-in; edits now write both, load adopts the account's config (rescheduling the window when it differs), an account with no config is seeded from a device holding a non-default one, and `offsets: []` stays a real "off" distinct from an unconfigured `null` (c2d18c0+, 2026-08-04); **a reminder body is now the bare lead time** — the fixed `Upcoming event` / `Maintenance due` / `Chore due` labels (and the occasion/holiday `… on 2026-08-20` form) are replaced by `15 minutes` / `Tomorrow` / `2 weeks`, one wording across every reminder kind, via `leadPhrase` + `dayLeadPhrase` in `lib/notifications.ts` (c2d18c0+, 2026-08-04); the pass re-arms kitchen cook timers after its cancel-all (`restoreCookTimerAlarms`) — the indiscriminate cancel was disarming a running cooking timer on the next app foreground (2026-08-11)
 code:
   - mobile/src/lib/notifications.ts
   - mobile/src/lib/calendar.ts              # eventAlertAnchor + the all-day alert grid/labels
@@ -49,6 +49,15 @@ obsolete.
   soonest **60** reminders (`MAX_SCHEDULED`, headroom under iOS' ~64 pending cap)
   falling within the next **21 days** (`WINDOW_DAYS`). A reminder further out is
   guaranteed only once the window reaches it — hence the refresh triggers below.
+  The window **opens at local midnight today**, not at the pass's own instant:
+  the calendar engine anchors a date-only occurrence at a fixed wall-clock
+  instant (local noon for interval chores/tasks, midnight for calendar-type and
+  occasions), so a window opening at "now" dropped *today's* occurrence once
+  that anchor passed — and because every pass starts with a cancel-all, an
+  afternoon reschedule wiped an already-armed evening day-of alert without
+  replacing it. Only future alerts are scheduled out of the widened window
+  (`computeReminders` filters on `at > now`), so nothing already past reaches
+  the OS.
 - Reminders honor a `remindersEnabled` pref (Privacy toggle); disabling
   cancels all scheduled ones.
 - Events support up to two alerts; `alertAudience` (`everyone`/`owner`) chooses
@@ -230,6 +239,14 @@ obsolete.
      background→foreground round trip, so an alert due in the same session
      simply never fired.
   3. **A background-fetch slot** (`lib/backgroundRefresh.ts`), best-effort.
+- **The cancel-all is not the reminder batch's alone.** Kitchen cook timers
+  arm themselves as scheduled notifications while the cooking screen is closed
+  (`lib/cookTimers`, specs/features/kitchen.md), and the pass's
+  `cancelAllScheduledNotificationsAsync` takes them with it — so the pass
+  re-arms them (`restoreCookTimerAlarms`) immediately after cancelling, before
+  its own schedule loop. Without it, the next app foreground silently disarmed
+  a running kitchen timer. Anything else that schedules outside this pass owes
+  the same restore.
 - **The pass is single-flight.** Those triggers overlap routinely, and a pass is
   a cancel-all followed by a schedule loop — so two concurrent passes interleave
   into a double-scheduled batch (every reminder in the overlap fires twice). A
@@ -281,6 +298,20 @@ settings screen).
   [households-sharing.md](households-sharing.md)), cross-household invitation
   alerts, and household event invite/response alerts — delivered through Expo
   (`services/push.js`, `services/notify.js`).
+- **Alerting message shape:** a non-silent Expo message carries
+  `sound: 'default'` (audible on iOS), `priority: 'high'` (wakes a Doze-d
+  Android device), and `channelId: 'default'` (the app's Android channel).
+  Sends post the **array form** to the Expo API and read the first ticket from
+  the array response — the old single-object read left ticket errors (e.g.
+  `InvalidCredentials` when the APNs key is missing) invisible, so a send that
+  could never deliver still counted as sent. A `DeviceNotRegistered` ticket
+  throws `{ statusCode: 410 }` so `notify.js` prunes the subscription.
+- **APNs credentials are required for iOS delivery.** Expo accepts a send for
+  a valid token even when the EAS project holds no APNs push key — the ticket
+  errors, and nothing arrives. `eas.json` therefore must NOT set
+  `promptToConfigurePushNotifications: false` (it did until 2026-08-12, which
+  silently skipped push-credential setup on every build); the next
+  `eas build` prompts to configure the key, after which existing tokens work.
 - Device registration: `POST /notifications/push/register-native` /
   `unregister-native` (Expo token on `User.pushSubscriptions`);
   `push/subscribe`/`unsubscribe` + `push/key` are the legacy Web-Push endpoints.
@@ -334,6 +365,71 @@ settings screen).
   `remote-notification` in `UIBackgroundModes` (EAS rebuild; no-ops in Expo
   Go).
 
+### In-app invitation pop-up (all invitation kinds)
+
+- Push is best-effort — an invited user who denied notifications, missed the
+  banner, or was offline must still be confronted with the invite. On app
+  open, on each foreground, once the household keys unlock (household event
+  requests aren't derivable before that), and when any invite push type lands
+  while the app is foregrounded (no banner shows then),
+  `hooks/useInviteAlerts` (mounted in RootNavigator beside
+  `usePushNotifications`) gathers **every pending invitation lane the
+  Invitations inbox lists** and pops the app's iOS-style **native alert** for
+  the ones this device has never prompted. The lanes (each fetch fails soft to
+  `[]` so one erroring lane can't hide the others): household event requests
+  (replica-derived, `listMyHouseholdEventRequests`), cross-household event
+  invitations (`invitationsApi.list`; **lapsed ones skipped** — asked before
+  the event, unanswered when it ended, per `invitationLapsed`; a record-share
+  sent AFTER the event still prompts, worded “«from» shared «event» with
+  you”), calendar shares
+  (`customCalendarsApi.invitations`), trip invitations
+  (`tripsApi.invitations`), household membership invitations
+  (`householdApi.myInvitations`), approver-side join requests
+  (`householdApi.joinRequests`, always actionable), and guardian recovery
+  requests awaiting the user's approval (`keysApi.guardianRequests`). Gated to
+  the full app shell — the viewer/paywall shells have no Invitations inbox to
+  route into.
+- **One fresh household event request** gets the full card — title "Event
+  Invitation", message "«inviter» invited you to “«event»”." plus the
+  Invitations-inbox when-line — with **Accept / Decline (destructive) / View
+  Invitation / Not Now (cancel)**: the only kind answerable inline, because
+  the answer is one sealed `EventRsvp` write (`respondToHouseholdEvent`,
+  reply push to the creator included; inbox query invalidated; a seal failure
+  alerts "Could not send your reply" and points at the Invitations screen).
+  The inviter's name resolves from `householdApi.get()` members (falls back
+  to "A housemate"). Android caps alerts at three buttons, so it shows
+  View / Decline / Accept with dismissal as the Not Now.
+- **One fresh invitation of any other kind** gets its kind's sentence —
+  "«from» invited you to “«event»”." (event, sealed snapshots fall back to
+  "an event"), "«from» shared the calendar “«name»” with you.", "«from»
+  invited you to the trip “«name»”.", "«from» invited you to join
+  “«household»”.", "«name» wants to join your household." — with **View
+  Invitation** (join requests: **Review Request**) **/ Not Now**. No inline
+  Accept/Decline: those accept flows are multi-step (key unwraps, join
+  carry-over, calendar merge) and live in the inbox.
+- **Several fresh invitations** (any mix of kinds) collapse to "You have N
+  new invitations." with **View Invitations / Not Now** — a stack of
+  sequential alerts would read as nagging.
+- **Guardian recovery requests present apart** — never folded into the
+  invitations count (a security approval isn't a social invite, and requests
+  expire in 30 min). One fresh request: title "Recovery Request", "«name» is
+  locked out of their account and asked for your help getting back in.";
+  several collapse to their own count. **Review Request / Not Now**, routed at
+  the Guardian recovery **approve screen** (not the inbox — the fingerprint
+  check lives there). Presented before any ordinary-invitation alert (iOS
+  queues the second). The request push carries
+  `data.type: 'guardian_recovery_request'` so a foreground arrival triggers
+  the same pop-up. Feature behavior owned by
+  [guardian-recovery.md](guardian-recovery.md).
+- **Prompted-once memory:** each invitation pops once per device per user —
+  "Not Now" is a real answer, not a snooze; the Invitations inbox (badge +
+  rows) stays the durable surface for anything dismissed. Prompted
+  `kind:id` keys persist per-user in AsyncStorage
+  (`hc_hh_invite_prompted:<userId>`, capped at 300, oldest fall off), and are
+  marked **before** the alert shows so a re-trigger while it's up (foreground
+  bounce, the push landing) can't stack a duplicate. Pure
+  selection/wording/memory live in `lib/inviteAlerts.ts`.
+
 ### Scheduled e-cards (server-sent email)
 
 - Occasion e-cards are the one scheduler pass that **runs for E2EE households**:
@@ -362,7 +458,8 @@ settings screen).
   and the stateless `event-request`/`event-response` relay).
 - **Client:** `lib/push.ts` (registration + sign-out unregister),
   `hooks/usePushNotifications.ts` (session wiring + tap routing),
-  `lib/notifications.ts` (scheduling).
+  `hooks/useInviteAlerts.ts` + `lib/inviteAlerts.ts` (the in-app invitation
+  pop-up), `lib/notifications.ts` (scheduling).
 - **Config:** `EXPO_ACCESS_TOKEN` (server → Expo Push API); push needs the EAS
   `projectId` to mint tokens.
 
@@ -390,6 +487,16 @@ nothing.
   `notifications.integration.test.js` (delivery no-ops there: no push
   subscriptions exist, so `sent` is 0 — the contract under test is validation
   and membership, not the Expo transport).
+- The Expo message shapes: silent pokes stay data-only, and an alerting push
+  carries `sound`/`priority`/`channelId` alongside its typed `data` —
+  `recordPoke.integration.test.js` (`buildExpoMessage`).
+- The invitation pop-up's pure half: fresh selection (un-prompted only, order
+  preserved, per-kind `kind:id` key spaces), each kind's single-invite wording
+  (household event inviter + title + when-line with "A housemate" fallback;
+  event/calendar/trip/household/join-request sentences with sealed-title and
+  unknown-sender fallbacks), the cross-kind multi-invite count collapse, the
+  when-line's UTC all-day read, and the per-user prompted memory (accumulate,
+  dedupe, 300 cap) — `mobile/src/lib/__tests__/inviteAlerts.test.ts`.
 - The daily reminder cron's behavior — per-member firing at each member's chosen
   local alert hour (`dayAlertTime`, 9am default), timezone
   spread, audience resolution (`alertAudience` + explicit `alertUserIds`), and

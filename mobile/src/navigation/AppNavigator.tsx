@@ -83,9 +83,9 @@ import HelpFeedbackScreen from '../screens/profile/HelpFeedbackScreen';
 import GuardianRecoveryScreen from '../screens/profile/GuardianRecoveryScreen';
 import RecoveryCodeScreen from '../screens/profile/RecoveryCodeScreen';
 import LinkDeviceScreen from '../screens/profile/LinkDeviceScreen';
-import PeopleScreen from '../screens/profile/PeopleScreen';
-import PersonDetailScreen from '../screens/profile/PersonDetailScreen';
-import PersonFormScreen from '../screens/profile/PersonFormScreen';
+import ContactsScreen from '../screens/profile/ContactsScreen';
+import ContactDetailScreen from '../screens/profile/ContactDetailScreen';
+import ContactFormScreen from '../screens/profile/ContactFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
 import AddOnsScreen from '../screens/plan/AddOnsScreen';
@@ -282,12 +282,12 @@ export default function AppNavigator() {
       {/* Kitchen / meals (teal) */}
       <Stack.Screen name="KitchenHome" component={KitchenScreen} options={featureCalendarHome('Meals')} />
       <Stack.Screen name="Recipes" component={RecipesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recipes' }} />
-      <Stack.Screen name="GrocerySchedule" component={GroceryScheduleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Grocery Schedule' }} />
+      <Stack.Screen name="GrocerySchedule" component={GroceryScheduleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Grocery Shopping Schedule' }} />
       <Stack.Screen name="RecipeDetail" component={RecipeDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recipe' }} />
       <Stack.Screen name="RecipeForm" component={RecipeFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recipe' }} />
       <Stack.Screen name="CookingMode" component={CookingModeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Cooking' }} />
       <Stack.Screen name="RecipeAssistant" component={FindRecipesScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: `${ASSISTANT_NAME} · Recipes` }} />
-      <Stack.Screen name="MealPlannerSettings" component={MealPlannerSettingsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Grocery Sections' }} />
+      <Stack.Screen name="MealPlannerSettings" component={MealPlannerSettingsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Grocery List Sections' }} />
       <Stack.Screen name="AddMeal" component={AddMealScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: '' }} />
 
       {/* Trips (purple) */}
@@ -309,9 +309,9 @@ export default function AppNavigator() {
       <Stack.Screen name="LinkDevice" component={LinkDeviceScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link device' }} />
       <Stack.Screen name="GuardianRecovery" component={GuardianRecoveryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Guardian recovery' }} />
       <Stack.Screen name="RecoveryCode" component={RecoveryCodeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recovery code' }} />
-      <Stack.Screen name="People" component={PeopleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contacts' }} />
-      <Stack.Screen name="PersonDetail" component={PersonDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
-      <Stack.Screen name="PersonForm" component={PersonFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
+      <Stack.Screen name="Contacts" component={ContactsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contacts' }} />
+      <Stack.Screen name="ContactDetail" component={ContactDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
+      <Stack.Screen name="ContactForm" component={ContactFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
       <Stack.Screen name="HelpFeedback" component={HelpFeedbackScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Help & feedback' }} />

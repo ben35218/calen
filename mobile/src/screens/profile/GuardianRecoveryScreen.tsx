@@ -20,7 +20,7 @@ import {
   Screen, ScreenTitle, Hint, Button, Input, FormError, CenteredLoader, Card, SectionTitle,
 } from '../../components/ui';
 import {
-  armGuardian, disarmGuardian, startGuardianRecovery, pollGuardianRecovery,
+  armGuardian, disarmGuardian, startGuardianRecovery, resumeGuardianRecovery, pollGuardianRecovery,
   finishGuardianRecovery, approveGuardianRecovery,
 } from '../../lib/guardianRecovery';
 import { colors, spacing, radius } from '../../theme';
@@ -159,6 +159,22 @@ function RecoverMode() {
   const begin = useCallback(async () => {
     setState('starting'); setError('');
     try {
+      // Resume a persisted in-flight request first — the guardian may have
+      // approved while this screen was gone (app killed, or the shared-device
+      // flow where the user signs out so the guardian can sign in). Starting
+      // fresh here would orphan that approval: only the persisted ephemeral
+      // key can open it. A resumed request the server no longer knows
+      // (expired unapproved) falls through to a fresh start.
+      const resumed = await resumeGuardianRecovery();
+      if (resumed) {
+        const status = await pollGuardianRecovery(resumed.requestId);
+        if (status !== 'expired') {
+          requestIdRef.current = resumed.requestId;
+          setFingerprint(resumed.fingerprint);
+          setState(status === 'ready' ? 'ready' : 'waiting');
+          return;
+        }
+      }
       const r = await startGuardianRecovery();
       requestIdRef.current = r.requestId;
       setFingerprint(r.fingerprint);
@@ -292,8 +308,17 @@ function ApproveMode() {
             <Ionicons name="person-circle-outline" size={22} color={colors.primary} />
             <Text style={styles.guardianName}>{r.requesterName}</Text>
           </View>
-          <Text style={styles.note}>Wants to recover their account. Verify their code in person or by call before approving.</Text>
-          <Button title="Review & approve" loading={busyId === r.requestId} onPress={() => approve(r)} />
+          <Text style={styles.note}>
+            They’re locked out of their account and asked for your help getting back in. Before you
+            approve, talk to them in person or by phone and make sure the request is really theirs —
+            you’ll be shown a security code to compare.
+          </Text>
+          <Button
+            title="Review & approve"
+            loading={busyId === r.requestId}
+            onPress={() => approve(r)}
+            style={styles.approveButton}
+          />
         </Card>
       ))}
     </Screen>
@@ -305,6 +330,7 @@ const styles = StyleSheet.create({
   center: { alignItems: 'center', gap: spacing.md, marginTop: spacing.lg },
   rowCenter: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   note: { fontSize: 13, color: colors.textMuted, marginTop: spacing.sm, lineHeight: 18 },
+  approveButton: { marginTop: spacing.md },
   guardianName: { fontSize: 16, fontWeight: '700', color: colors.text },
   memberRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 10 },
   memberName: { fontSize: 15, color: colors.text },

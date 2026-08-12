@@ -5,7 +5,7 @@
 // organize endpoint, with explicit consent, exactly as before).
 
 import { recipesApi, Recipe, GroceryItem } from '../api';
-import { openRecord } from './e2ee';
+import { openRecipe } from './recipeNames';
 import * as replica from './replica';
 import { loadSchedulesInRange } from './mealSchedule';
 import { aggregateGroceryList } from './groceryAggregate';
@@ -29,7 +29,7 @@ export async function loadGroceryList(
     loadSchedulesInRange(iso(start), iso(end)),
     replica
       .syncedList<Recipe>('Recipe', async () => (await recipesApi.list()).data)
-      .then((rows) => Promise.all(rows.map((r) => openRecord('Recipe', r)))),
+      .then((rows) => Promise.all(rows.map((r) => openRecipe(r)))),
   ]);
 
   return aggregateGroceryList(schedules, new Map(recipes.map((r) => [String(r._id), r])));

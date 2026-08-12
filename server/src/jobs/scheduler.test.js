@@ -12,7 +12,7 @@ const { mock } = require('node:test');
 let membersRows = [];
 let tasksRows = [];
 let choresRows = [];
-let personsRows = [];
+let contactsRows = [];
 // Captured push deliveries: { email, payload }.
 let pushes = [];
 
@@ -37,7 +37,7 @@ function mockModule(relPath, exports) {
 
 mockModule('../models/MaintenanceTask', makeModel(() => tasksRows));
 mockModule('../models/Chore', makeModel(() => choresRows));
-mockModule('../models/Person', makeModel(() => personsRows));
+mockModule('../models/Contact', makeModel(() => contactsRows));
 mockModule('../models/User', makeModel(() => membersRows));
 mockModule('../models/Household', makeModel(() => []));
 mockModule('../models/CalendarEvent', makeModel(() => []));
@@ -63,7 +63,7 @@ function task(overrides = {}) {
 }
 
 function reset() {
-  membersRows = []; tasksRows = []; choresRows = []; personsRows = []; pushes = [];
+  membersRows = []; tasksRows = []; choresRows = []; contactsRows = []; pushes = [];
 }
 
 // 13:00 UTC on 2026-07-02 → 09:00 in Toronto (EDT), 06:00 in Vancouver (PDT).

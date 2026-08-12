@@ -13,7 +13,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, Trip } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Badge, CenteredLoader, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
+import { Card, Badge, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
 import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -50,8 +50,9 @@ function dateSummary(t: Trip) {
 // navigation, restored nav state.
 export default function TripsScreen() {
   const { isUnlocked, loaded } = useOwnedAddons();
-  const accent = useCalendarColors().colors.trips;
-  if (!loaded) return <CenteredLoader color={accent} />;
+  // Same skeleton the trips query shows, so an unlocked user sees one steady
+  // skeleton from mount to content instead of a spinner → skeleton flip.
+  if (!loaded) return <SkeletonList />;
   if (!isUnlocked('trips')) return <AddonLockedView addon="trips" />;
   return <TripsHome />;
 }

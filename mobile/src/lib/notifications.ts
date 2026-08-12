@@ -25,6 +25,7 @@ import {
 } from './calendarPrefs';
 import { getHolidays } from './holidays';
 import { occasionTitle } from './occasions';
+import { restoreCookTimerAlarms } from './cookTimers';
 
 // Foreground notification behavior (applies to local reminders and any push).
 Notifications.setNotificationHandler({
@@ -338,7 +339,7 @@ async function collectHolidayAlerts(from: Date, to: Date): Promise<{ prefs: Holi
 // arrived" indistinguishable from "permission denied", "offline", and "the keys
 // were locked" — a whole-feature outage that went unnoticed for weeks. Nothing
 // renders this: it is a `console.warn` plus a record under RUN_LOG_KEY that
-// survives to the next launch, so the next person debugging silent reminders
+// survives to the next launch, so the next contact debugging silent reminders
 // starts with the answer instead of the symptom.
 
 // The pass runs five stages against data the server can't see, so "it threw" is
@@ -418,7 +419,17 @@ async function runReschedule(): Promise<number> {
         importance: Notifications.AndroidImportance.DEFAULT,
       });
     }
+    // The window opens at local MIDNIGHT, not the current instant. Day-based
+    // alerts fire as late as 23:59 on the due date, but the calendar expansion
+    // anchors a date-only occurrence at a fixed wall-clock instant (local noon
+    // for interval chores/tasks, midnight for calendar-type and occasions) —
+    // so a window opening at "now" drops TODAY's occurrence the moment that
+    // anchor passes, and the cancel-all below then wipes an already-armed
+    // day-of alert without replacing it (a 5pm chore alert died on any pass
+    // after noon that day). Nothing stale gets scheduled from the widened
+    // window: computeReminders keeps only alerts still in the future.
     const from = new Date();
+    from.setHours(0, 0, 0, 0);
     const to = new Date(Date.now() + WINDOW_DAYS * 86400000);
 
     // Separate stages, not one Promise.all: decrypting the calendar and reading
@@ -439,6 +450,10 @@ async function runReschedule(): Promise<number> {
     const reminders = await stage('compute', () => computeReminders(data, muted, occasionPrefs, dayAlertTime, holidayAlerts));
 
     await stage('cancel', () => Notifications.cancelAllScheduledNotificationsAsync());
+    // That cancel is indiscriminate — it takes any armed cook timer with it
+    // (lib/cookTimers), so a foreground refresh would quietly disarm a running
+    // kitchen timer. Put them back before the reminder batch goes on.
+    await restoreCookTimerAlarms();
 
     // Per-reminder, not per-batch: one malformed record (a bad date, an
     // over-long title) must cost its own notification, not every later one in

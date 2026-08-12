@@ -1,5 +1,5 @@
-// Integration tests for the people/contacts server surface (spec:
-// features/people-contacts.md). Person CRUD lives in the opaque record store
+// Integration tests for the contacts/contacts server surface (spec:
+// features/contacts-contacts.md). Contact CRUD lives in the opaque record store
 // (C3b — covered by records.integration.test.js); what this router owns is
 // contact IMPORT (vCard parsing) and AI-assisted CLASSIFY. The classify tests
 // capture the exact Anthropic payload (prototype stub at the network edge) to
@@ -26,7 +26,7 @@ const messagesProto = Object.getPrototypeOf(new Anthropic({ apiKey: 'stub' }).me
 messagesProto.create = async function stubbedCreate(params) {
   createCalls.push(params);
   const resp = createQueue.shift();
-  if (!resp) throw new Error('people stub: model called with no scripted response left');
+  if (!resp) throw new Error('contacts stub: model called with no scripted response left');
   return resp;
 };
 
@@ -73,7 +73,7 @@ const VCF = [
 test('vCard import parses names, phones, emails, birthdays, addresses, folded notes', async () => {
   const u = await registerUser({ firstName: 'Importer' });
 
-  const res = await request().post('/api/people/import')
+  const res = await request().post('/api/contacts/import')
     .set('Authorization', u.auth)
     .attach('file', Buffer.from(VCF), 'contacts.vcf');
   assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -112,10 +112,10 @@ test('vCard import parses names, phones, emails, birthdays, addresses, folded no
 test('vCard import rejects a missing file and a file with no contacts', async () => {
   const u = await registerUser({ firstName: 'NoFile' });
 
-  const missing = await request().post('/api/people/import').set('Authorization', u.auth);
+  const missing = await request().post('/api/contacts/import').set('Authorization', u.auth);
   assert.equal(missing.status, 400);
 
-  const empty = await request().post('/api/people/import')
+  const empty = await request().post('/api/contacts/import')
     .set('Authorization', u.auth)
     .attach('file', Buffer.from('not a vcard at all'), 'contacts.vcf');
   assert.equal(empty.status, 422);
@@ -141,7 +141,7 @@ test('classify sends the model names + companies only; contact details merge bac
     { key: 'zz-not-sent', type: 'friend', name: 'Phantom' }, // unknown key — must be dropped
   ])];
 
-  const res = await request().post('/api/people/classify')
+  const res = await request().post('/api/contacts/classify')
     .set('Authorization', u.auth)
     .send({ contacts });
   assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -171,12 +171,12 @@ test('classify sends the model names + companies only; contact details merge bac
 test('classify validates input and coerces unknown types to friend', async () => {
   const u = await registerUser({ firstName: 'Coercer' });
 
-  const bad = await request().post('/api/people/classify')
+  const bad = await request().post('/api/contacts/classify')
     .set('Authorization', u.auth).send({ contacts: [] });
   assert.equal(bad.status, 400);
 
   createQueue = [classifyResponse([{ key: 'a', type: 'alien', name: 'Mimi Example' }])];
-  const res = await request().post('/api/people/classify')
+  const res = await request().post('/api/contacts/classify')
     .set('Authorization', u.auth)
     .send({ contacts: [contacts[0]] });
   assert.equal(res.status, 200);
@@ -198,7 +198,7 @@ test('web-search enrichment runs only with the per-import opt-in, professionals 
     },
   ];
 
-  const res = await request().post('/api/people/classify')
+  const res = await request().post('/api/contacts/classify')
     .set('Authorization', u.auth)
     .send({ contacts, enrich: true });
   assert.equal(res.status, 200, JSON.stringify(res.body));

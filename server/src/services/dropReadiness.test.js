@@ -77,8 +77,8 @@ test('min-app-version gate passes when all members meet it', () => {
 });
 
 test('dropUnsetFor builds a $unset spec from the content field list', () => {
-  const unset = dropUnsetFor('Person');
-  assert.deepEqual(Object.keys(unset).sort(), [...DROP_FIELDS.Person].sort());
+  const unset = dropUnsetFor('Contact');
+  assert.deepEqual(Object.keys(unset).sort(), [...DROP_FIELDS.Contact].sort());
   assert.equal(unset.name, '');
   assert.equal(dropUnsetFor('NopeCollection'), null);
 });

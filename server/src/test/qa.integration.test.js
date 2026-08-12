@@ -296,6 +296,35 @@ test('completing a run is audited and records how much was executed', async () =
   assert.equal(audit.meta.results, 1);
 });
 
+test('a case\'s history reports its results across runs and releases, newest first', async () => {
+  await importDoc(DOC);
+  const row = await TestCase.findOne({ caseId: 'AUTH-01' }).lean();
+
+  // Nothing recorded yet → an empty history, not an error.
+  const empty = await request().get(`/api/admin/qa/cases/${row._id}/history`).set('Authorization', admin.auth);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.results, []);
+
+  const rel = await makeRelease({ version: '2.0.0' });
+  const run = (await request().post('/api/admin/qa/runs').set('Authorization', admin.auth)
+    .send({ releaseId: rel._id, environment: { device: 'iPhone SE' } })).body;
+  await request().post(`/api/admin/qa/runs/${run._id}/results`).set('Authorization', admin.auth)
+    .send({ results: [{ caseId: 'AUTH-01', status: 'fail', note: 'saw it break' }] });
+
+  const res = await request().get(`/api/admin/qa/cases/${row._id}/history`).set('Authorization', admin.auth);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.caseId, 'AUTH-01');
+  assert.equal(res.body.results.length, 1);
+  assert.equal(res.body.results[0].status, 'fail');
+  assert.equal(res.body.results[0].note, 'saw it break');
+  assert.equal(res.body.results[0].run.device, 'iPhone SE');
+  assert.equal(res.body.results[0].release.version, '2.0.0');
+
+  const bogus = await request().get('/api/admin/qa/cases/64b7f9c2f1a2c3d4e5f60718/history')
+    .set('Authorization', admin.auth);
+  assert.equal(bogus.status, 404);
+});
+
 // --- Summary & the sign-off gate --------------------------------------------
 
 test('the summary reports coverage across every run on the release', async () => {
@@ -389,16 +418,17 @@ test('the repo\'s own pre-release plan imports end to end', async () => {
     .send({ format: 'markdown', content, sourceDoc: 'docs/PRE-RELEASE-TEST-PLAN.md', dryRun: false });
 
   assert.equal(res.status, 200);
-  assert.ok(res.body.counts.added > 500, `expected the full plan, got ${res.body.counts.added} cases`);
+  assert.ok(res.body.counts.added > 150, `expected the full plan, got ${res.body.counts.added} cases`);
   assert.deepEqual(res.body.warnings, [], 'the real plan must parse without warnings');
 
   // The ⛔ markers are load-bearing: they are what the sign-off gate refuses on.
   const blockers = await TestCase.countDocuments({ priority: 'blocker' });
-  assert.ok(blockers > 20, `expected the plan's blocker cases, got ${blockers}`);
+  assert.ok(blockers > 30, `expected the plan's blocker cases, got ${blockers}`);
   // Spec links in a section preamble reach the cases under it.
-  const cal13 = await TestCase.findOne({ caseId: 'CAL-13' }).lean();
-  assert.ok(cal13, 'CAL-13 must survive the round trip');
-  assert.match(cal13.specPath, /calendar\.md$/);
+  const spot = await TestCase.findOne({ caseId: 'REPEAT-03' }).lean();
+  assert.ok(spot, 'REPEAT-03 must survive the round trip');
+  assert.equal(spot.priority, 'blocker');
+  assert.match(spot.specPath, /calendar\.md$/);
 
   const again = await request().post('/api/admin/qa/cases/import').set('Authorization', admin.auth)
     .send({ format: 'markdown', content, sourceDoc: 'docs/PRE-RELEASE-TEST-PLAN.md', dryRun: false });

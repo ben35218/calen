@@ -29,6 +29,7 @@ config.resolver.extraNodeModules = {
   // Shared CJS engines (no deps). See §9.1 P2 / P5b.
   '@household/calendar': path.resolve(workspaceRoot, 'shared/calendar'),
   '@household/weather': path.resolve(workspaceRoot, 'shared/weather'),
+  '@household/grocery': path.resolve(workspaceRoot, 'shared/grocery'),
 };
 
 // @household/crypto uses the package "exports" field (./adapters/native).

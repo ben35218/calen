@@ -56,8 +56,8 @@ export const EVENT_RSVP_ENC = (p: Rec) => ({
 // + jobTitle/company are the current shape; the legacy singles (phone/email/
 // address/businessName) stay in the subset so re-saving an upgraded record can
 // clear them (a field set to undefined is dropped from the sealed blob). See
-// lib/personFields for the read-time fold and the save-time clear.
-export const PERSON_ENC = (p: Rec) => ({
+// lib/contactFields for the read-time fold and the save-time clear.
+export const CONTACT_ENC = (p: Rec) => ({
   type: p.type, name: p.name, firstName: p.firstName, lastName: p.lastName,
   relationship: p.relationship, birthday: p.birthday,
   notes: p.notes, occasionsHidden: p.occasionsHidden,
@@ -107,7 +107,7 @@ export const RECIPE_ENC = (p: Rec) => ({
   imageUrl: p.imageUrl, servings: p.servings, prepTimeMins: p.prepTimeMins,
   cookTimeMins: p.cookTimeMins, ingredients: p.ingredients, instructions: p.instructions,
   instructionIngredients: p.instructionIngredients, instructionTimers: p.instructionTimers,
-  tags: p.tags,
+  tags: p.tags, variations: p.variations, instructionVariations: p.instructionVariations,
 });
 
 export const ITEM_ENC = (p: Rec) => ({
@@ -123,6 +123,7 @@ export const ODOMETER_ENC = (p: Rec) => ({
 });
 export const RECIPE_SCHEDULE_ENC = (p: Rec) => ({
   recipeId: p.recipeId, scheduledDate: p.scheduledDate, servings: p.servings, notes: p.notes,
+  variation: p.variation,
 });
 export const CATEGORY_ENC = (p: Rec) => ({
   parentId: p.parentId, name: p.name, icon: p.icon, color: p.color, sortOrder: p.sortOrder,

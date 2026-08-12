@@ -15,7 +15,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tasksApi, itemsApi, propertiesApi, TaskTemplate, LinkedRef } from '../../api';
 import { createTaskFromTemplate } from '../../lib/taskTemplates';
-import { Input, Badge, SectionHeader, CenteredLoader, IconAvatar } from '../../components/ui';
+import { Input, Badge, SectionHeader, SkeletonList, IconAvatar } from '../../components/ui';
 import { recurrenceLabelShort } from '../../lib/recurrence';
 import { diyBadge } from '../../lib/diy';
 import { categoryMeta, orderCategories, resolveTaskIcon } from '../../lib/maintenanceCategories';
@@ -147,7 +147,7 @@ export default function TaskTemplatesScreen() {
   const pickCategory = (cat: string) => { setSearch(''); setActiveCat(cat); };
 
   if (templatesQ.isLoading) {
-    return <CenteredLoader />;
+    return <SkeletonList />;
   }
 
   const renderCard = (tpl: TaskTemplate) => {
@@ -183,7 +183,7 @@ export default function TaskTemplatesScreen() {
         {isMulti ? (
           <Ionicons name={checked ? 'checkmark-circle' : 'ellipse-outline'} size={24} color={checked ? accent : colors.border} />
         ) : busy ? (
-          <ActivityIndicator color={colors.primary} />
+          <ActivityIndicator color={accent} />
         ) : !used ? (
           <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
         ) : null}

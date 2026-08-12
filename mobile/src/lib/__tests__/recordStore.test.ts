@@ -37,9 +37,9 @@ afterEach(() => {
 
 const SEALED = { _id: 'p1', name: 'Sam', dates: [{ label: 'anniversary', value: '1998-06-12' }], enc: 'ct', keyVersion: 1 };
 
-test('editing a person invalidates the calendar queries after the replica write', async () => {
-  await store.update('Person', 'p1', SEALED);
-  expect(replica.upsert).toHaveBeenCalledWith('Person', [expect.objectContaining({ _id: 'p1', name: 'Sam' })]);
+test('editing a contact invalidates the calendar queries after the replica write', async () => {
+  await store.update('Contact', 'p1', SEALED);
+  expect(replica.upsert).toHaveBeenCalledWith('Contact', [expect.objectContaining({ _id: 'p1', name: 'Sam' })]);
   jest.runAllTimers();
   expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['calendar'] });
 });
@@ -56,9 +56,9 @@ test('creating and deleting a calendar-bearing record invalidate too', async () 
 
 test('a burst of writes coalesces into one invalidation', async () => {
   await Promise.all([
-    store.create('Person', { _id: 'a', enc: 'ct', keyVersion: 1 }),
-    store.create('Person', { _id: 'b', enc: 'ct', keyVersion: 1 }),
-    store.create('Person', { _id: 'c', enc: 'ct', keyVersion: 1 }),
+    store.create('Contact', { _id: 'a', enc: 'ct', keyVersion: 1 }),
+    store.create('Contact', { _id: 'b', enc: 'ct', keyVersion: 1 }),
+    store.create('Contact', { _id: 'c', enc: 'ct', keyVersion: 1 }),
   ]);
   jest.runAllTimers();
   expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(1);
@@ -81,7 +81,7 @@ test('a collection the calendar never expands does not invalidate it', async () 
 test('a local update leaves the replica row decrypting to the NEW content', async () => {
   replica.getAll.mockResolvedValueOnce([{ _id: 'p1', name: 'Sam', enc: 'stale-ct', keyVersion: 1 }]);
 
-  await store.update('Person', 'p1', { _id: 'p1', name: 'Sammy', enc: 'fresh-ct', keyVersion: 2 });
+  await store.update('Contact', 'p1', { _id: 'p1', name: 'Sammy', enc: 'fresh-ct', keyVersion: 2 });
 
   const [, [row]] = replica.upsert.mock.calls[0];
   expect(row.name).toBe('Sammy');
@@ -107,7 +107,7 @@ test('a param naming a field no record carries yields an empty list', async () =
 });
 
 test('a created row carries its own ciphertext too', async () => {
-  await store.create('Person', { _id: 'p2', name: 'Alex', enc: 'ct2', keyVersion: 3 });
+  await store.create('Contact', { _id: 'p2', name: 'Alex', enc: 'ct2', keyVersion: 3 });
 
   const [, [row]] = replica.upsert.mock.calls[0];
   expect(row.enc).toBe('ct2');

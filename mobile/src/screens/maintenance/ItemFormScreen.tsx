@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { itemsApi, propertiesApi, peopleApi, Item, Property, Person, CustomField, FormAssistField } from '../../api';
+import { itemsApi, propertiesApi, contactsApi, Item, Property, Contact, CustomField, FormAssistField } from '../../api';
 import { loadCategories } from '../../lib/categories';
 import { ITEM_ENC } from '../../lib/encSubsets';
 import { sealNew, sealUpdate, openRecord } from '../../lib/e2ee';
@@ -14,7 +14,7 @@ import { takePhoto, pickImage } from '../../lib/media';
 import { uploadFile } from '../../lib/upload';
 
 // Encrypted item content (categoryId/type/dates stay plaintext).
-import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader, Button } from '../../components/ui';
+import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader, Button, Skeleton } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import FormAssist from '../../components/FormAssist';
@@ -304,19 +304,19 @@ export default function ItemFormScreen() {
   // in-form property Select (keeps creation in the same sheet as the choices).
   const ADD_PROPERTY = '__add_property__';
 
-  // Service professionals are type:'service' people from the user's contacts.
+  // Service professionals are type:'service' contacts from the user's contacts.
   // Decrypt over plaintext (dual-write); the roster refreshes automatically when
-  // PersonForm/ContactImport invalidate ['people'] after an add/import.
-  const peopleQ = useQuery({
-    queryKey: ['people'],
+  // ContactForm/ContactImport invalidate ['contacts'] after an add/import.
+  const contactsQ = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
-      const rows = (await peopleApi.list()).data;
-      return Promise.all(rows.map((p) => openRecord('Person', p))) as Promise<Person[]>;
+      const rows = (await contactsApi.list()).data;
+      return Promise.all(rows.map((p) => openRecord('Contact', p))) as Promise<Contact[]>;
     },
   });
-  const servicePeople = useMemo(
-    () => (peopleQ.data ?? []).filter((p) => p.type === 'service'),
-    [peopleQ.data]
+  const serviceContacts = useMemo(
+    () => (contactsQ.data ?? []).filter((p) => p.type === 'service'),
+    [contactsQ.data]
   );
 
   // After launching the add/import flow, auto-select the one new service pro that
@@ -325,15 +325,15 @@ export default function ItemFormScreen() {
   const preAddServiceIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!awaitingNewPro.current) return;
-    const newIds = servicePeople.map((p) => p._id).filter((pid) => !preAddServiceIds.current.has(pid));
+    const newIds = serviceContacts.map((p) => p._id).filter((pid) => !preAddServiceIds.current.has(pid));
     if (newIds.length === 1) set({ serviceProId: newIds[0] });
     if (newIds.length >= 1) awaitingNewPro.current = false; // ambiguous (>1): let the user pick
-  }, [servicePeople]);
+  }, [serviceContacts]);
 
   const openAddServicePro = () => {
     awaitingNewPro.current = true;
-    preAddServiceIds.current = new Set(servicePeople.map((p) => p._id));
-    const addManually = () => navigation.navigate('PersonForm', { type: 'service' });
+    preAddServiceIds.current = new Set(serviceContacts.map((p) => p._id));
+    const addManually = () => navigation.navigate('ContactForm', { type: 'service' });
     const importContacts = () => navigation.navigate('ContactImport');
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
@@ -620,7 +620,19 @@ export default function ItemFormScreen() {
       <Screen>
         <Text style={styles.intro}>Which property is this item at?</Text>
         {propertiesQ.isLoading ? (
-          <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.lg }} />
+          // Shimmer the property rows' shape (avatar disc + name) so the card
+          // loads in place rather than popping in after a bare spinner.
+          <GroupCard>
+            {[0, 1].map((i) => (
+              <React.Fragment key={i}>
+                {i > 0 ? <CardDivider /> : null}
+                <View style={styles.typeRow}>
+                  <Skeleton width={44} height={44} radius={22} />
+                  <Skeleton width={i ? '38%' : '52%'} height={15} />
+                </View>
+              </React.Fragment>
+            ))}
+          </GroupCard>
         ) : (
           <GroupCard>
             {(propertiesQ.data ?? []).map((p, i) => (
@@ -703,6 +715,7 @@ export default function ItemFormScreen() {
       ) : null}
 
       <FormAssist
+        accent={accent}
         formType={`${cfg.label.toLowerCase()} (home item)`}
         placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
         fields={assistFields}
@@ -811,7 +824,7 @@ export default function ItemFormScreen() {
           clearable
           placeholder="None"
           value={form.serviceProId ?? undefined}
-          options={servicePeople.map((p) => ({
+          options={serviceContacts.map((p) => ({
             label: p.businessName ? `${p.name} · ${p.businessName}` : p.name,
             value: p._id,
           }))}

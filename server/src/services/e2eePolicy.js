@@ -83,7 +83,7 @@ const AUTHOR_FIELD = 'userId';
 // also keep `userId` via the `enc.ks` guard below; only its private HDK events
 // hide it. Mirrors the AUTHOR_HIDDEN set the drop nulls.
 const AUTHOR_HIDDEN = new Set([
-  'CalendarEvent', 'Person', 'MaintenanceTask', 'Chore', 'Recipe', 'Item',
+  'CalendarEvent', 'Contact', 'MaintenanceTask', 'Chore', 'Recipe', 'Item',
   'OdometerLog', 'RecipeSchedule', 'Category',
 ]);
 

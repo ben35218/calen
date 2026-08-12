@@ -68,7 +68,7 @@ const DAY_VIEW_KEY = 'hc_day_view_mode';
 // device setting — see hydrateAccountPrefsFromServer.
 const OCCASION_ALERTS_KEY = 'hc_occasion_alert_prefs';
 // Alert config shared by EVERY holiday calendar the user has (one config, not
-// one per country — a person who wants a heads-up for holidays wants it for all
+// one per country — a contact who wants a heads-up for holidays wants it for all
 // of them). Same shape as the occasion prefs. Defaults to OFF: holidays are
 // numerous, and silently filling the rolling reminder window with them would
 // crowd out the user's own events.
@@ -116,7 +116,7 @@ export const CALENDARS: CalendarDef[] = [
 // customCalendarsApi with AsyncStorage as the offline warm-start cache. `id`
 // is the server record's `key` (`custom-<slug>`) — what events reference via
 // calendarType. Sharing tiers: the whole household (supersedes `sharedWith`),
-// specific household members (user ids), or people outside the household
+// specific household members (user ids), or contacts outside the household
 // (emails; stored intent — no invitation flow yet). `mine` = created by this
 // user; only the creator can edit or delete.
 export interface CustomCalendar {
@@ -126,7 +126,7 @@ export interface CustomCalendar {
   // When off, events on this calendar never display alerts.
   alertsEnabled: boolean;
   sharedWithHousehold: boolean;
-  // One access level for household-wide sharing; per-person otherwise.
+  // One access level for household-wide sharing; per-contact otherwise.
   householdAccess: CalendarAccess;
   sharedWith: { userId: string; access: CalendarAccess }[];
   sharedWithOutside: { email?: string; phone?: string; access: CalendarAccess }[];
@@ -742,6 +742,19 @@ async function ensureLoaded() {
       .then(markPrefsReady, markPrefsReady)
       .finally(() => clearTimeout(cap));
   }
+}
+
+// Re-arm the load after an IN-SESSION wipe. resetCalendarPrefs drops `loaded`
+// and `prefsReady`, and `prefsReady` is what the RootNavigator holds its splash
+// on — but the ready hook only restarts ensureLoaded when its signed-in gate
+// flips (the sign-out → sign-in case). A wipe that happens while the user STAYS
+// signed in (the household-changed teardown: join, leave, removal, re-key) must
+// therefore call this after resetting, or nothing ever marks the prefs ready
+// again and the splash holds forever. Reads the now-empty cache, pulls the
+// server truth (the current household's calendars + the account arrangement),
+// and marks ready within the bounded first-paint wait.
+export function reloadCalendarPrefs(): Promise<void> {
+  return ensureLoaded();
 }
 
 // Write the visibility map to the device cache AND the account. Every mutation

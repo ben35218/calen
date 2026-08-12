@@ -1,16 +1,16 @@
 import {
   collectOccasions, whenLabel, PAST_WINDOW_DAYS, COMING_UP_DAYS,
 } from '../occasions';
-import type { Person } from '../../api';
+import type { Contact } from '../../api';
 
-const person = (p: Partial<Person> & { _id: string; name: string }) => p as Person;
+const contact = (p: Partial<Contact> & { _id: string; name: string }) => p as Contact;
 
 // A fixed "today" so the windowing is deterministic: Fri Jul 31, 2026 (local).
 const NOW = new Date(2026, 6, 31);
 
 // Convenience: run collectOccasions for a single-birthday contact and read its offset.
 function offsetOf(birthday: string): number {
-  const [o] = collectOccasions([person({ _id: '1', name: 'A', birthday })], NOW);
+  const [o] = collectOccasions([contact({ _id: '1', name: 'A', birthday })], NOW);
   return o.offset;
 }
 
@@ -47,44 +47,44 @@ describe('collectOccasions windowing', () => {
 
 describe('collectOccasions years-since', () => {
   it("computes the age turned at a recently-passed birthday from last occurrence", () => {
-    const [o] = collectOccasions([person({ _id: '1', name: 'A', birthday: '1990-07-30' })], NOW);
+    const [o] = collectOccasions([contact({ _id: '1', name: 'A', birthday: '1990-07-30' })], NOW);
     expect(o.years).toBe(36); // turned 36 yesterday
   });
 
   it('computes the age about to be turned at an upcoming birthday', () => {
-    const [o] = collectOccasions([person({ _id: '1', name: 'A', birthday: '1990-08-01' })], NOW);
+    const [o] = collectOccasions([contact({ _id: '1', name: 'A', birthday: '1990-08-01' })], NOW);
     expect(o.years).toBe(36); // turns 36 tomorrow
   });
 
   it('leaves years null when no real origin year is on file', () => {
     // A far-future stored year (a date with no meaningful birth year) yields no age.
-    const [o] = collectOccasions([person({ _id: '1', name: 'A', birthday: '1900-06-15' })], NOW);
+    const [o] = collectOccasions([contact({ _id: '1', name: 'A', birthday: '1900-06-15' })], NOW);
     expect(o.years).toBeNull();
   });
 });
 
 describe('collectOccasions ordering & sources', () => {
   it('sorts chronologically: recently-passed before today before upcoming', () => {
-    const people = [
-      person({ _id: '1', name: 'Upcoming', birthday: '1990-08-01' }),   // +1
-      person({ _id: '2', name: 'Past', birthday: '1990-07-29' }),       // -2
-      person({ _id: '3', name: 'Today', birthday: '2000-07-31' }),      // 0
+    const contacts = [
+      contact({ _id: '1', name: 'Upcoming', birthday: '1990-08-01' }),   // +1
+      contact({ _id: '2', name: 'Past', birthday: '1990-07-29' }),       // -2
+      contact({ _id: '3', name: 'Today', birthday: '2000-07-31' }),      // 0
     ];
-    expect(collectOccasions(people, NOW).map((o) => o.person.name)).toEqual(['Past', 'Today', 'Upcoming']);
+    expect(collectOccasions(contacts, NOW).map((o) => o.contact.name)).toEqual(['Past', 'Today', 'Upcoming']);
   });
 
   it('derives occasions from both the birthday field and labeled dates, tagging kind from the label', () => {
-    const people = [person({
+    const contacts = [contact({
       _id: '1', name: 'A',
       birthday: '1990-07-31',
       dates: [{ label: 'anniversary', value: '2010-08-05' }],
     })];
-    const kinds = collectOccasions(people, NOW).map((o) => o.kind).sort();
+    const kinds = collectOccasions(contacts, NOW).map((o) => o.kind).sort();
     expect(kinds).toEqual(['anniversary', 'birthday']);
   });
 
   it('flags an occasionsHidden contact so the screen can omit it (does not drop it here)', () => {
-    const [o] = collectOccasions([person({ _id: '1', name: 'A', birthday: '2000-07-31', occasionsHidden: true })], NOW);
+    const [o] = collectOccasions([contact({ _id: '1', name: 'A', birthday: '2000-07-31', occasionsHidden: true })], NOW);
     expect(o.hidden).toBe(true);
   });
 });

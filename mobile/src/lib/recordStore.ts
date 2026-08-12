@@ -32,13 +32,13 @@ const runSync = () => require('./records').syncRecords as () => Promise<unknown>
 // mounted tab, so nothing re-runs on its own). Invalidating here, at the one
 // CRUD chokepoint, is what keeps a contact/chore/event editor from having to
 // remember it: editing a contact's occasion dates repainted the Occasions list
-// (it reads ['people']) but left the month grid showing the old dates until the
-// next sync pass, because the person form only invalidated ['people'].
+// (it reads ['contacts']) but left the month grid showing the old dates until the
+// next sync pass, because the contact form only invalidated ['contacts'].
 // `Recipe` is in the set even though no recipe is itself a calendar item: the
 // calendar joins each scheduled meal's title out of the Recipe replica
 // (lib/calendarData), so renaming a recipe changes what the grid renders.
 const CALENDAR_COLLECTIONS = new Set([
-  'CalendarEvent', 'MaintenanceTask', 'Chore', 'Person', 'RecipeSchedule', 'EventRsvp', 'Recipe',
+  'CalendarEvent', 'MaintenanceTask', 'Chore', 'Contact', 'RecipeSchedule', 'EventRsvp', 'Recipe',
 ]);
 
 // Coalesce bursts (a bulk contact import writes one record per contact) into a

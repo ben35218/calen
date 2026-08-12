@@ -97,7 +97,7 @@ const FOLLOWUPS_TOOL_NAME = 'suggest_followups';
 const FOLLOWUPS_TOOL = {
   name: FOLLOWUPS_TOOL_NAME,
   description:
-    'Call this exactly once at the END of your turn, alongside or after your final reply text: suggest 2-3 short things the user might tap to say next. First person, max ~6 words each, concrete next actions (confirmations, refinements, follow-up questions) — no generic chit-chat. Do not mention or repeat the suggestions in your reply text, and do not add reply text after calling this.',
+    'Call this exactly once at the END of your turn, alongside or after your final reply text: suggest 2-3 short things the user might tap to say next. First contact, max ~6 words each, concrete next actions (confirmations, refinements, follow-up questions) — no generic chit-chat. Do not mention or repeat the suggestions in your reply text, and do not add reply text after calling this.',
   input_schema: {
     type: 'object',
     properties: {

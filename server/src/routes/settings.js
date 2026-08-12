@@ -1,7 +1,7 @@
 const express = require('express');
 const User = require('../models/User');
 const Household = require('../models/Household');
-const Person = require('../models/Person');
+const Contact = require('../models/Contact');
 const { requireAuth } = require('../middleware/auth');
 const { pickRecordEnc } = require('../services/householdKey');
 const { stripSealedContent } = require('../services/e2eePolicy');
@@ -11,8 +11,8 @@ const router = express.Router();
 router.use(requireAuth);
 
 // Settings shared across the household vs. personal to the user account.
-// aboutMe (notes) now lives on the user's self Person record,
-// managed from the People page — not here. Notifications are no longer a global
+// aboutMe (notes) now lives on the user's self Contact record,
+// managed from the Contacts page — not here. Notifications are no longer a global
 // setting — alerts are configured per item and delivered via push.
 // timezone is personal: alerts fire at each member's own default alert hour
 // (9am unless they change it — see dayAlertTime) in their own local zone, so a
@@ -244,9 +244,9 @@ router.put('/', async (req, res) => {
         : Promise.resolve(),
     ]);
 
-    // Signal-parity C3b: the self-Person lives in the unified opaque store, which
+    // Signal-parity C3b: the self-Contact lives in the unified opaque store, which
     // the client seeds + maintains ENCRYPTED (createSelf via /records). The server
-    // no longer creates or syncs a plaintext self-Person here — doing so would mint
+    // no longer creates or syncs a plaintext self-Contact here — doing so would mint
     // a plaintext straggler that blocks the born-encrypted drop.
 
     res.json(user);

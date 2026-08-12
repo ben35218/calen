@@ -74,7 +74,7 @@ describe('UnlockPaywallScreen', () => {
 
   it('puts the purchase terms under the CTA as micro-copy', async () => {
     const view = await render(<UnlockPaywallScreen />);
-    expect(view.getByText(/One-time purchase, per person/)).toBeTruthy();
+    expect(view.getByText(/One-time purchase, per contact/)).toBeTruthy();
     expect(view.getByText(/not a subscription/)).toBeTruthy();
   });
 

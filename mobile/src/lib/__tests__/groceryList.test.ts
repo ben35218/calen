@@ -34,6 +34,27 @@ test('aggregates ingredients across the week, merging by normalized name', () =>
   expect(garlic.entries![0]).toMatchObject({ recipeTitle: 'Soup', multiplier: 2 });
 });
 
+test('a scheduled variation buys base + component groups + only the chosen kit', () => {
+  const energyBalls: Recipe = {
+    _id: 'r3', title: 'Energy Balls',
+    variations: ['Lemon Blueberry', 'Chocolate PB'],
+    ingredients: [
+      { name: 'Oats', amount: '2', unit: 'cups' },                       // base
+      { name: 'Drizzle', amount: '1', unit: 'tbsp', group: 'Topping' },  // component group ≠ variation
+      { name: 'Blueberries', amount: '1', unit: 'cup', group: 'Lemon Blueberry' },
+      { name: 'Peanut butter', amount: '2', unit: 'tbsp', group: 'Chocolate PB' },
+    ],
+  };
+  const byId = new Map([['r3', energyBalls]]);
+
+  const chosen = aggregateGroceryList([{ recipeId: 'r3', variation: 'Lemon Blueberry' }], byId);
+  expect(chosen.map((g) => g.name)).toEqual(['Blueberries', 'Drizzle', 'Oats']);
+
+  // No recorded choice (legacy schedule) fails open: everything is bought.
+  const unchosen = aggregateGroceryList([{ recipeId: 'r3' }], byId);
+  expect(unchosen.map((g) => g.name)).toEqual(['Blueberries', 'Drizzle', 'Oats', 'Peanut butter']);
+});
+
 test('schedules pointing at unknown or ingredient-less recipes are skipped', () => {
   const list = aggregateGroceryList(
     [{ recipeId: 'missing' }, { recipeId: 'r1' }],
@@ -41,3 +62,4 @@ test('schedules pointing at unknown or ingredient-less recipes are skipped', () 
   );
   expect(list).toEqual([]);
 });
+

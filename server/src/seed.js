@@ -3,7 +3,7 @@
 // (Signal-parity D5: an E2EE-active household seeds ENCRYPTED categories from
 // the same data) can never drift from the server seed.
 //
-// Register-time seeding stays plaintext on purpose (the P1 self-Person
+// Register-time seeding stays plaintext on purpose (the P1 self-Contact
 // pattern): a fresh household isn't e2eeActive yet, and the born-encrypted
 // activation's straggler pass seals these rows before the drop nulls the names.
 const { categories: defaultCategories, subcategories: defaultSubcategories } =

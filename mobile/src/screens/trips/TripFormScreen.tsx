@@ -387,6 +387,7 @@ export default function TripFormScreen() {
   return (
     <Screen>
       <FormAssist
+        accent={accent}
         formType="trip"
         placeholder={'Describe the trip, e.g. "10-day trip to Rome in May, booked"'}
         fields={ASSIST_FIELDS}

@@ -16,7 +16,7 @@ const mongoose = require('mongoose');
 const schema = new mongoose.Schema({
   numberHash: { type: String, required: true, unique: true }, // HMAC-SHA256(E.164)
   last4:      { type: String },                               // display only
-  // How the number got here. 'callee-request' = the person asked on the call;
+  // How the number got here. 'callee-request' = the contact asked on the call;
   // 'inbound-sms' = a future STOP text; 'support'/'user' = added by hand.
   source: { type: String, enum: ['callee-request', 'inbound-sms', 'support', 'user'], required: true },
   note:   { type: String },

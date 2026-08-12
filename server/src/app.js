@@ -32,7 +32,7 @@ const historyRoutes = require('./routes/history');
 const settingsRoutes = require('./routes/settings');
 const odometerRoutes = require('./routes/odometer');
 const weatherRoutes = require('./routes/weather');
-const peopleRoutes = require('./routes/people');
+const contactsRoutes = require('./routes/contacts');
 const ecardRoutes = require('./routes/ecards');
 const recipeRoutes = require('./routes/recipes');
 const recipeScheduleRoutes = require('./routes/recipeSchedule');
@@ -130,7 +130,11 @@ app.use('/api/history', historyRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/vehicles/:itemId/odometer', odometerRoutes);
 app.use('/api/weather', weatherRoutes);
-app.use('/api/people', peopleRoutes);
+app.use('/api/contacts', contactsRoutes);
+// Deprecated alias: app builds from before the Person→Contact rename call
+// /api/people/{import,classify}. Keep it mounted so an installed build keeps
+// importing contacts; remove once those builds are out of circulation.
+app.use('/api/people', contactsRoutes);
 app.use('/api/ecards', ecardRoutes);
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/recipe-schedule', recipeScheduleRoutes);

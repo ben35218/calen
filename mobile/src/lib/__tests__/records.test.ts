@@ -38,13 +38,13 @@ function makeDeps(records: RecordRow[], serverTime = '2026-07-19T00:00:05.000Z')
 test('opaque rows decrypt and land in their recovered per-collection bucket', async () => {
   const { deps, buckets } = makeDeps([
     { _id: 'a1', updatedAt: 't1', __dec: { collection: 'MaintenanceTask', record: { title: 'Filter' } } } as any,
-    { _id: 'p1', updatedAt: 't2', __dec: { collection: 'Person', record: { name: 'Sam' } } } as any,
+    { _id: 'p1', updatedAt: 't2', __dec: { collection: 'Contact', record: { name: 'Sam' } } } as any,
     { _id: 'a2', updatedAt: 't3', __dec: { collection: 'MaintenanceTask', record: { title: 'Oil' } } } as any,
   ]);
   const res = await syncRecords(deps);
   expect(res.upserted).toBe(3);
   expect(buckets.MaintenanceTask.map((r) => r._id).sort()).toEqual(['a1', 'a2']);
-  expect(buckets.Person[0]).toMatchObject({ _id: 'p1', name: 'Sam', updatedAt: 't2' });
+  expect(buckets.Contact[0]).toMatchObject({ _id: 'p1', name: 'Sam', updatedAt: 't2' });
 });
 
 test('a tombstone removes the row from its bucket', async () => {
@@ -82,9 +82,9 @@ test('the cursor advances to serverTime when nothing is blocked', async () => {
 // lives on the server. The cursor parks before the blocked row so it's re-pulled.
 test('a blocked (undecryptable) content row holds the cursor before it, not at serverTime', async () => {
   const { deps, getCursor } = makeDeps([
-    { _id: 'good', updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    { _id: 'good', updatedAt: 't1', __dec: { collection: 'Contact', record: { name: 'Ada' } } } as any,
     { _id: 'locked', updatedAt: 't2' } as any, // key not ready → decrypt null
-    { _id: 'later', updatedAt: 't3', __dec: { collection: 'Person', record: { name: 'Bo' } } } as any,
+    { _id: 'later', updatedAt: 't3', __dec: { collection: 'Contact', record: { name: 'Bo' } } } as any,
   ], '2026-07-19T09:00:00.000Z');
   const res = await syncRecords(deps);
   expect(res.skipped).toBe(1);
@@ -110,14 +110,14 @@ test('every content row blocked → cursor is left untouched for a full retry', 
 // data" failure. A foreign row must skip like a reaped tombstone.
 test('a foreign undecryptable row does NOT hold the cursor back', async () => {
   const { deps, getCursor, buckets } = makeDeps([
-    { _id: 'mine', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    { _id: 'mine', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Contact', record: { name: 'Ada' } } } as any,
     { _id: 'stranded', householdId: 'hh-theirs', updatedAt: 't2' } as any, // their old household's key
-    { _id: 'later', householdId: MY_HOUSEHOLD, updatedAt: 't3', __dec: { collection: 'Person', record: { name: 'Bo' } } } as any,
+    { _id: 'later', householdId: MY_HOUSEHOLD, updatedAt: 't3', __dec: { collection: 'Contact', record: { name: 'Bo' } } } as any,
   ], '2026-07-19T09:00:00.000Z');
   const res = await syncRecords(deps);
   expect(res.skipped).toBe(1);
   // The rows AFTER the foreign one still reconcile — the feed isn't wedged.
-  expect(buckets.Person.map((r) => r._id)).toEqual(['mine', 'later']);
+  expect(buckets.Contact.map((r) => r._id)).toEqual(['mine', 'later']);
   expect(getCursor()).toBe('2026-07-19T09:00:00.000Z'); // fully caught up
 });
 
@@ -126,7 +126,7 @@ test('a foreign undecryptable row does NOT hold the cursor back', async () => {
 // (a sync racing ahead of unlock) comes straight back.
 test('an undecryptable row in our own household still blocks the cursor', async () => {
   const { deps, getCursor } = makeDeps([
-    { _id: 'good', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    { _id: 'good', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Contact', record: { name: 'Ada' } } } as any,
     { _id: 'locked', householdId: MY_HOUSEHOLD, updatedAt: 't2' } as any,
   ], '2026-07-19T09:00:00.000Z');
   await syncRecords(deps);
@@ -138,7 +138,7 @@ test('an undecryptable row in our own household still blocks the cursor', async 
 // must stay retryable, not be written off as foreign.
 test('a resource-scoped row from another household stays retryable', async () => {
   const { deps, getCursor } = makeDeps([
-    { _id: 'good', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Person', record: { name: 'Ada' } } } as any,
+    { _id: 'good', householdId: MY_HOUSEHOLD, updatedAt: 't1', __dec: { collection: 'Contact', record: { name: 'Ada' } } } as any,
     {
       _id: 'sharedcal', householdId: 'hh-owner', updatedAt: 't2',
       enc: { alg: 'x', nonce: 'n', ct: 'c', ks: 'cal' },

@@ -18,10 +18,10 @@ import {
 // envelopes the server will store. Skips anyone we can't seal to.
 async function wrapFor(
   resource: string, version: number,
-  people: { userId: string; identityPublicKey: string }[],
+  contacts: { userId: string; identityPublicKey: string }[],
 ): Promise<{ userId: string; wrappedKey: string }[]> {
   const out: { userId: string; wrappedKey: string }[] = [];
-  for (const p of people) {
+  for (const p of contacts) {
     if (!p.identityPublicKey) continue;
     const wrapped = await wrapResourceKeyForCollaborator(resource, version, p.identityPublicKey);
     if (wrapped) out.push({ userId: p.userId, wrappedKey: wrapped });

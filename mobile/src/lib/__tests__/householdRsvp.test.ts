@@ -119,7 +119,7 @@ describe('rsvpsForEvent', () => {
 
 describe('respondToHouseholdEvent', () => {
   const opts = {
-    eventId: 'e1', status: 'accepted' as const, eventTitle: 'Dinner', creatorId: 'ada', myName: 'Me Person',
+    eventId: 'e1', status: 'accepted' as const, eventTitle: 'Dinner', creatorId: 'ada', myName: 'Me Contact',
   };
 
   it('creates my sealed EventRsvp and pushes the reply to the creator', async () => {
@@ -128,7 +128,7 @@ describe('respondToHouseholdEvent', () => {
     expect(recordStore.create).toHaveBeenCalledWith('EventRsvp', expect.objectContaining({ _id: 'new-rsvp-id' }));
     expect(notificationsApi.eventResponse).toHaveBeenCalledWith(expect.objectContaining({
       toUserId: 'ada', eventId: 'e1', title: 'Invitation accepted',
-      body: 'Me Person accepted “Dinner”',
+      body: 'Me Contact accepted “Dinner”',
     }));
   });
 

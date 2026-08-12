@@ -11,10 +11,19 @@ const AUDIT_EVENTS = [
   // of its own records were left unreadable and how many envelopes were
   // cleared — never content.
   'key_rekeyed',
+  // The solo "start fresh" that can ride a re-key: nobody else held the HDK, so
+  // the household's permanently unreadable records were purged and its key
+  // version reset for a fresh mint. Meta carries the purge count — never content.
+  'hdk_reset',
   // A calendar owner re-wrapped their CalendarKey to a re-keyed collaborator's
   // NEW identity. The deliberate, human-approved half of that recovery.
   'calendar_access_reapproved',
   'factor_added', 'factor_removed', // unlock-factor envelope changes (Signal-parity A1)
+  // Guardian recovery lifecycle (specs/features/guardian-recovery.md). Meta is
+  // the guardian's userId only — never the PIN, envelope, or any key material.
+  'guardian_armed',    // user nominated a household member as recovery guardian
+  'guardian_disarmed', // user removed their guardian envelope
+  'guardian_approved', // guardian re-sealed the inner envelope for a recovery request
   'passkey_signin_added',           // a WebAuthn sign-in credential was registered
   'session_created', 'session_revoked', // device sign-in lifecycle (Signal-parity F2/F3)
   'device_linked',   // a device received the E2EE keys via QR linking (Signal-parity F4)

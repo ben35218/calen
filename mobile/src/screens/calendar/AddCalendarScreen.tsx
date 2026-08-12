@@ -37,7 +37,7 @@ function memberName(m: HouseholdMember): string {
 type OutsideEntry = { email?: string; phone?: string; access: CalendarAccess };
 const outsideKey = (o: { email?: string; phone?: string }) => o.email || o.phone || '';
 
-// Tappable "View Only / Full Access" pill next to a shared person. Tapping
+// Tappable "View Only / Full Access" pill next to a shared contact. Tapping
 // toggles the level; tinted with the calendar colour when Full Access.
 function AccessPill({
   access,
@@ -68,7 +68,7 @@ function AccessPill({
 const flip = (a: CalendarAccess): CalendarAccess => (a === 'full' ? 'view' : 'full');
 
 // Create (or edit, when `calendarId` is passed) a user-defined calendar:
-// name, who it's shared with (each person View Only or Full Access), colour,
+// name, who it's shared with (each contact View Only or Full Access), colour,
 // and whether its events may display alerts. Also edits the built-in default
 // calendars (`calendarId` = a DELETABLE_DEFAULT_IDS entry): fixed name,
 // household-only sharing, with colour/alerts/delete backed by device prefs.
@@ -234,7 +234,7 @@ export default function AddCalendarScreen() {
       if (e?.response?.data?.error === 'decrypt_required') {
         Alert.alert(
           'Sharing outside isn’t available yet',
-          'Calendars can’t be shared with people outside your household yet. Remove the outside emails to save.',
+          'Calendars can’t be shared with contacts outside your household yet. Remove the outside emails to save.',
         );
       } else {
         Alert.alert('Couldn’t save calendar', 'Check your connection and try again.');
@@ -699,8 +699,8 @@ export default function AddCalendarScreen() {
               </View>
               {suggestOpen && suggestions.length > 0 ? (
                 <View style={styles.dropdown}>
-                  {suggestions.map(({ p, entry }) => (
-                    <TouchableOpacity key={p._id} style={styles.suggestRow} onPress={() => addFromSuggestion(entry)}>
+                  {suggestions.map(({ key, p, entry, label, display }) => (
+                    <TouchableOpacity key={key} style={styles.suggestRow} onPress={() => addFromSuggestion(entry)}>
                       <Ionicons
                         name={'phone' in entry ? 'chatbubble-outline' : 'mail-outline'}
                         size={16}
@@ -709,7 +709,7 @@ export default function AddCalendarScreen() {
                       <View style={styles.suggestText}>
                         <Text style={styles.suggestName} numberOfLines={1}>{p.name}</Text>
                         <Text style={styles.suggestEmail} numberOfLines={1}>
-                          {'email' in entry ? entry.email : entry.phone}
+                          {label ? `${label} · ${display}` : display}
                         </Text>
                       </View>
                     </TouchableOpacity>

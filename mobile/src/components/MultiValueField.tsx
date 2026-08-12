@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet, Button, Input } from './ui';
 import { GroupCard, CardDivider } from './formStyles';
 import { colors, spacing, radius } from '../theme';
-import type { LabeledValue } from '../lib/personFields';
+import type { LabeledValue } from '../lib/contactFields';
 
 // The Apple-Contacts-style label picker: a bottom sheet of preset labels plus an
 // "Add Custom Label" path. Only the presets are listed — a custom (non-preset)
@@ -82,7 +82,7 @@ function LabelPicker({
 // A tappable label pill (label text + chevron) that opens the LabelPicker. Styled
 // like an inline form label so it sits flush in a grouped card row. Exported so
 // callers can reuse the same picker outside a MultiValueField row (e.g. the
-// person form's reciprocal-label control for a linked custom relationship).
+// contact form's reciprocal-label control for a linked custom relationship).
 export function LabelChip({
   value,
   presets,
@@ -117,7 +117,7 @@ export function LabelChip({
 // tappable label + a caller-supplied value editor, followed by a green-plus "add"
 // row. The value editor is a render prop so each field type supplies its own
 // control (PhoneField, DateField, PlacesAutocomplete, plain Input). Generic over
-// T so entries carrying extra keys (e.g. a related name's personId) round-trip.
+// T so entries carrying extra keys (e.g. a related name's contactId) round-trip.
 export function MultiValueField<T extends LabeledValue>({
   entries,
   onChange,

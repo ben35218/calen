@@ -76,7 +76,7 @@ describe('scopeCalendarSources', () => {
       { _id: 'tr1', name: 'in range', startDate: '2026-08-10', endDate: '2026-08-20' },
       { _id: 'tr2', name: 'out of range', startDate: '2027-01-01', endDate: '2027-01-10' },
     ],
-    people: [{ _id: 'p1', name: 'Ada' }],
+    contacts: [{ _id: 'p1', name: 'Ada' }],
     recipeSchedules: [{ _id: 'rs1', date: '2029-01-01' }],
   };
 
@@ -96,7 +96,7 @@ describe('scopeCalendarSources', () => {
   });
 
   it('leaves the roster and recipe schedules untouched (birthdays span the year)', () => {
-    expect(scoped.people).toEqual(sources.people);
+    expect(scoped.contacts).toEqual(sources.contacts);
     expect(scoped.recipeSchedules).toEqual(sources.recipeSchedules);
   });
 });
@@ -115,7 +115,7 @@ describe('availabilityForWindow (privacy toggle off)', () => {
           startDate: '2026-07-20T14:00:00.000Z', endDate: '2026-07-20T15:00:00.000Z',
         },
       ],
-      tasks: [], chores: [], people: [], trips: [], recipeSchedules: [], selfId: 'me',
+      tasks: [], chores: [], contacts: [], trips: [], recipeSchedules: [], selfId: 'me',
     };
     const days = availabilityForWindow(sources as any, window, 'UTC');
     const json = JSON.stringify(days);
@@ -131,7 +131,7 @@ describe('availabilityForWindow (privacy toggle off)', () => {
 
   it('drops the trip name from an away day', () => {
     const sources = {
-      events: [], tasks: [], chores: [], people: [], recipeSchedules: [], selfId: 'me',
+      events: [], tasks: [], chores: [], contacts: [], recipeSchedules: [], selfId: 'me',
       trips: [{ _id: 'tr1', name: 'Anniversary getaway', startDate: '2026-07-21', endDate: '2026-07-21' }],
     };
     const days = availabilityForWindow(sources as any, window, 'UTC');

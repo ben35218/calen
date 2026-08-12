@@ -1,14 +1,14 @@
 // Multi-value contact fields (Apple-Contacts-style) — the shared vocabulary and
-// the legacy⇄array migration used by the person form, detail view, and roster.
+// the legacy⇄array migration used by the contact form, detail view, and roster.
 //
-// A Person used to hold exactly one phone/email/address; it now holds labeled
+// A Contact used to hold exactly one phone/email/address; it now holds labeled
 // ARRAYS (phones/emails/addresses/dates/urls/relatedNames) plus jobTitle +
 // company. Because contact records are end-to-end encrypted, the server can't
-// migrate old rows — so we upgrade them on READ (`normalizePerson`, folding the
+// migrate old rows — so we upgrade them on READ (`normalizeContact`, folding the
 // legacy scalars into single-entry arrays) and, on the next save, write the new
 // arrays while clearing the legacy scalars (`denormalizeForSave`). Records that
 // are never re-edited still render correctly via the read-time fold.
-import type { Person } from '../api';
+import type { Contact } from '../api';
 import { canonicalizePhoneForStorage } from './phone';
 
 export interface LabeledValue {
@@ -16,14 +16,14 @@ export interface LabeledValue {
   value: string;
 }
 
-// A related contact: a labeled name, optionally linked to another Person in the
-// roster (personId) so the detail view can deep-link to their card.
+// A related contact: a labeled name, optionally linked to another Contact in the
+// roster (contactId) so the detail view can deep-link to their card.
 // `reciprocalLabel` is the label to mirror onto the LINKED contact's card for a
 // **custom** relationship whose inverse can't be derived automatically — e.g. a
 // "daughter-in-law" link whose reciprocal the user sets to "father-in-law".
 // Ignored for preset labels (their inverse is derived); see reciprocalLabelFor.
 export interface RelatedName extends LabeledValue {
-  personId?: string;
+  contactId?: string;
   reciprocalLabel?: string;
 }
 
@@ -41,7 +41,7 @@ export const ADDRESS_LABELS = ['home', 'work', 'other'];
 // catch-all preset — a date that isn't one of these kinds takes a **custom
 // label** (the picker's "Add Custom Label"), which surfaces as a custom occasion
 // under that label. The `birthday` row persists to the dedicated
-// `Person.birthday` field (split out in the person form's save), not `dates[]`.
+// `Contact.birthday` field (split out in the contact form's save), not `dates[]`.
 // See shared/calendar occasionKindFromLabel.
 export const DATE_LABELS = ['birthday', 'anniversary', 'death'];
 export const URL_LABELS = ['homepage', 'home', 'work', 'other'];
@@ -59,7 +59,7 @@ export const DEFAULT_URL_LABEL = 'homepage';
 export const DEFAULT_RELATED_LABEL = 'spouse';
 
 // ── Structured names (Apple-Contacts First / Last) ───────────────────────────
-// A Person's `name` stays the canonical, composed display name (used by the
+// A Contact's `name` stays the canonical, composed display name (used by the
 // roster, sorting, e-cards, related-name mirrors, initials, …). `firstName` /
 // `lastName` are the structured components the form edits; `name` is recomposed
 // from them on save. Legacy records hold only `name`, so we split it for the
@@ -74,9 +74,9 @@ export function composeName(firstName: string, lastName: string): string {
   return [firstName, lastName].map((s) => String(s ?? '').trim()).filter(Boolean).join(' ');
 }
 
-// The decrypted Person projected into the multi-value shape the form/detail work
+// The decrypted Contact projected into the multi-value shape the form/detail work
 // with. Every array is present (possibly empty); scalars default to ''.
-export interface NormalizedPerson {
+export interface NormalizedContact {
   // Structured name components — from the stored fields when present, else
   // split from the legacy `name` (see splitName).
   firstName: string;
@@ -97,20 +97,25 @@ function cleanList(list: unknown, fallbackLabel: string): LabeledValue[] {
     .map((e) => {
       const value = String((e as LabeledValue)?.value ?? '').trim();
       const label = String((e as LabeledValue)?.label ?? '').trim() || fallbackLabel;
-      const personId = (e as RelatedName)?.personId;
+      // `contactId` links a related name to another roster contact. It was
+      // `personId` before the Person→Contact rename and rides INSIDE the sealed
+      // blob, so the server can't rewrite it — accept the old key on read and
+      // the next save persists the new one.
+      const entry = e as RelatedName & { personId?: string };
+      const contactId = entry?.contactId ?? entry?.personId;
       const reciprocalLabel = String((e as RelatedName)?.reciprocalLabel ?? '').trim();
       const out: RelatedName = { label, value };
-      if (personId) out.personId = personId;
+      if (contactId) out.contactId = contactId;
       if (reciprocalLabel) out.reciprocalLabel = reciprocalLabel;
       return out;
     })
     .filter((e) => e.value);
 }
 
-// Fold a decrypted Person into the multi-value shape, upgrading legacy single
+// Fold a decrypted Contact into the multi-value shape, upgrading legacy single
 // phone/email/address/businessName fields into their array equivalents so old
 // records (never re-saved since the multi-value cutover) still display.
-export function normalizePerson(p: Person): NormalizedPerson {
+export function normalizeContact(p: Contact): NormalizedContact {
   const legacy = (arr: unknown, single: unknown, label: string): LabeledValue[] => {
     const list = cleanList(arr, label);
     if (list.length) return list;
@@ -148,7 +153,7 @@ export function canonicalizePhones(entries: LabeledValue[]): LabeledValue[] {
 // Build the persisted payload from the edited multi-value shape: emit trimmed
 // arrays (undefined when empty) and clear the legacy scalars so re-saving an old
 // record drops the duplicated single values from the sealed blob.
-export function denormalizeForSave(n: NormalizedPerson): Record<string, unknown> {
+export function denormalizeForSave(n: NormalizedContact): Record<string, unknown> {
   const list = (arr: LabeledValue[], fallback: string) => {
     const clean = cleanList(arr, fallback);
     return clean.length ? clean : undefined;
@@ -212,7 +217,7 @@ export function reciprocalLabelFor(entry: RelatedName): string {
   return entry.reciprocalLabel?.trim() || 'other';
 }
 
-// The back-link writes needed after saving a person: for each related name
+// The back-link writes needed after saving a contact: for each related name
 // linked to a roster contact, the contact's new relatedNames array with the
 // mirrored entry created/kept in sync. Behaviour:
 //   • No back-link yet → add `{ inverse label, saver name, saver id }`.
@@ -223,7 +228,7 @@ export function reciprocalLabelFor(entry: RelatedName): string {
 //         saver's previously-saved related names), so an independently-customized
 //         label on the other card isn't clobbered on an unrelated save.
 //   • Back-link's source entry was REMOVED (or unlinked to free text) since the
-//     last save — a personId in `prevEntries` with no surviving entry — → strip
+//     last save — a contactId in `prevEntries` with no surviving entry — → strip
 //     the mirror entries pointing back at the saver from that contact, so the
 //     other card doesn't keep a one-sided relationship. (Whole-contact deletion
 //     is still the separate relatedNameRemovalsOnDelete path.)
@@ -232,20 +237,20 @@ export function reciprocalLabelFor(entry: RelatedName): string {
 export function reciprocalUpdates(
   self: { id: string; name: string },
   entries: RelatedName[],
-  people: Person[],
+  contacts: Contact[],
   prevEntries: RelatedName[] = [],
-): { person: Person; relatedNames: RelatedName[] }[] {
-  const updates: { person: Person; relatedNames: RelatedName[] }[] = [];
+): { contact: Contact; relatedNames: RelatedName[] }[] {
+  const updates: { contact: Contact; relatedNames: RelatedName[] }[] = [];
   const done = new Set<string>();
   const norm = (s: string) => s.trim().toLowerCase();
   for (const entry of entries) {
-    const targetId = entry.personId;
+    const targetId = entry.contactId;
     if (!targetId || targetId === self.id || done.has(targetId) || !entry.value.trim()) continue;
     done.add(targetId);
-    const person = people.find((p) => p._id === targetId);
-    if (!person) continue;
-    const existing = normalizePerson(person).relatedNames;
-    const backIdx = existing.findIndex((e) => e.personId === self.id);
+    const contact = contacts.find((p) => p._id === targetId);
+    if (!contact) continue;
+    const existing = normalizeContact(contact).relatedNames;
+    const backIdx = existing.findIndex((e) => e.contactId === self.id);
     // The mirror's label: a preset's derived inverse, or the user-chosen
     // reciprocal label for a custom relationship (father-in-law ↔ daughter-in-law).
     const desiredLabel = reciprocalLabelFor(entry);
@@ -259,64 +264,64 @@ export function reciprocalUpdates(
       // The saver changed the mirror label they want for this link (their own
       // preset label, or the custom reciprocal label) → propagate it. Otherwise
       // leave the (possibly independently-customized) mirror label alone.
-      const prev = prevEntries.find((e) => e.personId === targetId);
+      const prev = prevEntries.find((e) => e.contactId === targetId);
       const labelChangedBySaver = !!prev && norm(reciprocalLabelFor(prev)) !== norm(desiredLabel);
       const nextLabel = labelChangedBySaver ? desiredLabel : cur.label;
       const nextReciprocal = labelChangedBySaver ? mirrorReciprocal : cur.reciprocalLabel;
       if (cur.value !== self.name || nextLabel !== cur.label || (nextReciprocal ?? '') !== (cur.reciprocalLabel ?? '')) {
-        const updated: RelatedName = { label: nextLabel, value: self.name, personId: self.id };
+        const updated: RelatedName = { label: nextLabel, value: self.name, contactId: self.id };
         if (nextReciprocal) updated.reciprocalLabel = nextReciprocal;
-        updates.push({ person, relatedNames: existing.map((e, i) => (i === backIdx ? updated : e)) });
+        updates.push({ contact, relatedNames: existing.map((e, i) => (i === backIdx ? updated : e)) });
       }
       continue;
     }
-    const mirror: RelatedName = { label: desiredLabel, value: self.name, personId: self.id };
+    const mirror: RelatedName = { label: desiredLabel, value: self.name, contactId: self.id };
     if (mirrorReciprocal) mirror.reciprocalLabel = mirrorReciprocal;
-    updates.push({ person, relatedNames: [...existing, mirror] });
+    updates.push({ contact, relatedNames: [...existing, mirror] });
   }
   // Links present at the last save but gone now (row deleted, or unlinked by
   // typing over it) → strip the back-link from the formerly-linked contact.
-  const keptIds = new Set(entries.map((e) => e.personId).filter(Boolean));
+  const keptIds = new Set(entries.map((e) => e.contactId).filter(Boolean));
   for (const prev of prevEntries) {
-    const targetId = prev.personId;
+    const targetId = prev.contactId;
     if (!targetId || targetId === self.id || keptIds.has(targetId) || done.has(targetId)) continue;
     done.add(targetId);
-    const person = people.find((p) => p._id === targetId);
-    if (!person) continue;
-    const existing = normalizePerson(person).relatedNames;
-    const filtered = existing.filter((e) => e.personId !== self.id);
-    if (filtered.length !== existing.length) updates.push({ person, relatedNames: filtered });
+    const contact = contacts.find((p) => p._id === targetId);
+    if (!contact) continue;
+    const existing = normalizeContact(contact).relatedNames;
+    const filtered = existing.filter((e) => e.contactId !== self.id);
+    if (filtered.length !== existing.length) updates.push({ contact, relatedNames: filtered });
   }
   return updates;
 }
 
 // When a contact is deleted, every OTHER contact that linked a related name to
-// it (`personId === deletedId`) is left pointing at a ghost — so clear those
+// it (`contactId === deletedId`) is left pointing at a ghost — so clear those
 // entries. Returns the back-link writes needed: for each affected contact, its
 // related-names array with the dangling entries removed. Client-side (contacts
 // are sealed), best-effort, and only touches contacts that actually referenced
 // the deleted id.
 export function relatedNameRemovalsOnDelete(
   deletedId: string,
-  people: Person[],
-): { person: Person; relatedNames: RelatedName[] }[] {
-  const updates: { person: Person; relatedNames: RelatedName[] }[] = [];
-  for (const person of people) {
-    if (person._id === deletedId) continue;
-    const existing = normalizePerson(person).relatedNames;
-    const filtered = existing.filter((e) => e.personId !== deletedId);
-    if (filtered.length !== existing.length) updates.push({ person, relatedNames: filtered });
+  contacts: Contact[],
+): { contact: Contact; relatedNames: RelatedName[] }[] {
+  const updates: { contact: Contact; relatedNames: RelatedName[] }[] = [];
+  for (const contact of contacts) {
+    if (contact._id === deletedId) continue;
+    const existing = normalizeContact(contact).relatedNames;
+    const filtered = existing.filter((e) => e.contactId !== deletedId);
+    if (filtered.length !== existing.length) updates.push({ contact, relatedNames: filtered });
   }
   return updates;
 }
 
 // The first phone/email — used for the roster and the detail quick-action
 // buttons, which act on a single "primary" value.
-export function primaryPhone(p: Person): string | undefined {
-  return normalizePerson(p).phones[0]?.value;
+export function primaryPhone(p: Contact): string | undefined {
+  return normalizeContact(p).phones[0]?.value;
 }
-export function primaryEmail(p: Person): string | undefined {
-  return normalizePerson(p).emails[0]?.value;
+export function primaryEmail(p: Contact): string | undefined {
+  return normalizeContact(p).emails[0]?.value;
 }
 
 // ── "Already imported" matching for the device-contact picker ────────────────
@@ -333,7 +338,7 @@ const nameKey = (s: string | undefined | null) =>
   String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
 // Match device contacts against the roster to flag re-imports. The stored
-// `deviceContactId` link is the primary signal, but many people in the roster
+// `deviceContactId` link is the primary signal, but many contacts in the roster
 // have none — contacts imported before the link existed, imported on another
 // device, or added by hand — so fall back to identity: a shared phone (both
 // sides canonicalized to E.164; stored numbers predating canonicalization are
@@ -341,14 +346,14 @@ const nameKey = (s: string | undefined | null) =>
 // name-only match can in principle flag a same-named stranger, but for this
 // picker that trade is right: the flag only badges the row / gates the
 // duplicate-confirm dialog, never blocks an import.
-export function buildImportedMatcher(people: Person[]): (c: DeviceContactIdentity) => boolean {
+export function buildImportedMatcher(contacts: Contact[]): (c: DeviceContactIdentity) => boolean {
   const ids = new Set<string>();
   const phones = new Set<string>();
   const emails = new Set<string>();
   const names = new Set<string>();
-  for (const p of people) {
+  for (const p of contacts) {
     if (p.deviceContactId) ids.add(p.deviceContactId);
-    const n = normalizePerson(p);
+    const n = normalizeContact(p);
     for (const { value } of canonicalizePhones(n.phones)) if (value) phones.add(value);
     for (const { value } of n.emails) if (value.trim()) emails.add(value.trim().toLowerCase());
     const nm = nameKey(p.name);

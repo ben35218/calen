@@ -19,19 +19,27 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../store/auth';
-import { peopleApi, Person } from '../../api';
+import { contactsApi, Contact } from '../../api';
 import { openRecord } from '../../lib/e2ee';
-import { ensureSelfPerson } from '../../lib/selfPerson';
-import { normalizePerson } from '../../lib/personFields';
+import { ensureSelfContact } from '../../lib/selfContact';
+import { normalizeContact } from '../../lib/contactFields';
 import { useContactSort, type ContactSort } from '../../lib/contactSortPref';
+import {
+  INDEX_LETTERS,
+  CONTACT_AVATAR,
+  CONTACT_ROW_H,
+  letterAtRatio,
+  sectionIndexForLetter,
+  buildCellLayouts,
+} from '../../lib/contactIndex';
 import * as replica from '../../lib/replica';
-import { HeaderIconButton, CenteredLoader, EmptyState } from '../../components/ui';
+import { HeaderIconButton, SkeletonList, EmptyState } from '../../components/ui';
 import { colors, spacing, radius } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList>;
 
-// Tabs map onto the plaintext Person.type used for roster grouping.
+// Tabs map onto the plaintext Contact.type used for roster grouping.
 type TabKey = 'family' | 'friend' | 'service';
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'family', label: 'Family' },
@@ -39,23 +47,25 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'service', label: 'Professionals' },
 ];
 
-// The right-edge scrubber, iOS Contacts style: full alphabet plus a trailing "#"
-// bucket for names that don't start with a letter.
-const INDEX_LETTERS = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '#'];
+type Section = { letter: string; data: Contact[] };
 
-type Section = { letter: string; data: Person[] };
+// The scrubber's letters + the fixed cell geometry that lets it actually jump
+// (lib/contactIndex owns both; the styles below mirror the heights).
+const AVATAR = CONTACT_AVATAR;
+const ROW_H = CONTACT_ROW_H;
 
 // Contacts roster split across Family / Friends / Professionals tabs, presented
 // as an iOS-Contacts-style alphabetical list: initials avatars, letter section
-// headers, a right-edge A–Z scrubber, and a floating search pill. The account
-// holder's own "You" card is not shown among the contacts — it is excluded from
-// the roster and edited from Account; the header "+" (kept in the nav bar) adds
-// into the active tab.
-export default function PeopleScreen() {
+// headers, a right-edge A–Z scrubber, and a floating search pill. The roster is
+// only the contacts the user created: every account-linked record (the account
+// holder's own "You" card, edited from Account, and each household member's
+// self-record) is excluded, so adding someone to the household never changes
+// what Contacts shows. The header "+" (kept in the nav bar) adds into the
+// active tab.
+export default function ContactsScreen() {
   const nav = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const selfId = String(user?._id ?? '');
   const [tab, setTab] = useState<TabKey>('family');
   const [query, setQuery] = useState('');
   const [kbHeight, setKbHeight] = useState(0);
@@ -76,13 +86,14 @@ export default function PeopleScreen() {
     };
   }, []);
 
-  const listRef = useRef<SectionList<Person, Section>>(null);
+  const listRef = useRef<SectionList<Contact, Section>>(null);
   const indexHeight = useRef(0);
+  const lastLetter = useRef<string | null>(null);
 
-  // Header "+" opens a menu: add a person manually (into the active tab) or
+  // Header "+" opens a menu: add a contact manually (into the active tab) or
   // import from the device address book.
   const openAddMenu = useCallback(() => {
-    const addManually = () => nav.navigate('PersonForm', { type: tab });
+    const addManually = () => nav.navigate('ContactForm', { type: tab });
     // Seed the import's default classification from the tab we launched from.
     const importContacts = () => nav.navigate('ContactImport', { type: tab });
     if (Platform.OS === 'ios') {
@@ -110,19 +121,19 @@ export default function PeopleScreen() {
     });
   }, [nav, openAddMenu]);
 
-  const { data: people, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['people'],
+  const { data: contacts, isLoading, refetch, isRefetching } = useQuery({
+    queryKey: ['contacts'],
     // Offline-first (Phase 4b): fetch + sync the local replica, falling back to
     // the cached copy when the network is unavailable. Decrypt content over
     // plaintext (dual-write); no-op without an HDK.
     queryFn: async () => {
       try {
-        const rows = (await peopleApi.list()).data;
-        replica.upsert('Person', rows as any).catch(() => {});
-        return Promise.all(rows.map((p) => openRecord('Person', p)));
+        const rows = (await contactsApi.list()).data;
+        replica.upsert('Contact', rows as any).catch(() => {});
+        return Promise.all(rows.map((p) => openRecord('Contact', p)));
       } catch (e) {
-        const cached = await replica.getAll<Person>('Person');
-        if (cached.length) return Promise.all(cached.map((p) => openRecord('Person', p)));
+        const cached = await replica.getAll<Contact>('Contact');
+        if (cached.length) return Promise.all(cached.map((p) => openRecord('Contact', p)));
         throw e;
       }
     },
@@ -130,54 +141,58 @@ export default function PeopleScreen() {
 
   const qc = useQueryClient();
 
-  // Fallback seed of the encrypted "You" Person (the primary seed runs at app
-  // boot — see hooks/useSelfPersonSeed). ensureSelfPerson guards on e2eeActive +
+  // Fallback seed of the encrypted "You" Contact (the primary seed runs at app
+  // boot — see hooks/useSelfContactSeed). ensureSelfContact guards on e2eeActive +
   // a held key and no-ops once a self-record exists, so this is just a belt-and-
   // suspenders retry for a session where boot seeding didn't land.
   React.useEffect(() => {
-    if (!people || !user) return;
-    ensureSelfPerson(user).then((created) => {
-      if (created) qc.invalidateQueries({ queryKey: ['people'] });
+    if (!contacts || !user) return;
+    ensureSelfContact(user).then((created) => {
+      if (created) qc.invalidateQueries({ queryKey: ['contacts'] });
     });
-  }, [people, user, qc]);
+  }, [contacts, user, qc]);
 
-  // Reap orphans from the pre-2026-07-27 person-form bug: a stale local
-  // PERSON_ENC sealed contacts without `type`, so they decrypt fine but can
-  // never appear in any tab. Rows only reach this decrypted Person bucket after
+  // Reap orphans from the pre-2026-07-27 contact-form bug: a stale local
+  // CONTACT_ENC sealed contacts without `type`, so they decrypt fine but can
+  // never appear in any tab. Rows only reach this decrypted Contact bucket after
   // a successful unseal (lib/records skips undecryptable rows), so a missing
   // type here is definitive — tombstone them. accountId-bearing records are
   // left alone as belt-and-suspenders for the "You"/member cards.
   const reaped = React.useRef(false);
   React.useEffect(() => {
-    if (reaped.current || !people) return;
-    const orphans = people.filter((p) => !p.accountId && !TABS.some((t) => t.key === p.type));
+    if (reaped.current || !contacts) return;
+    const orphans = contacts.filter((p) => !p.accountId && !TABS.some((t) => t.key === p.type));
     if (!orphans.length) return;
     reaped.current = true;
-    Promise.all(orphans.map((p) => peopleApi.delete(p._id).catch(() => {})))
-      .then(() => qc.invalidateQueries({ queryKey: ['people'] }));
-  }, [people, qc]);
-
-  const selfPerson = useMemo(
-    () => people?.find((p) => p.accountId && String(p.accountId) === selfId),
-    [people, selfId]
-  );
+    Promise.all(orphans.map((p) => contactsApi.delete(p._id).catch(() => {})))
+      .then(() => qc.invalidateQueries({ queryKey: ['contacts'] }));
+  }, [contacts, qc]);
 
   // Group the active tab's contacts into alphabetical sections, sorted and
   // section-keyed by the chosen name field (first or last; non-letter leads fall
-  // into "#"), then filtered by the search query. The account holder's own self
-  // Person is excluded entirely.
+  // into "#"), then filtered by the search query.
+  //
+  // Account-linked records (`accountId`) are excluded from every tab — this is
+  // the contacts YOU created, and joining a household must not write into it.
+  // Each household member carries a self-record (their "You" card, seeded by
+  // their own device and carried into the household on join); those used to
+  // surface here as a bare "Member" row, duplicating the contact you already
+  // had for that person and opening onto an empty detail view. The records
+  // still exist and still back chore assignment / "You" pickers — they just
+  // aren't contacts. The account holder's own card is excluded by the same
+  // rule and is edited from Account.
   const sections = useMemo<Section[]>(() => {
-    if (!people) return [];
+    if (!contacts) return [];
     const q = query.trim().toLowerCase();
     const qDigits = q.replace(/\D/g, '');
-    const roster = people.filter(
-      (p) => p.type === tab && p !== selfPerson && (!q || matchesPerson(p, q, qDigits))
+    const roster = contacts.filter(
+      (p) => p.type === tab && !p.accountId && (!q || matchesContact(p, q, qDigits))
     );
     // Precompute the sort key once per contact (it normalizes to read structured
     // first/last), then sort and section by it.
     const keyed = roster.map((p) => ({ p, key: sortKey(p, sort) }));
     keyed.sort((a, b) => a.key.localeCompare(b.key));
-    const buckets = new Map<string, Person[]>();
+    const buckets = new Map<string, Contact[]>();
     for (const { p, key } of keyed) {
       const first = key.charAt(0).toUpperCase();
       const letter = /[A-Z]/.test(first) ? first : '#';
@@ -188,36 +203,42 @@ export default function PeopleScreen() {
     return [...buckets.entries()]
       .sort(([a], [b]) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b)))
       .map(([letter, data]) => ({ letter, data }));
-  }, [people, tab, selfPerson, query, sort]);
+  }, [contacts, tab, query, sort]);
 
-  // Jump the list to a scrubbed letter, snapping to the nearest following
-  // section when that exact letter has no contacts.
+  const cellLayouts = useMemo(() => buildCellLayouts(sections), [sections]);
+
+  const getItemLayout = useCallback(
+    (_: unknown, index: number) => ({ index, ...(cellLayouts[index] ?? { length: 0, offset: 0 }) }),
+    [cellLayouts]
+  );
+
   const scrollToLetter = useCallback(
     (letter: string) => {
-      if (!sections.length) return;
-      let idx = sections.findIndex((s) => s.letter === letter);
-      if (idx < 0) {
-        idx = sections.findIndex((s) => s.letter !== '#' && s.letter > letter);
-        if (idx < 0) idx = sections.length - 1;
-      }
+      const idx = sectionIndexForLetter(sections, letter);
+      if (idx < 0) return;
       listRef.current?.scrollToLocation({ sectionIndex: idx, itemIndex: 0, viewPosition: 0, animated: false });
     },
     [sections]
   );
 
+  // Map a touch anywhere on the letter column to its letter. `locationY` is
+  // relative to the responder view, which is the letters block itself (not the
+  // full-height wrapper it is centered in) — measuring the wrapper instead
+  // offsets every hit by half the leftover space.
   const onIndexTouch = useCallback(
     (e: GestureResponderEvent) => {
       const h = indexHeight.current;
       if (!h) return;
-      const ratio = e.nativeEvent.locationY / h;
-      const i = Math.max(0, Math.min(INDEX_LETTERS.length - 1, Math.floor(ratio * INDEX_LETTERS.length)));
-      scrollToLetter(INDEX_LETTERS[i]);
+      const letter = letterAtRatio(e.nativeEvent.locationY / h);
+      if (letter === lastLetter.current) return; // don't re-scroll on every move within one letter
+      lastLetter.current = letter;
+      scrollToLetter(letter);
     },
     [scrollToLetter]
   );
 
-  if (isLoading || !people) {
-    return <CenteredLoader />;
+  if (isLoading || !contacts) {
+    return <SkeletonList />;
   }
 
   const emptyLabel = {
@@ -264,31 +285,39 @@ export default function PeopleScreen() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+          getItemLayout={getItemLayout}
           onScrollToIndexFailed={() => {}}
           renderSectionHeader={({ section }) => (
             <Text style={styles.sectionHeader}>{section.letter}</Text>
           )}
           renderItem={({ item }) => (
-            <ContactRow person={item} onPress={() => nav.navigate('PersonDetail', { id: item._id })} />
+            <ContactRow contact={item} onPress={() => nav.navigate('ContactDetail', { id: item._id })} />
           )}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
           ListEmptyComponent={<EmptyState variant="inline" message={emptyLabel} />}
         />
 
         {!query.trim() && sections.length > 0 ? (
-          <View
-            style={styles.index}
-            onLayout={(e) => (indexHeight.current = e.nativeEvent.layout.height)}
-            onStartShouldSetResponder={() => true}
-            onMoveShouldSetResponder={() => true}
-            onResponderGrant={onIndexTouch}
-            onResponderMove={onIndexTouch}
-          >
-            {INDEX_LETTERS.map((l) => (
-              <Text key={l} style={styles.indexLetter} allowFontScaling={false}>
-                {l}
-              </Text>
-            ))}
+          <View style={styles.indexWrap} pointerEvents="box-none">
+            <View
+              style={styles.index}
+              onLayout={(e) => (indexHeight.current = e.nativeEvent.layout.height)}
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderTerminationRequest={() => false}
+              onResponderGrant={onIndexTouch}
+              onResponderMove={onIndexTouch}
+              onResponderRelease={() => (lastLetter.current = null)}
+              onResponderTerminate={() => (lastLetter.current = null)}
+              accessibilityRole="adjustable"
+              accessibilityLabel="Alphabetical index"
+            >
+              {INDEX_LETTERS.map((l) => (
+                <Text key={l} style={styles.indexLetter} allowFontScaling={false}>
+                  {l}
+                </Text>
+              ))}
+            </View>
           </View>
         ) : null}
 
@@ -324,22 +353,18 @@ export default function PeopleScreen() {
   );
 }
 
-// One roster row: an initials avatar, the name (surname bolded, iOS style), and a
-// "You"/"Member" chip for the self and household-member cards.
-function ContactRow({ person, self, onPress }: { person: Person; self?: boolean; onPress: () => void }) {
+// One roster row: an initials avatar and the name (surname bolded, iOS style).
+// No membership chip — the roster holds only contacts the user created, so
+// there is no household member here to badge (see `sections`).
+function ContactRow({ contact, onPress }: { contact: Contact; onPress: () => void }) {
   return (
     <TouchableOpacity style={styles.row} activeOpacity={0.6} onPress={onPress}>
-      <View style={[styles.avatar, self && styles.avatarSelf]}>
-        <Text style={[styles.avatarText, self && styles.avatarTextSelf]}>{initialsOf(person.name)}</Text>
+      <View style={styles.avatar}>
+        <Text style={styles.avatarText}>{initialsOf(contact.name)}</Text>
       </View>
       <Text style={styles.rowName} numberOfLines={1}>
-        {renderName(person.name, person.lastName)}
+        {renderName(contact.name, contact.lastName)}
       </Text>
-      {self ? (
-        <Text style={styles.youChip}>You</Text>
-      ) : person.accountId ? (
-        <Text style={styles.memberChip}>Member</Text>
-      ) : null}
     </TouchableOpacity>
   );
 }
@@ -350,8 +375,8 @@ function ContactRow({ person, self, onPress }: { person: Person; self?: boolean;
 // since they're stored as canonical E.164 and users type spaces/parens/dashes.
 // `q` is already trimmed + lowercased; `qDigits` is `q` stripped to digits. The
 // contact is normalized so legacy single-value records match the same way.
-function matchesPerson(p: Person, q: string, qDigits: string): boolean {
-  const n = normalizePerson(p);
+function matchesContact(p: Contact, q: string, qDigits: string): boolean {
+  const n = normalizeContact(p);
   const hay = [
     p.name, p.relationship, n.company, n.jobTitle,
     ...n.emails.map((e) => e.value),
@@ -370,9 +395,9 @@ function matchesPerson(p: Person, q: string, qDigits: string): boolean {
 // by last name leads with the surname (falling back to the first name when a
 // contact has none, e.g. a single-token or business name), then the first name
 // as a tiebreak; sorting by first name is the mirror. Reads the structured
-// first/last via normalizePerson so legacy single-`name` records sort sensibly.
-function sortKey(p: Person, mode: ContactSort): string {
-  const n = normalizePerson(p);
+// first/last via normalizeContact so legacy single-`name` records sort sensibly.
+function sortKey(p: Contact, mode: ContactSort): string {
+  const n = normalizeContact(p);
   const first = (n.firstName || p.name || '').trim();
   const last = (n.lastName || '').trim();
   const primary = mode === 'last' ? last || first : first || last;
@@ -420,8 +445,6 @@ function renderName(name: string, lastName?: string): React.ReactNode {
   );
 }
 
-const AVATAR = 40;
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   body: { flex: 1 },
@@ -456,8 +479,11 @@ const styles = StyleSheet.create({
   sortBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2 },
   sortText: { fontSize: 13, fontWeight: '600', color: colors.primary },
 
+  // Header and row heights mirror CONTACT_HEADER_H / CONTACT_ROW_H
+  // (lib/contactIndex) so the scrubber's getItemLayout stays exact.
   sectionHeader: {
     fontSize: 13,
+    lineHeight: 16,
     fontWeight: '700',
     color: colors.textMuted,
     backgroundColor: colors.background,
@@ -468,8 +494,9 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
+    minHeight: ROW_H,
+    paddingVertical: spacing.xs,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
     backgroundColor: colors.background,
   },
   separator: {
@@ -488,42 +515,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: spacing.md,
   },
-  avatarSelf: { backgroundColor: colors.primary, borderColor: colors.primary },
   avatarText: { fontSize: 15, fontWeight: '600', color: colors.text },
-  avatarTextSelf: { color: '#fff' },
   rowName: { flex: 1, fontSize: 17, color: colors.text },
   rowNameLast: { fontWeight: '700' },
-  youChip: {
-    marginLeft: spacing.sm,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#fff',
-    backgroundColor: colors.primary,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: radius.sm,
-    overflow: 'hidden',
-  },
-  memberChip: {
-    marginLeft: spacing.sm,
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.primary,
-    backgroundColor: colors.primary + '18',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: radius.sm,
-    overflow: 'hidden',
-  },
 
-  index: {
+  // The wrapper spans the body and centers the letter column; the column itself
+  // is the touch target, so its measured height matches the letters exactly.
+  indexWrap: {
     position: 'absolute',
-    right: 2,
+    right: 0,
     top: 0,
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 4,
+  },
+  index: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
   },
   indexLetter: {
     fontSize: 11,

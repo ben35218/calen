@@ -18,9 +18,9 @@ async function alertHousehold(householdId, { title, body, tag, excludeUserId } =
   }
 }
 
-async function alertUser(userId, { title, body, tag }) {
+async function alertUser(userId, { title, body, tag, data }) {
   const u = await User.findById(userId, 'pushSubscriptions');
-  if (u) await pushToUser(u, { title, body, tag: tag || 'security', url: '/profile' }).catch(() => {});
+  if (u) await pushToUser(u, { title, body, tag: tag || 'security', url: '/profile', ...(data ? { data } : {}) }).catch(() => {});
 }
 
 // Fire-and-forget wrapper: callers await nothing and errors only log.

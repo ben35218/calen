@@ -2,12 +2,12 @@
 //
 // Calen contacts are end-to-end encrypted, but the E2EE boundary is the network
 // — writing decrypted contact data to the user's OWN device, on their explicit
-// request, is outside it by design (see specs/features/people-contacts.md's
+// request, is outside it by design (see specs/features/contacts-contacts.md's
 // Encryption boundary section). This is the WRITE counterpart to
 // ContactImportScreen's read-only import; both use expo-contacts' /legacy API
 // (v56 deprecated the same functions on the package root).
 import * as Contacts from 'expo-contacts/legacy';
-import type { LabeledValue } from './personFields';
+import type { LabeledValue } from './contactFields';
 
 // Thrown when the user hasn't granted (write) contacts permission, so callers
 // can show a Settings nudge instead of a generic failure.
@@ -22,7 +22,7 @@ export interface DeviceContactInput {
   name: string;
   firstName?: string;
   lastName?: string;
-  // 'service' → a Company card; everything else → a Person card.
+  // 'service' → a Company card; everything else → a Contact card.
   type?: string;
   company?: string;
   jobTitle?: string;
@@ -36,7 +36,7 @@ export interface DeviceContactInput {
 // Build an expo-contacts Contact from a Calen contact and add it to the device
 // address book, returning the new device contact id. Requests write permission
 // first (throws ContactsPermissionError if denied).
-export async function addPersonToDeviceContacts(input: DeviceContactInput): Promise<string> {
+export async function addContactToDeviceContacts(input: DeviceContactInput): Promise<string> {
   const perm = await Contacts.requestPermissionsAsync();
   if (perm.status !== 'granted') throw new ContactsPermissionError();
 

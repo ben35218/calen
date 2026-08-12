@@ -101,6 +101,20 @@ export async function clear(collection: string): Promise<void> {
   await AsyncStorage.removeItem(key(collection));
 }
 
+// Move a whole bucket to a new collection name, for a collection RENAME (the
+// Person→Contact rename). Rows already synced sit under the old name and the
+// sync cursor will never resend them, so without this an upgraded install shows
+// an empty roster until something forces a full resync. Backend-agnostic (it
+// goes through the same getAll/upsert/clear the two backends both implement)
+// and idempotent: once the old bucket is drained, later calls are a no-op.
+// Returns how many rows moved.
+export async function migrateCollection(from: string, to: string): Promise<number> {
+  const rows = await getAll<StoredRow>(from);
+  if (rows.length) await upsert(to, rows);
+  await clear(from);
+  return rows.length;
+}
+
 // Wipe every replicated collection (both backends) — a signed-out device must
 // not keep another household's records.
 export async function clearAll(): Promise<void> {

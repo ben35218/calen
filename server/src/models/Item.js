@@ -6,9 +6,9 @@ const itemSchema = new mongoose.Schema({
   name: { type: String, required: requiredUntilSealed },
   categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
   propertyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Property' },
-  // The service professional (a type:'service' Person in the user's contacts)
+  // The service professional (a type:'service' Contact in the user's contacts)
   // who maintains this item. A plaintext ref, like categoryId/propertyId.
-  serviceProId: { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },
+  serviceProId: { type: mongoose.Schema.Types.ObjectId, ref: 'Contact' },
   type: { type: String, enum: ['appliance', 'vehicle', 'system', 'structure', 'equipment', 'other'], default: 'other' },
   manufacturer: String,
   modelNumber: String,

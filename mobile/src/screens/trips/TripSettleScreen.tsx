@@ -6,7 +6,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, SettlementBalance, SettlementLine } from '../../api';
-import { Button, Card, Input, Select, SectionHeader, CenteredLoader } from '../../components/ui';
+import { Button, Card, Input, Select, SectionHeader, SkeletonList } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { tripTypeMeta } from '../../lib/tripTypes';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -69,7 +69,7 @@ export default function TripSettleScreen() {
 
   if (settleQ.isLoading || !settleQ.data) {
     return (
-      <CenteredLoader color={accent} />
+      <SkeletonList />
     );
   }
 

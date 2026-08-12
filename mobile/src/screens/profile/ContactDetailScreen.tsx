@@ -1,24 +1,24 @@
 import React, { useEffect, useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, Linking, TouchableOpacity, ActivityIndicator, Alert, Share } from 'react-native';
+import { View, Text, StyleSheet, Linking, TouchableOpacity, Alert, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import * as Sharing from 'expo-sharing';
 import { cacheDirectory, writeAsStringAsync } from 'expo-file-system/legacy';
-import { peopleApi, Person } from '../../api';
+import { contactsApi, Contact } from '../../api';
 import { openRecord } from '../../lib/e2ee';
-import { Card, Screen, ListRow, EmptyState, HeaderIconButton, Button } from '../../components/ui';
+import { Card, Screen, ListRow, EmptyState, HeaderIconButton, Button, CenteredLoader } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { formatDisplay } from '../../lib/phone';
-import { normalizePerson } from '../../lib/personFields';
-import { addPersonToDeviceContacts, ContactsPermissionError } from '../../lib/deviceContacts';
+import { normalizeContact } from '../../lib/contactFields';
+import { addContactToDeviceContacts, ContactsPermissionError } from '../../lib/deviceContacts';
 import { buildVCard } from '../../lib/vcard';
 import { colors, spacing } from '../../theme';
 import type { ProfileStackParamList } from '../../navigation/ProfileNavigator';
 
-type Nav = NativeStackNavigationProp<ProfileStackParamList, 'PersonDetail'>;
-type Rt = RouteProp<ProfileStackParamList, 'PersonDetail'>;
+type Nav = NativeStackNavigationProp<ProfileStackParamList, 'ContactDetail'>;
+type Rt = RouteProp<ProfileStackParamList, 'ContactDetail'>;
 
 const TYPE_LABEL: Record<string, string> = { family: 'Family', friend: 'Friend', service: 'Professional' };
 
@@ -45,50 +45,46 @@ function ActionButton({ icon, label, onPress }: { icon: keyof typeof Ionicons.gl
   );
 }
 
-export default function PersonDetailScreen() {
+export default function ContactDetailScreen() {
   const nav = useNavigation<Nav>();
   const { id } = useRoute<Rt>().params;
   const [exporting, setExporting] = useState(false);
 
-  // Read the decrypted roster (shared ['people'] cache); fetch if not present so
-  // the screen works from any entry point (People list or an item's service pro).
-  const { data: people, isLoading } = useQuery({
-    queryKey: ['people'],
+  // Read the decrypted roster (shared ['contacts'] cache); fetch if not present so
+  // the screen works from any entry point (Contacts list or an item's service pro).
+  const { data: contacts, isLoading } = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
-      const rows = (await peopleApi.list()).data;
-      return Promise.all(rows.map((p) => openRecord('Person', p))) as Promise<Person[]>;
+      const rows = (await contactsApi.list()).data;
+      return Promise.all(rows.map((p) => openRecord('Contact', p))) as Promise<Contact[]>;
     },
   });
-  const person = people?.find((p) => p._id === id);
+  const contact = contacts?.find((p) => p._id === id);
 
   // If the roster has loaded but this contact is gone (e.g. it was just deleted
   // from the edit screen, which pops back here), there's nothing to show — pop
   // back to the list instead of spinning forever on a missing record.
   useEffect(() => {
-    if (!isLoading && people && !person) nav.goBack();
-  }, [isLoading, people, person, nav]);
+    if (!isLoading && contacts && !contact) nav.goBack();
+  }, [isLoading, contacts, contact, nav]);
 
   useLayoutEffect(() => {
     nav.setOptions({
       title: 'Contact',
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit contact" onPress={() => nav.navigate('PersonForm', { id })} />
+        <HeaderIconButton icon="pencil" accessibilityLabel="Edit contact" onPress={() => nav.navigate('ContactForm', { id })} />
       ),
     });
   }, [nav, id]);
 
-  if (!person) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
+  if (!contact) {
+    return <CenteredLoader />;
   }
 
-  const n = normalizePerson(person);
+  const n = normalizeContact(contact);
   const primaryPhone = n.phones[0]?.value;
   const primaryEmail = n.emails[0]?.value;
-  const subtitle = [TYPE_LABEL[person.type] || person.type, person.relationship].filter(Boolean).join(' · ');
+  const subtitle = [TYPE_LABEL[contact.type] || contact.type, contact.relationship].filter(Boolean).join(' · ');
   const work = [n.jobTitle, n.company].filter(Boolean).join(' · ');
 
   const call = (phone: string) => Linking.openURL(`tel:${phone}`);
@@ -101,52 +97,52 @@ export default function PersonDetailScreen() {
   async function shareContact() {
     try {
       const vcf = buildVCard({
-        name: person!.name,
-        firstName: person!.type === 'service' ? undefined : n.firstName,
-        lastName: person!.type === 'service' ? undefined : n.lastName,
-        type: person!.type,
+        name: contact!.name,
+        firstName: contact!.type === 'service' ? undefined : n.firstName,
+        lastName: contact!.type === 'service' ? undefined : n.lastName,
+        type: contact!.type,
         company: n.company,
         jobTitle: n.jobTitle,
-        birthday: person!.birthday ? String(person!.birthday).slice(0, 10) : undefined,
+        birthday: contact!.birthday ? String(contact!.birthday).slice(0, 10) : undefined,
         phones: n.phones,
         emails: n.emails,
         addresses: n.addresses,
         urls: n.urls,
       });
-      const safe = person!.name.trim().replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'contact';
+      const safe = contact!.name.trim().replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'contact';
       const uri = `${cacheDirectory}${safe}.vcf`;
       await writeAsStringAsync(uri, vcf);
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'text/vcard', UTI: 'public.vcard', dialogTitle: `Share ${person!.name}` });
+        await Sharing.shareAsync(uri, { mimeType: 'text/vcard', UTI: 'public.vcard', dialogTitle: `Share ${contact!.name}` });
       } else {
-        await Share.share({ url: uri, title: person!.name });
+        await Share.share({ url: uri, title: contact!.name });
       }
     } catch (e: any) {
       Alert.alert('Could not share', e?.message || 'Please try again.');
     }
   }
 
-  // Write this Calen contact into the device address book (shares the person-form
+  // Write this Calen contact into the device address book (shares the contact-form
   // opt-in logic). Best-effort; confirms first if it may already be on the phone.
   async function exportToDevice() {
     if (exporting) return;
     const run = async () => {
       setExporting(true);
       try {
-        await addPersonToDeviceContacts({
-          name: person!.name,
-          firstName: person!.type === 'service' ? undefined : n.firstName,
-          lastName: person!.type === 'service' ? undefined : n.lastName,
-          type: person!.type,
+        await addContactToDeviceContacts({
+          name: contact!.name,
+          firstName: contact!.type === 'service' ? undefined : n.firstName,
+          lastName: contact!.type === 'service' ? undefined : n.lastName,
+          type: contact!.type,
           company: n.company,
           jobTitle: n.jobTitle,
-          birthday: person!.birthday ? String(person!.birthday).slice(0, 10) : undefined,
+          birthday: contact!.birthday ? String(contact!.birthday).slice(0, 10) : undefined,
           phones: n.phones,
           emails: n.emails,
           addresses: n.addresses,
           urls: n.urls,
         });
-        Alert.alert('Added to iPhone Contacts', `${person!.name} was saved to your phone's address book.`);
+        Alert.alert('Added to iPhone Contacts', `${contact!.name} was saved to your phone's address book.`);
       } catch (e) {
         Alert.alert(
           'Not added',
@@ -158,7 +154,7 @@ export default function PersonDetailScreen() {
         setExporting(false);
       }
     };
-    if (person!.deviceContactId) {
+    if (contact!.deviceContactId) {
       Alert.alert('Add again?', 'This contact may already be in your iPhone Contacts. Add another copy?', [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Add', onPress: run },
@@ -172,12 +168,12 @@ export default function PersonDetailScreen() {
   // flesh it out rather than show a blank card.
   const hasDetails =
     !!(n.phones.length || n.emails.length || n.addresses.length || n.dates.length ||
-      n.urls.length || n.relatedNames.length || person.birthday || work) || !!person.notes;
+      n.urls.length || n.relatedNames.length || contact.birthday || work) || !!contact.notes;
 
   return (
     <Screen>
       <View style={styles.header}>
-        <Text style={styles.name}>{person.name}</Text>
+        <Text style={styles.name}>{contact.name}</Text>
         {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
         {work ? <Text style={styles.work}>{work}</Text> : null}
       </View>
@@ -189,7 +185,7 @@ export default function PersonDetailScreen() {
           title="Add contact details"
           message="This contact only has a name. Add a phone number, email, birthday, and more."
           actionLabel="Add details"
-          onAction={() => nav.navigate('PersonForm', { id })}
+          onAction={() => nav.navigate('ContactForm', { id })}
         />
       ) : null}
 
@@ -216,8 +212,8 @@ export default function PersonDetailScreen() {
           {/* Birthday is the first occasion date (its own `birthday` field),
               rendered inline with the labeled dates as one group. */}
           {[
-            ...(person.birthday
-              ? [{ label: 'Birthday', value: String(person.birthday).slice(0, 10), icon: 'gift-outline' as const }]
+            ...(contact.birthday
+              ? [{ label: 'Birthday', value: String(contact.birthday).slice(0, 10), icon: 'gift-outline' as const }]
               : []),
             ...n.dates.map((d) => ({ ...d, icon: 'calendar-outline' as const })),
           ].map((d, i) => (
@@ -232,21 +228,21 @@ export default function PersonDetailScreen() {
               icon="people-outline"
               title={titleCase(r.label)}
               subtitle={r.value}
-              // push (not navigate): we're already on PersonDetail, so navigate
+              // push (not navigate): we're already on ContactDetail, so navigate
               // would swap params in place and leave nothing to go Back to — push
               // stacks a fresh instance so Back returns to this contact.
-              onPress={r.personId && people?.some((p) => p._id === r.personId)
-                ? () => nav.push('PersonDetail', { id: r.personId! })
+              onPress={r.contactId && contacts?.some((p) => p._id === r.contactId)
+                ? () => nav.push('ContactDetail', { id: r.contactId! })
                 : undefined}
             />
           ))}
         </Card>
       ) : null}
 
-      {person.notes ? (
+      {contact.notes ? (
         <Card style={styles.textCard}>
           <Text style={styles.overline}>Notes</Text>
-          <Text style={styles.body}>{person.notes}</Text>
+          <Text style={styles.body}>{contact.notes}</Text>
         </Card>
       ) : null}
 
@@ -263,7 +259,6 @@ export default function PersonDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   header: { marginBottom: spacing.md },
   name: { fontSize: 24, fontWeight: '700', color: colors.text },
   subtitle: { fontSize: 15, color: colors.textMuted, marginTop: 2 },

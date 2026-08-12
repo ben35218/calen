@@ -11,10 +11,11 @@
 // — they hold the PIN-locked inner and could brute-force it offline. The model
 // rests on nominating a member you already trust with your data.
 
+import * as SecureStore from 'expo-secure-store';
 import { loadHouseholdCrypto } from '@household/crypto/adapters/native';
 import type { IdentityKeyPair } from '@household/crypto';
 import { keysApi, type GuardianRequest } from '../api';
-import { getKeyPair, importLinkedKeyPair } from './e2ee';
+import { currentUserId, getKeyPair, importLinkedKeyPair } from './e2ee';
 
 // ── Arm / disarm (user, unlocked) ───────────────────────────────────────────
 
@@ -44,6 +45,45 @@ let ephemeral: IdentityKeyPair | null = null;
 let ephemeralRequestId: string | null = null;
 let sealedInner: string | null = null; // stashed until the user enters their PIN
 
+// The in-flight recovery ALSO persists to the keychain, keyed per user, because
+// approval can take a while and only THIS ephemeral secret can open it: losing
+// the module state — app killed while waiting, or (shared-device flow) signing
+// out so the guardian can sign in and approve — used to orphan the approval
+// unrecoverably. The sealed handoff joins the slot once polled (the server
+// burns it on delivery, so the device copy is the only one after that). It all
+// stays PIN-locked (the same offline-brute-force residual the guardian
+// already holds); WHEN_UNLOCKED_THIS_DEVICE_ONLY, no biometric gate — resume
+// must run silently on a locked account. Cleared on finish and on expiry.
+type StoredRecovery = {
+  requestId: string;
+  fingerprint: string;
+  expiresAt: string;
+  publicKey: string; // b64
+  privateKey: string; // b64 (the ephemeral secret — never leaves the device)
+  sealedInner?: string;
+};
+
+const STORE_OPTS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
+const storeKey = (userId: string) => `hc_guardian_recovery_${userId}`;
+
+async function saveStored(userId: string, s: StoredRecovery): Promise<void> {
+  try { await SecureStore.setItemAsync(storeKey(userId), JSON.stringify(s), STORE_OPTS); } catch { /* best-effort */ }
+}
+async function loadStored(userId: string): Promise<StoredRecovery | null> {
+  try {
+    const raw = await SecureStore.getItemAsync(storeKey(userId), STORE_OPTS);
+    return raw ? (JSON.parse(raw) as StoredRecovery) : null;
+  } catch {
+    return null;
+  }
+}
+async function clearStored(userId: string | null): Promise<void> {
+  if (!userId) return;
+  await SecureStore.deleteItemAsync(storeKey(userId)).catch(() => {});
+}
+
 export interface StartedRecovery {
   requestId: string;
   fingerprint: string; // shown on both screens; the guardian confirms it matches
@@ -60,7 +100,37 @@ export async function startGuardianRecovery(): Promise<StartedRecovery> {
   const fingerprint = crypto.publicKeyFingerprint(ephemeralPublicKey);
   const { data } = await keysApi.guardianRequest({ ephemeralPublicKey, fingerprint });
   ephemeralRequestId = data.requestId;
+  const userId = currentUserId();
+  if (userId) {
+    await saveStored(userId, {
+      requestId: data.requestId,
+      fingerprint,
+      expiresAt: data.expiresAt,
+      publicKey: ephemeralPublicKey,
+      privateKey: crypto.b64(ephemeral.privateKey),
+    });
+  }
   return { requestId: data.requestId, fingerprint, expiresAt: data.expiresAt };
+}
+
+// Restore a persisted in-flight recovery for the signed-in user, or null when
+// there is none worth resuming. An expired, still-unapproved slot is cleared; a
+// slot already holding the sealed handoff never expires client-side (PIN entry
+// is offline from here).
+export async function resumeGuardianRecovery(): Promise<StartedRecovery | null> {
+  const userId = currentUserId();
+  if (!userId) return null;
+  const s = await loadStored(userId);
+  if (!s) return null;
+  if (!s.sealedInner && new Date(s.expiresAt).getTime() < Date.now()) {
+    await clearStored(userId);
+    return null;
+  }
+  const crypto = await loadHouseholdCrypto();
+  ephemeral = { publicKey: crypto.unb64(s.publicKey), privateKey: crypto.unb64(s.privateKey) };
+  ephemeralRequestId = s.requestId;
+  sealedInner = s.sealedInner ?? null;
+  return { requestId: s.requestId, fingerprint: s.fingerprint, expiresAt: s.expiresAt };
 }
 
 // Poll once. 'ready' means the guardian approved and the sealed inner is stashed
@@ -72,11 +142,20 @@ export async function pollGuardianRecovery(requestId: string): Promise<'pending'
   try {
     res = await keysApi.guardianPoll(requestId);
   } catch (e: any) {
-    if (e?.response?.status === 404) return 'expired';
+    if (e?.response?.status === 404) {
+      await clearStored(currentUserId());
+      return 'expired';
+    }
     return 'pending'; // transient network error — keep polling
   }
   if (res.data.status !== 'sealed' || !res.data.sealedPayload) return 'pending';
   sealedInner = res.data.sealedPayload;
+  // The server just burned its copy — persist ours before anything can lose it.
+  const userId = currentUserId();
+  if (userId) {
+    const s = await loadStored(userId);
+    if (s && s.requestId === requestId) await saveStored(userId, { ...s, sealedInner });
+  }
   return 'ready';
 }
 
@@ -99,6 +178,7 @@ export async function finishGuardianRecovery(pin: string): Promise<boolean> {
   ephemeral = null;
   ephemeralRequestId = null;
   sealedInner = null;
+  await clearStored(currentUserId());
   return true;
 }
 

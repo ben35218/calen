@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { choresApi, peopleApi } from '../../api';
+import { choresApi, contactsApi } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import { useAuth } from '../../store/auth';
 import { Button, Card, Screen, ListRow, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, InfoCard } from '../../components/ui';
@@ -33,11 +33,11 @@ export default function ChoreDetailScreen() {
   });
   const chore = choreQ.data;
 
-  // `assignedTo` is a Person id in the opaque store, so resolve the name against
-  // the decrypted people list rather than a populated doc.
-  const peopleQ = useQuery({
-    queryKey: ['people'],
-    queryFn: async () => Promise.all((await peopleApi.list()).data.map((p) => openRecord('Person', p))),
+  // `assignedTo` is a Contact id in the opaque store, so resolve the name against
+  // the decrypted contacts list rather than a populated doc.
+  const contactsQ = useQuery({
+    queryKey: ['contacts'],
+    queryFn: async () => Promise.all((await contactsApi.list()).data.map((p) => openRecord('Contact', p))),
   });
 
   const invalidate = () => {
@@ -97,13 +97,13 @@ export default function ChoreDetailScreen() {
 
   const a = chore.assignedTo;
   const assigneeId = !a ? null : typeof a === 'string' ? a : a._id;
-  const assigneePerson = assigneeId
-    ? (peopleQ.data ?? []).find((p) => String(p._id) === String(assigneeId))
+  const assigneeContact = assigneeId
+    ? (contactsQ.data ?? []).find((p) => String(p._id) === String(assigneeId))
     : null;
-  const assignee = assigneePerson
-    ? user && assigneePerson.accountId && String(assigneePerson.accountId) === String(user._id)
+  const assignee = assigneeContact
+    ? user && assigneeContact.accountId && String(assigneeContact.accountId) === String(user._id)
       ? 'You'
-      : assigneePerson.name
+      : assigneeContact.name
     : null;
   const instructions = chore.instructions || chore.description || '';
 

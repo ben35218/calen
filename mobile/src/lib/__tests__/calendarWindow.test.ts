@@ -133,8 +133,8 @@ describe('mergeCalendarChunks', () => {
 
   it('dedups occasions per date and recipes per schedule', () => {
     const merged = mergeCalendarChunks([
-      { ...empty, occasions: [{ id: 'o1', kind: 'birthday', name: 'Ann', label: 'Birthday', date: '2026-08-20T12:00:00Z', personId: 'p1' } as any], recipes: [{ _id: 's1', scheduledDate: '2026-08-20T12:00:00Z', recipeId: 'rec1' }] },
-      { ...empty, occasions: [{ id: 'o1', kind: 'birthday', name: 'Ann', label: 'Birthday', date: '2026-08-20T12:00:00Z', personId: 'p1' } as any], recipes: [{ _id: 's1', scheduledDate: '2026-08-20T12:00:00Z', recipeId: 'rec1' }] },
+      { ...empty, occasions: [{ id: 'o1', kind: 'birthday', name: 'Ann', label: 'Birthday', date: '2026-08-20T12:00:00Z', contactId: 'p1' } as any], recipes: [{ _id: 's1', scheduledDate: '2026-08-20T12:00:00Z', recipeId: 'rec1' }] },
+      { ...empty, occasions: [{ id: 'o1', kind: 'birthday', name: 'Ann', label: 'Birthday', date: '2026-08-20T12:00:00Z', contactId: 'p1' } as any], recipes: [{ _id: 's1', scheduledDate: '2026-08-20T12:00:00Z', recipeId: 'rec1' }] },
     ]);
     expect(merged.occasions).toHaveLength(1);
     expect(merged.recipes).toHaveLength(1);

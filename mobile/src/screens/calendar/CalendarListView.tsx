@@ -6,7 +6,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { loadCalendarData } from '../../lib/calendarData';
-import { buildMonth, itemsForDate, eventColor, ymd, MonthGrid, GROCERY_ICON, RECIPE_ICON } from '../../lib/calendar';
+import { buildMonth, itemsForDate, visibleDayItems, eventColor, ymd, MonthGrid, GROCERY_ICON, RECIPE_ICON } from '../../lib/calendar';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../lib/calendarPrefs';
 import { useCallEventStatus } from '../../lib/callStatus';
@@ -42,13 +42,13 @@ function dotColors(
   holidayColors: string[],
 ): string[] {
   const out = [...holidayColors];
-  const d = itemsForDate(data, dateStr);
-  d.trips.forEach((t) => visible('trips') && out.push(t.color));
-  d.events.forEach((e) => visible(e.calendarType) && out.push(eventColor(e)));
-  if (visible('birthdays') && d.occasions.length) out.push(calColors.birthdays);
-  if (visible('maintenance') && d.tasks.length) out.push(calColors.maintenance);
-  if (visible('chores') && d.chores.length) out.push(calColors.chores);
-  if (visible('recipes') && (d.recipes.length || d.grocery)) out.push(calColors.recipes);
+  const d = visibleDayItems(itemsForDate(data, dateStr), visible);
+  d.trips.forEach((t) => out.push(t.color));
+  d.events.forEach((e) => out.push(eventColor(e)));
+  if (d.occasions.length) out.push(calColors.birthdays);
+  if (d.tasks.length) out.push(calColors.maintenance);
+  if (d.chores.length) out.push(calColors.chores);
+  if (d.recipes.length || d.grocery) out.push(calColors.recipes);
   return out.slice(0, DOT_MAX);
 }
 
@@ -209,7 +209,12 @@ const CalendarListView = forwardRef<TodayHandle, {
   }, [active, getViewedMonth]);
 
   // ── The selected day's items ──
-  const day = useMemo(() => itemsForDate(calQ.data, selected), [calQ.data, selected]);
+  // Filtered by calendar visibility exactly as the dots above are: a toggled-off
+  // calendar contributes neither a dot nor a row.
+  const day = useMemo(
+    () => visibleDayItems(itemsForDate(calQ.data, selected), (id) => visibility[id] !== false),
+    [calQ.data, selected, visibility],
+  );
   const holidaysForSelected = useMemo(() => {
     const d = new Date(selected + 'T12:00:00');
     const out: { id: string; name: string; color: string }[] = [];

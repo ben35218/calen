@@ -401,7 +401,7 @@ test('C3: opaque v2 envelope hides the collection from the AAD and carries it in
   // The AAD no longer binds `collection`: decrypting with a DIFFERENT collection in
   // `loc` still succeeds (v2 uses the generic `record` tag), proving the record
   // type is not part of the authenticated metadata the server could ever see.
-  assert.deepEqual(crypto.decryptRecord(hdk, { ...loc, collection: 'Person' }, env), record);
+  assert.deepEqual(crypto.decryptRecord(hdk, { ...loc, collection: 'Contact' }, env), record);
   // id / householdId / keyVersion are STILL bound — the slot/replay protection holds.
   assert.throws(() => crypto.decryptRecord(hdk, { ...loc, id: 'other-id' }, env));
   assert.throws(() => crypto.decryptRecord(hdk, { ...loc, householdId: 'elsewhere' }, env));
@@ -419,7 +419,7 @@ test('C3: reads still accept the pre-bump (v1) envelope format', () => {
   // Tagged decrypt of a v1 record echoes the caller-supplied collection.
   assert.deepEqual(crypto.decryptRecordTagged(hdk, loc, v1), { collection: loc.collection, record });
   // v1 STILL binds the collection: a wrong-collection loc fails (unlike v2).
-  assert.throws(() => crypto.decryptRecord(hdk, { ...loc, collection: 'Person' }, v1));
+  assert.throws(() => crypto.decryptRecord(hdk, { ...loc, collection: 'Contact' }, v1));
 });
 
 test('C3: resource-scoped (D1/D2) records survive the v2 bump — ks + scoped AAD intact', () => {

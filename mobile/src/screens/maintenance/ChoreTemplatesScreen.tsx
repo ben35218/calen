@@ -14,7 +14,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { choresApi, ChoreTemplate } from '../../api';
 import { createChoreFromTemplate } from '../../lib/taskTemplates';
-import { Input, Badge, SectionHeader, CenteredLoader } from '../../components/ui';
+import { Input, Badge, SectionHeader, SkeletonList } from '../../components/ui';
 import { recurrenceLabelShort, mdiName } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -74,7 +74,7 @@ export default function ChoreTemplatesScreen() {
   }, [templatesQ.data, search]);
 
   if (templatesQ.isLoading) {
-    return <CenteredLoader color={accent} />;
+    return <SkeletonList />;
   }
 
   return (
@@ -112,7 +112,7 @@ export default function ChoreTemplatesScreen() {
                   ) : null}
                 </View>
                 {busy ? (
-                  <ActivityIndicator color={colors.primary} />
+                  <ActivityIndicator color={accent} />
                 ) : (
                   <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
                 )}

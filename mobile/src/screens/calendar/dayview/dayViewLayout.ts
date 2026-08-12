@@ -54,7 +54,7 @@ export type AllDayItem = {
   color: string;
   kind: 'event' | 'trip' | 'holiday' | 'occasion' | 'task' | 'chore' | 'recipe' | 'grocery';
   // Detail-navigation id for the kind (eventId / tripId / taskId / choreId /
-  // recipeId; occasions carry the personId); holidays and grocery have no
+  // recipeId; occasions carry the contactId); holidays and grocery have no
   // detail target.
   id?: string;
   // The full occasion for kind 'occasion', so a tap can focus it in the list.
@@ -128,7 +128,7 @@ export function normalizeDay(
     allDay.push({ key: `hol-${h.id}`, title: h.name, color: h.color, kind: 'holiday' });
   }
   for (const o of day.occasions) {
-    allDay.push({ key: `occ-${o.id}`, title: occasionTitle(o), color: calColors.birthdays, kind: 'occasion', id: o.personId, occasion: o, icon: occasionIcon(o.kind) });
+    allDay.push({ key: `occ-${o.id}`, title: occasionTitle(o), color: calColors.birthdays, kind: 'occasion', id: o.contactId, occasion: o, icon: occasionIcon(o.kind) });
   }
 
   for (const e of day.events) {

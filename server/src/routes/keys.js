@@ -7,6 +7,7 @@
 
 const express = require('express');
 const User = require('../models/User');
+const Household = require('../models/Household');
 const AuditLog = require('../models/AuditLog');
 const DeviceLink = require('../models/DeviceLink');
 const GuardianRecoveryRequest = require('../models/GuardianRecoveryRequest');
@@ -173,16 +174,19 @@ router.post('/rekey', rekeyLimiter, async (req, res) => {
     // it must be a decision, never a side effect — so the client has to say it
     // understands before this proceeds. A pure viewer has no records and never
     // sees this.
-    const [recordCount, householdMembers] = await Promise.all([
+    // "Recoverable" means someone else actually HOLDS a copy of the HDK — a
+    // fellow member with an envelope of their own can re-seal it to the new
+    // identity. A member row alone (never enrolled, never approved) can't.
+    const [recordCount, peerEnvelopes] = await Promise.all([
       Record.countDocuments({ householdId: user.householdId, deleted: false }),
-      User.countDocuments({ householdId: user.householdId }),
+      HouseholdKeyEnvelope.countDocuments({ householdId: user.householdId, userId: { $ne: user._id } }),
     ]);
     if (recordCount > 0 && req.body.confirmDataLoss !== true) {
       return res.status(409).json({
         error: 'Re-keying abandons the data this account has already encrypted',
         code: 'confirm_data_loss',
         recordCount,
-        recoverableByHousehold: householdMembers > 1,
+        recoverableByHousehold: peerEnvelopes > 0,
       });
     }
 
@@ -218,9 +222,49 @@ router.post('/rekey', rekeyLimiter, async (req, res) => {
       { arrayFilters: [{ 'c.userId': user._id }] },
     );
 
+    // The caller's copy of the HDK died with the old identity. Whether anyone
+    // ELSE still holds one decides what happens to the household:
+    //  - a fellow envelope-holder exists → the data survives, and only a member
+    //    re-sealing HDK v(N+1) to the new key re-admits the caller. Nothing did
+    //    that automatically — the caller sat `pending` until someone happened to
+    //    rotate — so flag the rotation the same way a departure does; the next
+    //    unlocked member's lazy-rotation pass wraps everyone, new key included.
+    //  - nobody does → every record is sealed under a key that no longer exists
+    //    anywhere, forever. Keeping the ciphertext (and a currentKeyVersion that
+    //    points at it) would strand the account: the v1 mint is guarded to
+    //    version 0, so the session unlocks but can never save again. The caller
+    //    has already confirmed the loss above, so purge the dead rows and reset
+    //    the key version — the ordinary owner mint then issues a fresh HDK and
+    //    the account starts clean. Orphaned attachment files are left to the
+    //    upload store's sweep.
+    let householdReset = false;
+    const household = user.householdId ? await Household.findById(user.householdId) : null;
+    if (household && (household.currentKeyVersion || 0) > 0) {
+      if (peerEnvelopes > 0) {
+        if (!household.keyRotationPending) {
+          household.keyRotationPending = true;
+          await household.save();
+        }
+      } else {
+        const purged = await Record.deleteMany({ householdId: household._id });
+        await Promise.all([
+          HouseholdKeyEnvelope.deleteMany({ householdId: household._id }),
+          ResourceKeyEnvelope.deleteMany({ recipient: 'household', householdId: household._id }),
+        ]);
+        household.currentKeyVersion = 0;
+        household.keyRotationPending = false;
+        await household.save();
+        householdReset = true;
+        await AuditLog.create({
+          userId: user._id, householdId: household._id, event: 'hdk_reset',
+          meta: { recordsPurged: purged.deletedCount },
+        });
+      }
+    }
+
     await AuditLog.create({
       userId: user._id, householdId: user.householdId, event: 'key_rekeyed',
-      meta: { recordCount, envelopesCleared: hdk.deletedCount + resource.deletedCount },
+      meta: { recordCount, envelopesCleared: hdk.deletedCount + resource.deletedCount, householdReset },
     });
     // Loud by design: a changed identity key is exactly the event safety numbers
     // exist to surface. The caller is excluded — they just did this on purpose.
@@ -235,6 +279,10 @@ router.post('/rekey', rekeyLimiter, async (req, res) => {
       enrolled: true,
       keyEnrolledAt: user.keyEnrolledAt,
       envelopesCleared: hdk.deletedCount + resource.deletedCount,
+      // The solo start-fresh happened: the household's dead ciphertext is gone
+      // and its key version is back to 0, so the client's next
+      // ensureHouseholdKey mints a fresh HDK and the account can save again.
+      householdReset,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -509,6 +557,9 @@ router.post('/guardian/request', guardianRequestLimiter, async (req, res) => {
       title: 'Recovery request',
       body: `${req.user.firstName} is trying to recover their account and asked you to approve it. Open Privacy & data to help.`,
       tag: `guardian-req-${req.user._id}`,
+      // Typed so the app's foregrounded pop-up lane reacts (a foreground push
+      // shows no banner; the type triggers the same alert the next open would).
+      data: { type: 'guardian_recovery_request', requestId: reqDoc.requestId },
     }));
     res.status(201).json({ requestId: reqDoc.requestId, expiresAt: reqDoc.expiresAt });
   } catch (e) {

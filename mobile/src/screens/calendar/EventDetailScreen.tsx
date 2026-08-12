@@ -13,7 +13,7 @@ import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { decryptDownloadedFile } from '../../lib/attachments';
-import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar } from '../../components/ui';
+import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar, SkeletonDetail } from '../../components/ui';
 import {
   EVENT_CALENDAR_TYPES, eventWhenFromStored, eventStoredFromWhen, shiftEventWhen, occurrenceShiftDays,
   DEFAULT_DAY_ALERT_TIME, allDayAlertLabel,
@@ -694,8 +694,10 @@ export default function EventDetailScreen() {
     promptEventDelete(event, date, (perform) => del.mutate(perform));
   };
 
+  // The initial fetch + decrypt is genuinely visible (deep links, push
+  // notifications, uncached opens) — hold the page's shape, not a spinner.
   if (eventQ.isLoading || (!event && !eventQ.isError)) {
-    return <CenteredLoader color={accent} />;
+    return <SkeletonDetail />;
   }
   if (eventQ.isError || !event) {
     return (

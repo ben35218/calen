@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-// Per-person permission on a shared calendar: View Only ('view') or Full
+// Per-contact permission on a shared calendar: View Only ('view') or Full
 // Access ('full' — may create/edit/delete events on the calendar).
 const ACCESS = ['view', 'full'];
 

@@ -80,7 +80,9 @@ function parseBody(body) {
       signoff: stripObj(body.signoff || '').trim().slice(0, 120),
       signature: stripObj(body.signature || '').trim().slice(0, 120),
       recipients: cleanRecipients,
-      personId: body.personId || undefined,
+      // `contactId` is the current field name; an app build from before the
+      // Person→Contact rename still sends `personId`. Accept either.
+      contactId: body.contactId || body.personId || undefined,
     },
   };
 }

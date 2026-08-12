@@ -1,0 +1,8 @@
+{
+  "name": "@household/grocery",
+  "version": "0.1.0",
+  "description": "Shared grocery-name normalizer (recipe-style ingredient -> shopper-facing label). Pure, dependency-free; used by server (organize response) + mobile (reconciling a saved organized list against the week's items).",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "ISC"
+}

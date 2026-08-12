@@ -153,7 +153,7 @@ async function truncateItemSeries(
 // Typed endpoint groups ported from client/src/services/api.js. Wave 1 (Tasks &
 // Chores) fills out the maintenance surface: tasks, chores, their templates,
 // plus the supporting groups their screens need (categories, items, history,
-// settings, odometer, people). Remaining groups (recipes, trips, …) follow the
+// settings, odometer, contacts). Remaining groups (recipes, trips, …) follow the
 // same one-line-per-endpoint pattern and land with their waves.
 
 export interface User {
@@ -707,6 +707,10 @@ export interface Ingredient {
   amount?: string;
   unit?: string;
   name: string;
+  // Section this ingredient belongs to ("Base", "For the sauce", or a
+  // variation name); undefined = ungrouped. Groups named in the recipe's
+  // `variations` list are mutually exclusive flavor choices.
+  group?: string;
 }
 
 export interface Recipe {
@@ -726,6 +730,14 @@ export interface Recipe {
   instructionIngredients?: number[][];
   // Per-step timer in minutes (parallel to instructions); null = no timer.
   instructionTimers?: (number | null)[];
+  // Ingredient-group names that are mutually exclusive flavor variations
+  // (e.g. ["Lemon Blueberry", "Chocolate Peanut Butter"]). A meal schedules
+  // one of them; the grocery list buys only the chosen one.
+  variations?: string[];
+  // Per-step variation tags (parallel to instructions): null/[] = the step is
+  // shared by every variation; else the variation names it applies to. Cooking
+  // mode shows only the steps that apply to the kit being cooked.
+  instructionVariations?: (string[] | null)[];
 }
 
 export const recipesApi = {
@@ -739,15 +751,24 @@ export const recipesApi = {
   delete: (id: string) => store().remove('Recipe', id),
   fromUrl: (url: string) => api.post<Partial<Recipe>>('/recipes/from-url', { url }),
   generateFromAi: (description: string) => api.post<Partial<Recipe>>('/recipes/generate', { description }),
+  // edit-with-ai responses return with instructionIngredients already
+  // recomputed server-side — there is no separate re-tag call.
   editWithAi: (recipe: Record<string, unknown>, instruction: string) =>
     api.post<Partial<Recipe>>('/recipes/edit-with-ai', { recipe, instruction }),
-  computeIngredientTags: (ingredients: Ingredient[], instructions: string[]) =>
-    api.post<{ instructionIngredients: number[][] }>('/recipes/compute-ingredient-tags', { ingredients, instructions }),
   // Recipe sharing is device-composed (OS share sheet in RecipeDetailScreen);
   // the server-sent styled-email path was retired 2026-08-01.
   suggestRecipes: (params: { query: string }) =>
     api.post<{ recipes: RecipeSuggestion[] }>('/recipes/suggest-recipes', params),
-  // fromPhoto handled via lib/upload (field 'photo'): POST /recipes/from-photo
+  // fromPhoto handled via lib/upload (repeated field 'photo', up to 5 pages of
+  // one recipe in a single request): POST /recipes/from-photo
+  // …as is uploadPhoto (a picture OF the dish, no AI): POST /recipes/photo.
+  //
+  // Bind a saved recipe to the photo it kept (`null` removes it). The URL is
+  // sealed inside the record, so the server can only learn which file is still
+  // in use by being told — an unclaimed file is swept as an abandoned draft.
+  // See lib/recipePhoto.
+  setPhoto: (id: string, imageUrl: string | null) =>
+    api.put<{ claimed: string | null; removed: number }>(`/recipes/${id}/photo`, { imageUrl }),
 };
 
 export interface RecipeSuggestion {
@@ -764,6 +785,9 @@ export interface RecipeSchedule {
   scheduledDate: string;
   servings?: number;
   notes?: string;
+  // The flavor variation this meal is planned as (one of the recipe's
+  // `variations`); null/undefined = none chosen (grocery buys everything).
+  variation?: string | null;
   updatedAt?: string;
   keyVersion?: number;
   enc?: { alg: string; nonce: string; ct: string };
@@ -798,15 +822,35 @@ export const recipeScheduleApi = {
 
 export interface OrganizedGroceryList {
   store_known?: boolean;
-  categories: { name: string; items: GroceryItem[] }[];
+  // `aisle` rides along from the AI when the store's layout is known; the
+  // locally-patched "New Items" section has none.
+  categories: { name: string; aisle?: string; items: GroceryItem[] }[];
+}
+
+// A row the shopper added by hand — something no recipe implies (paper towels,
+// coffee). Merged into the derived list on-device (lib/groceryExtras).
+export interface GroceryExtra {
+  name: string;
+  amount?: string;
 }
 
 export interface GrocerySessionState {
   checked?: Record<string, boolean>;
+  // Hand-added items for this shopping period. Part of the session because
+  // that's where everything the shopper (rather than the meal plan) decides
+  // already lives, and because it makes the additions household-shared.
+  extras?: GroceryExtra[];
   substitutions?: Record<string, string>;
   notFound?: Record<string, boolean>;
   haveHome?: Record<string, boolean>;
   organizedList?: OrganizedGroceryList | null;
+  // Fingerprint of the grocery items `organizedList` was built from (cleaned
+  // name -> portion signature, lib/groceryOrganize.groceryFingerprint).
+  // Flipping to the plain list doesn't discard the organized one, so this is
+  // how the client keeps a saved organized list honest as the plan moves: the
+  // diff against the current week patches it locally (New Items appended,
+  // removed items dropped, re-portioned amounts rewritten) — no AI call.
+  organizedFor?: Record<string, string> | null;
 }
 
 export const historyApi = {
@@ -932,21 +976,21 @@ export const odometerApi = {
 };
 
 // A labeled contact value (Apple-Contacts-style multi-value field). See
-// lib/personFields for the normalize/migrate helpers.
-export interface PersonLabeledValue {
+// lib/contactFields for the normalize/migrate helpers.
+export interface ContactLabeledValue {
   label: string;
   value: string;
 }
-export interface PersonRelatedName extends PersonLabeledValue {
-  personId?: string;
+export interface ContactRelatedName extends ContactLabeledValue {
+  contactId?: string;
 }
 
-export interface Person {
+export interface Contact {
   _id: string;
   // Canonical, composed display name (source of truth for roster/sort/e-cards).
   name: string;
   // Structured components (Apple-Contacts First / Last); `name` is recomposed
-  // from them on save. Absent on legacy records — read via personFields.
+  // from them on save. Absent on legacy records — read via contactFields.
   firstName?: string;
   lastName?: string;
   type: 'family' | 'friend' | 'service' | string;
@@ -957,21 +1001,21 @@ export interface Person {
   // (anniversary/custom — birthday stays its own single field, driving the
   // calendar). `company`/`jobTitle` apply to all types (company supersedes the
   // old service-only businessName).
-  phones?: PersonLabeledValue[];
-  emails?: PersonLabeledValue[];
-  addresses?: PersonLabeledValue[];
-  dates?: PersonLabeledValue[];
-  urls?: PersonLabeledValue[];
-  relatedNames?: PersonRelatedName[];
+  phones?: ContactLabeledValue[];
+  emails?: ContactLabeledValue[];
+  addresses?: ContactLabeledValue[];
+  dates?: ContactLabeledValue[];
+  urls?: ContactLabeledValue[];
+  relatedNames?: ContactRelatedName[];
   jobTitle?: string;
   company?: string;
   notes?: string;
-  // When true, this person's birthday + dates are excluded from the Occasions
+  // When true, this contact's birthday + dates are excluded from the Occasions
   // calendar (grid, day/list, search, reminders) and the Occasions list. Default
   // false (shown).
   occasionsHidden?: boolean;
   deviceContactId?: string;
-  // Legacy single-value fields — read via lib/personFields.normalizePerson and
+  // Legacy single-value fields — read via lib/contactFields.normalizeContact and
   // cleared on the next save. Kept for records not yet re-edited.
   email?: string;
   phone?: string;
@@ -1002,33 +1046,33 @@ export interface ClassifiedContact {
   notes?: string;
 }
 
-export const peopleApi = {
-  // C3b: person CRUD routes through the unified store. The self-Person is just a
+export const contactsApi = {
+  // C3b: contact CRUD routes through the unified store. The self-Contact is just a
   // create with accountId set (the client seeds it — the server can no longer
-  // create readable content); bulk import creates each sealed person client-side.
-  list: (params?: Record<string, unknown>) => store().list<Person>('Person', params),
-  create: (data: Record<string, unknown>) => store().create<Person>('Person', data),
-  createSelf: (data: Record<string, unknown>) => store().create<Person>('Person', data),
-  update: (id: string, data: Record<string, unknown>) => store().update<Person>('Person', id, data),
-  delete: (id: string) => store().remove('Person', id),
-  bulk: async (people: Record<string, unknown>[]) => {
+  // create readable content); bulk import creates each sealed contact client-side.
+  list: (params?: Record<string, unknown>) => store().list<Contact>('Contact', params),
+  create: (data: Record<string, unknown>) => store().create<Contact>('Contact', data),
+  createSelf: (data: Record<string, unknown>) => store().create<Contact>('Contact', data),
+  update: (id: string, data: Record<string, unknown>) => store().update<Contact>('Contact', id, data),
+  delete: (id: string) => store().remove('Contact', id),
+  bulk: async (contacts: Record<string, unknown>[]) => {
     const { sealNew } = require('../lib/e2ee');
-    const { PERSON_ENC } = require('../lib/encSubsets');
+    const { CONTACT_ENC } = require('../lib/encSubsets');
     const created = await Promise.all(
-      people.map(async (p) => store().create<Person>('Person', await sealNew('Person', p, PERSON_ENC(p)))),
+      contacts.map(async (p) => store().create<Contact>('Contact', await sealNew('Contact', p, CONTACT_ENC(p)))),
     );
-    return { data: created.map((r: { data: Person }) => r.data) };
+    return { data: created.map((r: { data: Contact }) => r.data) };
   },
   // AI-assisted import: categorize + pre-fill. The model sees each contact's
   // name + company only. Web-search enrichment of professionals rides along
   // with the AI-assisted method — choosing it implies `enrich: true`; the
   // import sheet's hint discloses the lookup (spec: ai-assistant.md).
   classify: (contacts: ImportContact[], enrich = false) =>
-    api.post<{ results: ClassifiedContact[] }>('/people/classify', { contacts, enrich }),
+    api.post<{ results: ClassifiedContact[] }>('/contacts/classify', { contacts, enrich }),
 };
 
 // ----- Occasion e-cards ------------------------------------------------------
-// PLAINTEXT by design: unlike Person content, a scheduled e-card's recipient
+// PLAINTEXT by design: unlike Contact content, a scheduled e-card's recipient
 // emails + message are sent to the server in the clear (a documented E2EE
 // exception, like email invites) so it can be delivered on the occasion date
 // while the app is closed. See crypto-e2ee.md "Deliberate plaintext exceptions".
@@ -1042,7 +1086,7 @@ export interface ECard {
   _id: string;
   userId: string;
   householdId?: string;
-  personId?: string;
+  contactId?: string;
   kind: OccasionKind;
   occasionLabel?: string;
   month: number;
@@ -1066,7 +1110,7 @@ export interface ECard {
 }
 
 export interface ECardInput {
-  personId?: string;
+  contactId?: string;
   kind: OccasionKind;
   occasionLabel?: string;
   month: number;
@@ -1112,7 +1156,7 @@ export interface Household {
   isOwner?: boolean;
   homeAddress?: string;
   // True once the household's plaintext has been dropped (§9). Gates the
-  // client-side encrypted self-Person seed.
+  // client-side encrypted self-Contact seed.
   e2eeActive?: boolean;
   // Signal-parity pass-2: dropped under an older DROP_FIELDS version → the owner
   // device runs the re-seal-all backfill (dropMigration.reencryptForReDrop).
@@ -1623,7 +1667,7 @@ export interface CalendarOccasion {
   // Friendly noun for known kinds; the raw contact date label for custom kinds.
   label: string;
   date: string;
-  personId: string;
+  contactId: string;
   relationship?: string;
   // The original year the occasion happened, when a real year is on file.
   year?: number | null;
@@ -1751,7 +1795,7 @@ export const calendarApi = {
 
 // ----- Custom calendars (Calendars → Add Calendar) ----------------------------
 
-// Per-person permission on a shared calendar.
+// Per-contact permission on a shared calendar.
 export type CalendarAccess = 'view' | 'full';
 
 // Server record for a user-created calendar. `key` is the client-minted

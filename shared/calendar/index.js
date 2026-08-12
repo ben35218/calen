@@ -481,7 +481,7 @@ function occasionOccurrences(dateValue, fromDate, toDate) {
 // clients already render: { tasks, chores, events, occasions, recipes,
 // groceryShopping, trips }.
 function assembleCalendarData({
-  events = [], tasks = [], chores = [], people = [],
+  events = [], tasks = [], chores = [], contacts = [],
   recipeSchedules = [], trips = [],
   fromDate, toDate, selfId = null, groceryShoppingDay = null,
   // 'weekly' | 'biweekly'; groceryAnchor (YYYY-MM-DD, a known shopping day)
@@ -517,22 +517,22 @@ function assembleCalendarData({
   const evented = [...regularEvents, ...expandedRecurring]
     .sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
 
-  // Occasions come from two per-person sources: the dedicated `birthday` field
+  // Occasions come from two per-contact sources: the dedicated `birthday` field
   // (kind 'birthday') and each labeled `dates[]` entry (kind from its label).
   const occasionSources = [];
-  for (const p of people) {
+  for (const p of contacts) {
     // A contact excluded from the Occasions calendar contributes nothing.
     if (p.occasionsHidden) continue;
-    const personId = String(p._id);
+    const contactId = String(p._id);
     const relationship = selfId && String(p.accountId) === selfId ? 'you' : (p.relationship || p.type);
     if (p.birthday != null) {
-      occasionSources.push({ personId, name: p.name, relationship, kind: 'birthday', label: 'Birthday', value: p.birthday });
+      occasionSources.push({ contactId, name: p.name, relationship, kind: 'birthday', label: 'Birthday', value: p.birthday });
     }
     for (const entry of (p.dates || [])) {
       const value = entry && entry.value;
       if (!value) continue;
       occasionSources.push({
-        personId, name: p.name, relationship,
+        contactId, name: p.name, relationship,
         kind:  occasionKindFromLabel(entry.label),
         label: String(entry.label || '').trim() || 'Date',
         value,
@@ -542,14 +542,14 @@ function assembleCalendarData({
   const occasions = occasionSources.flatMap(src =>
     occasionOccurrences(src.value, from, to).map(date => ({
       id:           src.kind === 'birthday'
-        ? `birthday-${src.personId}-${date}`
-        : `occasion-${occasionSlug(src.label)}-${src.personId}-${date}`,
+        ? `birthday-${src.contactId}-${date}`
+        : `occasion-${occasionSlug(src.label)}-${src.contactId}-${date}`,
       kind:         src.kind,
       name:         src.name,
       relationship: src.relationship,
       label:        src.label,
       date,
-      personId:     src.personId,
+      contactId:     src.contactId,
       year:         occasionYear(src.value),
     }))
   ).sort((a, b) => a.date.localeCompare(b.date));

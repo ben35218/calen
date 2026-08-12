@@ -207,3 +207,75 @@ describe('a malformed reminder', () => {
     expect(await readRunLog()).toMatchObject({ reason: 'ok', scheduled: 0 });
   });
 });
+
+// The reminder window must OPEN AT LOCAL MIDNIGHT, not at the pass's own
+// instant. The engine anchors a recurring chore's date-only occurrence at local
+// noon, so a window opening at "now" lost today's occurrence on any pass after
+// noon — and since every pass starts with a cancel-all, an afternoon foreground
+// wiped an already-armed evening day-of alert without replacing it (weekly
+// chore alerting due-day 5pm + day-before 5pm: Monday's alert fired, Tuesday's
+// never did). Driven through the real engine so the noon anchor is the actual
+// one, not a fixture's guess.
+describe('a due-today day-of alert', () => {
+  it("survives a pass that runs after the occurrence's noon anchor", async () => {
+    const { assembleCalendarData } = require('@household/calendar');
+    jest.useFakeTimers().setSystemTime(new Date(2026, 7, 11, 14, 0)); // Tue Aug 11, 2:00 PM local
+    try {
+      mockLoadCalendarData.mockImplementation(async ({ from, to }: { from: string; to: string }) =>
+        assembleCalendarData({
+          events: [], tasks: [], contacts: [], recipeSchedules: [], trips: [],
+          chores: [{
+            _id: 'c1', title: 'Trash night', active: true,
+            nextDueDate: '2026-08-11T12:00:00',
+            recurrence: { type: 'interval', intervalUnit: 'weeks', intervalValue: 1, dayOfWeek: 2 },
+            reminderDaysBefore: 0, alert2DaysBefore: 1, reminderTime: '17:00',
+          }],
+          fromDate: new Date(from), toDate: new Date(to),
+        }));
+
+      await freshModule().rescheduleReminders();
+
+      const at = mockNotifications.scheduleNotificationAsync.mock.calls
+        .map((c) => ((c[0] as any).trigger.date as Date).getTime());
+      // Today's 5 PM alert is still ahead of the 2 PM pass and must be armed …
+      expect(at).toContain(new Date(2026, 7, 11, 17, 0).getTime());
+      // … and the widened window let nothing already past onto the OS.
+      expect(Math.min(...at)).toBeGreaterThan(Date.now());
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// A cook timer left running when the cook leaves the kitchen screen is armed as
+// its own scheduled notification (lib/cookTimers). The reminder pass rebuilds
+// its batch by cancelling EVERY scheduled notification, so without the restore
+// the next app foreground would silently disarm a simmering pot.
+describe('armed cook timers', () => {
+  it('survive the pass\'s cancel-all', async () => {
+    let mod!: typeof import('../notifications');
+    let cook!: typeof import('../cookTimers');
+    jest.isolateModules(() => {
+      mod = require('../notifications');
+      cook = require('../cookTimers');
+    });
+    try {
+      // An earlier test leaves this rejecting; the arm needs it to succeed.
+      mockNotifications.scheduleNotificationAsync.mockResolvedValue('id');
+      cook.startCookTimer('r1', 'Step 2', 10);
+      await cook.armCookTimerAlarms('r1');
+      jest.clearAllMocks();
+
+      mockLoadCalendarData.mockResolvedValue(dataWithOneAlert());
+      await mod.rescheduleReminders();
+
+      expect(mockNotifications.cancelAllScheduledNotificationsAsync).toHaveBeenCalled();
+      expect(mockNotifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.objectContaining({ body: 'Step 2 is up.' }) }),
+      );
+      expect(cook.runningCookTimers('r1')[0].notificationId).toBeTruthy();
+    } finally {
+      cook.resetCookTimers();  // the store's 1s ticker is module state
+    }
+  });
+});

@@ -167,7 +167,7 @@ const userSchema = new mongoose.Schema({
   // Feature-calendar add-ons this user OWNS (calendar ids: 'recipes' |
   // 'maintenance' | 'trips'). Ownership is per-USER because that is who buys:
   // RevenueCat keys the purchase to `app_user_id` = this user's id, so the
-  // entitlement belongs to a person, not to a household they might leave.
+  // entitlement belongs to a contact, not to a household they might leave.
   // The EFFECT is still household-wide — GET /billing/status returns the UNION
   // across household members, so one member's purchase unlocks the lane for
   // everyone (the records these add-ons surface live in the shared household
@@ -190,7 +190,7 @@ const userSchema = new mongoose.Schema({
   aiPlanActive:      { type: Boolean, default: false },
   aiPlanExpiresAt:   { type: Date },
   householdId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Household' }, // family the user belongs to
-  personId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },    // optional link to the People roster
+  contactId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Contact' },    // optional link to the Contacts roster
   firstName:         { type: String, required: true, trim: true },
   lastName:          { type: String, trim: true, default: '' },
   // Plaintext phone (like email) so sharing flows can resolve a phone number to

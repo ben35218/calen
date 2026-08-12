@@ -418,7 +418,7 @@ export function RevealWrap({
 }
 
 // Wraps a form section that should sit at the top of the viewport when the
-// screen opens focused on it (a `focus` deep-link, e.g. PersonForm's
+// screen opens focused on it (a `focus` deep-link, e.g. ContactForm's
 // `focus: 'dates'` from the Occasions list). Must be a DIRECT child of a
 // scrolling <Screen> — the scroll-context provider lives inside Screen, so
 // calling useScreenScroll from the screen component itself (which *renders*
@@ -800,6 +800,46 @@ export function SkeletonList({ count = 6 }: { count?: number }) {
             <Skeleton width={'60%'} height={15} />
             <Skeleton width={'40%'} height={12} style={{ marginTop: 8 }} />
           </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// Bare shimmering text lines for content that loads inside an already-rendered
+// card or section (grocery rows, outlook rows, picker rows) — SkeletonList's
+// full-bleed avatar rows would overpower a card interior. Widths stagger so the
+// block reads as settling text, not stripes.
+export function SkeletonRows({ count = 3, height = 14, style }: {
+  count?: number;
+  height?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const widths: Array<`${number}%`> = ['90%', '72%', '82%', '64%', '86%', '70%'];
+  return (
+    <View style={[styles.skeletonRows, style]}>
+      {Array.from({ length: count }).map((_, i) => (
+        <Skeleton key={i} width={widths[i % widths.length]} height={height} />
+      ))}
+    </View>
+  );
+}
+
+// A skeleton in the shape of a detail screen: bold title block, a wide
+// hero/info card, then a few icon+label field rows. The loading fallback for
+// detail screens whose fetch is genuinely visible (deep links, push-notification
+// entries, uncached pulls) — replica-fast edit-form seeds keep CenteredLoader
+// (see mobile/CLAUDE.md's loading table).
+export function SkeletonDetail() {
+  return (
+    <View style={styles.skeletonDetail}>
+      <Skeleton width={'60%'} height={24} />
+      <Skeleton width={'40%'} height={14} style={{ marginTop: 10 }} />
+      <Skeleton width={'100%'} height={96} radius={radius.md} style={{ marginTop: spacing.lg }} />
+      {[0, 1, 2].map((i) => (
+        <View key={i} style={styles.skeletonDetailRow}>
+          <Skeleton width={28} height={28} radius={14} />
+          <Skeleton width={i === 1 ? '52%' : '68%'} height={14} style={{ marginLeft: spacing.md }} />
         </View>
       ))}
     </View>
@@ -1933,7 +1973,7 @@ export function PhoneField({
 // (national by device region, or international once a "+" is present). Emits
 // canonical E.164 for storage, same contract as PhoneField, and seeds itself from
 // a stored value. Use where a flush row shares its line with other controls (the
-// person form's multi-value rows) and the picker button would crowd the number.
+// contact form's multi-value rows) and the picker button would crowd the number.
 // Renders like Input, so it drops in beside the sibling email <Input> unchanged.
 export function PhoneTextField({
   value,
@@ -2136,6 +2176,9 @@ const styles = StyleSheet.create({
   skeletonList: { padding: spacing.md },
   skeletonRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, marginBottom: spacing.sm },
   skeletonRowText: { flex: 1, marginLeft: spacing.md },
+  skeletonRows: { gap: 12, paddingVertical: spacing.sm },
+  skeletonDetail: { padding: spacing.md },
+  skeletonDetailRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.lg },
   formError: { color: colors.error, marginVertical: spacing.sm, fontSize: 14 },
   hint: { fontSize: 13, color: colors.textMuted, lineHeight: 18, marginBottom: spacing.md },
   hintDisclosureRow: {

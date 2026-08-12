@@ -1,7 +1,7 @@
 ---
 title: Release QA — test cases, runs & sign-off
 status: current
-last-verified: ddaa21b+ (2026-08-10); initial spec — the admin portal gains a Quality group (Releases / Test cases): a release record per public build, a test-case library imported from the repo's own markdown plan (or CSV) with the repo as source of truth, execution runs recorded one-per-device, and a sign-off gate that refuses while a blocker case is unexecuted or failing
+last-verified: ddaa21b+ (2026-08-10); **the plan document is written for a non-technical tester and a case row opens** — `docs/PRE-RELEASE-TEST-PLAN.md` was rewritten as ~200 plain-language combined flows (the original 812-case technical plan is preserved as `docs/ENGINEERING-TEST-PLAN.md`, an engineer-run companion that is NOT imported), and the library's case rows became tappable: a detail dialog shows what-to-do / what-to-expect, records a result against any in-progress run (the same `(run, case)` upsert as the run screen, pre-filled with that run's existing answer), and lists the case's history across runs/releases via the new `GET /cases/:id/history` (2026-08-10); initial spec — the admin portal gains a Quality group (Releases / Test cases): a release record per public build, a test-case library imported from the repo's own markdown plan (or CSV) with the repo as source of truth, execution runs recorded one-per-device, and a sign-off gate that refuses while a blocker case is unexecuted or failing
 code:
   - server/src/models/Release.js
   - server/src/models/TestCase.js
@@ -45,6 +45,15 @@ Test cases are authored in the repository (`docs/PRE-RELEASE-TEST-PLAN.md` and
 any sibling plan document), reviewed in pull requests like every other artifact,
 and **imported** into the portal. The portal owns run results and sign-off; it
 does not own the wording of a case.
+
+**The imported plan is written for a non-technical tester.** Each case is a
+plain-language "do this → you should see this" flow — no env vars, file paths,
+or internals — because the person running it is a tester, not the engineer.
+Engineering-only checks (server audits, App Store submission readiness, deploy
+ops, migration steps) live in `docs/ENGINEERING-TEST-PLAN.md`, which is
+deliberately **not** imported: the portal's library is the runnable tester
+surface, and burying it under engineering checklists is what made the first
+import unusable.
 
 - A case is identified by its **`caseId`** — the stable, human-readable id the
   plan document already prints (`CAL-13`, `AUTH-28`, `REG-07`). The id is the
@@ -129,6 +138,15 @@ an import can silently retire hundreds of cases.
   overwrites the previous answer rather than appending, so a tester can correct
   a mis-tap without leaving a contradictory trail inside the same run. The
   history that matters lives across runs, not within one.
+- **Results can be recorded from the library too.** Tapping a case in the
+  Test-cases view opens a detail dialog — the full what-to-do / what-to-expect,
+  where the case came from, and its history across runs and releases
+  (`GET /cases/:id/history`) — with a record-result control offered whenever at
+  least one run is `in_progress`. It writes through the **same
+  `POST /runs/:id/results` upsert** as the run screen (never a parallel path),
+  and selecting a run pre-fills the answer already recorded on it, so the
+  dialog corrects rather than blanks. With no run in progress it points at
+  Releases instead — a result always belongs to a run.
 - Result statuses: `pass`, `fail`, `blocked` (couldn't run — a dependency was
   broken), `skipped` (chose not to run), `na` (does not apply to this device).
   A `fail` or `blocked` SHOULD carry a note; nothing enforces it, because
@@ -180,6 +198,7 @@ disagree with the numbers the gate uses — the same helper computes both.
   | GET | `/releases/:id/summary` | Coverage + outstanding blockers |
   | POST | `/releases/:id/sign-off` | Gated sign-off (409 with `blockers[]`) |
   | GET | `/cases` | Paginated, filter by section/priority/spec/source/active, search |
+  | GET | `/cases/:id/history` | The case's results across every run/release, newest first, joined to run device + release version |
   | PUT | `/cases/:id` | Edit a `manual` case (409 on a repo-managed one) |
   | POST | `/cases/import` | `{ format, content, dryRun, sourceDoc }` |
   | GET / POST | `/runs` | List by release / start a run |
@@ -224,9 +243,12 @@ stores, and caps the number of cases a single import may create.
   the unique-build constraint, import dry-run writing nothing vs. commit
   writing, a re-import reporting all-unchanged, a removed case flagged
   `active: false` with its results intact, result upsert replacing rather than
-  appending, and the **sign-off gate refusing (409) with an outstanding blocker
-  and accepting once it passes on any one run** — plus the audit rows each
-  action writes — `server/src/test/qa.integration.test.js`.
+  appending, the case **history** endpoint (empty before any run, joined to run
+  device + release version after, 404 on an unknown id), and the **sign-off
+  gate refusing (409) with an outstanding blocker and accepting once it passes
+  on any one run** — plus the audit rows each action writes — and the repo's
+  real plan document importing end to end with zero warnings —
+  `server/src/test/qa.integration.test.js`.
 
 ## Out of scope
 

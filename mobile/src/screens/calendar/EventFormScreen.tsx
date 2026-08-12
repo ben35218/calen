@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { calendarApi, householdApi, invitationsApi, placesApi, eventAttachmentsApi, settingsApi, CalendarEvent, EventAttachment, FormAssistField, TravelMode } from '../../api';
+import { EVENT_INVITATIONS_KEY, fetchEventInvitations } from '../../lib/eventInvitations';
 import { useAuth } from '../../store/auth';
 import { resolveCurrentAddressIfShared } from '../../lib/currentLocation';
 import { API_URL } from '../../config';
@@ -1292,10 +1293,12 @@ export default function EventFormScreen() {
     onError: (e: any) => Alert.alert('Could not remove', e.response?.data?.error || 'Please try again.'),
   });
 
-  // The guest's own invitation, to show who invited them.
+  // The guest's own invitation, to show who invited them. Shared key AND
+  // shared queryFn — see lib/eventInvitations: a second reader of this key with
+  // its own fetcher decides what every OTHER reader sees.
   const myInvitesQ = useQuery({
-    queryKey: ['invitations'],
-    queryFn: async () => (await invitationsApi.list()).data,
+    queryKey: EVENT_INVITATIONS_KEY,
+    queryFn: fetchEventInvitations,
     enabled: !!guestInvitationId,
   });
   const inviter = myInvitesQ.data?.find((i) => i._id === guestInvitationId);
@@ -1346,7 +1349,7 @@ export default function EventFormScreen() {
     mutationFn: () => invitationsApi.leave(guestInvitationId!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['calendar'] });
-      qc.invalidateQueries({ queryKey: ['invitations'] });
+      qc.invalidateQueries({ queryKey: EVENT_INVITATIONS_KEY });
       allowLeave();
       navigation.goBack();
     },

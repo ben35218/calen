@@ -66,10 +66,10 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
 
   const conduct =
     `Be polite, patient, and professional. Navigate any IVR menus calmly. Keep each reply to one or two short sentences and answer promptly — this is a live phone conversation.\n` +
-    `If the person asks you to wait, hold, or give them a moment, acknowledge once briefly and then wait in silence — never prompt or hurry them.\n` +
+    `If the contact asks you to wait, hold, or give them a moment, acknowledge once briefly and then wait in silence — never prompt or hurry them.\n` +
     // Do-not-call handling (spec: ai-assistant.md). The intro already discloses
     // this is an AI assistant; if the recipient wants out, honor it immediately.
-    `If the person asks not to be called again, to be removed from calls, or to stop calling — or otherwise objects to receiving automated calls — do NOT argue or try to persuade them. Acknowledge warmly ("Understood — I'll make sure this number isn't called again. Sorry to have bothered you."), record it with the record_do_not_call tool, and then politely end the call.`;
+    `If the contact asks not to be called again, to be removed from calls, or to stop calling — or otherwise objects to receiving automated calls — do NOT argue or try to persuade them. Acknowledge warmly ("Understood — I'll make sure this number isn't called again. Sorry to have bothered you."), record it with the record_do_not_call tool, and then politely end the call.`;
 
   // The client's own details, offered only on request (identity verification —
   // businesses often ask for the phone number or name on file). Per-call
@@ -118,7 +118,7 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
     function: {
       name: 'record_do_not_call',
       description:
-        'Record that the person on this call asked not to receive automated calls in the future. Invoke this immediately when they ask to opt out, be removed, or stop being called.',
+        'Record that the contact on this call asked not to receive automated calls in the future. Invoke this immediately when they ask to opt out, be removed, or stop being called.',
       parameters: {
         type: 'object',
         properties: { reason: { type: 'string', description: 'Brief reason, if given.' } },
@@ -195,7 +195,7 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
                 content:
                   'Summarize the outcome of this phone call in 1-3 short sentences for the client who requested it.\n' +
                   'State ONLY outcome facts: whether the cancellation or reschedule was confirmed; the agreed new date and time (for a reschedule); any fee amount mentioned; whether the call reached voicemail or no one; and anything the client still needs to do.\n' +
-                  'NEVER include identity details, even if they were spoken on the call: no names of people on either side, no phone numbers, no email or street addresses, no birthdates, and no account, reference, or confirmation numbers. Refer to the parties only as "the business" and "the client", and to the appointment as "the appointment".',
+                  'NEVER include identity details, even if they were spoken on the call: no names of contacts on either side, no phone numbers, no email or street addresses, no birthdates, and no account, reference, or confirmation numbers. Refer to the parties only as "the business" and "the client", and to the appointment as "the appointment".',
               },
               {
                 role: 'user',
@@ -215,7 +215,7 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
               properties: {
                 doNotCallRequested: {
                   type: 'boolean',
-                  description: 'True if the person asked not to be called again, to be removed, or to stop receiving automated calls.',
+                  description: 'True if the contact asked not to be called again, to be removed, or to stop receiving automated calls.',
                 },
               },
             },
@@ -223,7 +223,7 @@ async function placeCall({ userId, householdId, event, action, callerName, newDa
               {
                 role: 'system',
                 content:
-                  'From the transcript, output whether the person who was called asked not to receive automated calls in the future (asked to be removed, to stop calling, or not to be called again). Return doNotCallRequested true only if they clearly expressed that.',
+                  'From the transcript, output whether the contact who was called asked not to receive automated calls in the future (asked to be removed, to stop calling, or not to be called again). Return doNotCallRequested true only if they clearly expressed that.',
               },
               { role: 'user', content: 'Transcript:\n\n{{transcript}}' },
             ],

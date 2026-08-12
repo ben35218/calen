@@ -9,9 +9,10 @@ import UnlockPaywallScreen from '../screens/plan/UnlockPaywallScreen';
 import ViewerNavigator from './ViewerNavigator';
 import { useReminderScheduler } from '../hooks/useReminderScheduler';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import { useInviteAlerts } from '../hooks/useInviteAlerts';
 import { useRecordSync } from '../hooks/useRecordSync';
 import { useAppLock } from '../hooks/useAppLock';
-import { useSelfPersonSeed } from '../hooks/useSelfPersonSeed';
+import { useSelfContactSeed } from '../hooks/useSelfContactSeed';
 import { usePrivacyPrefs } from '../lib/privacyPrefs';
 import { useCalendarPrefsReady } from '../lib/calendarPrefs';
 import { useOnboardingStatus } from '../lib/onboarding';
@@ -82,6 +83,17 @@ export default function RootNavigator() {
   // invitation alerts). See hooks/usePushNotifications.
   usePushNotifications(navRef, isLoggedIn && !bootstrapping);
 
+  // Invitations, in-app: on open/foreground (and when an invite push lands
+  // while the app is up), pop the iOS-style alert for pending invitations this
+  // device hasn't prompted yet (household event requests answer inline; other
+  // kinds route to the Invitations inbox) — the guaranteed surface when the
+  // push banner was missed. Gated to the full app shell: the viewer and
+  // paywall shells have no Invitations inbox to route into.
+  useInviteAlerts(
+    navRef,
+    isLoggedIn && !bootstrapping && onboarding.complete && !needsUnlock,
+  );
+
   // Real-time calendar freshness (poke-and-pull): the record-change WebSocket
   // while foregrounded + the silent-push background sync task. A housemate's
   // write appears on this device without a manual refresh.
@@ -91,10 +103,10 @@ export default function RootNavigator() {
   // background window; no-op while the pref is "never".
   useAppLock(isLoggedIn && !bootstrapping);
 
-  // Seed the encrypted "You" Person once unlocked (mandatory E2EE: the server no
-  // longer creates it), so person-assignment UIs always have at least the user —
-  // not only after the People screen is opened.
-  useSelfPersonSeed(isLoggedIn && !bootstrapping);
+  // Seed the encrypted "You" Contact once unlocked (mandatory E2EE: the server no
+  // longer creates it), so contact-assignment UIs always have at least the user —
+  // not only after the Contacts screen is opened.
+  useSelfContactSeed(isLoggedIn && !bootstrapping);
 
   // Hold the splash a beat longer while the first-run flag reads from disk, so a
   // returning user never flashes the onboarding screen before it resolves.

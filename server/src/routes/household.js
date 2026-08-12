@@ -475,7 +475,7 @@ router.post('/key/retire', async (req, res) => {
 });
 
 // §9 born-encrypted activation. A brand-new mandated household (typically a solo
-// owner who just enrolled → minted HDK → sealed their seeded self-Person) flips
+// owner who just enrolled → minted HDK → sealed their seeded self-Contact) flips
 // itself E2EE-live on first login: verify the policy applies, then reuse the
 // household-scoped plaintext drop. Idempotent — 'already-active' is success, and
 // an exempt/grandfathered household is left for the managed drop instead. The
@@ -749,7 +749,7 @@ router.post('/invitations', async (req, res) => {
       return res.status(400).json({ error: "You can't invite yourself" });
     }
     if (recipient && String(recipient.householdId) === String(req.household._id)) {
-      return res.status(400).json({ error: 'That person is already in your household' });
+      return res.status(400).json({ error: 'That contact is already in your household' });
     }
 
     const fromName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ');
@@ -1115,7 +1115,7 @@ router.post('/join-requests/:id/reject', async (req, res) => {
       { $set: { status: 'rejected', resolvedByUserId: req.user._id } },
     );
     if (!request) return res.status(404).json({ error: 'No pending request found' });
-    // Retire the invitation the reject answers, so the person sees it was declined.
+    // Retire the invitation the reject answers, so the contact sees it was declined.
     await HouseholdInvitation.updateMany(
       { householdId: req.household._id, toUserId: request.requesterUserId, status: 'accepted' },
       { $set: { status: 'declined', respondedAt: new Date(), joinRequestId: null } },

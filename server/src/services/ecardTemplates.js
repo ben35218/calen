@@ -203,7 +203,7 @@ function renderECard({ kind, template, occasionLabel, toName, toEmail, fromName,
   // A custom occasion titles the card with its author-written label.
   const heading = kind === 'custom' && occasionLabel ? stripObj(occasionLabel) : v.heading;
   // Recipients are stored with their full contact name (for the recipient
-  // list), but a card addresses people familiarly — greet and subject-line by
+  // list), but a card addresses contacts familiarly — greet and subject-line by
   // FIRST name only ("Dear Sarah," not "Dear Sarah Smith,").
   const firstName = stripObj(toName).trim().split(/\s+/)[0] || '';
   const greetLine = stripObj(greeting).trim() || (firstName ? `Dear ${firstName},` : 'Hello,');

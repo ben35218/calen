@@ -9,7 +9,7 @@ import { WEB_URL } from '../config';
 // public .ics link), these grant in-app access: the recipient accepts from their
 // Invitations inbox. Both channels are composed on the inviter's own device —
 // email via mailto:, phone via sms: — so the server never sends the outreach nor
-// handles the invitee's address. The message just nudges the person to open the
+// handles the invitee's address. The message just nudges the contact to open the
 // app, where the pending invitation is waiting (resolved by their saved
 // email/phone, or claimed when they sign up with it).
 

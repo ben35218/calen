@@ -109,7 +109,7 @@ import {
   mintResourceKey, wrapResourceKeyForCollaborator, sealForResource, decryptResourceRecord,
   publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady, rekeyIdentity,
   currentHouseholdId, unwrapForeignHDKs, openForeignRecord, encryptRecord,
-  subscribeHouseholdChanged, getHDK,
+  subscribeHouseholdChanged, getHDK, currentCollection, LEGACY_COLLECTION_PAIRS,
 } from '../e2ee';
 
 const PASSWORD = 'correct horse battery staple';
@@ -336,6 +336,23 @@ describe('re-key (lost every unlock factor)', () => {
     expect(await unlockWithRecoveryCode(fresh!)).toBe(true);
   });
 
+  test('a successful re-key fires the household-changed teardown', async () => {
+    // The replica's decrypted rows must not outlive the key that produced them:
+    // server-side the household was purged (solo) or awaits a member's re-wrap,
+    // so a re-key runs the same device wipe a join/leave does (store/auth owns
+    // the actual clearing — this pins the signal it hangs off).
+    expect(await unlockWithPassword(PASSWORD)).toBe(true);
+    let signals = 0;
+    const unsubscribe = subscribeHouseholdChanged(() => { signals += 1; });
+    try {
+      clearRecoveryCode();
+      expect((await rekeyIdentity(PASSWORD)).ok).toBe(true);
+      expect(signals).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test('surfaces the server’s data-loss guard instead of throwing', async () => {
     const { keysApi } = require('../../api');
     const real = keysApi.rekey;
@@ -457,7 +474,7 @@ describe('join carry-over: reading a household we have left', () => {
   });
 
   test('the wrong householdId does not open the record (the AAD binds it)', async () => {
-    const stranded = await sealNew('Person', { name: 'Ada' });
+    const stranded = await sealNew('Contact', { name: 'Ada' });
     const hdks = await unwrapForeignHDKs(mockServer.hdkEnvelopes);
     const wrong = await openForeignRecord(
       { _id: String(stranded._id), keyVersion: stranded.keyVersion as number, enc: stranded.enc as never },
@@ -542,5 +559,50 @@ describe('subscribeHouseholdChanged', () => {
 
     expect(hdkAtSignal).not.toBeNull(); // a refill on this signal can succeed
     unsubscribe();
+  });
+});
+
+// The Person→Contact rename moved the collection tag that rides INSIDE the
+// sealed payload. The server is content-blind, so every contact sealed before
+// the rename still says "Person" and only the client can reconcile it — if the
+// read path didn't, an upgraded install would bucket them under a collection
+// nothing reads and the whole roster would look empty.
+describe('legacy collection aliases (Person → Contact)', () => {
+  test('a record sealed under the old name opens and reports the new one', async () => {
+    await ensureHouseholdKey();
+    // Seal exactly as a pre-rename build did: collection tag 'Person'.
+    const legacy = await sealNew('Person', { name: 'Ada Lovelace', type: 'family' });
+
+    const opened = await openOpaqueRecord(legacy as never);
+    expect(opened).toBeTruthy();
+    expect(opened!.collection).toBe('Contact');
+    expect(opened!.record).toMatchObject({ name: 'Ada Lovelace', type: 'family' });
+  });
+
+  test('a record sealed under the new name is unaffected', async () => {
+    await ensureHouseholdKey();
+    const current = await sealNew('Contact', { name: 'Grace Hopper', type: 'friend' });
+
+    const opened = await openOpaqueRecord(current as never);
+    expect(opened!.collection).toBe('Contact');
+    expect(opened!.record).toMatchObject({ name: 'Grace Hopper' });
+  });
+
+  test('openRecord falls back to the old name for a v1 row (its AAD binds the collection)', async () => {
+    await ensureHouseholdKey();
+    // encryptRecord with the legacy collection reproduces a v1-style seal whose
+    // location binds 'Person'; opening it as 'Contact' must still succeed.
+    const enc = await encryptRecord('Person', '507f1f77bcf86cd799439011', { name: 'Ada' });
+    const row = { _id: '507f1f77bcf86cd799439011', ...enc } as never;
+
+    expect((await openRecord('Contact', row)) as never).toMatchObject({ name: 'Ada' });
+  });
+
+  test('currentCollection maps old → new and leaves everything else alone', () => {
+    expect(currentCollection('Person')).toBe('Contact');
+    expect(currentCollection('Contact')).toBe('Contact');
+    expect(currentCollection('Chore')).toBe('Chore');
+    // The replica re-bucket reads the same table, so it must not be empty.
+    expect(LEGACY_COLLECTION_PAIRS).toContainEqual(['Person', 'Contact']);
   });
 });

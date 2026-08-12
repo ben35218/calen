@@ -5,10 +5,13 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi, Recipe } from '../../api';
-import { openRecord, sealNew } from '../../lib/e2ee';
+import { sealNew } from '../../lib/e2ee';
+import { openRecipe } from '../../lib/recipeNames';
+import { pickVariation } from '../../lib/recipeVariations';
 import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
 import * as replica from '../../lib/replica';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { SkeletonList } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { colors, spacing } from '../../theme';
 
@@ -57,15 +60,15 @@ export default function AddMealScreen() {
     // Offline-first, mirroring RecipesScreen: sync the replica, then decrypt.
     queryFn: async () => {
       const rows = await replica.syncedList<Recipe>('Recipe', async () => (await recipesApi.list()).data);
-      return Promise.all(rows.map((r) => openRecord('Recipe', r)));
+      return Promise.all(rows.map((r) => openRecipe(r)));
     },
   });
 
   const schedule = useMutation({
     // Sealed create (Signal-parity D5): schedule notes are content, so every
     // entry carries an enc blob for the write-guard.
-    mutationFn: async (recipeId: string) => {
-      const payload = { recipeId, scheduledDate: date };
+    mutationFn: async ({ recipeId, variation }: { recipeId: string; variation: string | null }) => {
+      const payload = { recipeId, scheduledDate: date, ...(variation ? { variation } : {}) };
       return recipeScheduleApi.schedule(await sealNew('RecipeSchedule', payload, RECIPE_SCHEDULE_ENC(payload)));
     },
     onSuccess: () => {
@@ -81,7 +84,11 @@ export default function AddMealScreen() {
   );
 
   if (recipesQ.isLoading) {
-    return <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.xl }} />;
+    return (
+      <View style={styles.pane}>
+        <SkeletonList />
+      </View>
+    );
   }
 
   return (
@@ -104,11 +111,17 @@ export default function AddMealScreen() {
           <TouchableOpacity
             style={styles.row}
             disabled={schedule.isPending}
-            onPress={() => schedule.mutate(item._id)}
+            onPress={async () => {
+              // A recipe with flavor variations schedules as ONE of them (the
+              // grocery list buys only that kit); cancelling aborts the add.
+              const variation = await pickVariation(item);
+              if (variation === undefined) return;
+              schedule.mutate({ recipeId: item._id, variation });
+            }}
           >
             <MaterialCommunityIcons name="silverware-fork-knife" size={20} color={colors.textMuted} />
             <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
-            {schedule.isPending && schedule.variables === item._id ? (
+            {schedule.isPending && schedule.variables?.recipeId === item._id ? (
               <ActivityIndicator size="small" color={accent} />
             ) : (
               <Ionicons name="add" size={22} color={accent} />

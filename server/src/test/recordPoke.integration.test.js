@@ -141,3 +141,14 @@ test('the silent push message is data-only — nothing user-visible', () => {
   });
   assert.ok(!('title' in msg) && !('body' in msg), 'no visible surface');
 });
+
+test('an alerting push message presents audibly on both platforms', () => {
+  const msg = buildExpoMessage(
+    { expoToken: 'ExponentPushToken[xyz]', platform: 'ios' },
+    { title: 'Event invitation', body: 'Ben invited you', data: { type: 'household_event_request', eventId: 'e1' } },
+  );
+  assert.equal(msg.sound, 'default');
+  assert.equal(msg.priority, 'high');
+  assert.equal(msg.channelId, 'default');
+  assert.deepEqual(msg.data, { type: 'household_event_request', eventId: 'e1' });
+});

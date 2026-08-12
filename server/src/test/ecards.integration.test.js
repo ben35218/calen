@@ -264,3 +264,29 @@ test('a card whose send hour already passed today still goes out (catch-up, not 
   assert.equal(card.active, false, 'past-hour card on the occasion day still sends (then deactivates)');
   assert.ok(card.sentAt, 'sentAt stamped');
 });
+
+// The occasion's subject moved from `personId` to `contactId` in the
+// Person→Contact rename. It is opaque routing/dedupe data the server only
+// stores, but an installed app build from before the rename still sends the old
+// key — if the route stopped reading it, those cards would lose their link to
+// the contact they are for.
+test('the occasion subject accepts contactId, and legacy personId from a pre-rename build', async () => {
+  const u = await registerUser({ firstName: 'Author' });
+  const subject = '507f1f77bcf86cd799439011';
+
+  const current = await request().post('/api/ecards').set('Authorization', u.auth)
+    .send(validBody({ contactId: subject }));
+  assert.equal(current.status, 201);
+  assert.equal(String(current.body.contactId), subject, 'contactId is stored');
+
+  const legacy = await request().post('/api/ecards').set('Authorization', u.auth)
+    .send(validBody({ personId: subject }));
+  assert.equal(legacy.status, 201);
+  assert.equal(String(legacy.body.contactId), subject, 'legacy personId lands on contactId');
+
+  // A body carrying both prefers the current key.
+  const both = await request().post('/api/ecards').set('Authorization', u.auth)
+    .send(validBody({ contactId: subject, personId: '507f1f77bcf86cd799439099' }));
+  assert.equal(both.status, 201);
+  assert.equal(String(both.body.contactId), subject, 'contactId wins over personId');
+});

@@ -52,7 +52,7 @@ function notifyActivated(): void {
 // this is the "records are now decryptable" signal. The record-sync pull races
 // ahead of unlock on sign-in — its first pass blocks every undecryptable row and
 // parks the cursor — so the app-root subscriber re-pulls + refetches the replica-
-// backed views here, otherwise the calendar/people/etc. stay empty until a manual
+// backed views here, otherwise the calendar/contacts/etc. stay empty until a manual
 // mutation invalidates them. Fires only on a genuine transition (not on every
 // ensureHouseholdKey call once the key is already held), so it can't loop.
 const keysReadyListeners = new Set<() => void>();
@@ -161,7 +161,7 @@ export function setSealAuthor(userId: string | null): void {
   sealAuthorId = userId || null;
 }
 // The signed-in user's id (same value setSealAuthor holds). Exposed so non-hook
-// libs (calendar assembly, reminders) can identify the self-Person without the
+// libs (calendar assembly, reminders) can identify the self-Contact without the
 // server: post-C3b the unified store returns no `selfId`, so callers derive it
 // from here + the decrypted roster. Returns null when signed out / pre-unlock.
 export function currentUserId(): string | null {
@@ -556,17 +556,17 @@ export const decryptCalendarRecord = <T = Record<string, unknown>>(
 ) => decryptResourceRecord<T>('calendar', collection, id, resource, keyVersion, enc);
 
 // ── Born-encrypted activation (mandatory E2EE) ───────────────────────────────
-// After a fresh solo owner enrolls → mints the HDK → seeds their self-Person, a
+// After a fresh solo owner enrolls → mints the HDK → seeds their self-Contact, a
 // mandated household flips itself E2EE-live on first login: the server drops its
 // plaintext (§9) so the boundary is live from day one. Idempotent and best-
 // effort — a not-yet-ready or exempt household is simply left as-is. On the first
-// login the register-seeded self-Person is still plaintext, so a `stragglers`
+// login the register-seeded self-Contact is still plaintext, so a `stragglers`
 // result triggers the re-encrypt pass (which seals it) and one retry.
 export async function activateBornEncryptedHousehold(): Promise<boolean> {
   if (!currentHDK()) return false; // no key held → nothing to activate yet
   let { data } = await householdApi.activate();
   if (data.status === 'stragglers') {
-    // Seal any server-seeded plaintext (e.g. the self-Person), then retry once.
+    // Seal any server-seeded plaintext (e.g. the self-Contact), then retry once.
     const { reencryptStragglers } = await import('./dropMigration');
     await reencryptStragglers().catch(() => {});
     ({ data } = await householdApi.activate());
@@ -712,6 +712,28 @@ export async function sealUpdate(collection: string, id: string, payload: Rec, f
 function withAuthor(fields: Rec): Rec {
   return sealAuthorId ? { author: sealAuthorId, ...fields } : fields;
 }
+// ── Legacy collection aliases ────────────────────────────────────────────────
+// The Person→Contact rename changed the collection tag that rides INSIDE the
+// sealed payload (`{ c: 'Person' }`) and, for pre-C3 v1 rows, inside the AAD.
+// Every contact sealed before the rename still carries the old tag and the
+// server is content-blind, so it cannot rewrite them — the client maps old → new
+// on read. Writes always seal the new name, so any edit retires the alias for
+// that row; `migrateLegacyCollections` (lib/replica) re-buckets the local copy.
+const LEGACY_COLLECTIONS: Record<string, string> = { Person: 'Contact' };
+
+// [oldName, newName] pairs, for the one-shot local replica re-bucket at boot.
+export const LEGACY_COLLECTION_PAIRS: [string, string][] = Object.entries(LEGACY_COLLECTIONS);
+
+// The current name for a collection tag read out of a sealed record.
+export function currentCollection(collection: string): string {
+  return LEGACY_COLLECTIONS[collection] ?? collection;
+}
+// The pre-rename name for a collection, when it has one. Needed for v1 records
+// only: their AAD binds the collection, so opening one requires the old string.
+function legacyCollectionFor(collection: string): string | undefined {
+  return Object.keys(LEGACY_COLLECTIONS).find((old) => LEGACY_COLLECTIONS[old] === collection);
+}
+
 // Return a fetched record with its decrypted content merged over the plaintext
 // (falls back to the plaintext the server returned when we can't decrypt).
 export async function openRecord<T extends { _id: string; keyVersion?: number; calendarType?: string; tripId?: string; enc?: { alg: string; nonce: string; ct: string; ks?: string } }>(
@@ -719,6 +741,23 @@ export async function openRecord<T extends { _id: string; keyVersion?: number; c
   record: T,
 ): Promise<T> {
   if (!record) return record;
+  // A v1 row sealed under the old collection name binds it in the AAD, so the
+  // first attempt fails on the renamed collection — retry under the old name
+  // before giving up and handing back the (contentless) plaintext row.
+  const legacy = legacyCollectionFor(collection);
+  if (legacy) {
+    const opened = await openRecordAs(collection, record);
+    if (opened) return opened;
+    return (await openRecordAs(legacy, record)) ?? record;
+  }
+  return (await openRecordAs(collection, record)) ?? record;
+}
+
+// One decrypt attempt under an exact collection name. Null when it won't open.
+async function openRecordAs<T extends { _id: string; keyVersion?: number; calendarType?: string; tripId?: string; enc?: { alg: string; nonce: string; ct: string; ks?: string } }>(
+  collection: string,
+  record: T,
+): Promise<T | null> {
   // Signal-parity D1/D2: a resource-sealed record decrypts with its resource key,
   // not the HDK — a CalendarKey for `enc.ks === 'cal'` (resource = its
   // calendarType), a TripKey for `enc.ks === 'trip'` (resource = its Trip id: the
@@ -731,7 +770,7 @@ export async function openRecord<T extends { _id: string; keyVersion?: number; c
   } else {
     dec = await decryptRecord<Partial<T>>(collection, record._id, record.keyVersion, record.enc);
   }
-  return dec ? ({ ...record, ...dec } as T) : record;
+  return dec ? ({ ...record, ...dec } as T) : null;
 }
 
 // Signal-parity C3 (opaque record envelopes / unified store): decrypt a row from
@@ -761,14 +800,14 @@ export async function openOpaqueRecord<T extends Rec = Rec>(
       if (!key) return null;
       const loc = { collection: '', id: row._id, householdId: String(hdkHouseholdId ?? ''), keyVersion: version, scope: { kind, resource, version } };
       const { collection, record } = crypto.decryptRecordTagged<T>(key, loc, row.enc as RecordEnvelope);
-      return { collection, record: { ...(row as Rec), ...(record as Rec) } as T };
+      return { collection: currentCollection(collection), record: { ...(row as Rec), ...(record as Rec) } as T };
     }
     const version = row.keyVersion ?? hdkVersion;
     const hdk = hdks.get(version);
     if (!hdk) return null;
     const loc = { collection: '', id: row._id, householdId: String(hdkHouseholdId ?? ''), keyVersion: version };
     const { collection, record } = crypto.decryptRecordTagged<T>(hdk, loc, row.enc as RecordEnvelope);
-    return { collection, record: { ...(row as Rec), ...(record as Rec) } as T };
+    return { collection: currentCollection(collection), record: { ...(row as Rec), ...(record as Rec) } as T };
   } catch {
     return null;
   }
@@ -1034,6 +1073,13 @@ export async function rekeyIdentity(
   // one-time code through the same mandatory modal registration uses.
   pendingRecoveryCode = result.recoveryCodeDisplay;
   emit();
+  // The device's household-scoped caches all describe data the new identity
+  // cannot read: server-side it was either purged outright (a solo household is
+  // reset to key version 0 so this account can start fresh) or now awaits a
+  // member's re-wrap. Either way the decrypted replica rows must not outlive the
+  // key that produced them — run the same teardown a household switch does
+  // (store/auth clears the replica + cursors and refills once keys are ready).
+  notifyHouseholdChanged();
   return { ok: true };
 }
 

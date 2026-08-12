@@ -30,7 +30,7 @@ export function navTargetForView(view: string, ctx: { tripId?: string; eventId?:
     case 'setup_ai_personal_info': return { route: 'PrivacyData', params: { focus: 'aiPersonalInfo' } };
     case 'setup_household': return { route: 'Household', params: { promptInvite: true } };
     case 'setup_home_address': return { route: 'Account', params: { promptField: 'homeAddress' } };
-    case 'setup_contact': return { route: 'PersonForm', params: { type: 'service', focus: 'phone' } };
+    case 'setup_contact': return { route: 'ContactForm', params: { type: 'service', focus: 'phone' } };
     case 'setup_reminders': return { route: 'Reminders', params: { promptEnable: true } };
     // Needs the focused event to know which event to add the phone to.
     case 'setup_event_phone': return ctx.eventId ? { route: 'EventLocation', params: { eventId: ctx.eventId, promptPhone: true } } : null;

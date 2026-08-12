@@ -258,6 +258,51 @@ router.get('/cases', async (req, res) => {
   }
 });
 
+// A case's results across every run and release, newest first — what the
+// library's detail view shows so "has this ever passed, and where?" is
+// answerable without opening each run.
+router.get('/cases/:id/history', async (req, res) => {
+  try {
+    if (badId(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const tc = await TestCase.findById(req.params.id).select('caseId').lean();
+    if (!tc) return res.status(404).json({ error: 'Not found' });
+
+    const rows = await TestResult.find({ caseId: tc.caseId })
+      .sort({ at: -1 }).limit(100).lean();
+    const runIds = [...new Set(rows.map((r) => String(r.runId)))];
+    const releaseIds = [...new Set(rows.map((r) => String(r.releaseId)))];
+    const [runs, releases] = await Promise.all([
+      TestRun.find({ _id: { $in: runIds } }).select('name environment status').lean(),
+      Release.find({ _id: { $in: releaseIds } }).select('version buildNumber channel').lean(),
+    ]);
+    const runById = Object.fromEntries(runs.map((r) => [String(r._id), r]));
+    const relById = Object.fromEntries(releases.map((r) => [String(r._id), r]));
+
+    res.json({
+      caseId: tc.caseId,
+      results: rows.map((r) => ({
+        _id: r._id,
+        runId: r.runId,
+        status: r.status,
+        note: r.note,
+        at: r.at,
+        run: runById[String(r.runId)]
+          ? { name: runById[String(r.runId)].name, device: runById[String(r.runId)].environment?.device || '' }
+          : null,
+        release: relById[String(r.releaseId)]
+          ? {
+            _id: r.releaseId,
+            version: relById[String(r.releaseId)].version,
+            buildNumber: relById[String(r.releaseId)].buildNumber,
+          }
+          : null,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Only portal-authored cases are editable here: a repo case's wording belongs to
 // the document it came from, and editing it would be silently reverted by the
 // next import — which is worse than refusing.

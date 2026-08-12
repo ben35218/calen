@@ -1,4 +1,4 @@
-import type { Person } from '../api';
+import type { Contact } from '../api';
 
 export interface AssigneeOption {
   value: string;
@@ -6,8 +6,8 @@ export interface AssigneeOption {
 }
 
 export interface AssigneeArgs {
-  /** The decrypted people roster (contacts + the household's self-Persons). */
-  people: Person[];
+  /** The decrypted contacts roster (contacts + the household's self-Contacts). */
+  contacts: Contact[];
   /** User ids of the current household's members (`GET /household` → members). */
   memberIds: string[];
   /** The signed-in user's id — always a member, even offline. */
@@ -20,15 +20,15 @@ const idOf = (v: unknown) => (v == null ? '' : String(v));
 
 /**
  * A chore is assigned to someone who lives here, never to a contact.
- * `Chore.assignedTo` refs a Person, so the options are the self-Persons of the
+ * `Chore.assignedTo` refs a Contact, so the options are the self-Contacts of the
  * household's member accounts (`accountId`), you first then alphabetical. A solo
  * household — or an offline/404 household fetch — leaves just you.
  */
-export function choreAssigneeOptions({ people, memberIds, myId, currentAssigneeId }: AssigneeArgs): AssigneeOption[] {
+export function choreAssigneeOptions({ contacts, memberIds, myId, currentAssigneeId }: AssigneeArgs): AssigneeOption[] {
   const members = new Set([...memberIds.map(idOf), idOf(myId)].filter(Boolean));
-  const isMe = (p: Person) => !!myId && idOf(p.accountId) === idOf(myId);
+  const isMe = (p: Contact) => !!myId && idOf(p.accountId) === idOf(myId);
 
-  const options = people
+  const options = contacts
     .filter((p) => p.accountId && members.has(idOf(p.accountId)))
     .sort((a, b) => {
       if (isMe(a) !== isMe(b)) return isMe(a) ? -1 : 1;
@@ -44,7 +44,7 @@ export function choreAssigneeOptions({ people, memberIds, myId, currentAssigneeI
   // "Unassigned" — it just isn't offered as a new choice.
   const current = idOf(currentAssigneeId);
   if (current && !options.some((o) => o.value === current)) {
-    const legacy = people.find((p) => idOf(p._id) === current);
+    const legacy = contacts.find((p) => idOf(p._id) === current);
     if (legacy) options.push({ value: current, label: legacy.name || 'Unknown' });
   }
   return options;

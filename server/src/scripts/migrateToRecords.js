@@ -36,7 +36,7 @@ const Record = require('../models/Record');
 // envelopes). Mirrors e2eePolicy.AUTHOR_HIDDEN.
 const MIGRATE_MODELS = {
   CalendarEvent:  require('../models/CalendarEvent'),
-  Person:         require('../models/Person'),
+  Contact:         require('../models/Contact'),
   MaintenanceTask:require('../models/MaintenanceTask'),
   Chore:          require('../models/Chore'),
   Recipe:         require('../models/Recipe'),

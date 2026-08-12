@@ -8,7 +8,7 @@ import type { ChatMessage } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
 import ChatHeaderButtons from '../chat/ChatHeaderButtons';
 import CreditsBanner from '../../components/CreditsBanner';
-import { peopleApi, householdApi, calendarApi, callsApi } from '../../api';
+import { contactsApi, householdApi, calendarApi, callsApi } from '../../api';
 import { getHDK, openRecord, sealNew } from '../../lib/e2ee';
 import type { AssistantFocusEvent, RootStackParamList } from '../../navigation/types';
 import { loadCalendarSources } from '../../lib/calendarData';
@@ -88,7 +88,7 @@ export default function CalendarAssistantScreen({
   // upload of contacts all track the setting — and re-sync if it resolves late.
   const usePersonal = usePrivacyPrefs().prefs.aiUsePersonalInfo;
 
-  // Ephemeral-consent (§9.1 P4c): post-drop send decrypted people + calendar
+  // Ephemeral-consent (§9.1 P4c): post-drop send decrypted contacts + calendar
   // sources so the server needn't read stored plaintext. Dormant pre-drop.
   // `ephemeralRef` holds the (sanitized) roster for the context panel + prompt;
   // the calendar sources are kept RAW here and scoped per-turn in buildBody (G4).
@@ -111,12 +111,12 @@ export default function CalendarAssistantScreen({
     // Pass the toggle to the context endpoint too, so the "what I can see" panel
     // doesn't claim access to household details the prompt won't actually get.
     contextEndpoint: `/calendar/chat/context?includePersonalInfo=${usePersonal}`,
-    // Post-drop the DB people are sealed — POST the decrypted roster instead.
+    // Post-drop the DB contacts are sealed — POST the decrypted roster instead.
     contextBody: () =>
-      ephemeralRef.current ? { includePersonalInfo: usePersonal, people: ephemeralRef.current.people } : null,
+      ephemeralRef.current ? { includePersonalInfo: usePersonal, contacts: ephemeralRef.current.contacts } : null,
     // Privacy toggle: tell the server whether it may use household contacts in the
     // prompt. When off, the server withholds them (and we also skip decrypting/
-    // sending people below, so plaintext contacts never leave the device).
+    // sending contacts below, so plaintext contacts never leave the device).
     // G4 (query-scoped context): scope the calendar sources to a window DERIVED
     // FROM THIS TURN'S CONVERSATION before they leave the device — only the
     // records the turn plausibly needs are sent (recurring items always kept, so
@@ -147,7 +147,7 @@ export default function CalendarAssistantScreen({
         messages,
         includePersonalInfo: usePersonal,
         ...(focusEvent ? { focusEvent: aliasCtx.sanitize(focusEvent) as AssistantFocusEvent } : {}),
-        ...(ephemeralRef.current || {}),         // { people } (roster — not windowed)
+        ...(ephemeralRef.current || {}),         // { contacts } (roster — not windowed)
         ...(scoped ? { calendarSources: scoped } : {}),
         ...(weatherRef.current ? { weather: weatherRef.current } : {}),
       };
@@ -204,10 +204,10 @@ export default function CalendarAssistantScreen({
         const now = new Date();
         const from = new Date(now.getFullYear() - 1, 0, 1).toISOString();
         const to = new Date(now.getFullYear() + 2, 0, 1).toISOString();
-        const [calendarSources, peopleRows, weather] = await Promise.all([
+        const [calendarSources, contactRows, weather] = await Promise.all([
           loadCalendarSources({ from, to }),
           usePersonal
-            ? peopleApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Person', p as any))))
+            ? contactsApi.list().then(({ data }) => Promise.all(data.map((p) => openRecord('Contact', p as any))))
             : Promise.resolve([]),
           loadPassiveForecast().catch(() => null),
         ]);
@@ -216,17 +216,17 @@ export default function CalendarAssistantScreen({
         // roster is sanitized once here (not windowed); the calendar sources stay
         // RAW and are scoped + sanitized per turn in buildBody (G4).
         //
-        // People projection (spec ai-assistant.md) — the only people shape that
+        // Contacts projection (spec ai-assistant.md) — the only contacts shape that
         // leaves the device:
         //   • family/friend  → NAME ONLY (nothing else — no birthdays, so the
-        //     calendar sources also drop their people feed below).
+        //     calendar sources also drop their contacts feed below).
         //   • service (pro)  → the business details the user saved them for
         //     (service + business name + address), so the assistant can reason
         //     about who handles what. Phone/email stay "on file" flags, never
         //     raw — the reference-not-values rule and the public transparency
         //     promise ("phone numbers replaced with 'on file' markers").
         const selfId = String(user?._id || '');
-        const projected = (peopleRows as Array<Record<string, unknown>>)
+        const projected = (contactRows as Array<Record<string, unknown>>)
           .filter((p) => p && typeof p.name === 'string'
             && (p.type === 'family' || p.type === 'friend' || p.type === 'service'))
           .map((p) => {
@@ -249,10 +249,10 @@ export default function CalendarAssistantScreen({
               isSelf: !!p.accountId && String(p.accountId) === selfId,
             };
           });
-        ephemeralRef.current = { people: aliasCtx.sanitize(projected) };
+        ephemeralRef.current = { contacts: aliasCtx.sanitize(projected) };
         rawCalendarRef.current = {
           ...(calendarSources as unknown as Record<string, unknown>),
-          people: [],
+          contacts: [],
         };
         weatherRef.current = weather || null;
         chat.loadContext(); // refresh the "what I can see" panel with the decrypted roster

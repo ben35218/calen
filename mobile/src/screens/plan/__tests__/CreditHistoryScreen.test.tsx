@@ -12,7 +12,7 @@ jest.mock('../../../components/ui', () => {
   const ReactActual = require('react');
   const { Text, View } = require('react-native');
   return {
-    CenteredLoader: () => ReactActual.createElement(Text, null, 'loading'),
+    SkeletonList: () => ReactActual.createElement(Text, null, 'skeleton'),
     SectionHeader: ({ children }: any) => ReactActual.createElement(Text, null, children),
     EmptyState: ({ title, message }: any) =>
       ReactActual.createElement(View, null,
@@ -69,11 +69,11 @@ describe('CreditHistoryScreen', () => {
     expect(view.getByText('No history yet')).toBeTruthy();
   });
 
-  it('shows the loader before the first fetch resolves', async () => {
+  it('shows the list skeleton before the first fetch resolves', async () => {
     mockLedger.isLoading = true;
     // react-query's `data` is undefined until the first fetch resolves.
     mockLedger.data = undefined as any;
     const view = await render(<CreditHistoryScreen />);
-    expect(view.getByText('loading')).toBeTruthy();
+    expect(view.getByText('skeleton')).toBeTruthy();
   });
 });

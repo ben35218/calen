@@ -1,6 +1,6 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
-// Signal-parity C3b: calendar/task/person content lives in the opaque store, so
+// Signal-parity C3b: calendar/task/contact content lives in the opaque store, so
 // this assistant reads it only from the client's decrypted context. PhoneCall +
 // WeatherRecord stay their own (non-migrated) collections.
 const PhoneCall = require('../models/PhoneCall');
@@ -269,7 +269,7 @@ async function executeTool(name, input, ctx) {
       // assistant expands the CLIENT's decrypted sources with the shared engine
       // (the same code the server uses) — there is no server-plaintext fallback.
       const data = assembleCalendarData({
-        ...(ctx.calendarSources || { events: [], tasks: [], chores: [], people: [], trips: [], recipeSchedules: [] }),
+        ...(ctx.calendarSources || { events: [], tasks: [], chores: [], contacts: [], trips: [], recipeSchedules: [] }),
         fromDate, toDate,
         selfId: String(userId),
         groceryShoppingDay: (household || user)?.groceryShoppingDay ?? null,
@@ -344,7 +344,7 @@ async function executeTool(name, input, ctx) {
       // meals, and grocery days are deliberately NOT passed to deriveAvailability
       // (they're reminders/plans, not commitments — see the shared engine note).
       const data = assembleCalendarData({
-        ...(ctx.calendarSources || { events: [], tasks: [], chores: [], people: [], trips: [], recipeSchedules: [] }),
+        ...(ctx.calendarSources || { events: [], tasks: [], chores: [], contacts: [], trips: [], recipeSchedules: [] }),
         fromDate, toDate,
         selfId: String(userId),
         groceryShoppingDay: (household || user)?.groceryShoppingDay ?? null,
@@ -387,11 +387,11 @@ async function executeTool(name, input, ctx) {
       // (service contacts) also share the business details the user saved them for
       // (service + business name + address). Phone/email stay "on file" flags — the
       // app dials/emails; the real values never reach you (references, not values).
-      const people = Array.isArray(ctx.people) ? ctx.people : [];
-      if (!people.length) {
+      const contacts = Array.isArray(ctx.contacts) ? ctx.contacts : [];
+      if (!contacts.length) {
         return {
           message: 'No household members are shared with this chat (none added, or personal info is turned off in Privacy).',
-          setup_hint: 'If the user needs household members for this request, offer suggest_navigation with setup_household so they can add people (or setup_ai_personal_info if it may be off).',
+          setup_hint: 'If the user needs household members for this request, offer suggest_navigation with setup_household so they can add contacts (or setup_ai_personal_info if it may be off).',
         };
       }
       const nameOf = (p) => (p.isSelf ? `${p.name} (the user you are assisting)` : p.name);
@@ -405,9 +405,9 @@ async function executeTool(name, input, ctx) {
         return parts.join(' ');
       };
       return {
-        household: people.filter(p => p.type === 'family').map(nameOf),
-        friends: people.filter(p => p.type === 'friend').map(nameOf),
-        professionals: people.filter(p => p.type === 'service').map(proOf),
+        household: contacts.filter(p => p.type === 'family').map(nameOf),
+        friends: contacts.filter(p => p.type === 'friend').map(nameOf),
+        professionals: contacts.filter(p => p.type === 'service').map(proOf),
         note: 'Household & friends: names only. Professionals: business details as shown; any "on file" phone/email is used by the app for dialing/emailing and is never shown to you.',
       };
     }
@@ -660,7 +660,7 @@ If asked who you are, say you're ${ASSISTANT_NAME} and that in this chat you can
 Lead with the outcome or answer. Keep replies to a sentence or two whenever you can; drop preamble, acknowledgements, and filler ("Great!", "Sure thing!", "I'd be happy to", or restating the user's request back to them). Don't narrate what you're about to do or add sign-offs. Use a short list only when several items genuinely need their own line. When you recap a drafted event or confirm an action, give just the essential details — date, time, place — not a full description. Add more only when the user asks for it.
 ${focusSection}${homeAreaSection}
 ## Household members & professionals
-Call get_household_members when the conversation involves who is in the household (e.g. suggesting a family outing, deciding who to invite) or which saved professional handles something (e.g. the plumber, the vet, the dentist). Household members and friends come back as NAMES ONLY — no other personal details (no birthdays, addresses, or notes). Saved professionals also include the business details the user saved them for (service, business name, address); their phone/email are shown only as "on file" flags — the app dials or emails on the user's behalf, so you never see the real values. Don't guess or invent details about people; if you need something only the user knows, ask them.
+Call get_household_members when the conversation involves who is in the household (e.g. suggesting a family outing, deciding who to invite) or which saved professional handles something (e.g. the plumber, the vet, the dentist). Household members and friends come back as NAMES ONLY — no other personal details (no birthdays, addresses, or notes). Saved professionals also include the business details the user saved them for (service, business name, address); their phone/email are shown only as "on file" flags — the app dials or emails on the user's behalf, so you never see the real values. Don't guess or invent details about contacts; if you need something only the user knows, ask them.
 
 You have access to stored weather forecast data via get_weather_forecast. Use it when the user asks about the weather, wants to plan outdoor activities, or when suggesting good days for outdoor events.
 
@@ -695,7 +695,7 @@ Always confirm what you've done. Ask for clarification when dates, names, or int
 ${navPromptSection('calendar')}`;
 }
 
-function buildContextSummary(people, includePersonalInfo = true, homeCity = '') {
+function buildContextSummary(contacts, includePersonalInfo = true, homeCity = '') {
   // Privacy toggle off: calendar records stay on the device, so the assistant
   // sees free/busy availability ONLY — be honest that titles/details are private.
   const sees = includePersonalInfo
@@ -711,16 +711,16 @@ function buildContextSummary(people, includePersonalInfo = true, homeCity = '') 
   const area = (homeCity || '').trim();
   if (area) sees.push(`Your general area — ${area} (for local suggestions; never your street address)`);
   // Only advertise access to household/professional details when the privacy
-  // toggle allows it — otherwise the panel would claim to "see" people the chat
+  // toggle allows it — otherwise the panel would claim to "see" contacts the chat
   // never receives. Household & friends are names only (spec: no birthdays,
   // addresses, or notes); saved professionals additionally share the
   // business details they were saved for, but phone/email stay "on file".
   if (includePersonalInfo) {
-    const named = people.filter((p) => p.type === 'family' || p.type === 'friend').length;
-    const pros = people.filter((p) => p.type === 'service').length;
+    const named = contacts.filter((p) => p.type === 'family' || p.type === 'friend').length;
+    const pros = contacts.filter((p) => p.type === 'service').length;
     sees.push(
       named
-        ? `Your household & friends — names only (${named} ${named === 1 ? 'person' : 'people'})`
+        ? `Your household & friends — names only (${named} ${named === 1 ? 'contact' : 'contacts'})`
         : 'Your household members & friends — names only',
     );
     sees.push(
@@ -762,17 +762,20 @@ function buildSuggestedPrompts() {
 }
 
 // Context + starter prompts shown when the assistant first opens. C3b: the roster
-// is sealed, so the client sends its decrypted `people` (POST) for the "what I can
+// is sealed, so the client sends its decrypted `contacts` (POST) for the "what I can
 // see" panel + starter prompts; there is no server read.
 async function contextHandler(req, res) {
   try {
     const src = req.method === 'GET' ? req.query : (req.body || {});
     // Privacy toggle: when off, don't surface household contacts.
     const includePersonalInfo = String(src.includePersonalInfo) !== 'false' && src.includePersonalInfo !== false;
-    const people = includePersonalInfo && Array.isArray(src.people) ? src.people : [];
+    // `contacts` is the current field name; a pre-rename app build still sends
+    // `people` (see the POST / handler) — accept either.
+    const sent = src.contacts ?? src.people;
+    const contacts = includePersonalInfo && Array.isArray(sent) ? sent : [];
     const homeCity = req.household?.homeCity || req.user?.homeCity || '';
     res.json({
-      context: buildContextSummary(people, includePersonalInfo, homeCity),
+      context: buildContextSummary(contacts, includePersonalInfo, homeCity),
       suggestedPrompts: buildSuggestedPrompts(),
     });
   } catch (err) {
@@ -785,7 +788,11 @@ router.post('/context', contextHandler);
 
 router.post('/', meter('chat', 'calendar'), async (req, res) => {
   try {
-    const { messages, people: clientPeople, calendarSources, weather, availability, includePersonalInfo = true } = req.body;
+    const { messages, calendarSources, weather, availability, includePersonalInfo = true } = req.body;
+    // The client's decrypted roster. `contacts` is the current field name; an app
+    // build from before the Person→Contact rename still sends `people`, so accept
+    // either rather than silently handing the model an empty roster.
+    const clientContacts = req.body.contacts ?? req.body.people;
     // "Ask Calen" opened from an event's detail screen: the client sends the
     // (decrypted) event so "cancel this appointment" needs no lookup — and works
     // on E2EE households where the server can't read the stored event. Keep only
@@ -811,7 +818,7 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
     if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
 
     const userId = req.user._id;
-    // Ephemeral-consent (§9.1 P4c): the client supplies decrypted people (system
+    // Ephemeral-consent (§9.1 P4c): the client supplies decrypted contacts (system
     // prompt) and calendar sources (list_events / call_business, expanded by the
     // shared engine) so the server needn't read stored plaintext. Dual-write: with
     // neither present it reads the DB exactly as before.
@@ -821,11 +828,11 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
     // prompt entirely — including the DB fallback — so no names/addresses/birthdays
     // reach the model. The assistant still works on the calendar itself.
     // Signal-parity C3b: the roster is sealed in the opaque store, so the client
-    // supplies its decrypted people; there is no server-plaintext fallback.
+    // supplies its decrypted contacts; there is no server-plaintext fallback.
     // Spec (name-only): the client sends {name, type, isSelf} projections; they
     // reach the model only when it calls get_household_members — never the
     // system prompt.
-    const people = includePersonalInfo && Array.isArray(clientPeople) ? clientPeople : [];
+    const contacts = includePersonalInfo && Array.isArray(clientContacts) ? clientContacts : [];
     const systemPrompt = buildSystemPrompt(req, focusEvent, includePersonalInfo);
     const client = new Anthropic({ apiKey });
 
@@ -848,7 +855,7 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
       messages,
       executeTool: (name, input) => executeTool(name, input, {
         userId, scopeIds: req.scopeIds, user: req.user, household: req.household,
-        people,
+        contacts,
         includePersonalInfo,
         calendarSources: (calendarSources && typeof calendarSources === 'object') ? calendarSources : null,
         availability: Array.isArray(availability) ? availability : null,

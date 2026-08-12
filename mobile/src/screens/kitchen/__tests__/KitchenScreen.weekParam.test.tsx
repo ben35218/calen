@@ -60,18 +60,19 @@ jest.mock('../../../components/ui', () => ({
   Card: ({ children }: { children: React.ReactNode }) => children,
   SegmentedControl: () => null,
   CenteredLoader: () => null,
+  // The nav-bar overflow button and the options sheet it opens: neither is
+  // under test here, but both have to exist or KitchenHome renders undefined.
+  HeaderIconButton: () => null,
+  BottomSheet: () => null,
 }));
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null, MaterialCommunityIcons: () => null }));
 
 const GROCERY_DAY = 6; // Saturday
 const pad = (n: number) => String(n).padStart(2, '0');
 const localYmd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const fmt = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-const periodLabel = (start: Date) => {
-  const end = new Date(start);
-  end.setDate(end.getDate() + 6);
-  return `${fmt(start)} – ${fmt(end)}`;
-};
+// The caption's trip date — the only concrete date the header carries now that
+// the label is relative ("Seven Weeks"), so it is what pins which period is up.
+const tripDate = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 
 describe('KitchenScreen grocery weekStart param', () => {
   beforeEach(() => {
@@ -90,14 +91,12 @@ describe('KitchenScreen grocery weekStart param', () => {
     const clicked = localYmd(clickedStart);
     mockStore.params = { pane: 'grocery', weekStart: clicked };
 
-    const expectedLabel = periodLabel(periodStartOf(new Date(`${clicked}T00:00:00`), GROCERY_DAY, 'weekly', null));
-
     render(<KitchenScreen />);
 
     // After effects settle (param applied, then cleared), the header must show the
     // clicked period — and must NOT snap back to the current week.
     await waitFor(() => {
-      expect(screen.queryByText(expectedLabel)).toBeTruthy();
+      expect(screen.queryByText(new RegExp(`^Shop ${tripDate(clickedStart)} \\(`))).toBeTruthy();
     });
     expect(screen.queryByText('This Week')).toBeNull();
     expect(screen.queryByText('Next Week')).toBeNull();

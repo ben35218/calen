@@ -13,7 +13,7 @@
 // implementation instead of re-rolling the filter.
 
 import { recipeScheduleApi, recipesApi, Recipe, RecipeSchedule } from '../api';
-import { openRecord } from './e2ee';
+import { openRecipe } from './recipeNames';
 
 // Schedules are created with a plain `YYYY-MM-DD` scheduledDate; rows written
 // before C3b carry a full ISO timestamp at UTC midnight. Both reduce to the day.
@@ -89,7 +89,7 @@ export async function loadSchedulesInRange(start: string, end: string): Promise<
 export async function loadPlannerMeals(start: string, end: string): Promise<PlannerMeal[]> {
   const [schedules, recipes] = await Promise.all([
     loadSchedulesInRange(start, end),
-    recipesApi.list().then(({ data }) => Promise.all(data.map((r) => openRecord('Recipe', r)))),
+    recipesApi.list().then(({ data }) => Promise.all(data.map((r) => openRecipe(r)))),
   ]);
   const titles = new Map<string, string>(recipes.map((r: Recipe) => [String(r._id), r.title]));
   return schedules.map((s) => ({

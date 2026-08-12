@@ -245,7 +245,7 @@ test('with no password held, the sheet still collects one', async () => {
 
 test('a viewer who never unlocked the app is not warned about data they never made', async () => {
   // The account is behind the hard paywall, so nothing on it was created by the
-  // user: the lone Record is the "You" Person the client auto-seeds at boot,
+  // user: the lone Record is the "You" Contact the client auto-seeds at boot,
   // which the server's guard counts as "1 items you saved in Calen". Warning
   // someone that re-keying destroys data they neither made nor can read is a
   // scare with no decision behind it, so the guard is pre-confirmed.

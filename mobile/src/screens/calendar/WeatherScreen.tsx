@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, Linking } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -14,14 +14,14 @@ import {
   loadSourceForecast, loadSourceOutlook, LiveLocationError, isMissingHomeAddressError,
 } from '../../lib/weatherSource';
 import { formatMm } from '../../lib/weatherSummary';
-import { Card, Button, BottomSheet } from '../../components/ui';
+import { Card, Button, BottomSheet, Skeleton } from '../../components/ui';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import type { RootStackParamList } from '../../navigation/types';
 import HourlyForecast from '../../components/HourlyForecast';
 import SkyBackground from '../../components/SkyBackground';
 import WeatherIcon from '../../components/WeatherIcon';
 import { weatherCardColors } from '../../lib/weatherTheme';
-import { colors, spacing } from '../../theme';
+import { colors, spacing, radius } from '../../theme';
 
 const BLUE = '#0288D1';
 
@@ -155,7 +155,7 @@ export default function WeatherScreen() {
         </TouchableOpacity>
       ) : null}
       {!source || weatherQ.isLoading ? (
-        <ActivityIndicator color={BLUE} style={{ marginVertical: spacing.xl }} />
+        <WeatherSkeleton />
       ) : weatherQ.isError || !w ? (
         weatherQ.error instanceof LiveLocationError ? (
           // The live source couldn't produce a fix — explain and offer a way
@@ -303,7 +303,14 @@ export default function WeatherScreen() {
         <Text style={styles.outlookTitle}>90-Day Seasonal Outlook</Text>
         <View style={styles.outlookDivider} />
         {outlookQ.isLoading ? (
-          <ActivityIndicator color="#fff" style={{ marginVertical: spacing.lg }} />
+          // SkeletonRows' staggered-line shape, re-filled by hand: its stock
+          // grey vanishes against the translucent card, so these lines carry
+          // the screen's white instead.
+          <View style={styles.skelOutlook}>
+            {(['90%', '72%', '82%', '64%'] as const).map((wdt) => (
+              <Skeleton key={wdt} width={wdt} style={styles.skelBlock} />
+            ))}
+          </View>
         ) : outlookQ.isError ? (
           <Text style={styles.outlookError}>Could not load seasonal outlook.</Text>
         ) : (
@@ -385,6 +392,31 @@ export default function WeatherScreen() {
   );
 }
 
+// Shimmering placeholders shaped like the loaded screen — the hero temp
+// readout, the hourly-strip card, and the 7-day card — so the first load (and
+// every source switch) keeps its layout instead of collapsing to a lone
+// spinner. Built from the shared Skeleton pulse, but the default grey block
+// disappears against the sky gradient, so every block here carries the same
+// translucent white the real cards' hairlines use.
+function WeatherSkeleton() {
+  return (
+    <>
+      <View style={styles.hero}>
+        <Skeleton width={128} height={84} radius={radius.md} style={styles.skelBlock} />
+        <Skeleton width={140} height={16} style={[styles.skelBlock, styles.skelGap]} />
+        <Skeleton width={210} height={12} style={[styles.skelBlock, styles.skelGap]} />
+      </View>
+      <Skeleton width={'100%'} height={112} radius={radius.lg} style={[styles.skelBlock, styles.skelHourly]} />
+      <Card style={styles.card}>
+        <Skeleton width={110} height={12} style={styles.skelBlock} />
+        {(['92%', '76%', '86%', '70%', '88%', '74%', '82%'] as const).map((wdt, i) => (
+          <Skeleton key={i} width={wdt} style={[styles.skelBlock, styles.skelDayRow]} />
+        ))}
+      </Card>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   scroll: { flex: 1 },
@@ -443,4 +475,10 @@ const styles = StyleSheet.create({
   weekPrecip: { flexDirection: 'row', alignItems: 'center', gap: 3, width: 72, justifyContent: 'flex-end' },
   weekPrecipText: { fontSize: 12, color: '#fff' },
   rainDays: { width: 40, textAlign: 'right', fontSize: 12, color: '#fff' },
+  // Skeleton blocks over the sky: same translucent white as the day-row hairlines.
+  skelBlock: { backgroundColor: 'rgba(255,255,255,0.25)' },
+  skelGap: { marginTop: spacing.sm },
+  skelHourly: { marginBottom: spacing.md },
+  skelDayRow: { marginTop: spacing.md },
+  skelOutlook: { gap: 12, paddingVertical: spacing.md },
 });

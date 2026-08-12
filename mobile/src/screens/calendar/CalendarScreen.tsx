@@ -846,7 +846,9 @@ const WeekRow = React.memo(function WeekRow({
                 </TouchableOpacity>
                 );
               })}
-              {c.chips.length > CHIP_MAX ? <Text style={styles.moreText}>+{c.chips.length - CHIP_MAX} more</Text> : null}
+              {/* The week-height math reserves exactly one line (MORE_H), so the
+                  label must never wrap — on narrow cells it shrinks to fit instead. */}
+              {c.chips.length > CHIP_MAX ? <Text style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{c.chips.length - CHIP_MAX} more</Text> : null}
               {showSkeleton && !c.chips.length ? <CellSkeleton date={cell.date} density={density} /> : null}
 
               {/* Each icon opens its own item view; a task/recipe icon aggregates
@@ -967,7 +969,13 @@ const WeekRow = React.memo(function WeekRow({
 
       {/* Spanning bars: hidden in Compact (dots only); text-labelled only in
           Details (Stacked shows unlabelled bars). */}
-      {density !== 'compact' && week.bars.map((bar) => (
+      {density !== 'compact' && week.bars.map((bar) => {
+        // Details bars take the same tinted treatment as the single-day chips
+        // (translucent wash, label in the calendar hue); the solid left edge is
+        // what marks a span as multi-day. Stacked bars stay solid to match its
+        // unlabelled single-day bars.
+        const tint = density === 'details' ? tintedChip(bar.color) : null;
+        return (
         <TouchableOpacity
           key={bar.key}
           activeOpacity={0.7}
@@ -1001,19 +1009,22 @@ const WeekRow = React.memo(function WeekRow({
           delayLongPress={LONG_PRESS_MS}
           style={[
             styles.spanBar,
+            tint
+              ? [styles.spanBarTinted, { backgroundColor: tint.fill, borderLeftColor: bar.color }]
+              : { backgroundColor: bar.color },
             {
-              backgroundColor: bar.color,
               left: bar.startCol * cellSize + 1,
               width: (bar.endCol - bar.startCol + 1) * cellSize - 3,
               top: week.headerH + weatherPad + bar.lane * BAR_H,
             },
           ]}
         >
-          {density === 'details' ? (
-            <Text style={styles.spanBarText} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
+          {tint ? (
+            <Text style={[styles.spanBarText, { color: tint.label }]} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
           ) : null}
         </TouchableOpacity>
-      ))}
+        );
+      })}
     </View>
   );
 });
@@ -1344,7 +1355,8 @@ const styles = StyleSheet.create({
   dayNum: { fontSize: 15, color: colors.text, fontWeight: '600' },
   todayNum: { color: '#fff', fontWeight: '700' },
   spanBar: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, justifyContent: 'center', paddingHorizontal: 4 },
-  spanBarText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
+  spanBarTinted: { borderLeftWidth: 3, overflow: 'hidden' },
+  spanBarText: { fontSize: 12, lineHeight: 13, fontWeight: '600' },
   // The 7-day forecast lane: translucent weather tint, one segment per day.
   weatherStrip: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
   weatherSeg: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2 },

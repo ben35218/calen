@@ -17,7 +17,7 @@ import { ensureSharedCalendarKeys } from '../lib/calendarKeys';
 import { queryClient } from '../lib/queryClient';
 import { clearAll as clearReplica } from '../lib/replica';
 import { resetRecordCursor, syncRecords } from '../lib/records';
-import { resetCalendarPrefs } from '../lib/calendarPrefs';
+import { resetCalendarPrefs, reloadCalendarPrefs } from '../lib/calendarPrefs';
 import { resetOwnedAddons } from '../lib/addons';
 import { cacheUnlocked, clearUnlockCache } from '../lib/unlock';
 import { unregisterCurrentPushToken } from '../lib/push';
@@ -169,7 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // app-lock foreground, or a manual unlock), re-pull the record feed and refetch
   // the replica-backed views. The first record sync on sign-in races ahead of the
   // unlock: it can't decrypt anything yet, blocks the cursor, and leaves the
-  // replica empty — so the calendar/people/etc. show only plaintext overlays
+  // replica empty — so the calendar/contacts/etc. show only plaintext overlays
   // (weather, holidays) until a manual mutation invalidates them. This closes that
   // gap centrally (ensureHouseholdKey is the chokepoint every unlock path reaches),
   // so content appears on its own once the key lands. See lib/records syncRecords.
@@ -220,6 +220,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // both change the instant membership does, and leaving must re-lock lanes
       // the old household had paid for.
       await resetCalendarPrefs().catch(() => {});
+      // The reset also dropped the first-paint readiness the RootNavigator
+      // splash gates on, and the ready hook only restarts the load when the
+      // signed-in flag flips — which it won't here (the user stays signed in).
+      // Without this re-arm the splash holds forever after any in-session
+      // household change (join, leave, removal, re-key "start fresh").
+      await reloadCalendarPrefs().catch(() => {});
       await resetOwnedAddons().catch(() => {});
       // Refill ONLY when this session actually holds the new household's key.
       // Syncing without one decrypts nothing, so it would leave the device on an

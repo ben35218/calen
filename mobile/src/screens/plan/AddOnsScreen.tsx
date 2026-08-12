@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { RouteProp } from '@react-navigation/native';
 import { useRoute } from '@react-navigation/native';
 import type { PurchasesPackage } from 'react-native-purchases';
-import { Badge, Button, Card, IconAvatar, SectionHeader } from '../../components/ui';
+import { Badge, Button, Card, IconAvatar, SectionHeader, Skeleton } from '../../components/ui';
 import { isPurchasesConfigured } from '../../lib/purchases';
 import { useCalendarColors, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
@@ -24,7 +24,7 @@ import {
 } from '../../lib/addons';
 import { billingApi } from '../../api';
 import { TERMS_URL, PRIVACY_URL } from '../../config';
-import { colors, spacing } from '../../theme';
+import { colors, spacing, radius } from '../../theme';
 import { useAddonPurchase } from './shared';
 import type { RootStackParamList } from '../../navigation/types';
 
@@ -161,14 +161,14 @@ export default function AddOnsScreen() {
       {/* Free add-ons lead the screen: the zero-friction wins come before any
           purchase ask (give-first sequencing), and the locked Birthdays/Chores
           views' "Add for free" entry lands on target without scrolling. Order
-          is state-stable — claimed cards stay put as quiet "Added" receipts. */}
-      {billing.data ? (
-        <>
-          <SectionHeader>Included free</SectionHeader>
-          {FREE_ADDON_CALENDAR_IDS.map((key) => renderAddonCard(key, true))}
-          <SectionHeader>One-time purchases</SectionHeader>
-        </>
-      ) : null}
+          is state-stable — claimed cards stay put as quiet "Added" receipts.
+          The headers render immediately with skeleton card bodies while billing
+          loads, so the section doesn't pop in above the fold once it arrives. */}
+      <SectionHeader>Included free</SectionHeader>
+      {billing.data
+        ? FREE_ADDON_CALENDAR_IDS.map((key) => renderAddonCard(key, true))
+        : FREE_ADDON_CALENDAR_IDS.map((key) => <AddonCardSkeleton key={key} />)}
+      <SectionHeader>One-time purchases</SectionHeader>
 
       {/* Featured bundle (paid add-ons only — free ones aren't sold). The CTA
           disappears once any single PAID add-on is owned — a partial owner
@@ -206,11 +206,9 @@ export default function AddOnsScreen() {
         </Card>
       )}
 
-      {billing.data ? (
-        PAID_ADDON_CALENDAR_IDS.map((key) => renderAddonCard(key, false))
-      ) : (
-        <ActivityIndicator color={colors.primary} style={{ marginVertical: spacing.lg }} />
-      )}
+      {billing.data
+        ? PAID_ADDON_CALENDAR_IDS.map((key) => renderAddonCard(key, false))
+        : PAID_ADDON_CALENDAR_IDS.map((key) => <AddonCardSkeleton key={key} />)}
 
       {__DEV__ && !isPurchasesConfigured() ? (
         <Card style={styles.card}>
@@ -246,6 +244,26 @@ export default function AddOnsScreen() {
   );
 }
 
+// A shimmering placeholder in the shape of an add-on card — icon disc, title
+// and description lines, then the price-button block — holding each card's slot
+// while the billing status loads. Built from the shared Skeleton pulse.
+function AddonCardSkeleton() {
+  return (
+    <Card style={styles.addonCard}>
+      <View style={styles.addonRow}>
+        <Skeleton width={44} height={44} radius={22} />
+        <View style={styles.addonText}>
+          <Skeleton width={'40%'} height={16} />
+          <Skeleton width={'76%'} height={13} style={styles.skelGap} />
+        </View>
+      </View>
+      <View style={styles.addonCta}>
+        <Skeleton width={'100%'} height={44} radius={radius.md} />
+      </View>
+    </Card>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
@@ -276,6 +294,7 @@ const styles = StyleSheet.create({
   addonLabel: { fontSize: 16, fontWeight: '700', color: colors.text },
   addonDesc: { color: colors.textMuted, fontSize: 13, lineHeight: 18, marginTop: 2 },
   addonCta: { marginTop: spacing.sm },
+  skelGap: { marginTop: 6 },
 
   disclosure: {
     color: colors.textMuted,

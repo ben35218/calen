@@ -168,7 +168,7 @@ describe('CalendarsScreen grouping', () => {
       customCal({ id: 'custom-in', name: 'Carpool', mine: false }),
     ];
     const view = await render(<CalendarsScreen />);
-    expect(view.getByText('Shared by you · 2 people')).toBeTruthy();
+    expect(view.getByText('Shared by you · 2 contacts')).toBeTruthy();
     expect(view.getByText('Shared with you')).toBeTruthy();
   });
 

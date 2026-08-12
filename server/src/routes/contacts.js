@@ -1,7 +1,7 @@
 const express = require('express');
 const multer  = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
-const Person  = require('../models/Person');
+const Contact  = require('../models/Contact');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
 const { meter, getConfig } = require('../middleware/usageMeter');
@@ -101,13 +101,13 @@ function parseVCards(raw) {
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────────────
-// Signal-parity C3b: person content CRUD (list/create/self/update/delete/bulk)
+// Signal-parity C3b: contact content CRUD (list/create/self/update/delete/bulk)
 // moved to the unified opaque store — the client reads its roster from the replica
-// and writes through /records. The self-Person seed + its accountId/type live
+// and writes through /records. The self-Contact seed + its accountId/type live
 // inside the sealed record now (the server can't stamp or read them), and the
 // "can't delete your own card" + roster-sort rules are enforced client-side. What
 // stays here is contact IMPORT + AI CLASSIFY, which return candidate data the
-// client seals + creates; neither writes a Person row.
+// client seals + creates; neither writes a Contact row.
 
 // ── Import ─────────────────────────────────────────────────────────────────────
 router.post('/import', upload.single('file'), async (req, res) => {
@@ -123,11 +123,11 @@ router.post('/import', upload.single('file'), async (req, res) => {
 });
 
 // POST /bulk was retired (Signal-parity C3b): bulk import seals + creates each
-// person client-side through /records (peopleApi.bulk).
+// contact client-side through /records (contactsApi.bulk).
 
 // ── AI-assisted import ─────────────────────────────────────────────────────────
 // Given raw device contacts, categorize each (family / friend / service) and
-// pre-populate the person form. Professionals additionally get a web-search
+// pre-populate the contact form. Professionals additionally get a web-search
 // lookup to fill business name / address / phone. Returns results aligned to the
 // caller-supplied `key` so the client can map them back onto its rows.
 

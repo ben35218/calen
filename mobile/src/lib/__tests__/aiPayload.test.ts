@@ -11,7 +11,7 @@ const OBJECT_ID_RE = /\b[0-9a-f]{24}\b/i;
 // A representative decrypted record set: everything openRecord could hand the
 // assistants, ids and metadata included.
 const fixture = {
-  people: [{
+  contacts: [{
     _id: '64b1f0a2c39e5d0012ab34cd',
     userId: '64b1f0a2c39e5d0012ab34ce',
     householdId: '64b1f0a2c39e5d0012ab34cf',
@@ -91,8 +91,8 @@ describe('aiPayload sanitizer (G1/G2)', () => {
   it('keeps content fields and non-id strings intact', () => {
     const ctx = createAliasContext();
     const out = ctx.sanitize(fixture) as any;
-    expect(out.people[0].name).toBe('Sam Polk');
-    expect(out.people[0].birthday).toBe('2015-03-02');
+    expect(out.contacts[0].name).toBe('Sam Polk');
+    expect(out.contacts[0].birthday).toBe('2015-03-02');
     expect(out.calendarSources.events[0].title).toBe('Dentist');
     expect(out.calendarSources.events[0].calendarType).toBe('appointments');
   });

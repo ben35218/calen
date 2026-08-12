@@ -6,15 +6,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { peopleApi, ecardsApi, ecardPhotoPath, Person, OccasionKind, ECardPhoto } from '../../api';
+import { contactsApi, ecardsApi, ecardPhotoPath, Contact, OccasionKind, ECardPhoto } from '../../api';
 import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { pickImages, PickedFile } from '../../lib/media';
 import { uploadECardPhotos } from '../../lib/ecardPhotos';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
-import { PERSON_ENC } from '../../lib/encSubsets';
+import { CONTACT_ENC } from '../../lib/encSubsets';
 import * as replica from '../../lib/replica';
-import { normalizePerson, denormalizeForSave, DEFAULT_EMAIL_LABEL } from '../../lib/personFields';
+import { normalizeContact, denormalizeForSave, DEFAULT_EMAIL_LABEL } from '../../lib/contactFields';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { useAuth } from '../../store/auth';
 import {
@@ -85,19 +85,19 @@ function to12h(hhmm: string): string {
 // send time is a whole-hour picker, not a free minute field.
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => ({ label: to12h(`${h}:00`), value: h }));
 
-// Reconstruct a full Person save payload (mirrors PersonFormScreen.save) with an
+// Reconstruct a full Contact save payload (mirrors ContactFormScreen.save) with an
 // added primary email — so we can add a missing email to a contact in place.
-function personPayloadWithEmail(person: Person, email: string): Record<string, unknown> {
-  const norm = normalizePerson(person);
+function contactPayloadWithEmail(contact: Contact, email: string): Record<string, unknown> {
+  const norm = normalizeContact(contact);
   return {
-    type: person.type,
-    name: person.name,
-    relationship: person.relationship || undefined,
-    birthday: person.birthday || undefined,
-    notes: person.notes || undefined,
-    occasionsHidden: person.occasionsHidden || undefined,
-    accountId: person.accountId || undefined,
-    deviceContactId: person.deviceContactId || undefined,
+    type: contact.type,
+    name: contact.name,
+    relationship: contact.relationship || undefined,
+    birthday: contact.birthday || undefined,
+    notes: contact.notes || undefined,
+    occasionsHidden: contact.occasionsHidden || undefined,
+    accountId: contact.accountId || undefined,
+    deviceContactId: contact.deviceContactId || undefined,
     ...denormalizeForSave({ ...norm, emails: [{ label: DEFAULT_EMAIL_LABEL, value: email }, ...norm.emails] }),
   };
 }
@@ -180,7 +180,7 @@ function TemplateThumb({ v, selected, accent, onPress }: {
   );
 }
 
-// Schedule an occasion e-card. The occasion context (person, kind, month/day)
+// Schedule an occasion e-card. The occasion context (contact, kind, month/day)
 // arrives via route params from the Occasions list. Recipients are scoped to the
 // occasion's contact plus anyone LINKED to them (their related names). A contact
 // missing an email can have one added inline (saved to their card). PRIVACY: the
@@ -190,7 +190,7 @@ export default function ECardFormScreen() {
   const nav = useNavigation<Nav>();
   const qc = useQueryClient();
   const route = useRoute<Rt>();
-  const { personId, personName, kind, occasionLabel, month, day, ecardId } = route.params;
+  const { contactId, contactName, kind, occasionLabel, month, day, ecardId } = route.params;
   const { colors: calColors } = useCalendarColors();
   const { user } = useAuth();
   const accent = calColors.birthdays;
@@ -234,24 +234,24 @@ export default function ECardFormScreen() {
     greetingRef.current?.focus();
   };
 
-  const { data: people, isLoading } = useQuery({
-    queryKey: ['people'],
+  const { data: contacts, isLoading } = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
       try {
-        const rows = (await peopleApi.list()).data;
-        replica.upsert('Person', rows as any).catch(() => {});
-        return Promise.all(rows.map((p) => openRecord('Person', p)));
+        const rows = (await contactsApi.list()).data;
+        replica.upsert('Contact', rows as any).catch(() => {});
+        return Promise.all(rows.map((p) => openRecord('Contact', p)));
       } catch (e) {
-        const cached = await replica.getAll<Person>('Person');
-        if (cached.length) return Promise.all(cached.map((p) => openRecord('Person', p)));
+        const cached = await replica.getAll<Contact>('Contact');
+        if (cached.length) return Promise.all(cached.map((p) => openRecord('Contact', p)));
         throw e;
       }
     },
   });
 
   // A contact's labeled emails (a session-added one first), deduped by address.
-  const emailEntriesOf = (p: Person): { label: string; value: string }[] => {
-    const norm = normalizePerson(p).emails;
+  const emailEntriesOf = (p: Contact): { label: string; value: string }[] => {
+    const norm = normalizeContact(p).emails;
     const ov = emailOverrides[p._id];
     const list = ov ? [{ label: DEFAULT_EMAIL_LABEL, value: ov }, ...norm] : norm;
     const seen = new Set<string>();
@@ -263,23 +263,23 @@ export default function ECardFormScreen() {
   };
   // The address this card goes to for a contact: the explicitly chosen one, else
   // their primary (first).
-  const chosenEmailOf = (p: Person): string => chosenEmail[p._id] ?? emailEntriesOf(p)[0]?.value ?? '';
+  const chosenEmailOf = (p: Contact): string => chosenEmail[p._id] ?? emailEntriesOf(p)[0]?.value ?? '';
 
   // Candidate recipients: the occasion's own contact first, then everyone linked
-  // to them (related names that resolve to a real person in the roster).
-  const candidates: Person[] = useMemo(() => {
-    if (!people) return [];
-    const byId = new Map(people.map((p) => [p._id, p]));
-    const occ = personId ? byId.get(personId) : undefined;
-    const out: Person[] = [];
+  // to them (related names that resolve to a real contact in the roster).
+  const candidates: Contact[] = useMemo(() => {
+    if (!contacts) return [];
+    const byId = new Map(contacts.map((p) => [p._id, p]));
+    const occ = contactId ? byId.get(contactId) : undefined;
+    const out: Contact[] = [];
     const seen = new Set<string>();
-    const push = (p?: Person) => { if (p && !seen.has(p._id)) { seen.add(p._id); out.push(p); } };
+    const push = (p?: Contact) => { if (p && !seen.has(p._id)) { seen.add(p._id); out.push(p); } };
     push(occ);
-    for (const rel of normalizePerson(occ ?? ({} as Person)).relatedNames) {
-      if (rel.personId) push(byId.get(rel.personId));
+    for (const rel of normalizeContact(occ ?? ({} as Contact)).relatedNames) {
+      if (rel.contactId) push(byId.get(rel.contactId));
     }
     return out;
-  }, [people, personId]);
+  }, [contacts, contactId]);
 
   // Seed once loaded. Edit mode: prefill message/time and re-select the card's
   // recipients (match each saved email back to a candidate + its address). New
@@ -289,7 +289,7 @@ export default function ECardFormScreen() {
   // seeding is done (a ref change alone wouldn't trigger it).
   const [seededReady, setSeededReady] = useState(false);
   useEffect(() => {
-    if (seeded.current || !people) return;
+    if (seeded.current || !contacts) return;
     if (ecardId && !existing) return; // wait for the cards list before seeding an edit
     seeded.current = true;
     setSeededReady(true);
@@ -314,22 +314,22 @@ export default function ECardFormScreen() {
       setChosenEmail(chosen);
       return;
     }
-    const occ = personId ? people.find((p) => p._id === personId) : undefined;
+    const occ = contactId ? contacts.find((p) => p._id === contactId) : undefined;
     if (occ && chosenEmailOf(occ)) setSelected(new Set([occ._id]));
-  }, [people, personId, existing, ecardId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [contacts, contactId, existing, ecardId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addEmail = useMutation({
-    mutationFn: async ({ person, email }: { person: Person; email: string }) => {
-      const payload = personPayloadWithEmail(person, email);
-      await peopleApi.update(person._id, await sealUpdate('Person', person._id, payload, PERSON_ENC({ ...person, ...payload })));
+    mutationFn: async ({ contact, email }: { contact: Contact; email: string }) => {
+      const payload = contactPayloadWithEmail(contact, email);
+      await contactsApi.update(contact._id, await sealUpdate('Contact', contact._id, payload, CONTACT_ENC({ ...contact, ...payload })));
     },
     onSuccess: (_data, vars) => {
-      setEmailOverrides((prev) => ({ ...prev, [vars.person._id]: vars.email }));
-      setChosenEmail((prev) => ({ ...prev, [vars.person._id]: vars.email }));
-      setSelected((prev) => new Set(prev).add(vars.person._id));
+      setEmailOverrides((prev) => ({ ...prev, [vars.contact._id]: vars.email }));
+      setChosenEmail((prev) => ({ ...prev, [vars.contact._id]: vars.email }));
+      setSelected((prev) => new Set(prev).add(vars.contact._id));
       setEditingFor(null);
       setDraftEmail('');
-      qc.invalidateQueries({ queryKey: ['people'] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: () => Alert.alert('Could not save email', 'Please try again.'),
   });
@@ -339,11 +339,11 @@ export default function ECardFormScreen() {
       const byId = new Map(candidates.map((p) => [p._id, p]));
       const recipients = [...selected]
         .map((id) => byId.get(id))
-        .filter((p): p is Person => Boolean(p))
+        .filter((p): p is Contact => Boolean(p))
         .map((p) => ({ email: chosenEmailOf(p), name: p.name }))
         .filter((r) => r.email);
       const body = {
-        personId, kind, occasionLabel, month, day, sendTime, template, font,
+        contactId, kind, occasionLabel, month, day, sendTime, template, font,
         message, greeting, signoff, signature, recipients,
       };
       return existing ? await ecardsApi.update(existing._id, body) : await ecardsApi.create(body);
@@ -448,10 +448,10 @@ export default function ECardFormScreen() {
   };
 
   const startAddEmail = (id: string) => { setEditingFor(id); setDraftEmail(''); };
-  const confirmAddEmail = (person: Person) => {
+  const confirmAddEmail = (contact: Contact) => {
     const email = draftEmail.trim().toLowerCase();
     if (!EMAIL_RE.test(email)) { Alert.alert('Enter a valid email', 'That doesn’t look like an email address.'); return; }
-    addEmail.mutate({ person, email });
+    addEmail.mutate({ contact, email });
   };
 
   // Live EDITABLE card: every line of the card face is a text input — blank
@@ -462,7 +462,7 @@ export default function ECardFormScreen() {
   // Default greeting addresses the recipient by FIRST name only (mirrors the
   // renderer: contacts store full names, cards speak familiarly).
   const previewRecipient =
-    ([...selected].map((id) => candidates.find((c) => c._id === id)).find(Boolean)?.name || personName || 'friend')
+    ([...selected].map((id) => candidates.find((c) => c._id === id)).find(Boolean)?.name || contactName || 'friend')
       .trim().split(/\s+/)[0];
   const senderName = user?.firstName || 'Me';
   const heading = kind === 'custom' && occasionLabel ? occasionLabel : tpl.heading;
@@ -706,11 +706,11 @@ export default function ECardFormScreen() {
               contact itself. Opens the occasion contact scrolled to Related
               names; anyone linked there becomes a candidate here on return (the
               recipient list = the occasion contact + their related names). */}
-          {personId ? (
+          {contactId ? (
             <ListRow
               title="Add a related contact"
               subtitle="Opens this contact to link someone related"
-              onPress={() => nav.navigate('PersonForm', { id: personId, focus: 'related' })}
+              onPress={() => nav.navigate('ContactForm', { id: contactId, focus: 'related' })}
               iconColor={accent}
               icon="person-add-outline"
               right={<Ionicons name="chevron-forward" size={18} color={colors.textMuted} />}
@@ -721,19 +721,19 @@ export default function ECardFormScreen() {
 
       {/* Which address a multi-email contact's card goes to. */}
       {pickerFor ? (() => {
-        const person = candidates.find((c) => c._id === pickerFor);
-        if (!person) return null;
-        const entries = emailEntriesOf(person);
-        const current = chosenEmailOf(person);
+        const contact = candidates.find((c) => c._id === pickerFor);
+        if (!contact) return null;
+        const entries = emailEntriesOf(contact);
+        const current = chosenEmailOf(contact);
         return (
-          <BottomSheet visible onClose={() => setPickerFor(null)} title={`Send to ${person.name}`}>
+          <BottomSheet visible onClose={() => setPickerFor(null)} title={`Send to ${contact.name}`}>
             {entries.map((e) => (
               <TouchableOpacity
                 key={e.value}
                 style={styles.pickRow}
                 onPress={() => {
-                  setChosenEmail((prev) => ({ ...prev, [person._id]: e.value }));
-                  setSelected((prev) => new Set(prev).add(person._id));
+                  setChosenEmail((prev) => ({ ...prev, [contact._id]: e.value }));
+                  setSelected((prev) => new Set(prev).add(contact._id));
                   setPickerFor(null);
                 }}
               >

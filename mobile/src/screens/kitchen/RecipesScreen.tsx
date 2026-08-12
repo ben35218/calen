@@ -15,7 +15,9 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, Recipe } from '../../api';
-import { openRecord } from '../../lib/e2ee';
+import { deleteRecipeWithSchedules } from '../../lib/recipeDelete';
+import { openRecipe } from '../../lib/recipeNames';
+import { recipeImageUri } from '../../lib/recipePhoto';
 import * as replica from '../../lib/replica';
 import { Card, Input, Badge, Chip, RoundIconButton, SectionHeader, SkeletonList, EmptyState, SwipeableRow } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -41,7 +43,7 @@ export default function RecipesScreen() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
   const confirmDelete = (recipe: Recipe) =>
-    Alert.alert('Delete recipe?', `"${recipe.title}" will be permanently removed.`, [
+    Alert.alert('Delete recipe?', `"${recipe.title}" and any meals planned with it will be permanently removed.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => del.mutate(recipe._id) },
     ]);
@@ -58,13 +60,17 @@ export default function RecipesScreen() {
     // then decrypt content over the plaintext rows.
     queryFn: async () => {
       const rows = await replica.syncedList<Recipe>('Recipe', async () => (await recipesApi.list()).data);
-      return Promise.all(rows.map((r) => openRecord('Recipe', r)));
+      return Promise.all(rows.map((r) => openRecipe(r)));
     },
   });
 
   const del = useMutation({
-    mutationFn: (id: string) => recipesApi.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['recipes'] }),
+    mutationFn: (id: string) => deleteRecipeWithSchedules(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['recipes'] });
+      qc.invalidateQueries({ queryKey: ['recipe-schedule'] });
+      qc.invalidateQueries({ queryKey: ['grocery-list'] });
+    },
   });
 
   const recipes = recipesQ.data ?? [];
@@ -83,8 +89,10 @@ export default function RecipesScreen() {
     return sorted;
   }, [recipes]);
 
-  // Sections are grouped by tag over the search-filtered recipes; a recipe with
-  // multiple tags appears in each of its sections. A selected chip narrows to one.
+  // The "All" view lists each recipe exactly once, alphabetically — grouping it
+  // by tag repeats a multi-tagged recipe under every tag it carries, which reads
+  // as duplicates rather than categories. A selected chip narrows to that tag's
+  // recipes under a single header.
   const sections = useMemo(() => {
     const q = search.trim().toLowerCase();
     const bySearch = recipes.filter((r) => {
@@ -92,22 +100,15 @@ export default function RecipesScreen() {
       return r.title.toLowerCase().includes(q) || r.tags?.some((t) => t.toLowerCase().includes(q));
     });
 
-    const map = new Map<string, Recipe[]>();
-    for (const r of bySearch) {
-      const rtags = r.tags?.length ? r.tags : [UNTAGGED];
-      for (const t of rtags) {
-        if (!map.has(t)) map.set(t, []);
-        map.get(t)!.push(r);
-      }
+    if (!selectedTag) {
+      const flat = [...bySearch].sort((a, b) => a.title.localeCompare(b.title));
+      return flat.length ? [{ title: '', data: flat }] : [];
     }
 
-    let entries = Array.from(map.entries()).sort((a, b) => {
-      if (a[0] === UNTAGGED) return 1;
-      if (b[0] === UNTAGGED) return -1;
-      return a[0].localeCompare(b[0]);
-    });
-    if (selectedTag) entries = entries.filter(([t]) => t === selectedTag);
-    return entries.map(([title, data]) => ({ title, data }));
+    const inTag = bySearch.filter((r) =>
+      selectedTag === UNTAGGED ? !r.tags?.length : r.tags?.includes(selectedTag),
+    );
+    return inTag.length ? [{ title: selectedTag, data: inTag }] : [];
   }, [recipes, search, selectedTag]);
 
   if (recipesQ.isLoading) {
@@ -118,7 +119,7 @@ export default function RecipesScreen() {
     <View style={styles.pane}>
       <SectionList
         sections={sections}
-        keyExtractor={(item, index) => `${item._id}-${index}`}
+        keyExtractor={(item) => item._id}
         contentContainerStyle={styles.content}
         stickySectionHeadersEnabled
         ListHeaderComponent={
@@ -134,7 +135,9 @@ export default function RecipesScreen() {
             ) : null}
           </View>
         }
-        renderSectionHeader={({ section }) => <SectionHeader style={styles.stickyHeader}>{section.title}</SectionHeader>}
+        renderSectionHeader={({ section }) =>
+          section.title ? <SectionHeader style={styles.stickyHeader}>{section.title}</SectionHeader> : null
+        }
         refreshControl={<RefreshControl refreshing={recipesQ.isRefetching} onRefresh={recipesQ.refetch} />}
         ListEmptyComponent={
           <EmptyState
@@ -155,8 +158,8 @@ export default function RecipesScreen() {
           >
             <TouchableOpacity activeOpacity={0.8} onPress={() => navigation.navigate('RecipeDetail', { id: item._id })}>
               <Card style={styles.row}>
-                {item.imageUrl ? (
-                  <Image source={{ uri: item.imageUrl }} style={styles.thumb} />
+                {recipeImageUri(item.imageUrl) ? (
+                  <Image source={{ uri: recipeImageUri(item.imageUrl)! }} style={styles.thumb} />
                 ) : (
                   <View style={[styles.thumb, styles.thumbPlaceholder]}>
                     <MaterialCommunityIcons name="silverware-fork-knife" size={24} color={colors.textMuted} />

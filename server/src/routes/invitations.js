@@ -164,7 +164,7 @@ router.post('/', async (req, res) => {
       ? await User.findOne({ email: toEmail }).select('_id householdId identityPublicKey').lean()
       : null;
     if (recipient && req.user.householdId && String(recipient.householdId) === String(req.user.householdId)) {
-      return res.status(400).json({ error: 'That person is in your household and already sees this event' });
+      return res.status(400).json({ error: 'That contact is in your household and already sees this event' });
     }
     // A sealed blob is only meaningful for an account with keys to open it.
     if (sealedEvent && !(recipient && recipient.identityPublicKey)) {

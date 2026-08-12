@@ -27,7 +27,7 @@ specs/
     kitchen.md
     maintenance.md
     trips.md
-    people-contacts.md
+    contacts.md
     households-sharing.md
     auth-identity.md
     guardian-recovery.md   # dual-control household-member recovery

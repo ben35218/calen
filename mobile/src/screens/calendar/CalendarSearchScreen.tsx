@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TextInput, FlatList, TouchableOpacity } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -12,6 +12,7 @@ import { mdiName } from '../../lib/recurrence';
 import { resolveTaskIcon } from '../../lib/maintenanceCategories';
 import { occasionTitle, occasionNoun, occasionIcon } from '../../lib/occasions';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
+import { CenteredLoader } from '../../components/ui';
 import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'CalendarSearch'>;
@@ -111,7 +112,7 @@ export default function CalendarSearchScreen() {
       </View>
 
       {isLoading ? (
-        <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
+        <CenteredLoader />
       ) : (
         <FlatList
           data={results}
@@ -145,7 +146,6 @@ const styles = StyleSheet.create({
     borderRadius: 12, borderWidth: 1, borderColor: colors.border,
   },
   input: { flex: 1, paddingVertical: 12, fontSize: 16, color: colors.text },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   list: { paddingHorizontal: spacing.md, paddingBottom: spacing.xl },
   row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: 12, padding: spacing.md, marginBottom: spacing.sm },
   title: { fontSize: 15, fontWeight: '600', color: colors.text },

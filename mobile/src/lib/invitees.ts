@@ -1,5 +1,6 @@
 import { invitationsApi, EventInvitation, InvitationEventSnapshot } from '../api';
 import { sealInvitationSnapshot, ensureHouseholdKey, sealNew } from './e2ee';
+import { eventInvitationExpired } from './inviteAlerts';
 import { API_URL, WEB_URL } from '../config';
 // Type-only: shareInvite imports normalizePhone from this module, so a value
 // import here would be a require cycle.
@@ -56,7 +57,10 @@ export async function composeSmsInvite(
     throw new Error('Text messaging is not available on this device');
   }
   const link = `${API_URL}/invitations/public/${inv._id}/ics?k=${inv.shareToken}`;
-  const body = `Join me for “${snapshot.title}” on ${formatWhen(snapshot)}. Tap to add it to your calendar: ${link}`;
+  // A past event reads as sharing a record, not a "join me" ask.
+  const body = eventInvitationExpired(snapshot)
+    ? `Sharing “${snapshot.title}” from ${formatWhen(snapshot)}. Tap to add it to your calendar: ${link}`
+    : `Join me for “${snapshot.title}” on ${formatWhen(snapshot)}. Tap to add it to your calendar: ${link}`;
   await SMS.sendSMSAsync([phone], body);
 }
 
@@ -87,19 +91,26 @@ export async function sealAcceptedCopy(
 // in-app (its public .ics route 404s), so that email is a notice pointing at
 // the app instead. Used for the initial non-account outreach and for Remind.
 export function eventInviteEmailContent(snapshot: InvitationEventSnapshot, inv: EventInvitation): EmailContent {
-  const subject = `Join me for “${snapshot.title}”`;
+  // A past event reads as sharing a record, not a "join me" ask (the in-app
+  // card mirrors this: Add to Calendar instead of Accept/Decline).
+  const past = eventInvitationExpired(snapshot);
+  const subject = past ? `Sharing “${snapshot.title}”` : `Join me for “${snapshot.title}”`;
   if (inv.sealedEvent) {
     return {
       subject,
       body:
-        `I invited you to “${snapshot.title}” on ${formatWhen(snapshot)}. ` +
-        `The invitation is end-to-end encrypted — open your invitations in the Calen app to respond: ${WEB_URL}`,
+        (past
+          ? `I’m sharing “${snapshot.title}” from ${formatWhen(snapshot)} with you. `
+          : `I invited you to “${snapshot.title}” on ${formatWhen(snapshot)}. `) +
+        `The invitation is end-to-end encrypted — open your invitations in the Calen app to ${past ? 'view it' : 'respond'}: ${WEB_URL}`,
     };
   }
   const link = `${API_URL}/invitations/public/${inv._id}/ics?k=${inv.shareToken}`;
   return {
     subject,
-    body: `Join me for “${snapshot.title}” on ${formatWhen(snapshot)}. Tap to add it to your calendar: ${link}`,
+    body: past
+      ? `Sharing “${snapshot.title}” from ${formatWhen(snapshot)}. Tap to add it to your calendar: ${link}`
+      : `Join me for “${snapshot.title}” on ${formatWhen(snapshot)}. Tap to add it to your calendar: ${link}`,
   };
 }
 

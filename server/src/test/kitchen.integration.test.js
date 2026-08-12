@@ -204,9 +204,19 @@ test('organize-grocery-list: item names go to the model, the organized JSON come
     .set('Authorization', u.auth).send({ items: [] });
   assert.equal(noItems.status, 400);
 
+  // The model is asked for shopper-facing names and short spoon units but isn't
+  // trusted to produce them — "whole milk, chilled" comes back as the label
+  // "Whole Milk", and "2 Tablespoons" as "2 tbsp".
   const organized = {
     store_known: false,
-    categories: [{ name: 'Dairy', aisle: '', items: [{ name: 'milk', amount: '2 cups' }] }],
+    categories: [{
+      name: 'Dairy',
+      aisle: '',
+      items: [
+        { name: 'whole milk, chilled', amount: '2 cups' },
+        { name: 'unsalted butter, melted', amount: '2 Tablespoons' },
+      ],
+    }],
   };
   createQueue = [{
     content: [{ type: 'text', text: JSON.stringify(organized) }],
@@ -225,9 +235,18 @@ test('organize-grocery-list: item names go to the model, the organized JSON come
   assert.equal(res.status, 200, JSON.stringify(res.body));
   // The usage meter appends tokensUsed; the organized payload rides unchanged.
   assert.equal(res.body.store_known, organized.store_known);
-  assert.deepEqual(res.body.categories, organized.categories);
+  assert.deepEqual(res.body.categories, [{
+    name: 'Dairy',
+    aisle: '',
+    items: [
+      { name: 'Whole Milk', amount: '2 cups' },
+      { name: 'Unsalted Butter', amount: '2 tbsp' },
+    ],
+  }]);
 
   const prompt = JSON.stringify(createCalls[0]);
+  assert.match(prompt, /Title Case/, 'the prompt asks for shopper-facing names');
+  assert.match(prompt, /tbsp/, 'the prompt asks for short spoon units');
   assert.match(prompt, /milk: 1 cup, 1 cup/, 'items ride as name + amounts');
   assert.match(prompt, /flour/);
   assert.match(prompt, /1\. Dairy, 2\. Pantry/, 'the household section order constrains the model');

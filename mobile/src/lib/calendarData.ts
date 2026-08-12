@@ -28,7 +28,7 @@ import { hasSyncedRecords, syncRecords } from './records';
 export type CalendarSyncMode = 'inline' | 'background';
 
 export interface CalendarSources {
-  events: any[]; tasks: any[]; chores: any[]; people: any[]; trips: any[];
+  events: any[]; tasks: any[]; chores: any[]; contacts: any[]; trips: any[];
   recipeSchedules: any[]; selfId: string | null; groceryShoppingDay: number | null;
   groceryFrequency: 'weekly' | 'biweekly'; groceryAnchor: string | null;
 }
@@ -139,7 +139,7 @@ export function scheduleRevalidate(): void {
 }
 
 // Load the calendar sources from the local replica (Signal-parity C3b). The
-// content records (events/tasks/chores/people/recipe schedules) now live in the
+// content records (events/tasks/chores/contacts/recipe schedules) now live in the
 // unified opaque store: syncRecords() pulls /records/sync, decrypts each row via
 // openOpaqueRecord, and buckets it into its per-collection replica — so the
 // replica already holds the DECRYPTED records, and this just reads them. (Trips
@@ -169,16 +169,16 @@ export async function loadCalendarSources(
     void revalidateCalendar();
   }
 
-  // selfId = the signed-in user (identifies their self-Person for birthdays).
+  // selfId = the signed-in user (identifies their self-Contact for birthdays).
   const selfId = currentUserId();
 
   // Content collections: read the decrypted rows straight from the replica. Trips
   // are still a per-collection resource (D2), fetched + decrypted separately.
-  const [events, tasks, chores, people, schedules, recipes, trips] = await Promise.all([
+  const [events, tasks, chores, contacts, schedules, recipes, trips] = await Promise.all([
     replica.getAll<any>('CalendarEvent').catch(() => []),
     replica.getAll<any>('MaintenanceTask').catch(() => []),
     replica.getAll<any>('Chore').catch(() => []),
-    replica.getAll<any>('Person').catch(() => []),
+    replica.getAll<any>('Contact').catch(() => []),
     replica.getAll<any>('RecipeSchedule').catch(() => []),
     replica.getAll<any>('Recipe').catch(() => []),
     mode === 'inline' ? loadTrips() : replica.getAll<any>('Trip').catch(() => []),
@@ -188,7 +188,7 @@ export async function loadCalendarSources(
   // same content-blind-store join the planner window needs (lib/mealSchedule).
   const recipeSchedules = populateRecipeRefs(schedules, recipes);
 
-  return { events, tasks, chores, people, trips, recipeSchedules, selfId, ...grocery };
+  return { events, tasks, chores, contacts, trips, recipeSchedules, selfId, ...grocery };
 }
 
 // Fetch + decrypt the trips collection and reconcile the replica's Trip bucket
@@ -265,7 +265,7 @@ export function expandCalendarRange(
     events: s.events,
     tasks: s.tasks,
     chores: s.chores,
-    people: s.people,
+    contacts: s.contacts,
     trips: s.trips,
     recipeSchedules: s.recipeSchedules,
     fromDate: new Date(from),

@@ -502,15 +502,21 @@ const WeekRow = React.memo(function WeekRow({
                 </TouchableOpacity>
                 );
               })}
-              {cell.extra ? <Text style={styles.moreText}>+{cell.extra} more</Text> : null}
+              {/* The week-height math reserves exactly one line (MORE_H), so the
+                  label must never wrap — on narrow cells it shrinks to fit instead. */}
+              {cell.extra ? <Text style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{cell.extra} more</Text> : null}
               {showSkeleton && !cell.chips.length ? <CellSkeleton date={cell.date} /> : null}
             </View>
           </TouchableOpacity>
         );
       })}
 
-      {/* Multi-day events: one labelled bar spanning its columns. */}
-      {week.bars.map((bar) => (
+      {/* Multi-day events: one labelled bar spanning its columns, in the same
+          tinted treatment as the single-day chips — the solid left edge is what
+          marks a span as multi-day. */}
+      {week.bars.map((bar) => {
+        const tint = tintedChip(bar.color);
+        return (
         <TouchableOpacity
           key={bar.key}
           activeOpacity={0.7}
@@ -518,16 +524,18 @@ const WeekRow = React.memo(function WeekRow({
           style={[
             styles.spanBar,
             {
-              backgroundColor: bar.color,
+              backgroundColor: tint.fill,
+              borderLeftColor: bar.color,
               left: bar.startCol * cellSize + 1,
               width: (bar.endCol - bar.startCol + 1) * cellSize - 3,
               top: week.headerH + bar.lane * BAR_H,
             },
           ]}
         >
-          <Text style={styles.spanBarText} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
+          <Text style={[styles.spanBarText, { color: tint.label }]} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
         </TouchableOpacity>
-      ))}
+        );
+      })}
     </View>
   );
 });
@@ -587,8 +595,8 @@ const styles = StyleSheet.create({
   chipTime: { fontSize: 10, lineHeight: 12, color: colors.textMuted, fontWeight: '600', marginTop: 1 },
   moreText: { fontSize: 11, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
   skeletonChip: { marginBottom: 4, marginHorizontal: 1 },
-  spanBar: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, justifyContent: 'center', paddingHorizontal: 4 },
-  spanBarText: { fontSize: 12, lineHeight: 13, color: '#fff', fontWeight: '600' },
+  spanBar: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, borderLeftWidth: 3, overflow: 'hidden', justifyContent: 'center', paddingHorizontal: 4 },
+  spanBarText: { fontSize: 12, lineHeight: 13, fontWeight: '600' },
   sheetList: { maxHeight: 360 },
   sheetDot: { width: 12, height: 12, borderRadius: 6 },
 });

@@ -29,7 +29,7 @@ const COPY: Record<AddonId, { name: string; message: string; free?: true }> = {
   },
   birthdays: {
     name: 'Occasions',
-    message: 'Birthdays, anniversaries, and other dates from your people — on the calendar every year, with e-cards. Included free with the app.',
+    message: 'Birthdays, anniversaries, and other dates from your contacts — on the calendar every year, with e-cards. Included free with the app.',
     free: true,
   },
   chores: {

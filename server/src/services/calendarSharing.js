@@ -51,7 +51,7 @@ function excludeOutsideCalendarFilter(collection, sharedKeys) {
 // Normalizers accept both the current subdoc shape and the legacy plain
 // ObjectId/String arrays (see models/CustomCalendar.js): legacy members kept
 // their historical capability (household members could edit events → 'full');
-// legacy outside people were read-only → 'view'.
+// legacy outside contacts were read-only → 'view'.
 function normalizeMemberEntry(m) {
   if (m && m.userId) return { userId: m.userId, access: m.access === 'view' ? 'view' : 'full' };
   return { userId: m, access: 'full' };

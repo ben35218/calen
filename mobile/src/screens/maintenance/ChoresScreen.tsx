@@ -11,7 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { choresApi, peopleApi, Chore, Person } from '../../api';
+import { choresApi, contactsApi, Chore, Contact } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import { useAuth } from '../../store/auth';
@@ -67,29 +67,29 @@ function ChoresHome() {
     },
   });
 
-  // `assignedTo` on an opaque-store chore is just a Person id, so resolve the
-  // display name against the decrypted people list rather than a populated doc.
-  const peopleQ = useQuery({
-    queryKey: ['people'],
+  // `assignedTo` on an opaque-store chore is just a Contact id, so resolve the
+  // display name against the decrypted contacts list rather than a populated doc.
+  const contactsQ = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
-      const rows = await replica.syncedList<Person>('Person', async () => (await peopleApi.list()).data);
-      return Promise.all(rows.map((p) => openRecord('Person', p)));
+      const rows = await replica.syncedList<Contact>('Contact', async () => (await contactsApi.list()).data);
+      return Promise.all(rows.map((p) => openRecord('Contact', p)));
     },
   });
 
-  const peopleById = React.useMemo(() => {
-    const m = new Map<string, Person>();
-    for (const p of peopleQ.data ?? []) m.set(String(p._id), p);
+  const contactsById = React.useMemo(() => {
+    const m = new Map<string, Contact>();
+    for (const p of contactsQ.data ?? []) m.set(String(p._id), p);
     return m;
-  }, [peopleQ.data]);
+  }, [contactsQ.data]);
 
   const assigneeName = (chore: Chore): string => {
     const a = chore.assignedTo;
-    const personId = !a ? null : typeof a === 'string' ? a : a._id;
-    const person = personId ? peopleById.get(String(personId)) : null;
-    if (!person) return 'Unassigned';
-    if (user && person.accountId && String(person.accountId) === String(user._id)) return 'You';
-    return person.name || 'Unassigned';
+    const contactId = !a ? null : typeof a === 'string' ? a : a._id;
+    const contact = contactId ? contactsById.get(String(contactId)) : null;
+    if (!contact) return 'Unassigned';
+    if (user && contact.accountId && String(contact.accountId) === String(user._id)) return 'You';
+    return contact.name || 'Unassigned';
   };
 
   if (choresQ.isLoading) {
