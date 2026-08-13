@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import {
-  Text,
-  TextInput,
   TextInputProps,
   TouchableOpacity,
   ActivityIndicator,
@@ -16,6 +14,7 @@ import {
   Switch as RNSwitch,
   Platform,
   KeyboardAvoidingView,
+  Keyboard,
   Dimensions,
   useWindowDimensions,
   LayoutChangeEvent,
@@ -26,6 +25,7 @@ import {
   PanResponder,
   PanResponderGestureState,
 } from 'react-native';
+import { Text, TextInput } from './Text';
 import { KeyboardAwareScrollView, KeyboardController } from 'react-native-keyboard-controller';
 import type { KeyboardAwareScrollViewRef } from 'react-native-keyboard-controller';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence } from 'react-native-reanimated';
@@ -376,18 +376,41 @@ export function useScreenScroll() {
   return React.useContext(ScreenScrollContext);
 }
 
+// The imperative half of the reveal: a ref for the wrapping view plus a
+// `reveal()` to call at any moment worth re-checking — the dropdown opened, the
+// field took focus, the keyboard finished coming up. No-op outside a scrolling
+// <Screen>.
+export function useReveal() {
+  const screenScroll = React.useContext(ScreenScrollContext);
+  const ref = useRef<View>(null);
+  const frame = useRef<number | null>(null);
+  const reveal = useCallback(() => {
+    if (!screenScroll) return;
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    // Wait a frame so the just-rendered dropdown — or the viewport the keyboard
+    // just shrank — is in the measured layout.
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      if (ref.current) screenScroll.reveal(ref.current);
+    });
+  }, [screenScroll]);
+  useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
+  return { ref, reveal };
+}
+
 // Attach the returned ref to the view wrapping an input and its inline
 // dropdown; whenever the dropdown opens or grows, the wrap is scrolled clear
 // of the keyboard. No-op outside a scrolling <Screen>.
 export function useRevealOnOpen(open: boolean, itemCount: number) {
-  const screenScroll = React.useContext(ScreenScrollContext);
-  const ref = useRef<View>(null);
+  const { ref, reveal } = useReveal();
   useEffect(() => {
-    if (!open || itemCount === 0 || !screenScroll) return;
-    // Wait a frame so the just-rendered dropdown is in the measured layout.
-    const id = requestAnimationFrame(() => { if (ref.current) screenScroll.reveal(ref.current); });
-    return () => cancelAnimationFrame(id);
-  }, [open, itemCount, screenScroll]);
+    if (!open || itemCount === 0) return;
+    reveal();
+    // A keyboard that comes up *after* the dropdown is already open shrinks the
+    // viewport out from under it, so re-reveal once it has settled.
+    const sub = Keyboard.addListener('keyboardDidShow', reveal);
+    return () => sub.remove();
+  }, [open, itemCount, reveal]);
   return ref;
 }
 
@@ -582,6 +605,16 @@ export function BottomSheet({
 }) {
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
+  // The home-indicator inset is dead space once the keyboard covers it — on a
+  // keyboard-adjacent sheet it reads as a gap between the content and the
+  // keys, which is exactly the room a search sheet needs for one more result.
+  const [keyboardUp, setKeyboardUp] = useState(false);
+  useEffect(() => {
+    if (!avoidKeyboard) return;
+    const show = Keyboard.addListener('keyboardWillShow', () => setKeyboardUp(true));
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardUp(false));
+    return () => { show.remove(); hide.remove(); };
+  }, [avoidKeyboard]);
   // Stay mounted through the exit animation: `visible` flips false the instant
   // the caller closes, but the slide-down still needs its frames.
   const [mounted, setMounted] = useState(visible);
@@ -691,7 +724,7 @@ export function BottomSheet({
           // label picker's "Add Custom Label…") clears the safe-area inset.
           style={[
             styles.modalSheet,
-            { paddingBottom: spacing.md + insets.bottom, transform: [{ translateY }] },
+            { paddingBottom: spacing.md + (keyboardUp ? 0 : insets.bottom), transform: [{ translateY }] },
             style,
           ]}
         >

@@ -137,6 +137,7 @@ export type RootStackParamList = {
   // Calendar-level occasion alert settings (offsets + time).
   OccasionAlerts: undefined;
   Weather: undefined;
+  WeatherLocationSearch: undefined;
   Invitations: undefined;
   // ----- Free viewer shell (ViewerNavigator) -----
   // The read-only shell a locked (no app unlock) user with shared-calendar

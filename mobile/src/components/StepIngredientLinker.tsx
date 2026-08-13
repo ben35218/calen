@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, TouchableOpacity } from 'react-native';
+import { Text } from './Text';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Input } from './ui';
 import { colors, spacing } from '../theme';

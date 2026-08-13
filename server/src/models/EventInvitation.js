@@ -64,10 +64,21 @@ const eventInvitationSchema = new mongoose.Schema({
   // /:id/guests gate reads it here. Missing = visible (predates the setting).
   guestListVisible: { type: Boolean, default: true },
 
-  // 'left' = the recipient accepted, then later left the event (their copy is
-  // deleted but the organizer's invitee list still shows they were invited).
-  status:      { type: String, enum: ['pending', 'accepted', 'declined', 'left'], default: 'pending' },
+  // 'left'   = the recipient accepted, then later left the event (their copy is
+  //            deleted but the organizer's invitee list still shows they were
+  //            invited).
+  // 'merged' = the two parties have since joined the SAME household, so the
+  //            cross-household contract this row encodes no longer applies: the
+  //            event is now shared by sync and the invitee lives on the event's
+  //            sealed `householdInvitees` with an `EventRsvp` carrying the
+  //            answer. Terminal and inert — a merged row is hidden from both
+  //            inboxes and never acted on again; it is kept only as the audit
+  //            trail of an invitation that predates the merge. Written by
+  //            `POST /invitations/:id/merge` (routes/invitations.js).
+  status:      { type: String, enum: ['pending', 'accepted', 'declined', 'left', 'merged'], default: 'pending' },
   respondedAt: Date,
+  // When the invitation was reconciled into the shared household (status 'merged').
+  mergedAt:    Date,
   // The recipient's copy created on accept — what a leave (recipient) or a
   // revoke (organizer) deletes.
   acceptedEventId: { type: mongoose.Schema.Types.ObjectId, ref: 'CalendarEvent' },

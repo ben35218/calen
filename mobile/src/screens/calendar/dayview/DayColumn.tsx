@@ -1,5 +1,8 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, TouchableOpacity } from 'react-native';
+// Every label here sits inside an event block whose height comes from the
+// event's duration, not its text — so all of it takes the tight cap.
+import { FixedText } from '../../../components/Text';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { radius } from '../../../theme';
@@ -76,9 +79,9 @@ const DayColumn = React.memo(function DayColumn({
                 accessibilityLabel={travelAccessibilityLabel(b.travelMinutes ?? 0, b.startMin)}
               >
                 {travelLabel ? (
-                  <Text style={[styles.travelText, { color: tint.time }]} numberOfLines={1}>
+                  <FixedText style={[styles.travelText, { color: tint.time }]} numberOfLines={1}>
                     {travelLabel}
-                  </Text>
+                  </FixedText>
                 ) : null}
               </View>
             ) : null}
@@ -91,28 +94,28 @@ const DayColumn = React.memo(function DayColumn({
                 travelH ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: withAlpha(b.color, 0.55) } : null,
               ]}
             >
-              <Text
+              <FixedText
                 style={[styles.title, { color: tint.label }, b.strike && styles.strike]}
                 numberOfLines={blockTitleLines(bodyHeight)}
               >
                 {b.title}
-              </Text>
+              </FixedText>
 
               {showLocation ? (
                 <View style={styles.metaRow}>
                   <MaterialCommunityIcons name="map-marker-outline" size={META_ICON} color={tint.time} />
-                  <Text style={[styles.meta, { color: tint.time }]} numberOfLines={1}>
+                  <FixedText style={[styles.meta, { color: tint.time }]} numberOfLines={1}>
                     {b.location}
-                  </Text>
+                  </FixedText>
                 </View>
               ) : null}
 
               {showTime ? (
                 <View style={styles.metaRow}>
                   <MaterialCommunityIcons name="clock-outline" size={META_ICON} color={tint.time} />
-                  <Text style={[styles.meta, { color: tint.time }]} numberOfLines={1}>
+                  <FixedText style={[styles.meta, { color: tint.time }]} numberOfLines={1}>
                     {timeRangeLabel(b.startMin, b.endMin)}
-                  </Text>
+                  </FixedText>
                 </View>
               ) : null}
             </View>

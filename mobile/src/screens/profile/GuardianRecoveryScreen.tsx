@@ -10,7 +10,8 @@
 // All key material is sealed client-side; the server blind-relays. See lib/guardianRecovery.ts.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Alert, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Alert, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Text } from '../../components/Text';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';

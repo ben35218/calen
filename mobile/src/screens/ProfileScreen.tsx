@@ -1,13 +1,13 @@
 import React, { useEffect, useRef } from 'react';
 import {
   View,
-  Text,
   ScrollView,
   StyleSheet,
   Linking,
   TouchableOpacity,
   Alert,
 } from 'react-native';
+import { Text } from '../components/Text';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';

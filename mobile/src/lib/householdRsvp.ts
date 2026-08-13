@@ -38,6 +38,10 @@ export interface RsvpEvent {
   cancelled?: boolean;
   householdInvitees?: string[];
   author?: string;
+  // Set on a copy accepted from a cross-household invitation — read by the merge
+  // pass (lib/invitationMerge) to tell a copy that still needs unlinking from one
+  // it has already promoted to an ordinary event.
+  invitationId?: string;
 }
 
 export interface HouseholdEventRequest {
@@ -155,6 +159,32 @@ export async function respondToHouseholdEvent(opts: {
       })
       .catch(() => {});
   }
+}
+
+// Carry an answer someone already gave into an EventRsvp, WITHOUT notifying —
+// used by the merge pass (lib/invitationMerge) when a cross-household invitation
+// the caller already accepted or declined becomes an in-household one. The reply
+// isn't news (it was pushed when it was first given), and re-pushing it on a
+// household join would be noise, so this deliberately skips the relay that
+// respondToHouseholdEvent fires.
+//
+// Absent-only: if I've since answered this event through the household lane, that
+// answer is newer and stands. Idempotent, so a retried merge pass is a no-op.
+export async function recordExistingAnswer(opts: {
+  eventId: string;
+  status: RsvpStatus;
+  respondedAt?: string;
+}): Promise<void> {
+  const { eventId, status, respondedAt } = opts;
+  if (!getHDK()) throw new Error('Unlock your household data to record this response.');
+  const me = currentUserId();
+  const already = (await replica.getAll<EventRsvp>('EventRsvp'))
+    .some((r) => r.eventId === eventId && r.author === me);
+  if (already) return;
+  const payload = { eventId, status, respondedAt: respondedAt || new Date().toISOString() };
+  const sealed = await sealNew('EventRsvp', payload, EVENT_RSVP_ENC(payload));
+  if (!sealed.enc) throw new Error('Unlock your household data to record this response.');
+  await recordStore.create('EventRsvp', sealed);
 }
 
 // Instant notify to selected housemates (event create/edit). Best-effort by

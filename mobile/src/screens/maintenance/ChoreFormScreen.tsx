@@ -19,6 +19,7 @@ import {
   recurrenceToRule,
   ruleToRecurrence,
   dueDateForRule,
+  ruleDateMismatch,
   recurrenceAssistFields,
   recurrenceAssistCurrent,
   patchTouchesRecurrence,
@@ -28,10 +29,10 @@ import {
   excludeUsedAlert,
   mdiName,
 } from '../../lib/recurrence';
-import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
+import { RepeatRule, EMPTY_REPEAT, repeatSummary, repeatsLine } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { useCalendarColors } from '../../lib/calendarPrefs';
-import { choreAssigneeOptions } from '../../lib/choreAssignees';
+import { choreAssigneeOptions, matchAssigneeByName } from '../../lib/choreAssignees';
 import { ymd, addDays, daysBetween } from '../../lib/calendar';
 import {
   ItemScope, itemSaveScopeDecision, isFirstItemOccurrence, promptItemSaveScope, itemRepeats, promptItemDelete,
@@ -258,6 +259,24 @@ export default function ChoreFormScreen() {
     if (isEdit || !prefill) return;
     if (prefill.title != null) set({ title: String(prefill.title) });
     if (prefill.instructions != null) set({ instructions: String(prefill.instructions) });
+    // Icon and alert settings, each validated against what the form itself
+    // offers — a draft value the pickers don't carry is dropped, not saved.
+    if (prefill.icon != null) {
+      const name = mdiName(String(prefill.icon));
+      if (CHORE_ICONS.includes(name)) set({ icon: `mdi-${name}` });
+    }
+    const alertDay = (v: unknown): number | undefined =>
+      typeof v === 'number' && ALERT_DAY_OPTIONS.some((o) => o.value === v) ? v : undefined;
+    const firstAlert = alertDay(prefill.reminderDaysBefore);
+    if (firstAlert !== undefined) set({ reminderDaysBefore: firstAlert });
+    const secondAlert = alertDay(prefill.alert2DaysBefore);
+    if (secondAlert !== undefined && secondAlert !== firstAlert) set({ alert2DaysBefore: secondAlert });
+    if (typeof prefill.reminderTime === 'string' && /^\d{1,2}:\d{2}$/.test(prefill.reminderTime)) {
+      set({ reminderTime: prefill.reminderTime.padStart(5, '0') });
+    }
+    if (prefill.alertAudience === 'everyone' || prefill.alertAudience === 'owner') {
+      set({ alertAudience: prefill.alertAudience });
+    }
     if (prefill.recurrence) {
       const rule = recurrenceToRule(prefill.recurrence);
       setRepeatRule(rule);
@@ -266,8 +285,30 @@ export default function ChoreFormScreen() {
       const due = dueDateFor(rule);
       if (due) set({ nextDueDate: due });
     }
+    // The draft's own first-occurrence date beats the interval-from-today seed
+    // above — "every 2 weeks starting this Sunday" must anchor on that Sunday
+    // (the anchor day IS the pattern day for an interval series).
+    if (typeof prefill.firstDueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(prefill.firstDueDate)) {
+      set({ nextDueDate: prefill.firstDueDate });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The draft names its assignee (the assistant only ever sees the name the
+  // user typed); the ids live on-device, so the match waits for the member
+  // options to finish loading. One shot — matched or not, it never re-runs, so
+  // a hand-cleared field stays cleared.
+  const draftAssigneeRef = React.useRef<string | null>(
+    !isEdit && prefill && prefill.assignedToName != null ? String(prefill.assignedToName) : null
+  );
+  useEffect(() => {
+    const name = draftAssigneeRef.current;
+    if (!name || !contactsQ.isFetched || !householdQ.isFetched) return;
+    draftAssigneeRef.current = null;
+    const match = matchAssigneeByName(memberOptions, name);
+    if (match) set({ assignedTo: match.value });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactsQ.isFetched, householdQ.isFetched]);
 
   // Everything the form knows, in one frame. 'occurrence' is the day the form
   // literally shows — where a detached one-off or a forked series begins;
@@ -372,6 +413,9 @@ export default function ChoreFormScreen() {
         ...rec,
         skipDates: oldSkips.filter((d) => d >= occDay).map((d) => addDays(d, delta)),
       };
+      // Link the fork to the series it truncates, so the Chores list can show
+      // the pair as ONE chore (this record stands for both).
+      payload.splitFrom = id!;
       const created = await writeChore(payload);
       try {
         await choresApi.truncateSeries(id!, occDay);
@@ -409,8 +453,18 @@ export default function ChoreFormScreen() {
       return;
     }
     setError('');
+    // A saved date becomes the series' pattern anchor, so a day the rule never
+    // generates ("every week on Tuesday" due on a Wednesday) can't be saved —
+    // except by "Save for This Chore Only", which detaches the day as a
+    // one-time copy and so may land anywhere. That scope skips this check in
+    // the prompt callback below.
+    const mismatch = form.nextDueDate ? ruleDateMismatch(repeatRule, form.nextDueDate) : null;
     const original = decryptedChore.current;
     if (!isEdit || !original || !dirtyRef.current) {
+      if (mismatch) {
+        setError(mismatch);
+        return;
+      }
       save.mutate('series');
       return;
     }
@@ -421,12 +475,21 @@ export default function ChoreFormScreen() {
     const occurrenceDateMoved = editingOccurrence && !!form.nextDueDate && form.nextDueDate !== date;
     const decision = itemSaveScopeDecision(original, buildPayload('series'), { occurrenceDateMoved });
     if (decision.kind === 'none') {
+      if (mismatch) {
+        setError(mismatch);
+        return;
+      }
       save.mutate('series');
       return;
     }
     // Cancel resolves to null: stay on the form with the edits intact.
     promptItemSaveScope('chore', decision, (scope) => {
-      if (scope) save.mutate(scope);
+      if (!scope) return;
+      if (scope !== 'occurrence' && mismatch) {
+        setError(mismatch);
+        return;
+      }
+      save.mutate(scope);
     });
   };
 
@@ -523,14 +586,15 @@ export default function ChoreFormScreen() {
           hideIcon
         />
         <CardDivider />
+        {/* One self-labeled line ("Repeats every 1 week on Tue & Thu") — the
+            whole rule stays readable at a glance without a left label
+            competing for the row's width. */}
         <NavField
-          inlineLabel="Repeat"
-          value={repeatSummary(repeatRule)}
+          value={repeatsLine(repeatRule)}
           onPress={openRepeatScreen}
           highlight={assist.changed.has('recurrence')}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
-          valueStyle={fs.dtValue}
         />
       </GroupCard>
       {/* Names the occurrence being edited. Without it the form looks like the

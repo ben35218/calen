@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { Text } from './Text';
 import { Input, Select, SegmentedControl, Chip, SectionTitle } from './ui';
 import { form as fs, GroupCard, CardDivider } from './formStyles';
 import {

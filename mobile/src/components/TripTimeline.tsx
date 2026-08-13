@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Text } from './Text';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { placesApi, TripItem } from '../api';
 import { tripTypeMeta } from '../lib/tripTypes';

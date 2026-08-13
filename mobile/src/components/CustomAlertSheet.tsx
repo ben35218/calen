@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { Text } from './Text';
 import { BottomSheet, Button, SegmentedControl } from './ui';
 import WheelPicker, { WHEEL_ITEM_H, WHEEL_VISIBLE } from './WheelPicker';
 import { AlertAnchor, canLeaveAnchor, leaveAlertBuffer, leaveAlertMinutes } from '../lib/calendar';

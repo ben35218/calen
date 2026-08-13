@@ -10,7 +10,8 @@
 // handshake + trust model live in lib/deviceLink.ts. See docs/SIGNAL-PARITY-PLAN §F4.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { Text } from '../../components/Text';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import * as Device from 'expo-device';
 import { Screen, Button, ScreenTitle, Hint, FormError, CenteredLoader } from '../../components/ui';

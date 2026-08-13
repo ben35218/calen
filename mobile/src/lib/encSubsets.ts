@@ -86,6 +86,9 @@ export const TASK_ENC = (p: Rec) => ({
   // so Resume can tell which upcoming days already have a standalone copy and
   // leave those skipped rather than double-booking the day.
   detachedFrom: p.detachedFrom, detachedDate: p.detachedDate,
+  // Set on a series created by "Save for Future …": the truncated series it
+  // forked from, so a list can collapse the pair to one card.
+  splitFrom: p.splitFrom,
 });
 
 export const CHORE_ENC = (p: Rec) => ({
@@ -100,6 +103,9 @@ export const CHORE_ENC = (p: Rec) => ({
   // so Resume can tell which upcoming days already have a standalone copy and
   // leave those skipped rather than double-booking the day.
   detachedFrom: p.detachedFrom, detachedDate: p.detachedDate,
+  // Set on a series created by "Save for Future …": the truncated series it
+  // forked from, so the Chores list can collapse the pair to one card.
+  splitFrom: p.splitFrom,
 });
 
 export const RECIPE_ENC = (p: Rec) => ({

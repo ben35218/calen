@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, AppState, Linking, Switch } from 'react-native';
+import { View, FlatList, StyleSheet, TouchableOpacity, Alert, AppState, Linking, Switch } from 'react-native';
+import { Text } from '../../components/Text';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';

@@ -58,6 +58,9 @@ const taskSchema = new mongoose.Schema({
   // "Resume schedule" leave that day skipped instead of double-booking it.
   detachedFrom: { type: mongoose.Schema.Types.ObjectId },
   detachedDate: String,
+  // Set on a series created by "Save for Future …": the truncated series it
+  // forked from, so a list can collapse the pair to one card.
+  splitFrom: { type: mongoose.Schema.Types.ObjectId },
   // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
   ...encFields,
 }, { timestamps: true });

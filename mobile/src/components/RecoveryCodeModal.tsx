@@ -12,9 +12,10 @@
 
 import React, { useEffect, useState } from 'react';
 import {
-  Modal, View, Text, StyleSheet, Pressable, TextInput,
+  Modal, View, StyleSheet, Pressable,
   KeyboardAvoidingView, ScrollView, Platform,
 } from 'react-native';
+import { Text, TextInput } from './Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';

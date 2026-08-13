@@ -6,7 +6,8 @@
 // first QR seen; the parent decides what to do with the text.
 
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { Text } from './Text';
 import { colors, spacing, radius } from '../theme';
 import { Button } from './ui';
 

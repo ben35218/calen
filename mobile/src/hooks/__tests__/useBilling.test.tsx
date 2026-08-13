@@ -1,5 +1,6 @@
 import React from 'react';
-import { Text, TouchableOpacity } from 'react-native';
+import { TouchableOpacity } from 'react-native';
+import { Text } from '../../components/Text';
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useCreditsActivation, useAiPlanActivation } from '../useBilling';

@@ -1,12 +1,10 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useLayoutEffect } from 'react';
 import {
-  Text,
-  View,
   FlatList,
   StyleSheet,
   RefreshControl,
-  TouchableOpacity,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -20,7 +18,7 @@ import { useOwnedAddons } from '../../lib/addons';
 import AddonLockedView from '../plan/AddonLockedView';
 import CalenChatIcon from '../../components/CalenChatIcon';
 import { recurrenceLabel, mdiName } from '../../lib/recurrence';
-import { hasUpcomingOccurrence } from '../../lib/repeatingItemScope';
+import { collapseScopedRecords, hasUpcomingOccurrence } from '../../lib/repeatingItemScope';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
 import { colors, spacing } from '../../theme';
@@ -53,9 +51,6 @@ function ChoresHome() {
       ),
     });
   }, [navigation, accent]);
-
-  // Ended chores stay collapsed until asked for — they're history, not work.
-  const [showEnded, setShowEnded] = useState(false);
 
   const choresQ = useQuery({
     queryKey: ['chores', 'list'],
@@ -96,19 +91,21 @@ function ChoresHome() {
     return <SkeletonList />;
   }
 
-  const all = choresQ.data ?? [];
+  // One card per chore: a detached one-off copy ("Save for This Chore Only")
+  // and a forked-away predecessor ("Save for Future Chores") are scoping
+  // records for a chore already on the list, not chores of their own.
+  //
   // A chore ended by "Delete All Future Chores" keeps its record — the days
-  // already behind it still render on the calendar — but it has no outstanding
-  // work, and this list is the to-do view. It moves to the footer group below
-  // rather than vanishing, because that page is the only route to "Resume
-  // schedule" (see maintenance.md).
-  const active = all.filter((c) => hasUpcomingOccurrence(c));
-  const ended = all.filter((c) => !hasUpcomingOccurrence(c));
+  // already behind it still render on the calendar — but to the user it is
+  // DELETED, so it leaves this list entirely rather than lingering in an
+  // "ended" group demanding a second delete. Its past calendar days stay its
+  // route to the detail page (Resume schedule, or a full delete from the
+  // series' first day) — see maintenance.md.
+  const active = collapseScopedRecords(choresQ.data ?? []).filter((c) => hasUpcomingOccurrence(c));
 
-  const choreRow = (chore: Chore, faded = false) => (
+  const choreRow = (chore: Chore) => (
     <CardRow
       key={chore._id}
-      style={faded ? styles.faded : undefined}
       onPress={() => navigation.navigate('ChoreDetail', { id: chore._id })}
       leading={<IconAvatar mdiIcon={mdiName(chore.icon)} size={40} bg={accent} />}
       title={chore.title}
@@ -135,7 +132,9 @@ function ChoresHome() {
     </Fab>
   );
 
-  if (!all.length) {
+  // An ended chore is deliberately indistinct from a deleted one here, so the
+  // all-ended state IS the empty state.
+  if (!active.length) {
     return (
       <>
         <EmptyState
@@ -160,33 +159,6 @@ function ChoresHome() {
         contentContainerStyle={styles.list}
         refreshControl={<RefreshControl refreshing={choresQ.isRefetching} onRefresh={choresQ.refetch} />}
         renderItem={({ item: chore }) => choreRow(chore)}
-        // Every chore ended: the list is empty but the footer group below still
-        // holds them, so this explains the gap rather than leaving blank space.
-        ListEmptyComponent={
-          <EmptyState
-            variant="inline"
-            mdiIcon="broom"
-            title="No active chores"
-            message="Every chore here has ended. Open one to resume its schedule."
-            accent={accent}
-          />
-        }
-        ListFooterComponent={
-          ended.length ? (
-            <View style={styles.endedWrap}>
-              <TouchableOpacity
-                style={styles.endedToggle}
-                onPress={() => setShowEnded((v) => !v)}
-                accessibilityRole="button"
-                accessibilityLabel={`${showEnded ? 'Hide' : 'Show'} ended chores`}
-              >
-                <Text style={styles.endedLabel}>{`Ended chores (${ended.length})`}</Text>
-                <Ionicons name={showEnded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />
-              </TouchableOpacity>
-              {showEnded ? ended.map((c) => choreRow(c, true)) : null}
-            </View>
-          ) : null
-        }
       />
       {assistantFab}
     </>
@@ -197,11 +169,4 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   list: { padding: spacing.md },
   sub: { fontSize: 13, color: colors.textMuted },
-  faded: { opacity: 0.55 },
-  endedWrap: { marginTop: spacing.md },
-  endedToggle: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: spacing.sm, paddingHorizontal: spacing.xs,
-  },
-  endedLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted, textTransform: 'uppercase' },
 });

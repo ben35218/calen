@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useState } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Share } from 'react-native';
+import { View, StyleSheet, Image, TouchableOpacity, Share } from 'react-native';
+import { Text } from '../../components/Text';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';

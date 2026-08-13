@@ -391,6 +391,12 @@ export interface Task {
   intervalKm?: number;
   lastServiceKm?: number;
   nextDueKm?: number;
+  // Occurrence-scoping links (see lib/repeatingItemScope): a detached one-off
+  // copy names its series + day; a "Save for Future" fork names the series it
+  // truncated. Sealed fields — present after openRecord, never server-visible.
+  detachedFrom?: string | null;
+  detachedDate?: string | null;
+  splitFrom?: string | null;
   updatedAt?: string;
   keyVersion?: number;
   enc?: { alg: string; nonce: string; ct: string };
@@ -523,6 +529,12 @@ export interface Chore {
   alert2DaysBefore?: number | null;
   reminderTime?: string | null;
   alertAudience?: 'everyone' | 'owner';
+  // Occurrence-scoping links (see lib/repeatingItemScope): a detached one-off
+  // copy names its series + day; a "Save for Future" fork names the series it
+  // truncated. Sealed fields — present after openRecord, never server-visible.
+  detachedFrom?: string | null;
+  detachedDate?: string | null;
+  splitFrom?: string | null;
   updatedAt?: string;
   keyVersion?: number;
   enc?: { alg: string; nonce: string; ct: string };
@@ -1762,6 +1774,14 @@ export const calendarApi = {
       { householdInvitees: userIds.length ? userIds : undefined }),
   cancelEvent: (id: string) =>
     resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { cancelled: true }),
+  // Turn an accepted cross-household copy back into an ordinary household event
+  // by clearing the sealed `invitationId` that marks it read-only and renames its
+  // delete action to "Leave event". Used by the merge pass (lib/invitationMerge)
+  // when the organizer's original is gone, so this copy is the only survivor and
+  // there is nothing left for it to be a copy OF. A field set to undefined drops
+  // out of the sealed blob.
+  detachInvitationCopy: (id: string) =>
+    resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { invitationId: undefined }),
   // Recurring-event deletes (Apple-style). The server can't edit sealed content,
   // so each re-seals the whole event (resealInLane reads the decrypted record
   // from the replica, so callers never reconstruct the recurrence), under
@@ -1946,12 +1966,32 @@ export interface EventInvitation {
   // The sealed snapshot lane (D3): an anonymous sealed box of the snapshot to the
   // recipient's identity key. Opaque; only the recipient opens it (lib/e2ee).
   sealedEvent?: string;
-  // 'left' = accepted then later left the event (copy deleted).
-  status: 'pending' | 'accepted' | 'declined' | 'left';
+  // 'left'   = accepted then later left the event (copy deleted).
+  // 'merged' = organizer and recipient have since joined one household, so this
+  //            row was reconciled away (lib/invitationMerge). Terminal and inert;
+  //            the server hides merged rows from both inboxes, so it is only ever
+  //            seen by code that fetches a specific row.
+  status: 'pending' | 'accepted' | 'declined' | 'left' | 'merged';
   respondedAt?: string;
   // The recipient's copy created on accept.
   acceptedEventId?: string;
+  mergedAt?: string;
   createdAt: string;
+}
+
+// One invitation the merge pass has to retire: the organizer is now a housemate,
+// so the cross-household copy is a duplicate of a record we already sync.
+export interface InvitationToMerge {
+  _id: string;
+  eventId: string | null;
+  acceptedEventId: string | null;
+  status: 'pending' | 'accepted' | 'declined' | 'left';
+  respondedAt?: string;
+  organizerUserId: string;
+  // Whether the organizer's original event still exists. False means our copy is
+  // the only survivor and gets unlinked into a normal household event instead of
+  // being dropped as a duplicate.
+  sourceExists: boolean;
 }
 
 export const invitationsApi = {
@@ -1993,6 +2033,14 @@ export const invitationsApi = {
   revoke: (id: string) => api.delete(`/invitations/${id}`),
   // Recipient: who else is invited, if the event's guestListVisible flag allows.
   guests: (id: string) => api.get<InvitationGuestList>(`/invitations/${id}/guests`),
+  // Invitations addressed to me whose organizer has since become a housemate —
+  // the merge pass's work list (lib/invitationMerge). Recipient-driven: the
+  // organizer's device is never handed any of this.
+  toMerge: () => api.get<{ invitations: InvitationToMerge[] }>('/invitations/reconcile'),
+  // Retire one reconciled invitation once the device has done the sealed half.
+  // The server tombstones the now-duplicate copy and marks the row terminal.
+  merge: (id: string) =>
+    api.post<{ ok: boolean; merged: boolean; tombstoned: boolean }>(`/invitations/${id}/merge`),
 };
 
 // GET /invitations/:id/guests — visible:false means the organizer keeps the

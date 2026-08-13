@@ -30,6 +30,7 @@ import OccasionsScreen from '../screens/calendar/OccasionsScreen';
 import ECardFormScreen from '../screens/calendar/ECardFormScreen';
 import OccasionAlertsScreen from '../screens/calendar/OccasionAlertsScreen';
 import WeatherScreen from '../screens/calendar/WeatherScreen';
+import WeatherLocationSearchScreen from '../screens/calendar/WeatherLocationSearchScreen';
 import InvitationsScreen from '../screens/calendar/InvitationsScreen';
 import EventInviteesScreen from '../screens/calendar/EventInviteesScreen';
 import EventTravelTimeScreen from '../screens/calendar/EventTravelTimeScreen';
@@ -261,6 +262,9 @@ export default function AppNavigator() {
           title: '',
         }}
       />
+      {/* Pushed from the Weather source sheet — a plain form-style screen (the
+          sky gradient stays behind on Weather), field under the header. */}
+      <Stack.Screen name="WeatherLocationSearch" component={WeatherLocationSearchScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Another Location' }} />
 
       {/* Maintenance (blue) */}
       <Stack.Screen name="MaintenanceHome" component={MaintenanceScreen} options={featureCalendarHome('Maintenance')} />

@@ -1,5 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, SectionList, RefreshControl, type ViewToken } from 'react-native';
+import { View, StyleSheet, SectionList, RefreshControl, type ViewToken } from 'react-native';
+import { Text } from '../../components/Text';
 import { CardRow, EmptyState, SkeletonList } from '../../components/ui';
 import type { CalendarEvent } from '../../api';
 import type { CustomCalendar } from '../../lib/calendarPrefs';

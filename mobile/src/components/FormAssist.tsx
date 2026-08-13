@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { Text, StyleSheet, Pressable } from 'react-native';
+import { StyleSheet, Pressable } from 'react-native';
+import { Text } from './Text';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, Input } from './ui';
 import CreditsBanner from './CreditsBanner';

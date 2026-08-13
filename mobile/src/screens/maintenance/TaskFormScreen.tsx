@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { Text } from '../../components/Text';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -21,6 +22,7 @@ import {
   formatCalendarDate,
   recurrenceToRule,
   ruleToRecurrence,
+  ruleDateMismatch,
   recurrenceAssistFields,
   recurrenceAssistCurrent,
   patchTouchesRecurrence,
@@ -32,7 +34,7 @@ import { addDays, daysBetween } from '../../lib/calendar';
 import {
   ItemScope, itemSaveScopeDecision, isFirstItemOccurrence, promptItemSaveScope, itemRepeats, promptItemDelete,
 } from '../../lib/repeatingItemScope';
-import { RepeatRule, EMPTY_REPEAT, repeatSummary } from '../../lib/eventRepeat';
+import { RepeatRule, EMPTY_REPEAT, repeatSummary, repeatsLine } from '../../lib/eventRepeat';
 import { useRepeatDraft, clearRepeatDraft } from '../../lib/repeatDraft';
 import { rebindDetailBelow, popPastDetail } from '../../navigation/rebindDetailBelow';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -332,6 +334,10 @@ export default function TaskFormScreen() {
         ...rec,
         skipDates: oldSkips.filter((d) => d >= occDay).map((d) => addDays(d, delta)),
       };
+      // Link the fork to the series it truncates, mirroring the chore fork —
+      // task lists keep showing both halves for now (the completion ledger is
+      // keyed on the old record), but the link is stamped from day one.
+      payload.splitFrom = id!;
       const created = await writeTask(payload);
       try {
         await tasksApi.truncateSeries(id!, occDay);
@@ -369,8 +375,18 @@ export default function TaskFormScreen() {
       return;
     }
     setError('');
+    // A saved date becomes the series' pattern anchor, so a day the rule never
+    // generates ("every week on Tuesday" due on a Wednesday) can't be saved —
+    // except by "Save for This Task Only", which detaches the day as a
+    // one-time copy and so may land anywhere. That scope skips this check in
+    // the prompt callback below.
+    const mismatch = form.nextDueDate ? ruleDateMismatch(repeatRule, form.nextDueDate) : null;
     const original = decryptedTask.current;
     if (!isEdit || !original || !dirtyRef.current) {
+      if (mismatch) {
+        setError(mismatch);
+        return;
+      }
       save.mutate('series');
       return;
     }
@@ -381,12 +397,21 @@ export default function TaskFormScreen() {
     const occurrenceDateMoved = editingOccurrence && !!form.nextDueDate && form.nextDueDate !== date;
     const decision = itemSaveScopeDecision(original, buildPayload('series'), { occurrenceDateMoved });
     if (decision.kind === 'none') {
+      if (mismatch) {
+        setError(mismatch);
+        return;
+      }
       save.mutate('series');
       return;
     }
     // Cancel resolves to null: stay on the form with the edits intact.
     promptItemSaveScope('task', decision, (scope) => {
-      if (scope) save.mutate(scope);
+      if (!scope) return;
+      if (scope !== 'occurrence' && mismatch) {
+        setError(mismatch);
+        return;
+      }
+      save.mutate(scope);
     });
   };
 
@@ -540,14 +565,15 @@ export default function TaskFormScreen() {
           hideIcon
         />
         <CardDivider />
+        {/* One self-labeled line ("Repeats every 1 week on Tue & Thu") — the
+            whole rule stays readable at a glance without a left label
+            competing for the row's width. */}
         <NavField
-          inlineLabel="Repeat"
-          value={repeatSummary(repeatRule)}
+          value={repeatsLine(repeatRule)}
           onPress={openRepeatScreen}
           highlight={assist.changed.has('recurrence')}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
-          valueStyle={fs.dtValue}
         />
       </GroupCard>
       {/* Names the occurrence being edited. Without it the form looks like the

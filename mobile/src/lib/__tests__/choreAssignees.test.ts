@@ -1,4 +1,4 @@
-import { choreAssigneeOptions } from '../choreAssignees';
+import { choreAssigneeOptions, matchAssigneeByName } from '../choreAssignees';
 import type { Contact } from '../../api';
 
 const contact = (p: Partial<Contact> & { _id: string; name: string }) => p as Contact;
@@ -58,5 +58,50 @@ describe('choreAssigneeOptions', () => {
       contacts: ROSTER, memberIds: [ME, PARTNER], myId: ME, currentAssigneeId: 'p-partner',
     });
     expect(opts.filter((o) => o.value === 'p-partner')).toHaveLength(1);
+  });
+});
+
+// The chores assistant's draft names its assignee (`assignedToName` — the name
+// the user typed, echoed back); the form resolves it to a member option here.
+describe('matchAssigneeByName', () => {
+  const OPTS = [
+    { value: 'p-me', label: 'Ben (You)' },
+    { value: 'p-partner', label: 'Alex Morgan' },
+    { value: 'p-zoe', label: 'Zoe' },
+  ];
+
+  it('matches an exact label case-insensitively', () => {
+    expect(matchAssigneeByName(OPTS, 'alex morgan')?.value).toBe('p-partner');
+  });
+
+  it('ignores the "(You)" suffix on the signed-in user', () => {
+    expect(matchAssigneeByName(OPTS, 'Ben')?.value).toBe('p-me');
+  });
+
+  it('falls back to a first-name match', () => {
+    expect(matchAssigneeByName(OPTS, 'Alex')?.value).toBe('p-partner');
+  });
+
+  it('prefers the exact label over another option’s first name', () => {
+    const opts = [
+      { value: 'p-1', label: 'Sam Lee' },
+      { value: 'p-2', label: 'Sam' },
+    ];
+    expect(matchAssigneeByName(opts, 'Sam')?.value).toBe('p-2');
+  });
+
+  it('returns undefined for an unknown or empty name', () => {
+    expect(matchAssigneeByName(OPTS, 'Casey')).toBeUndefined();
+    expect(matchAssigneeByName(OPTS, '  ')).toBeUndefined();
+  });
+
+  it('resolves self-references to the signed-in user ("assign it to me")', () => {
+    expect(matchAssigneeByName(OPTS, 'me')?.value).toBe('p-me');
+    expect(matchAssigneeByName(OPTS, 'You')?.value).toBe('p-me');
+    expect(matchAssigneeByName(OPTS, 'Myself')?.value).toBe('p-me');
+  });
+
+  it('leaves a self-reference unresolved when no option carries the (You) suffix', () => {
+    expect(matchAssigneeByName([{ value: 'p-1', label: 'Alex' }], 'me')).toBeUndefined();
   });
 });

@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, Alert, ActivityIndicator, TouchableOpacity,
+  View, StyleSheet, Alert, ActivityIndicator, TouchableOpacity,
   Switch, Platform, Share,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { useNavigation, useFocusEffect, useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';

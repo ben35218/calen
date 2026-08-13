@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import {
   View,
-  Text,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';

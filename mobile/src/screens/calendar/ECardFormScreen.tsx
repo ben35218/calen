@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, Image, StyleSheet, Alert, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { View, Image, StyleSheet, Alert, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { Text, TextInput } from '../../components/Text';
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Rect } from 'react-native-svg';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, withDelay, Easing } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
@@ -84,6 +85,34 @@ function to12h(hhmm: string): string {
 // E-cards are sent hour-granular (the scheduler reads only the hour), so the
 // send time is a whole-hour picker, not a free minute field.
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => ({ label: to12h(`${h}:00`), value: h }));
+
+// Whether the occasion's month/day is today — the one case where the send time
+// competes with the clock.
+function isTodayOccasion(month: number, day: number): boolean {
+  const now = new Date();
+  return now.getMonth() + 1 === month && now.getDate() === day;
+}
+
+// The earliest hour that can still send today. The server's send pass fires on
+// the hour, so the current hour's tick has already gone — the next tick is the
+// first reachable one. Returns 24 past 11 PM: nothing can send today, and the
+// card rolls to next year's occurrence.
+function minHourToday(): number {
+  return new Date().getHours() + 1;
+}
+
+// An 'HH:mm' send time valid for the occasion: unchanged normally; on the
+// occasion day itself, pushed forward to the first hour the scheduler can
+// still hit (a passed hour must not be selectable or seeded).
+function clampSendTime(hhmm: string, month: number, day: number): string {
+  let h = Number(String(hhmm || '09:00').split(':')[0]);
+  if (!Number.isInteger(h) || h < 0 || h > 23) h = 9;
+  if (isTodayOccasion(month, day)) {
+    const min = minHourToday();
+    if (min <= 23 && h < min) h = min;
+  }
+  return `${String(h).padStart(2, '0')}:00`;
+}
 
 // Reconstruct a full Contact save payload (mirrors ContactFormScreen.save) with an
 // added primary email — so we can add a missing email to a contact in place.
@@ -214,7 +243,7 @@ export default function ECardFormScreen() {
   // (uploaded after save, once the card has an id).
   const [serverPhotos, setServerPhotos] = useState<ECardPhoto[]>([]);
   const [localPhotos, setLocalPhotos] = useState<PickedFile[]>([]);
-  const [sendTime, setSendTime] = useState<string>('09:00');
+  const [sendTime, setSendTime] = useState<string>(() => clampSendTime('09:00', month, day));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Emails added in this session (instant UI; also persisted to the contact).
   const [emailOverrides, setEmailOverrides] = useState<Record<string, string>>({});
@@ -303,7 +332,7 @@ export default function ECardFormScreen() {
       setSignoff(existing.signoff ?? '');
       setSignature(existing.signature ?? '');
       setServerPhotos(existing.photos ?? []);
-      setSendTime(existing.sendTime || '09:00');
+      setSendTime(clampSendTime(existing.sendTime || '09:00', month, day));
       const sel = new Set<string>();
       const chosen: Record<string, string> = {};
       for (const r of existing.recipients ?? []) {
@@ -407,6 +436,17 @@ export default function ECardFormScreen() {
     ]);
   };
 
+  // Scheduling on the occasion day itself: hours whose send tick has already
+  // passed are off the menu, and past the last tick (11 PM) the card can only
+  // go out on next year's occurrence. Recomputed each render; the onSave check
+  // below backstops time passing while the form sits open.
+  const todayOccasion = isTodayOccasion(month, day);
+  const rollsToNextYear = todayOccasion && minHourToday() > 23;
+  const hourOptions = todayOccasion && !rollsToNextYear
+    ? HOUR_OPTIONS.filter((o) => o.value >= minHourToday())
+    : HOUR_OPTIONS;
+  const sendYear = nextOccurrenceYear(month, day) + (rollsToNextYear ? 1 : 0);
+
   const onSave = () => {
     const hasRecipient = [...selected].some((id) => {
       const p = candidates.find((c) => c._id === id);
@@ -414,6 +454,13 @@ export default function ECardFormScreen() {
     });
     if (!hasRecipient) {
       Alert.alert('Pick a recipient', 'Choose at least one contact with an email to send this card to.');
+      return;
+    }
+    // The occasion is today and the chosen hour has meanwhile passed (the form
+    // sat open across it): make the user pick a reachable time rather than
+    // silently sending at the next hour.
+    if (isTodayOccasion(month, day) && minHourToday() <= 23 && Number(sendTime.split(':')[0]) < minHourToday()) {
+      Alert.alert('That time has passed', 'Choose a send time later today.');
       return;
     }
     save.mutate();
@@ -613,10 +660,11 @@ export default function ECardFormScreen() {
         <Select
           inlineLabel="Time on the day"
           value={Number((sendTime || '09:00').split(':')[0])}
-          options={HOUR_OPTIONS}
+          options={hourOptions}
           // Open scrolled to noon: cards are usually sent in daytime, and an
           // AM-first list invites picking "2:00 AM" when "2:00 PM" was meant.
-          initialScrollValue={12}
+          // On the occasion day itself, no lower than the first sendable hour.
+          initialScrollValue={Math.min(23, Math.max(12, todayOccasion && !rollsToNextYear ? minHourToday() : 12))}
           onChange={(v) => setSendTime(`${String(v).padStart(2, '0')}:00`)}
           containerStyle={fs.dtFieldWrap}
           fieldStyle={fs.rowField}
@@ -624,7 +672,10 @@ export default function ECardFormScreen() {
           chevronIcon="chevron-expand"
         />
       </GroupCard>
-      <Hint>Sends once on {MONTHS[month - 1]} {day}, {nextOccurrenceYear(month, day)} at {to12h(sendTime)} — nothing goes out until then.</Hint>
+      <Hint>
+        Sends once on {MONTHS[month - 1]} {day}, {sendYear} at {to12h(sendTime)} — nothing goes out until then.
+        {rollsToNextYear ? ' It’s past the last send time for today, so the card waits for the next occurrence.' : ''}
+      </Hint>
 
       <SectionHeader>Recipients</SectionHeader>
       {candidates.length === 0 ? (

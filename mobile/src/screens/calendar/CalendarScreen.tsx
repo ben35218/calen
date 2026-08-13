@@ -1,5 +1,9 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import { View, StyleSheet, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+// FixedText for everything sized by the month grid or by a fixed disc/pill —
+// cells, chips, span bars, the 44pt avatar and back pill, count badges. Plain
+// Text only where padding lets the control grow (the Today / Calendars pills).
+import { Text, FixedText } from '../../components/Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -667,7 +671,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
         <View style={[styles.weekdayRow, { height: WEEKDAY_ROW_H }]}>
           {WEEKDAYS.map((d, i) => (
             <View key={i} style={[styles.weekdayCell, { width: cellSize }]}>
-              <Text style={styles.weekdayText}>{d}</Text>
+              <FixedText style={styles.weekdayText}>{d}</FixedText>
             </View>
           ))}
         </View>
@@ -759,11 +763,11 @@ const WeekRow = React.memo(function WeekRow({
                   the row so all the numbers stay on one line. */}
               {week.isMonthStart ? (
                 <View style={styles.monthLabelSlot}>
-                  {col === week.firstCol ? <Text style={styles.monthAbbrev}>{week.abbrev}</Text> : null}
+                  {col === week.firstCol ? <FixedText style={styles.monthAbbrev}>{week.abbrev}</FixedText> : null}
                 </View>
               ) : null}
               <View style={[styles.dayNumWrap, cell.isToday && styles.todayWrap]}>
-                <Text style={[styles.dayNum, cell.isToday && styles.todayNum]}>{cell.day}</Text>
+                <FixedText style={[styles.dayNum, cell.isToday && styles.todayNum]}>{cell.day}</FixedText>
               </View>
             </View>
 
@@ -839,16 +843,16 @@ const WeekRow = React.memo(function WeekRow({
                   }
                   delayLongPress={LONG_PRESS_MS}
                 >
-                  <Text style={[styles.chipText, { color: tint.label }, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(charsPerLine, chip.label)} ellipsizeMode="clip">{chip.label}</Text>
+                  <FixedText style={[styles.chipText, { color: tint.label }, chip.cancelled && styles.chipTextCancelled]} numberOfLines={titleLines(charsPerLine, chip.label)} ellipsizeMode="clip">{chip.label}</FixedText>
                   {/* numberOfLines={1} keeps the time on one line; ellipsizeMode "clip"
                       cuts off overflow (e.g. "10:30A") with no "…" and no wrapped "M". */}
-                  {chip.time ? <Text style={[styles.chipTime, { color: tint.time }]} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text> : null}
+                  {chip.time ? <FixedText style={[styles.chipTime, { color: tint.time }]} numberOfLines={1} ellipsizeMode="clip">{chip.time}</FixedText> : null}
                 </TouchableOpacity>
                 );
               })}
               {/* The week-height math reserves exactly one line (MORE_H), so the
                   label must never wrap — on narrow cells it shrinks to fit instead. */}
-              {c.chips.length > CHIP_MAX ? <Text style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{c.chips.length - CHIP_MAX} more</Text> : null}
+              {c.chips.length > CHIP_MAX ? <FixedText style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{c.chips.length - CHIP_MAX} more</FixedText> : null}
               {showSkeleton && !c.chips.length ? <CellSkeleton date={cell.date} density={density} /> : null}
 
               {/* Each icon opens its own item view; a task/recipe icon aggregates
@@ -961,7 +965,7 @@ const WeekRow = React.memo(function WeekRow({
           {week.weather.days.map((d) => (
             <View key={d.col} style={styles.weatherSeg}>
               <WeatherIcon code={d.code} size={11} />
-              <Text style={styles.weatherSegTemp} numberOfLines={1}>{Math.round(d.tempMax)}°</Text>
+              <FixedText style={styles.weatherSegTemp} numberOfLines={1}>{Math.round(d.tempMax)}°</FixedText>
             </View>
           ))}
         </TouchableOpacity>
@@ -1020,7 +1024,7 @@ const WeekRow = React.memo(function WeekRow({
           ]}
         >
           {tint ? (
-            <Text style={[styles.spanBarText, { color: tint.label }]} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
+            <FixedText style={[styles.spanBarText, { color: tint.label }]} numberOfLines={1} ellipsizeMode="clip">{bar.label}</FixedText>
           ) : null}
         </TouchableOpacity>
         );
@@ -1197,14 +1201,14 @@ export default function CalendarScreen() {
                 : 'Profile'
           }
         >
-          <Text style={styles.avatarText}>{initial}</Text>
+          <FixedText style={styles.avatarText}>{initial}</FixedText>
           {dataLocked ? (
             <View style={styles.lockBadge}>
-              <Text style={styles.lockBadgeText}>!</Text>
+              <FixedText style={styles.lockBadgeText}>!</FixedText>
             </View>
           ) : invCount > 0 ? (
             <View style={styles.lockBadge}>
-              <Text style={styles.lockBadgeText}>{invCount > 9 ? '9+' : invCount}</Text>
+              <FixedText style={styles.lockBadgeText}>{invCount > 9 ? '9+' : invCount}</FixedText>
             </View>
           ) : null}
         </TouchableOpacity>
@@ -1276,7 +1280,7 @@ export default function CalendarScreen() {
           accessibilityLabel={`Back to ${ASSISTANT_NAME}`}
         >
           <Ionicons name="chevron-back" size={22} color={BTN_FG} />
-          <Text style={styles.backPillText}>{ASSISTANT_NAME}</Text>
+          <FixedText style={styles.backPillText}>{ASSISTANT_NAME}</FixedText>
         </TouchableOpacity>
       ) : aiEnabled ? (
         <AssistantButton
@@ -1328,7 +1332,7 @@ function IconChip({ count, icon, color }: { count: number; icon: string; color: 
   return (
     <View style={styles.iconChip}>
       <MaterialCommunityIcons name={icon as any} size={16} color={color} />
-      {count > 1 ? <Text style={[styles.iconCount, { color }]}>{count}</Text> : null}
+      {count > 1 ? <FixedText style={[styles.iconCount, { color }]}>{count}</FixedText> : null}
     </View>
   );
 }

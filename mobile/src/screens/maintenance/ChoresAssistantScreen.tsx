@@ -58,9 +58,19 @@ export default function ChoresAssistantScreen({
     (text: string, msg: ChatMessage): boolean => {
       const c = (msg.pendingChore ?? null) as Record<string, any> | null;
       if (text !== 'Review & add chore' || !c) return false;
+      // Everything the draft tool can set rides through; the form validates
+      // each field (icon against its own list, assignedToName against the
+      // member options once they load) and ignores what it can't use.
       const prefill: Record<string, unknown> = {
         title: c.title,
         instructions: c.instructions,
+        icon: c.icon,
+        firstDueDate: c.firstDueDate,
+        assignedToName: c.assignedToName,
+        reminderDaysBefore: c.reminderDaysBefore,
+        alert2DaysBefore: c.alert2DaysBefore,
+        reminderTime: c.reminderTime,
+        alertAudience: c.alertAudience,
         recurrence: c.frequency
           ? { type: 'interval', intervalValue: c.interval || 1, intervalUnit: UNIT[c.frequency] || 'weeks' }
           : undefined,

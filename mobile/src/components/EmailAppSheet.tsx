@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet} from 'react-native';
+import { Text } from './Text';
 import * as Clipboard from 'expo-clipboard';
 import { BottomSheet, Divider, Hint, ListRow } from './ui';
 import {

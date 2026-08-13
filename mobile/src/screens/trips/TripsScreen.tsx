@@ -1,11 +1,11 @@
 import React, { useLayoutEffect, useMemo } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';

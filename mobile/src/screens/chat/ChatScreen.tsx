@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
-  Text,
-  TextInput,
   ScrollView,
   Image,
   TouchableOpacity,
@@ -15,6 +13,7 @@ import {
   StyleSheet,
   useWindowDimensions,
 } from 'react-native';
+import { Text, TextInput } from '../../components/Text';
 import { moderationApi } from '../../api';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

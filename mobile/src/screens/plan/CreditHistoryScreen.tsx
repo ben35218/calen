@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-import { View, Text, SectionList, StyleSheet, RefreshControl } from 'react-native';
+import { View, SectionList, StyleSheet, RefreshControl } from 'react-native';
+import { Text } from '../../components/Text';
 import type { CreditLedgerEntry } from '../../api';
 import { EmptyState, SectionHeader, SkeletonList } from '../../components/ui';
 import { colors, spacing } from '../../theme';

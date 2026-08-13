@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable, Vibration,
+  View, StyleSheet, ScrollView, TouchableOpacity, Pressable, Vibration,
   ActionSheetIOS, Alert, Platform,
   LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoute, RouteProp, useNavigation, usePreventRemove } from '@react-navigation/native';

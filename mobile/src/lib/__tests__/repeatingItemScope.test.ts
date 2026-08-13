@@ -30,8 +30,9 @@ const mockTasksApi = tasksApi as jest.Mocked<typeof tasksApi>;
 
 import {
   itemRepeats, itemStartDay, isFirstItemOccurrence, itemDeletePrompt, hasUpcomingOccurrence,
-  resumeState, resumeSubtitle, buildResumedRecurrence,
-  changedItemFields, itemSaveScopeDecision, itemSaveChoices, RepeatingItem,
+  nextOccurrenceFrom, resumeState, resumeSubtitle, buildResumedRecurrence,
+  changedItemFields, itemSaveScopeDecision, itemSaveChoices, collapseScopedRecords,
+  RepeatingItem,
 } from '../repeatingItemScope';
 
 // The content shared by the stored record and the payload an untouched load
@@ -111,6 +112,95 @@ describe('hasUpcomingOccurrence', () => {
   it('keeps an item with an unparseable end rather than hiding it', () => {
     const c = chore({ recurrence: { ...CONTENT.recurrence, until: 'not-a-date' } });
     expect(hasUpcomingOccurrence(c, NOW)).toBe(true);
+  });
+});
+
+// One card per chore: scoping writes NEW records (a detached one-off, a forked
+// series beside its truncated predecessor), and a list that shows every record
+// shows the plumbing — the reported bug was a moved occurrence appearing as a
+// second "one-time" chore card, and a "Save for Future" edit listing the chore
+// twice (old version and new).
+describe('collapseScopedRecords', () => {
+  it('hides a detached copy behind the series it left', () => {
+    const series = chore();
+    const copy = chore({
+      _id: 'c2', recurrence: { type: 'one-time' }, detachedFrom: 'c1', detachedDate: '2026-02-01',
+    });
+    expect(collapseScopedRecords([series, copy])).toEqual([series]);
+  });
+
+  // The series is gone: the copy is all that's left of the chore, so hiding it
+  // would make the record unreachable from the list.
+  it('keeps a detached copy whose series was deleted', () => {
+    const copy = chore({
+      _id: 'c2', recurrence: { type: 'one-time' }, detachedFrom: 'c1', detachedDate: '2026-02-01',
+    });
+    expect(collapseScopedRecords([copy])).toEqual([copy]);
+  });
+
+  it('hides a truncated predecessor behind its fork', () => {
+    const old = chore({ recurrence: { ...CONTENT.recurrence, until: '2026-03-31T23:59:59' } });
+    const fork = chore({ _id: 'c2', splitFrom: 'c1', nextDueDate: '2026-04-01T12:00:00.000Z' });
+    expect(collapseScopedRecords([old, fork])).toEqual([fork]);
+  });
+
+  it('keeps a predecessor whose fork was deleted', () => {
+    const old = chore({ recurrence: { ...CONTENT.recurrence, until: '2026-03-31T23:59:59' } });
+    expect(collapseScopedRecords([old])).toEqual([old]);
+  });
+
+  // Fork of a fork: every superseded generation hides, and only the record
+  // carrying the chore forward lists. The middle link still hides the first
+  // even though it is itself hidden — presence in the DATA is what counts.
+  it('collapses a chain of forks to the latest', () => {
+    const a = chore({ recurrence: { ...CONTENT.recurrence, until: '2026-02-28T23:59:59' } });
+    const b = chore({ _id: 'c2', splitFrom: 'c1', recurrence: { ...CONTENT.recurrence, until: '2026-04-30T23:59:59' } });
+    const c = chore({ _id: 'c3', splitFrom: 'c2' });
+    expect(collapseScopedRecords([a, b, c])).toEqual([c]);
+  });
+
+  it('leaves unrelated records — including genuinely one-time chores — alone', () => {
+    const series = chore();
+    const oneTime = chore({ _id: 'c9', title: 'Wash the car', recurrence: { type: 'one-time' } });
+    expect(collapseScopedRecords([series, oneTime])).toEqual([series, oneTime]);
+  });
+});
+
+// The detail screen's series-frame due row asks for the next REAL occurrence
+// from today, because the stored anchor never advances on its own — a chore
+// created in the past (or simply older than one cycle) has a permanently stale
+// `nextDueDate`.
+describe('nextOccurrenceFrom', () => {
+  const NOW = new Date('2026-06-15T09:00:00');
+
+  it('walks a stale past anchor forward to the next occurrence', () => {
+    // Monthly, anchored Jan 1 → the June 1 occurrence is behind NOW; July 1 is next.
+    expect(nextOccurrenceFrom(chore(), NOW)).toBe('2026-07-01');
+  });
+
+  it('returns a today occurrence as today', () => {
+    const c = chore({ nextDueDate: '2026-06-15T12:00:00.000Z' });
+    expect(nextOccurrenceFrom(c, NOW)).toBe('2026-06-15');
+  });
+
+  it('returns a future anchor unchanged', () => {
+    const c = chore({ nextDueDate: '2026-08-20T12:00:00.000Z' });
+    expect(nextOccurrenceFrom(c, NOW)).toBe('2026-08-20');
+  });
+
+  it('skips past a skipped day', () => {
+    const c = chore({ recurrence: { ...CONTENT.recurrence, skipDates: ['2026-07-01'] } });
+    expect(nextOccurrenceFrom(c, NOW)).toBe('2026-08-01');
+  });
+
+  it('is null for a one-time item whose day has passed', () => {
+    const c = chore({ recurrence: { type: 'one-time' } });
+    expect(nextOccurrenceFrom(c, NOW)).toBeNull();
+  });
+
+  it('is null for an ended series', () => {
+    const c = chore({ recurrence: { ...CONTENT.recurrence, until: '2026-02-28T23:59:59' } });
+    expect(nextOccurrenceFrom(c, NOW)).toBeNull();
   });
 });
 

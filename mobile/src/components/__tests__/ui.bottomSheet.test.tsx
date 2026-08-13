@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text } from 'react-native';
+import { Text } from '../Text';
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react-native';
 
 // The shared bottom sheet (mobile/CLAUDE.md → "Presentation & dismissal"). It

@@ -187,6 +187,15 @@ export async function maintainKeyHygiene(): Promise<void> {
     const { carryOverStrandedRecords } = await import('./joinCarryover');
     await carryOverStrandedRecords();
   } catch { /* offline / locked / nothing stranded — retried on a later unlock */ }
+  // Then invitation merge: cross-household event invitations between two people
+  // who now share a household. It runs AFTER carry-over on purpose — the copy it
+  // resolves is one of the records carry-over just moved, and the organizer's
+  // event it converges onto has to be readable under the CURRENT household's key
+  // before anything can be re-sealed onto it. See lib/invitationMerge.
+  try {
+    const { reconcileMergedInvitations } = await import('./invitationMerge');
+    await reconcileMergedInvitations();
+  } catch { /* offline / locked / nothing to merge — retried on a later unlock */ }
   try {
     const res = await reencryptOldVersions();
     if (res.failed === 0) await householdApi.retireKey().catch(() => {});

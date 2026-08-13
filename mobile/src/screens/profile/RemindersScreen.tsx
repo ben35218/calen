@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, AppState, Linking, Switch, TouchableOpacity,
+  View, StyleSheet, AppState, Linking, Switch, TouchableOpacity,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { useFocusEffect, useRoute, RouteProp } from '@react-navigation/native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Notifications from 'expo-notifications';

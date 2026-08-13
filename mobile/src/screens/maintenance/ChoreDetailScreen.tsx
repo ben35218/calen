@@ -1,5 +1,6 @@
 import React, { useLayoutEffect } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, StyleSheet, Alert } from 'react-native';
+import { Text } from '../../components/Text';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -10,6 +11,7 @@ import { Button, Card, Screen, ListRow, CenteredLoader, IconAvatar, ScreenTitle,
 import { recurrenceLabel, dueInLabel, mdiName, formatCalendarDate } from '../../lib/recurrence';
 import {
   promptItemDelete, promptResumeSchedule, resumeState, resumeSubtitle, hasUpcomingOccurrence,
+  nextOccurrenceFrom,
 } from '../../lib/repeatingItemScope';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { MaintenanceStackParamList } from '../../navigation/MaintenanceNavigator';
@@ -85,15 +87,19 @@ export default function ChoreDetailScreen() {
   }
 
   const resumeInfo = resumeState(chore);
-  // What the date row says. An ENDED series has no next due date, so reading the
-  // anchor would report it as long overdue ("7 months overdue") when it simply
-  // stopped. Keyed on having no occurrence left rather than on `until` merely
-  // being set — a series ending next month hasn't ended yet.
+  // What the date row says. Opened on an occurrence, its own day — including a
+  // past one ("Due yesterday"). Opened from a list, the series' next occurrence
+  // computed from today, NOT the stored anchor: nothing advances `nextDueDate`
+  // as time passes, so it goes stale after its first occurrence. An ENDED
+  // series has nothing ahead to compute, so it reads `Ended <date>` — keyed on
+  // having no occurrence left rather than on `until` merely being set, since a
+  // series ending next month hasn't ended yet. The anchor fallback covers the
+  // remaining case with no occurrence ahead: a one-time chore whose day passed.
   const dueRowTitle = date
     ? dueInLabel(`${date}T12:00:00`)
     : !hasUpcomingOccurrence(chore) && resumeInfo.endedOn
       ? `Ended ${formatCalendarDate(resumeInfo.endedOn)}`
-      : dueInLabel(chore.nextDueDate);
+      : dueInLabel(nextOccurrenceFrom(chore) ?? chore.nextDueDate);
 
   const a = chore.assignedTo;
   const assigneeId = !a ? null : typeof a === 'string' ? a : a._id;

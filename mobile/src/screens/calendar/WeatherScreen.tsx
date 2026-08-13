@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import React, { useState } from 'react';
+import { View, ScrollView, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import { Text } from '../../components/Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { loadWeatherForAddress, geocodePlace } from '@household/weather';
@@ -15,7 +16,6 @@ import {
 } from '../../lib/weatherSource';
 import { formatMm } from '../../lib/weatherSummary';
 import { Card, Button, BottomSheet, Skeleton } from '../../components/ui';
-import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import type { RootStackParamList } from '../../navigation/types';
 import HourlyForecast from '../../components/HourlyForecast';
 import SkyBackground from '../../components/SkyBackground';
@@ -55,18 +55,21 @@ export default function WeatherScreen() {
   // custom place. Chosen from the sheet behind the hero's location chip.
   const [source, setSource] = useState<WeatherSource | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [customOpen, setCustomOpen] = useState(false);
-  const [customDraft, setCustomDraft] = useState('');
-  const closePicker = () => {
-    setPickerOpen(false);
-    setCustomOpen(false);
-    setCustomDraft('');
-  };
-  useEffect(() => { getWeatherSource().then(setSource); }, []);
+  const closePicker = () => setPickerOpen(false);
+  // Re-read on every focus, not just mount: the "Another location" search is a
+  // pushed screen that persists the pick itself, and coming back here is when
+  // its choice has to take effect.
+  useFocusEffect(React.useCallback(() => { getWeatherSource().then(setSource); }, []));
   const pickSource = (s: WeatherSource) => {
     setSource(s);
     closePicker();
     void setWeatherSource(s);
+  };
+  // "Another location" → the pushed search screen. Close the sheet first
+  // (caller-driven = instant teardown) so the push isn't eaten by its Modal.
+  const openCustomSearch = () => {
+    closePicker();
+    nav.navigate('WeatherLocationSearch');
   };
 
   const sourceKey = !source ? 'pending' : source.kind === 'custom' ? `custom:${source.place}` : source.kind;
@@ -340,7 +343,12 @@ export default function WeatherScreen() {
       </ScrollView>
 
       {/* Source picker: live location / home address / a typed place. */}
-      <BottomSheet visible={pickerOpen} onClose={closePicker} title="Weather location" avoidKeyboard>
+      {/* Source picker. The first two rows commit in place; "Another location"
+          leaves the sheet for a pushed search screen — a text field cannot
+          live in a bottom sheet (the sheet rides the keyboard, so suggestions
+          under the field render behind the keys). Sheet closes caller-driven
+          (instant teardown), so the push isn't swallowed by a dying Modal. */}
+      <BottomSheet visible={pickerOpen} onClose={closePicker} title="Weather location">
         <TouchableOpacity style={styles.sourceRow} activeOpacity={0.7} onPress={() => pickSource({ kind: 'live' })}>
           <Ionicons name="navigate" size={20} color={BLUE} />
           <View style={styles.sourceRowText}>
@@ -357,11 +365,7 @@ export default function WeatherScreen() {
           </View>
           {source?.kind === 'home' ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
         </TouchableOpacity>
-        {/* "Another location": the row toggles an inline Google-Places city
-            search (same picker as trip destinations). Selecting a suggestion
-            IS the confirmation — it applies the source and closes the sheet;
-            free text alone is never accepted. */}
-        <TouchableOpacity style={styles.sourceRow} activeOpacity={0.7} onPress={() => setCustomOpen((o) => !o)}>
+        <TouchableOpacity style={styles.sourceRow} activeOpacity={0.7} onPress={openCustomSearch}>
           <Ionicons name="search" size={20} color={BLUE} />
           <View style={styles.sourceRowText}>
             <Text style={styles.sourceRowTitle}>Another location</Text>
@@ -369,24 +373,9 @@ export default function WeatherScreen() {
               {source?.kind === 'custom' ? source.place : 'Search for a city or place'}
             </Text>
           </View>
-          {source?.kind === 'custom'
-            ? <Ionicons name="checkmark" size={20} color={BLUE} />
-            : <Ionicons name={customOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textMuted} />}
+          {source?.kind === 'custom' ? <Ionicons name="checkmark" size={20} color={BLUE} /> : null}
+          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
         </TouchableOpacity>
-        {customOpen ? (
-          <PlacesAutocomplete
-            type="city"
-            value={customDraft}
-            onChangeText={setCustomDraft}
-            onSelect={(p) => {
-              setCustomDraft('');
-              setCustomOpen(false);
-              pickSource({ kind: 'custom', place: p.description });
-            }}
-            placeholder="Search for a city or place…"
-            containerStyle={styles.customSearch}
-          />
-        ) : null}
       </BottomSheet>
     </View>
   );
@@ -433,7 +422,6 @@ const styles = StyleSheet.create({
   sourceRowText: { flex: 1, minWidth: 0 },
   sourceRowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
   sourceRowSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
-  customSearch: { marginTop: 2, marginBottom: 0 },
   // Hero: current conditions floating over the sky, Apple Weather style.
   hero: { alignItems: 'center', paddingTop: spacing.md, paddingBottom: spacing.lg },
   heroEyebrow: { fontSize: 13, fontWeight: '600', letterSpacing: 1.5, color: 'rgba(255,255,255,0.85)', textShadowColor: 'rgba(0,0,0,0.25)', textShadowRadius: 6 },

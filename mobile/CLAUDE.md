@@ -9,6 +9,29 @@ for the same shared primitive instead of re-rolling one. All primitives live in
 Never hard-code colours, spacing, or radii — use `colors`, `spacing`, `radius`
 from the theme.
 
+## Text — never import it from react-native
+
+`Text` and `TextInput` always come from
+[src/components/Text.tsx](src/components/Text.tsx), never from `react-native`.
+The wrappers cap iOS Dynamic Type: without them a string scales to AX5 (~3.1x)
+and bursts whatever holds it. The suite scans for raw imports and fails on one,
+so this is enforced, not advisory. Spec:
+[specs/platform/accessibility.md](../specs/platform/accessibility.md).
+
+- **`Text`** — the default, capped at 1.5x. Anything that reflows: list rows,
+  forms, detail screens, buttons whose size comes from their padding.
+- **`FixedText`** — capped at 1.1x, for text inside a container sized by
+  something *other* than its text: a calendar cell (sized by the grid), an event
+  block (sized by duration), a fixed disc or pill, a count badge. Reach for it
+  whenever growing the string would overflow the shape instead of reflowing it.
+- Both spread caller props after the cap, so a screen can pass its own
+  `maxFontSizeMultiplier`, or `allowFontScaling={false}` where the layout *is*
+  the content (the Contacts A–Z rail, a safety-number block).
+
+Note this is a ceiling, not a fix: ~90 styles still pin an explicit `lineHeight`
+that doesn't scale with `fontSize`. Prefer omitting `lineHeight` on new text, or
+set it as a multiple of the font size.
+
 ## Presentation & dismissal — how a view opens and how it closes
 
 The app has exactly **four** ways a view can appear. Pick by what the view *is*,
@@ -45,10 +68,22 @@ its rule, is drift.
   keyboard-aware scroll only keeps the *input* above the keyboard, so a
   dropdown rendered below it opens exactly behind the keyboard. Wrap the
   input + dropdown pair in `<RevealWrap open count>` (components/ui); `<Screen>`
-  scrolls the pair clear when the dropdown opens. Do NOT call `useRevealOnOpen`
+  scrolls the pair clear when the dropdown opens, when the field takes focus,
+  and again on `keyboardDidShow` (a keyboard that arrives *after* the dropdown
+  covers whatever was under it). Do NOT call `useRevealOnOpen`
   from the screen component itself — it renders `<Screen>`, so the hook reads a
   null scroll context and silently no-ops; the hook is only for components
   already rendered inside a Screen (e.g. `PlacesAutocomplete`).
+  **A search field never lives inside a bottom sheet.** The sheet rides on top
+  of the keyboard, so anything below the field renders behind the keys — no
+  scroll position, sheet height, or reveal fixes it (both were tried on the
+  weather location picker and failed on an SE-sized screen). A sheet row that
+  needs a search **closes the sheet and pushes a full screen** — field at the
+  top (out of the keyboard's reach), `<PlacesAutocomplete expand autoFocus>`
+  (or the same shape hand-built) filling the rest, results ending at the
+  keyboard via `KeyboardAvoidingView` offset by `useHeaderHeight()`. Selecting
+  a result commits and pops. `EventLocation` and `WeatherLocationSearch` are
+  the references.
   Picking a suggestion in a **single-value** field completes the entry —
   `Keyboard.dismiss()` so the field blurs and shows the value from its start.
   A **multi-add** field (invitees: type, pick, type the next) keeps the
@@ -184,9 +219,15 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
   - `<SectionTitle>` = the bold in-form heading (add/edit forms).
   - `<SectionHeader>` = the quiet uppercase eyebrow above a group of rows/cards
     (lists & detail screens).
-- **Bottom sheet** (custom picker / action / confirm sheet) → `<BottomSheet visible onClose title? style? avoidKeyboard? onShow?>`. `avoidKeyboard` when it holds text inputs; `onShow` to position content on open (Select's initial scroll). Don't hand-roll a `Modal` + backdrop + slide-up `Pressable` — the shared sheet is what supplies the slide-up, the grabber, drag-to-dismiss, the home-indicator inset, and the scrim fade, and a hand-rolled one silently drops all five. `Select`, `DateField`/`TimeField`, and `PhoneField`'s country picker all render through it.
+- **Bottom sheet** (custom picker / action / confirm sheet) → `<BottomSheet visible onClose title? style? avoidKeyboard? onShow?>`. `avoidKeyboard` when it holds text inputs — it lifts the sheet flush onto the keyboard and drops the home-indicator inset while the keyboard covers it, so content sits right above the keys with no dead gap. `onShow` to position content on open (Select's initial scroll). Don't hand-roll a `Modal` + backdrop + slide-up `Pressable` — the shared sheet is what supplies the slide-up, the grabber, drag-to-dismiss, the home-indicator inset, and the scrim fade, and a hand-rolled one silently drops all five. `Select`, `DateField`/`TimeField`, and `PhoneField`'s country picker all render through it.
   - Its drag lives on the **grabber/title strip only**, so a sheet holding a
     scrolling list keeps its scroll. Content sits below that strip.
+  - **A sheet row that leads to more than a tap navigates away.** A row needing
+    a search or an editor closes the sheet (caller-driven `visible` flip —
+    instant teardown, so the push isn't swallowed by the dying Modal) and pushes
+    a screen; the row wears `chevron-forward` because that is what it does. Text
+    input inside a sheet is reserved for short single fields (a password, a
+    label) under `avoidKeyboard` — never a field with results below it.
   - **A picker sheet commits on dismissal.** A sheet whose content is a wheel,
     a date/time picker, or a list of options saves what it is showing when the
     user taps the scrim, drags it down, or presses Android back — the same value

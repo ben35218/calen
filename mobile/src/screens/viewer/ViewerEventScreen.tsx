@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import { Text } from '../../components/Text';
 import { useRoute, RouteProp } from '@react-navigation/native';
 import { Screen, ScreenTitle, SectionTitle, CardRow } from '../../components/ui';
 import type { RootStackParamList } from '../../navigation/types';

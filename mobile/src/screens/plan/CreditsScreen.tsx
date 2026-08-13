@@ -1,8 +1,9 @@
 import React, { useCallback } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, ActivityIndicator, AppState, Linking, Platform,
+  View, ScrollView, StyleSheet, ActivityIndicator, AppState, Linking, Platform,
   TouchableOpacity,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';

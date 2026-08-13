@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl, LayoutChangeEvent } from 'react-native';
+import { View, ScrollView, StyleSheet, TouchableOpacity, RefreshControl, LayoutChangeEvent } from 'react-native';
+import { Text } from '../../components/Text';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -10,7 +11,7 @@ import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import {
   occasionIcon, occasionNoun, occasionFocusKey,
-  collectOccasions, whenLabel, Occasion, COMING_UP_DAYS,
+  collectOccasions, whenLabel, Occasion, COMING_UP_DAYS, PAST_WINDOW_DAYS,
 } from '../../lib/occasions';
 import { CALENDAR_COLORS } from '../../lib/calendar';
 import { Card, CenteredLoader, EmptyState, Hint, IconAvatar, HeaderIconButton, SectionHeader, SkeletonList } from '../../components/ui';
@@ -100,8 +101,11 @@ function OccasionsHome() {
   }
 
   // Match an occasion to a scheduled card by contact + kind + month/day. ACTIVE
-  // cards drive the upcoming "schedule/edit" envelope; a card that already sent
-  // (active:false, sentAt set) instead marks its recently-passed row as "Sent".
+  // cards drive the "schedule/edit" envelope; a card that already sent
+  // (active:false, sentAt set) instead marks its row — today's or recently
+  // passed — as "Sent". Sent rows persist server-side forever, so only a card
+  // sent within the past window counts: last year's card must not label this
+  // year's occurrence as sent.
   const cardKey = (contactId: string, kind: string, month: number, day: number) => `${contactId}|${kind}|${month}|${day}`;
   const activeCard = new Map<string, ECard>();
   const sentCard = new Map<string, ECard>();
@@ -109,14 +113,17 @@ function OccasionsHome() {
     if (!c.contactId) continue;
     const k = cardKey(String(c.contactId), c.kind, c.month, c.day);
     if (c.active) activeCard.set(k, c);
-    else if (c.sentAt) sentCard.set(k, c);
+    else if (c.sentAt && Date.now() - new Date(c.sentAt).getTime() <= (PAST_WINDOW_DAYS + 1) * 86400000) sentCard.set(k, c);
   }
 
   // Contacts hidden from the Occasions calendar (occasionsHidden) are omitted
   // entirely — they don't appear anywhere in this list.
   const visible = collectOccasions(contacts).filter((o) => !o.hidden);
   const recentlyPassed = visible.filter((o) => o.offset < 0);
-  const comingUp = visible.filter((o) => o.offset >= 0 && o.offset <= COMING_UP_DAYS);
+  // Today's occasions sit directly under the "Today" marker — they're happening,
+  // not "coming up", so they render above that section's header.
+  const todayOccasions = visible.filter((o) => o.offset === 0);
+  const comingUp = visible.filter((o) => o.offset > 0 && o.offset <= COMING_UP_DAYS);
   const later = visible.filter((o) => o.offset > COMING_UP_DAYS);
 
   const occKey = (o: Occasion) => occasionFocusKey({ contactId: o.contact._id, kind: o.kind, month: o.month, day: o.day, label: o.label });
@@ -175,6 +182,13 @@ function OccasionsHome() {
                 <Text style={styles.sentPillText}>Sent</Text>
               </View>
             ) : null
+          ) : sent && !active ? (
+            // The card for this occurrence already went out (it sends once, then
+            // deactivates) — say so instead of offering to schedule another.
+            <View style={styles.sentPill}>
+              <MaterialCommunityIcons name="email-check" size={13} color={ACCENT} />
+              <Text style={styles.sentPillText}>Sent</Text>
+            </View>
           ) : (
             <TouchableOpacity
               accessibilityLabel={active ? 'Edit scheduled e-card' : 'Schedule an e-card'}
@@ -223,6 +237,8 @@ function OccasionsHome() {
           <View style={styles.todayLine} />
         </View>
       ) : null}
+
+      {todayOccasions.map((o, i) => renderRow(o, i, 'upcoming'))}
 
       {comingUp.length > 0 ? (
         <>
@@ -278,7 +294,8 @@ const styles = StyleSheet.create({
   cardBtn: { padding: 4 },
   sentPill: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   sentPillText: { fontSize: 12, fontWeight: '600', color: ACCENT },
-  // The "Today · <date>" anchor separating recently observed from what's coming up.
+  // The "Today · <date>" anchor: today's occasions render directly beneath it,
+  // then the "Coming up" section.
   todayMarker: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.md },
   todayLine: { flex: 1, height: 1, backgroundColor: ACCENT, opacity: 0.4 },
   todayMarkerText: { fontSize: 12, fontWeight: '700', color: ACCENT, textTransform: 'uppercase', letterSpacing: 0.5 },

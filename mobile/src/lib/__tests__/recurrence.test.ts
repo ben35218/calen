@@ -8,6 +8,7 @@ import {
   recurrencePreview,
   alertSummary,
   dueStatus,
+  dueInLabel,
   parseCalendarDate,
   formatCalendarDate,
   mdiName,
@@ -17,6 +18,7 @@ import {
   ruleToRecurrence,
   dueDateForRule,
   excludeUsedAlert,
+  ruleDateMismatch,
 } from '../recurrence';
 import { Recurrence } from '../../api';
 import { EMPTY_REPEAT, RepeatRule } from '../eventRepeat';
@@ -265,6 +267,28 @@ describe('dueStatus', () => {
   });
 });
 
+describe('dueInLabel', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date(2026, 6, 8, 9, 30)); // July 8 2026, local
+  });
+  afterEach(() => jest.useRealTimers());
+
+  it('returns Not set when no date', () => {
+    expect(dueInLabel(null)).toBe('Not set');
+  });
+
+  it('labels today and future dates', () => {
+    expect(dueInLabel('2026-07-08')).toBe('Due today');
+    expect(dueInLabel('2026-07-09')).toBe('Due in 1 day');
+    expect(dueInLabel('2026-07-12')).toBe('Due in 4 days');
+  });
+
+  it('reports a past day as past', () => {
+    expect(dueInLabel('2026-07-07')).toBe('Due yesterday');
+    expect(dueInLabel('2026-07-01')).toBe('Due 7 days ago');
+  });
+});
+
 describe('parseCalendarDate', () => {
   it('reads a UTC-midnight ISO string as the same calendar day locally', () => {
     const d = parseCalendarDate('2026-03-05T00:00:00.000Z');
@@ -389,5 +413,76 @@ describe('dueDateForRule', () => {
 
   it('implies no date when the rule does not repeat, so a picked date stands', () => {
     expect(dueDateForRule(rule({ freq: '' }), from)).toBeNull();
+  });
+});
+
+// ── ruleDateMismatch ─────────────────────────────────────────────────────────
+// The chore/task forms refuse to anchor a repeating series on a day its own
+// rule never generates ("every week on Tuesday" due on a Wednesday). A detached
+// "This Chore Only" save is exempt at the call site — it saves as one-time.
+describe('ruleDateMismatch', () => {
+  const rule = (patch: Partial<RepeatRule>): RepeatRule => ({ ...EMPTY_REPEAT, ...patch });
+  // Aug 2026: the 1st is a Saturday, so the 4th/11th/18th/25th are Tuesdays.
+
+  it('accepts a date on the rule’s weekday', () => {
+    expect(ruleDateMismatch(rule({ freq: 'weekly', daysOfWeek: [2] }), '2026-08-11')).toBeNull();
+  });
+
+  it('rejects a weekly date off the rule’s weekday, naming both sides', () => {
+    const msg = ruleDateMismatch(rule({ freq: 'weekly', daysOfWeek: [2] }), '2026-08-12');
+    expect(msg).toContain('Tuesday');
+    expect(msg).toContain('Wednesday');
+  });
+
+  it('accepts any of several weekly weekdays and rejects the rest', () => {
+    const r = rule({ freq: 'weekly', interval: 2, daysOfWeek: [3, 4] });
+    expect(ruleDateMismatch(r, '2026-08-12')).toBeNull(); // Wednesday
+    expect(ruleDateMismatch(r, '2026-08-13')).toBeNull(); // Thursday
+    expect(ruleDateMismatch(r, '2026-08-14')).toContain('Wednesday or Thursday');
+  });
+
+  it('pins no day for daily, plain, and off rules', () => {
+    expect(ruleDateMismatch(rule({ freq: 'daily' }), '2026-08-12')).toBeNull();
+    expect(ruleDateMismatch(rule({ freq: 'weekly' }), '2026-08-12')).toBeNull();
+    expect(ruleDateMismatch(rule({ freq: '' }), '2026-08-12')).toBeNull();
+  });
+
+  it('checks monthly numbered dates', () => {
+    const r = rule({ freq: 'monthly', daysOfMonth: [15] });
+    expect(ruleDateMismatch(r, '2026-08-15')).toBeNull();
+    expect(ruleDateMismatch(r, '2026-08-14')).toContain('15th');
+  });
+
+  it('checks the monthly ordinal weekday, including which one of the month', () => {
+    const r = rule({ freq: 'monthly', weekOfMonth: 2, weekdayKind: 'tue' });
+    expect(ruleDateMismatch(r, '2026-08-11')).toBeNull(); // the second Tuesday
+    expect(ruleDateMismatch(r, '2026-08-12')).toContain('second Tuesday'); // a Wednesday
+    expect(ruleDateMismatch(r, '2026-08-04')).toContain('second Tuesday'); // the FIRST Tuesday
+  });
+
+  it('counts last / next-to-last from the end of the month', () => {
+    const last = rule({ freq: 'monthly', weekOfMonth: -1, weekdayKind: 'tue' });
+    expect(ruleDateMismatch(last, '2026-08-25')).toBeNull();
+    expect(ruleDateMismatch(last, '2026-08-18')).not.toBeNull();
+    const nextToLast = rule({ freq: 'monthly', weekOfMonth: -2, weekdayKind: 'tue' });
+    expect(ruleDateMismatch(nextToLast, '2026-08-18')).toBeNull();
+  });
+
+  it('checks weekday/weekend kinds by class', () => {
+    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekday' }), '2026-08-15')).toContain('weekday');
+    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekend' }), '2026-08-12')).toContain('weekend');
+    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekend' }), '2026-08-15')).toBeNull();
+  });
+
+  it('checks the ordinal day-of-month kind', () => {
+    const r = rule({ freq: 'monthly', weekOfMonth: -1, weekdayKind: 'day' });
+    expect(ruleDateMismatch(r, '2026-08-31')).toBeNull();
+    expect(ruleDateMismatch(r, '2026-08-30')).toContain('last day');
+  });
+
+  it('checks yearly months', () => {
+    const r = rule({ freq: 'yearly', months: [6, 12] });
+    expect(ruleDateMismatch(r, '2026-12-05')).toBeNull();
+    expect(ruleDateMismatch(r, '2026-08-12')).toContain('June or December');
   });
 });

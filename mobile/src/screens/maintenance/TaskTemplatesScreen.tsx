@@ -1,13 +1,13 @@
 import React, { useLayoutEffect, useMemo, useState } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
   RefreshControl,
   ScrollView,
 } from 'react-native';
+import { Text } from '../../components/Text';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';

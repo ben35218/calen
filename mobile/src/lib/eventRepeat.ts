@@ -128,6 +128,41 @@ export function repeatSummary(r: RepeatRule): string {
   return every;
 }
 
+// The chore/task forms show the Repeat row as ONE self-labeled line —
+// "Repeats every 1 week on Tue & Thu" — so the whole rule reads at a glance
+// with no left label competing for the row's width. The interval is always
+// spelled ("every 1 week", never "Weekly") and day/month names abbreviated,
+// keeping the line short enough to stay on one line.
+export function repeatsLine(r: RepeatRule): string {
+  if (!r.freq) return 'Does not repeat';
+  const [one, many] = FREQ_UNITS[r.freq];
+  const every = `Repeats every ${r.interval} ${r.interval === 1 ? one : many}`;
+
+  if (r.freq === 'weekly' && r.daysOfWeek.length) {
+    const days = [...r.daysOfWeek].sort((a, b) => a - b).map((d) => WEEKDAY_NAMES[d].slice(0, 3));
+    return `${every} on ${ampJoin(days)}`;
+  }
+  if (r.freq === 'monthly' && r.daysOfMonth.length) {
+    const days = [...r.daysOfMonth].sort((a, b) => a - b).map(nth);
+    return `${every} on the ${ampJoin(days)}`;
+  }
+  if (r.freq === 'monthly' && r.weekOfMonth != null && r.weekdayKind) {
+    return `${every} on the ${ordinalPhrase(r)}`;
+  }
+  if (r.freq === 'yearly' && r.months.length) {
+    const months = [...r.months].sort((a, b) => a - b).map((m) => MONTH_ABBREV[m - 1]);
+    return r.weekOfMonth != null && r.weekdayKind
+      ? `${every} on the ${ordinalPhrase(r)} of ${ampJoin(months)}`
+      : `${every} in ${ampJoin(months)}`;
+  }
+  return every;
+}
+
+const ampJoin = (parts: string[]) =>
+  parts.length <= 1
+    ? parts.join('')
+    : `${parts.slice(0, -1).join(', ')} & ${parts[parts.length - 1]}`;
+
 // "second Tuesday", "last weekend day", …
 function ordinalPhrase(r: RepeatRule): string {
   const ord = ORDINAL_OPTIONS.find((o) => o.value === r.weekOfMonth)?.label ?? '';

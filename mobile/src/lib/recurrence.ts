@@ -277,9 +277,12 @@ export function dueStatus(nextDueDate?: string | null): { status: DueStatus; lab
   return { status: 'upcoming', label: 'Upcoming' };
 }
 
-// Relative countdown for a chore's next due date: "Due today" or "Due in N
-// days". Chores don't track completion, so nextDueDate always rolls forward —
-// there's no "overdue" state; any past date is treated as due today.
+// Relative countdown for a chore's due date: "Due today", "Due in N days", or —
+// for a day genuinely behind us (a tapped past occurrence, a past one-time
+// chore) — "Due yesterday" / "Due N days ago". Series callers must pass the
+// next occurrence computed from today (repeatingItemScope's
+// nextOccurrenceFrom), never the raw `nextDueDate` anchor, which nothing
+// advances and so goes stale the moment its first occurrence passes.
 export function dueInLabel(d?: string | null): string {
   if (!d) return 'Not set';
   const due = parseCalendarDate(d);
@@ -287,7 +290,9 @@ export function dueInLabel(d?: string | null): string {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const days = Math.round((due.getTime() - today.getTime()) / 86400000);
-  if (days <= 0) return 'Due today';
+  if (days === 0) return 'Due today';
+  if (days === -1) return 'Due yesterday';
+  if (days < 0) return `Due ${-days} days ago`;
   return `Due in ${days} day${days === 1 ? '' : 's'}`;
 }
 
@@ -486,6 +491,78 @@ export function applyRecurrenceAssistPatch(prev: RepeatRule, patch: Record<strin
 export function dueDateForRule(rule: RepeatRule, from: Date = new Date()): Date | null {
   const d = seedDueDate(ruleToRecurrence(rule), from);
   return d ? new Date(d) : null;
+}
+
+const orList = (parts: string[]) =>
+  parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} or ${parts[parts.length - 1]}`;
+const ORDINAL_LABELS: Record<number, string> = {
+  1: 'first', 2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth', [-1]: 'last', [-2]: 'next to last',
+};
+
+// A due date the repeat rule itself would never generate — "every week on
+// Tuesday" anchored on a Wednesday. The stored anchor IS the series' pattern
+// day, so a mismatched anchor makes every future occurrence wrong; the chore
+// and task forms refuse to save the combination (except a detached
+// "This Chore Only" copy, which saves as one-time and may land anywhere).
+// Returns a user-facing message naming the conflict, or null when the date
+// fits — or when the rule pins no days at all (daily, plain weekly/monthly).
+export function ruleDateMismatch(rule: RepeatRule, date: string): string | null {
+  const clause = mismatchClause(rule, date);
+  return clause ? `${clause} Pick a matching date or change the repeat.` : null;
+}
+
+function mismatchClause(rule: RepeatRule, date: string): string | null {
+  if (!rule.freq || !date) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(date);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  const dow = d.getDay();
+  const dayName = WEEKDAY_NAMES[dow];
+
+  if (rule.freq === 'weekly' && rule.daysOfWeek.length && !rule.daysOfWeek.includes(dow)) {
+    const days = [...rule.daysOfWeek].sort((a, b) => a - b).map((n) => WEEKDAY_NAMES[n]);
+    return `The repeat is on ${orList(days)}, but this date falls on a ${dayName}.`;
+  }
+
+  if ((rule.freq === 'monthly' || rule.freq === 'yearly') && rule.weekOfMonth != null && rule.weekdayKind) {
+    const ord = ORDINAL_LABELS[rule.weekOfMonth] ?? '';
+    const kind = WEEKDAY_KINDS.indexOf(rule.weekdayKind);
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    if (kind >= 0) {
+      const slot = `the ${ord} ${WEEKDAY_NAMES[kind]} of the month`;
+      if (dow !== kind) {
+        return `The repeat is on ${slot}, but this date falls on a ${dayName}.`;
+      }
+      // Right weekday — is it also the right one of the month? (1..5 count from
+      // the start; -1/-2 from the end.)
+      const nth = Math.ceil(d.getDate() / 7);
+      const nthFromEnd = Math.ceil((lastDay - d.getDate() + 1) / 7);
+      const fits =
+        rule.weekOfMonth > 0 ? nth === rule.weekOfMonth : nthFromEnd === -rule.weekOfMonth;
+      if (!fits) {
+        return `The repeat is on ${slot}, but this date isn't that ${WEEKDAY_NAMES[kind]}.`;
+      }
+    } else if (rule.weekdayKind === 'weekday' && (dow === 0 || dow === 6)) {
+      return `The repeat is on a weekday, but this date falls on a ${dayName}.`;
+    } else if (rule.weekdayKind === 'weekend' && dow >= 1 && dow <= 5) {
+      return `The repeat is on a weekend day, but this date falls on a ${dayName}.`;
+    } else if (rule.weekdayKind === 'day') {
+      const want = rule.weekOfMonth > 0 ? rule.weekOfMonth : lastDay + 1 + rule.weekOfMonth;
+      if (d.getDate() !== want) {
+        return `The repeat is on the ${ord} day of the month, but this date is the ${ordinal(d.getDate())}.`;
+      }
+    }
+  } else if (rule.freq === 'monthly' && rule.daysOfMonth.length && !rule.daysOfMonth.includes(d.getDate())) {
+    const days = [...rule.daysOfMonth].sort((a, b) => a - b).map(ordinal);
+    return `The repeat is on the ${orList(days)} of the month, but this date is the ${ordinal(d.getDate())}.`;
+  }
+
+  if (rule.freq === 'yearly' && rule.months.length && !rule.months.includes(d.getMonth() + 1)) {
+    const months = [...rule.months].sort((a, b) => a - b).map((n) => MONTH_NAMES[n - 1]);
+    return `The repeat is in ${orList(months)}, but this date is in ${MONTH_NAMES[d.getMonth()]}.`;
+  }
+
+  return null;
 }
 
 export function ruleToRecurrence(rule: RepeatRule): Recurrence {

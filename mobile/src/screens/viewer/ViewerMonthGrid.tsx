@@ -1,8 +1,11 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, ScrollView,
+  View, StyleSheet, FlatList, TouchableOpacity, ScrollView,
   useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent,
 } from 'react-native';
+// The viewer's month grid is the same fixed 7-column geometry as CalendarScreen's,
+// so every label in it takes the tight cap.
+import { FixedText } from '../../components/Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CalendarData, CalendarEvent } from '../../api';
 import { expandCalendarRange, type CalendarWindowSources } from '../../lib/calendarData';
@@ -385,7 +388,7 @@ const ViewerMonthGrid = forwardRef<ViewerGridHandle, {
         <View style={[styles.weekdayRow, { height: WEEKDAY_ROW_H }]}>
           {WEEKDAYS.map((d, i) => (
             <View key={i} style={[styles.weekdayCell, { width: cellSize }]}>
-              <Text style={styles.weekdayText}>{d}</Text>
+              <FixedText style={styles.weekdayText}>{d}</FixedText>
             </View>
           ))}
         </View>
@@ -463,11 +466,11 @@ const WeekRow = React.memo(function WeekRow({
                   cell of the row so all the day numbers stay on one line. */}
               {week.isMonthStart ? (
                 <View style={styles.monthLabelSlot}>
-                  {col === week.firstCol ? <Text style={styles.monthAbbrev}>{week.abbrev}</Text> : null}
+                  {col === week.firstCol ? <FixedText style={styles.monthAbbrev}>{week.abbrev}</FixedText> : null}
                 </View>
               ) : null}
               <View style={[styles.dayNumWrap, cell.isToday && styles.todayWrap]}>
-                <Text style={[styles.dayNum, cell.isToday && styles.todayNum]}>{cell.day}</Text>
+                <FixedText style={[styles.dayNum, cell.isToday && styles.todayNum]}>{cell.day}</FixedText>
               </View>
             </View>
 
@@ -489,22 +492,22 @@ const WeekRow = React.memo(function WeekRow({
                   ]}
                   onPress={() => onPressChip(chip.eventId)}
                 >
-                  <Text
+                  <FixedText
                     style={[styles.chipText, { color: tint.label }, chip.cancelled && styles.chipTextCancelled]}
                     numberOfLines={titleLines(charsPerLine, chip.label)}
                     ellipsizeMode="clip"
                   >
                     {chip.label}
-                  </Text>
+                  </FixedText>
                   {chip.time ? (
-                    <Text style={[styles.chipTime, { color: tint.time }]} numberOfLines={1} ellipsizeMode="clip">{chip.time}</Text>
+                    <FixedText style={[styles.chipTime, { color: tint.time }]} numberOfLines={1} ellipsizeMode="clip">{chip.time}</FixedText>
                   ) : null}
                 </TouchableOpacity>
                 );
               })}
               {/* The week-height math reserves exactly one line (MORE_H), so the
                   label must never wrap — on narrow cells it shrinks to fit instead. */}
-              {cell.extra ? <Text style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{cell.extra} more</Text> : null}
+              {cell.extra ? <FixedText style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{cell.extra} more</FixedText> : null}
               {showSkeleton && !cell.chips.length ? <CellSkeleton date={cell.date} /> : null}
             </View>
           </TouchableOpacity>
@@ -532,7 +535,7 @@ const WeekRow = React.memo(function WeekRow({
             },
           ]}
         >
-          <Text style={[styles.spanBarText, { color: tint.label }]} numberOfLines={1} ellipsizeMode="clip">{bar.label}</Text>
+          <FixedText style={[styles.spanBarText, { color: tint.label }]} numberOfLines={1} ellipsizeMode="clip">{bar.label}</FixedText>
         </TouchableOpacity>
         );
       })}

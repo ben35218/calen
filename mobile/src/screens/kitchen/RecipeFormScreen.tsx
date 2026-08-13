@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Image, TouchableOpacity, Alert, Keyboard } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, Image, TouchableOpacity, Alert, Keyboard } from 'react-native';
+import { Text } from '../../components/Text';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';

@@ -42,6 +42,9 @@ const RULES = [
     tests: /^(server\/src\/services\/(householdKey|keyEnvelope|e2eePolicy)\.test\.js|server\/src\/test\/(householdKey|keyHygiene|e2eeMandate|securityAlerts)\.)/ },
   { re: /^mobile\/src\/lib\/e2ee\.ts/, specs: ['specs/platform/crypto-e2ee.md'],
     tests: /^mobile\/src\/lib\/__tests__\/e2ee\./ },
+  // The Dynamic Type wrapper every screen's text renders through.
+  { re: /^mobile\/src\/components\/Text\.tsx$/, specs: ['specs/platform/accessibility.md'],
+    tests: /^mobile\/src\/components\/__tests__\/textScaling\./ },
 
   // Features.
   { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|server\/src\/services\/sessions\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/api\/client\.ts|mobile\/src\/lib\/(passkeys|secureToken|deviceId|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
@@ -61,7 +64,7 @@ const RULES = [
   { re: /^(mobile\/src\/screens\/onboarding\/|mobile\/src\/lib\/onboarding\.ts)/, specs: ['specs/features/onboarding.md'],
     tests: /^mobile\/src\/lib\/__tests__\/onboarding\./ },
   { re: /^(server\/src\/routes\/(calendarChat|choresChat|maintenanceChat|maintenancePlanChat|tripsChat|calls|formAssist)\.js|server\/src\/services\/(chatStream|chatSuggestions|aiUsage|phoneCalls)\.js|mobile\/src\/screens\/chat\/|mobile\/src\/lib\/(aiPayload|chatLinks)\.ts|mobile\/src\/hooks\/(useScrollAwareKeyboard|useDictation)\.ts)/, specs: ['specs/features/ai-assistant.md'],
-    tests: /^(server\/src\/test\/aiPrivacy\.|server\/src\/services\/phoneCalls\.test\.js$|server\/src\/middleware\/usageMeter\.tokens\.test\.js$|mobile\/src\/lib\/__tests__\/(aiPayload|aiWindow|chatLinks)\.|mobile\/src\/hooks\/__tests__\/(useScrollAwareKeyboard|useDictation)\.)/ },
+    tests: /^(server\/src\/test\/aiPrivacy\.|server\/src\/services\/phoneCalls\.test\.js$|server\/src\/middleware\/usageMeter\.tokens\.test\.js$|mobile\/src\/lib\/__tests__\/(aiPayload|aiWindow|chatLinks)\.|mobile\/src\/hooks\/__tests__\/(useScrollAwareKeyboard|useDictation)\.|mobile\/src\/screens\/chat\/__tests__\/)/ },
   // Email lifecycle: the code-owned catalog + mailer + delivery ledger/outbox +
   // reconcile + the two admin email views. Ordered BEFORE the admin rule so the
   // email surfaces win; adminEmail.js itself stays admin-portal-owned.

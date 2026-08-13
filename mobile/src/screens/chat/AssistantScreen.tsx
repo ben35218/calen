@@ -1,13 +1,20 @@
-import React, { useCallback, useState } from 'react';
-import { useRoute, type RouteProp } from '@react-navigation/native';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
+import { View } from 'react-native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../../navigation/types';
-import type { AssistantId } from './assistantTabs';
+import { ASSISTANT_TABS, type AssistantId } from './assistantTabs';
 import { peekResume, requestResume, surfaceToTab, surfaceTripId } from '../../lib/chatHistory';
+import { useOwnedAddons, type AddonId } from '../../lib/addons';
+import { useCalendarColors } from '../../lib/calendarPrefs';
+import { CenteredLoader } from '../../components/ui';
+import AssistantSwitcher from '../../components/AssistantSwitcher';
+import AddonLockedView from '../plan/AddonLockedView';
 import CalendarAssistantScreen from '../calendar/CalendarAssistantScreen';
 import ChoresAssistantScreen from '../maintenance/ChoresAssistantScreen';
 import AiTaskPlanChatScreen from '../maintenance/AiTaskPlanChatScreen';
 import TripPickerScreen from '../trips/TripPickerScreen';
 import TripAssistantScreen from '../trips/TripAssistantScreen';
+import { colors } from '../../theme';
 
 // Unified assistant view. Calendar, Chores, Task Plan and Trips are no longer
 // separate routes — they're bodies swapped in place here, so the switcher hops
@@ -21,6 +28,7 @@ import TripAssistantScreen from '../trips/TripAssistantScreen';
 export default function AssistantScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'Assistant'>>();
   const [active, setActive] = useState<AssistantId>(route.params?.initial ?? 'calendar');
+  const { isUnlocked, loaded: addonsLoaded } = useOwnedAddons();
   // A cross-tab resume that arrived by navigation (from a standalone surface's
   // sheet) parks a request in chatHistory; if it targets a trip, pre-select that
   // trip here so we drop straight into its assistant instead of the picker.
@@ -46,6 +54,21 @@ export default function AssistantScreen() {
     setActive(tab);
   }, []);
 
+  // Add-on gate: the switcher always shows all four tabs, but a tab whose
+  // add-on isn't owned swaps its chat body for the same AddonLockedView the
+  // feature home screens render — the switcher stays above it so the user can
+  // hop straight back, and the AI can't draft records into a locked feature.
+  const lockedAddon = ASSISTANT_TABS.find((t) => t.id === active)?.addon;
+  if (lockedAddon && !isUnlocked(lockedAddon))
+    return (
+      <LockedAssistantBody
+        addon={lockedAddon}
+        active={active}
+        loaded={addonsLoaded}
+        onSelectAssistant={setActive}
+      />
+    );
+
   if (active === 'chores')
     return <ChoresAssistantScreen onSelectAssistant={setActive} onResumeChat={resumeAcross} />;
   if (active === 'maintenance')
@@ -70,5 +93,35 @@ export default function AssistantScreen() {
       onResumeChat={resumeAcross}
       focusEvent={route.params?.focusEvent}
     />
+  );
+}
+
+// A locked tab's body: the switcher row (so the user can tab away) over the
+// shared locked interstitial. Entitlement-cache-not-loaded spins per the
+// loading rule (unknown-shape branch).
+function LockedAssistantBody({
+  addon,
+  active,
+  loaded,
+  onSelectAssistant,
+}: {
+  addon: AddonId;
+  active: AssistantId;
+  loaded: boolean;
+  onSelectAssistant: (id: AssistantId) => void;
+}) {
+  const navigation = useNavigation();
+  const accent = useCalendarColors().colors[addon] ?? colors.primary;
+
+  // No conversation here, so clear any header action a chat body left behind.
+  useLayoutEffect(() => {
+    navigation.setOptions({ headerRight: undefined });
+  }, [navigation]);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <AssistantSwitcher active={active} onSelectAssistant={onSelectAssistant} />
+      {loaded ? <AddonLockedView addon={addon} /> : <CenteredLoader color={accent} />}
+    </View>
   );
 }

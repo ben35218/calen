@@ -5,7 +5,8 @@
 // confirm. The new code itself is surfaced by the app-root RecoveryCodeModal.
 
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, StyleSheet, Alert } from 'react-native';
+import { Text } from '../../components/Text';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen, ScreenTitle, Card, Button, Badge, Hint } from '../../components/ui';
 import { isUnlocked, regenerateRecoveryCode } from '../../lib/e2ee';

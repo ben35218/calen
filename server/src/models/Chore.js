@@ -41,6 +41,9 @@ const choreSchema = new mongoose.Schema({
   // "Resume schedule" leave that day skipped instead of double-booking it.
   detachedFrom:         { type: mongoose.Schema.Types.ObjectId },
   detachedDate:         String,
+  // Set on a series created by "Save for Future …": the truncated series it
+  // forked from, so the Chores list can collapse the pair to one card.
+  splitFrom:            { type: mongoose.Schema.Types.ObjectId },
   icon:                 { type: String, default: 'mdi-broom' },
   // E2EE dual-write ciphertext (Phase 3+): see models/encFields.js.
   ...encFields,

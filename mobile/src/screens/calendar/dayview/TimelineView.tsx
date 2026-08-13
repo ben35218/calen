@@ -1,5 +1,6 @@
 import React, { forwardRef, useCallback, useImperativeHandle, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Dimensions } from 'react-native';
+import { View, StyleSheet, Animated, Dimensions } from 'react-native';
+import { Text } from '../../../components/Text';
 import { useQuery } from '@tanstack/react-query';
 import { loadCalendarData } from '../../../lib/calendarData';
 import { loadPassiveForecast } from '../../../lib/weatherSource';

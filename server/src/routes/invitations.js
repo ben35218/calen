@@ -59,6 +59,63 @@ function addressedToMe(user) {
   return { $or: [{ toUserId: user._id }, { toEmail: user.email }] };
 }
 
+// ── Merge reconciliation: the two parties have since joined one household ────
+//
+// An EventInvitation is the contract BETWEEN two households: the organizer keeps
+// their event, the recipient owns an independent copy, and neither ever sees the
+// other's record. When the two people later join the same household that premise
+// dissolves — both now hold the same HDK and sync the same rows — and, left
+// alone, every surface built on the old premise misbehaves:
+//   - join carry-over moves the recipient's copy into the shared household, so
+//     the same event appears TWICE on one calendar (and the copy stays read-only,
+//     with a "Leave event" action, because `invitationId` is sealed inside it);
+//   - `POST /:id/leave` would tombstone a record the whole household now shares
+//     (the recipient "leaving" deletes the event out of the organizer's calendar);
+//   - the recipient is absent from the event's sealed `householdInvitees`, so
+//     they show on no invitee chip and their accept/decline is stranded here
+//     instead of in an `EventRsvp` that the calendar actually reads.
+//
+// The fix is deterministic, not heuristic: this row already carries an exact
+// correlation key (`eventId` = the organizer's original, `acceptedEventId` = the
+// recipient's copy), so nothing has to be matched on title/time. The RECIPIENT's
+// device drives it — the same actor that drives join carry-over, and the only one
+// that can author their own `EventRsvp` (the responder identity is the C4 `author`
+// folded inside the ciphertext). It lists its work at `GET /reconcile`, does the
+// sealed half on-device (lib/invitationMerge), and retires each row through
+// `POST /:id/merge`, which tombstones the duplicate copy. See
+// specs/features/calendar.md § Invitees & sharing.
+
+// Statuses that still describe a live cross-household relationship. 'merged' is
+// terminal, so a reconciled row is never reconsidered — this is what makes the
+// pass idempotent across the retries it is expected to take.
+const UNMERGED = ['pending', 'accepted', 'declined', 'left'];
+
+// True once the organizer and the recipient are in the SAME household — the state
+// in which this invitation's actions (accept / leave / revoke) would mint or
+// destroy a record the household jointly owns. Guards those lanes for the window
+// between the join and the recipient's device running the reconcile pass.
+//
+// Deliberately compares the two PARTIES to each other rather than either of them
+// to the caller's household: the caller is the organizer on one lane (revoke) and
+// the recipient on the others, so a caller-relative check would compare one party
+// to their own household and always match. An invitation with no resolved
+// `toUserId` (a phone invite, or an email that has never registered) has no
+// second party to share anything with.
+async function partiesShareHousehold(invitation) {
+  if (!invitation.toUserId) return false;
+  const [from, to] = await Promise.all([
+    User.findById(invitation.fromUserId).select('householdId').lean(),
+    User.findById(invitation.toUserId).select('householdId').lean(),
+  ]);
+  const a = from?.householdId;
+  const b = to?.householdId;
+  return !!(a && b && String(a) === String(b));
+}
+
+const MERGED_CONFLICT =
+  'You and the organizer now share a household, so this event is shared directly — ' +
+  'change who is invited on the event itself.';
+
 // Resolve an invited email (or phone) so the organizer's device can decide two
 // things before reaching out: whether to seal the snapshot (D3 — a match with an
 // enrolled identity key gets a sealed box; anyone else gets the plaintext lane),
@@ -235,8 +292,102 @@ router.get('/sent', async (req, res) => {
     // C3b: existence/scope check against the opaque store.
     const event = await Record.findOne({ _id: req.query.eventId, ...req.scopeFilter }).select('_id').lean();
     if (!event) return res.status(404).json({ error: 'Event not found' });
-    const invitations = await EventInvitation.find({ eventId: event._id }).sort({ createdAt: -1 }).lean();
+    // 'merged' rows are inert history: that invitee is a housemate now and shows
+    // as a household invitee chip on the event instead of an outside guest.
+    const invitations = await EventInvitation
+      .find({ eventId: event._id, status: { $ne: 'merged' } }).sort({ createdAt: -1 }).lean();
     res.json(invitations);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /invitations/reconcile — invitations addressed to ME whose organizer is now
+// a housemate, i.e. the ones the merge pass has to retire. Recipient-driven by
+// design (see the note above `UNMERGED`), so this only ever lists rows where the
+// caller is the `toUserId`; the organizer's own device does nothing.
+//
+// `sourceExists` tells the device which shape the merge takes: the organizer's
+// event still being there means converge onto it (add me to its invitees, record
+// my answer, drop my duplicate copy); it being gone means my copy is the only
+// survivor, so it is unlinked into an ordinary household event instead.
+router.get('/reconcile', async (req, res) => {
+  try {
+    if (!req.household) return res.json({ invitations: [] });
+    const rows = await EventInvitation
+      .find({ toUserId: req.user._id, status: { $in: UNMERGED } })
+      .sort({ createdAt: 1 }).lean();
+    if (!rows.length) return res.json({ invitations: [] });
+
+    // One membership lookup per distinct organizer, not per invitation.
+    const fromIds = [...new Set(rows.map((r) => String(r.fromUserId)))];
+    const housemates = await User
+      .find({ _id: { $in: fromIds }, householdId: req.household._id }, '_id').lean();
+    const isHousemate = new Set(housemates.map((u) => String(u._id)));
+
+    const mine = rows.filter((r) => isHousemate.has(String(r.fromUserId)));
+    const sourceIds = mine.map((r) => r.eventId).filter(Boolean);
+    const liveSources = sourceIds.length
+      ? await Record.find({ _id: { $in: sourceIds }, deleted: { $ne: true } }, '_id').lean()
+      : [];
+    const live = new Set(liveSources.map((r) => String(r._id)));
+
+    res.json({
+      invitations: mine.map((r) => ({
+        _id: String(r._id),
+        eventId: r.eventId ? String(r.eventId) : null,
+        acceptedEventId: r.acceptedEventId ? String(r.acceptedEventId) : null,
+        status: r.status,
+        respondedAt: r.respondedAt,
+        organizerUserId: String(r.fromUserId),
+        sourceExists: !!(r.eventId && live.has(String(r.eventId))),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /invitations/:id/merge — retire one reconciled invitation. The device has
+// already done the sealed half (added itself to the source event's
+// `householdInvitees`, written its `EventRsvp`, or unlinked an orphaned copy);
+// this is the plaintext half the server can do: drop the now-duplicate copy and
+// mark the row terminal.
+//
+// The copy is tombstoned rather than hard-deleted so the delete reaches the
+// recipient's other devices through the /records sync cursor, and it is addressed
+// by `_id` alone: authorization is holding an invitation addressed to you (this
+// is your own accepted copy), and the row may still be sitting in the household
+// you left if carry-over hasn't reached it yet. When the organizer's source event
+// is gone there is no duplicate — the copy IS the event now — so nothing is
+// tombstoned and the device keeps it.
+router.post('/:id/merge', async (req, res) => {
+  try {
+    const invitation = await EventInvitation.findOne({ _id: req.params.id, toUserId: req.user._id });
+    if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    // Idempotent: a retried pass (or a second device) finds it already retired.
+    if (invitation.status === 'merged') return res.json({ ok: true, merged: false, tombstoned: false });
+    if (!UNMERGED.includes(invitation.status)) return res.status(400).json({ error: 'Invitation cannot be merged' });
+    if (!(await partiesShareHousehold(invitation))) {
+      return res.status(409).json({ error: 'You do not share a household with the organizer' });
+    }
+
+    // Only an ACCEPTED invitation ever minted a copy, and it is only a duplicate
+    // while the organizer's original still exists.
+    const sourceLives = invitation.eventId
+      ? !!(await Record.exists({ _id: invitation.eventId, deleted: { $ne: true } }))
+      : false;
+    let tombstoned = false;
+    if (invitation.status === 'accepted' && invitation.acceptedEventId && sourceLives) {
+      await Record.updateOne({ _id: invitation.acceptedEventId }, { deleted: true }, { timestamps: true });
+      tombstoned = true;
+    }
+
+    invitation.status = 'merged';
+    invitation.mergedAt = new Date();
+    await invitation.save();
+
+    res.json({ ok: true, merged: true, tombstoned });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -257,7 +408,7 @@ router.get('/:id/guests', async (req, res) => {
       return res.json({ visible: false, guests: [] });
     }
 
-    const guests = await EventInvitation.find({ eventId: invitation.eventId })
+    const guests = await EventInvitation.find({ eventId: invitation.eventId, status: { $ne: 'merged' } })
       .select('toEmail toPhone status').sort({ createdAt: 1 }).lean();
     res.json({
       visible: true,
@@ -278,7 +429,10 @@ router.get('/', async (req, res) => {
       { toEmail: req.user.email, toUserId: null },
       { $set: { toUserId: req.user._id } },
     );
-    const invitations = await EventInvitation.find(addressedToMe(req.user)).sort({ createdAt: -1 }).lean();
+    // A merged invitation is not an invitation any more — the event is shared by
+    // sync and the answer lives on an EventRsvp, so the inbox must not offer it.
+    const invitations = await EventInvitation
+      .find({ ...addressedToMe(req.user), status: { $ne: 'merged' } }).sort({ createdAt: -1 }).lean();
     res.json(invitations);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -321,6 +475,15 @@ router.post('/:id/accept', async (req, res) => {
     const invitation = await EventInvitation.findOne({ _id: req.params.id, ...addressedToMe(req.user) });
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
     if (invitation.status !== 'pending') return res.status(400).json({ error: 'Already replied' });
+    // The organizer is a housemate now, so this event already syncs to us —
+    // accepting would mint a second copy of a record we can see. The merge pass
+    // turns this row into a household invite (householdInvitees + EventRsvp)
+    // instead; until it runs, refuse rather than duplicate.
+    if (await partiesShareHousehold(invitation)) {
+      return res.status(409).json({
+        error: 'You share a household with the organizer now — this event is already on your calendar.',
+      });
+    }
 
     let enc;
     try { enc = pickRecordEnc(req.body); } catch (msg) { return res.status(400).json({ error: String(msg) }); }
@@ -369,6 +532,13 @@ router.post('/:id/leave', async (req, res) => {
     const invitation = await EventInvitation.findOne({ _id: req.params.id, ...addressedToMe(req.user) });
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
     if (invitation.status !== 'accepted') return res.status(400).json({ error: 'Not attending this event' });
+    // Once the organizer is a housemate, "leave" would tombstone a record the
+    // whole household shares — deleting the event out of everyone's calendar.
+    // Refuse for the window between the join and the recipient's device running
+    // the merge pass, which retires this row (and drops the duplicate) properly.
+    if (await partiesShareHousehold(invitation)) {
+      return res.status(409).json({ error: MERGED_CONFLICT });
+    }
 
     if (invitation.acceptedEventId) {
       // C3b: tombstone the recipient's opaque copy so the delete propagates to
@@ -391,11 +561,21 @@ router.delete('/:id', async (req, res) => {
   try {
     const invitation = await EventInvitation.findOne({ _id: req.params.id, fromUserId: { $in: req.scopeIds } });
     if (!invitation) return res.status(404).json({ error: 'Invitation not found' });
+    // Symmetric with /leave: the recipient is a housemate now, so their "copy" is
+    // a record this household shares. Uninviting them must not delete it — they
+    // come off the event's sealed householdInvitees instead.
+    if (await partiesShareHousehold(invitation)) {
+      return res.status(409).json({ error: MERGED_CONFLICT });
+    }
 
     if (invitation.status === 'accepted' && invitation.acceptedEventId) {
-      // C3b: tombstone the recipient's opaque copy (keyed by their userId).
+      // C3b: tombstone the recipient's opaque copy. Addressed by `_id` alone —
+      // the invitation is the authorization, and the plaintext `userId` this
+      // once matched on is dropped the moment the copy is carried into an
+      // e2eeActive household (routes/household.js carry-over), which silently
+      // turned every revoke after a join into a no-op that stranded the copy.
       await Record.updateOne(
-        { _id: invitation.acceptedEventId, userId: invitation.toUserId },
+        { _id: invitation.acceptedEventId },
         { deleted: true },
         { timestamps: true },
       );

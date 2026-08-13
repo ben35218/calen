@@ -3,7 +3,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 );
 
 import React from 'react';
-import { Text } from 'react-native';
+import { Text } from '../../components/Text';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { render, act } from '@testing-library/react-native';
 import {

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, StyleSheet, Alert } from 'react-native';
+import { Text } from '../../components/Text';
 import { useNavigation } from '@react-navigation/native';
 import {
   Screen, Input, Button, SegmentedControl, SectionHeader, FormError, Hint, Card,

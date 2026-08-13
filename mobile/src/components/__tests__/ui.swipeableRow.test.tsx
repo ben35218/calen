@@ -1,5 +1,6 @@
 import React from 'react';
-import { Text, PanResponder, PanResponderGestureState } from 'react-native';
+import { PanResponder, PanResponderGestureState } from 'react-native';
+import { Text } from '../Text';
 import { render, fireEvent, cleanup, act } from '@testing-library/react-native';
 
 // The shared swipe-to-delete row (mobile/CLAUDE.md → "Deleting a row from a

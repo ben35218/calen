@@ -1,9 +1,7 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
-  Text,
   SectionList,
-  TextInput,
   StyleSheet,
   TouchableOpacity,
   ActionSheetIOS,
@@ -13,6 +11,7 @@ import {
   Keyboard,
   type GestureResponderEvent,
 } from 'react-native';
+import { Text, TextInput } from '../../components/Text';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';

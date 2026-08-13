@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import { View, ScrollView, StyleSheet } from 'react-native';
+import { Text } from './Text';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WeatherHour } from '../api';
 import WeatherIcon from './WeatherIcon';

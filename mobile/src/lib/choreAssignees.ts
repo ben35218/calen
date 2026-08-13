@@ -49,3 +49,25 @@ export function choreAssigneeOptions({ contacts, memberIds, myId, currentAssigne
   }
   return options;
 }
+
+// The assistant never knows the user's name (no roster is sent to it), so
+// "assign it to me" reaches the device as a self-reference, not a name.
+const SELF_REFERENCES = new Set(['me', 'myself', 'you', 'yourself', 'self', 'the user', 'user']);
+
+/**
+ * Resolve an assistant draft's `assignedToName` to a member option. The model
+ * only ever echoes what the user typed — a name, or a self-reference ("me",
+ * "you"), which resolves to the signed-in user's own "(You)"-suffixed option.
+ * For names, an exact label match wins, else a first-name match; the "(You)"
+ * suffix is ignored while comparing.
+ */
+export function matchAssigneeByName(options: AssigneeOption[], name: string): AssigneeOption | undefined {
+  const norm = (s: string) => s.toLowerCase().replace(/\s*\(you\)$/, '').trim();
+  const target = name.toLowerCase().trim();
+  if (!target) return undefined;
+  if (SELF_REFERENCES.has(target)) return options.find((o) => /\(you\)\s*$/i.test(o.label));
+  return (
+    options.find((o) => norm(o.label) === target) ??
+    options.find((o) => norm(o.label).split(/\s+/)[0] === target)
+  );
+}

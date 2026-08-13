@@ -4,8 +4,8 @@ import {
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
-  TextInput,
 } from 'react-native';
+import { TextInput } from '../components/Text';
 
 // Scroll-aware keyboard for chat surfaces (the iMessage/WhatsApp pattern):
 // scrolling UP to read history tucks the keyboard away; a deliberate pull

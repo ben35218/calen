@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Pressable, StyleSheet } from 'react-native';
+import { Text } from '../../components/Text';
 import type { PurchasesPackage } from 'react-native-purchases';
 import type { CreditPack } from '../../api';
 import { Button } from '../../components/ui';

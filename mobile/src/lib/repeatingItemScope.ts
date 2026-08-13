@@ -43,6 +43,9 @@ export interface RepeatingItem {
   // day it stands in for.
   detachedFrom?: string | null;
   detachedDate?: string | null;
+  // Present on a series created by "Save for Future …": the truncated series it
+  // forked from.
+  splitFrom?: string | null;
 }
 
 type Rec = Record<string, unknown>;
@@ -104,6 +107,48 @@ export function hasUpcomingOccurrence(item: RepeatingItem, now: Date = new Date(
   from.setHours(0, 0, 0, 0); // an item due TODAY is still outstanding
   if (end < from) return false;
   return expandRecurringTaskChore(item, from, end).length > 0;
+}
+
+// One card per chore: which records a management list (the Chores list) shows.
+//
+// Occurrence scoping works by writing NEW records — "Save for This … Only"
+// leaves a detached one-time copy beside the series, and "Save for Future …"
+// leaves the truncated old series beside its fork — but to the user those are
+// still ONE chore, and a list that shows every record advertises the plumbing:
+// the moved occurrence turns up as a second "one-time" card, and a forked
+// series lists twice (old version and new). A record is therefore hidden when
+// another record in the list already stands for it:
+//   - a detached copy hides behind the series it left (`detachedFrom`) — the
+//     occurrence still renders on its calendar day, which is where a single
+//     day's override belongs;
+//   - a truncated predecessor hides behind the fork that carries the chore
+//     forward (the successor's `splitFrom` names it).
+// Both rules require the OTHER record to actually be present: if the series (or
+// the fork) has since been deleted, the survivor is all that's left of the
+// chore and lists normally.
+export function collapseScopedRecords<T extends RepeatingItem>(items: T[]): T[] {
+  const present = new Set(items.map((i) => String(i._id)));
+  const superseded = new Set(
+    items.filter((i) => i.splitFrom != null).map((i) => String(i.splitFrom)),
+  );
+  return items.filter(
+    (i) =>
+      !(i.detachedFrom && present.has(String(i.detachedFrom))) &&
+      !superseded.has(String(i._id)),
+  );
+}
+
+// The series' real next due day — the first occurrence on or after `now`, as
+// yyyy-MM-dd. The stored `nextDueDate` anchor can't answer this: nothing
+// advances it as time passes (chores don't track completion), so it goes stale
+// the moment its first occurrence is behind us. Expanding forward from today
+// honours `skipDates` and `until` for free. Returns null when nothing lies
+// ahead (a past one-time item, an ended series).
+export function nextOccurrenceFrom(item: RepeatingItem, now: Date = new Date()): string | null {
+  const from = startOfToday(now);
+  const horizon = new Date(from);
+  horizon.setFullYear(horizon.getFullYear() + 10);
+  return (expandRecurringTaskChore(item, from, horizon)[0]?._instanceDate as string) ?? null;
 }
 
 // ── Resume schedule ─────────────────────────────────────────────────────────
