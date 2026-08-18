@@ -15,10 +15,12 @@ import {
   patchTouchesRecurrence,
   applyRecurrenceAssistPatch,
   recurrenceAssistCurrent,
+  recurrenceToRule,
   ruleToRecurrence,
   dueDateForRule,
   excludeUsedAlert,
   ruleDateMismatch,
+  ruleLossyForItem,
 } from '../recurrence';
 import { Recurrence } from '../../api';
 import { EMPTY_REPEAT, RepeatRule } from '../eventRepeat';
@@ -434,11 +436,16 @@ describe('ruleDateMismatch', () => {
     expect(msg).toContain('Wednesday');
   });
 
-  it('accepts any of several weekly weekdays and rejects the rest', () => {
+  it('refuses a multi-day weekly rule outright — the sealed model stores one weekday', () => {
+    // Previously accepted (the anchor merely had to land on ONE of the days),
+    // which enshrined the silent collapse: ruleToRecurrence kept only the
+    // first day, so "Tue & Thu" saved as Tuesday-only. Validation now mirrors
+    // what is persistable: a multi-day rule is refused even on a matching day.
     const r = rule({ freq: 'weekly', interval: 2, daysOfWeek: [3, 4] });
-    expect(ruleDateMismatch(r, '2026-08-12')).toBeNull(); // Wednesday
-    expect(ruleDateMismatch(r, '2026-08-13')).toBeNull(); // Thursday
-    expect(ruleDateMismatch(r, '2026-08-14')).toContain('Wednesday or Thursday');
+    const msg = ruleDateMismatch(r, '2026-08-13'); // a Thursday — one of the picked days
+    expect(msg).toContain('Wednesday and Thursday');
+    expect(msg).toContain('one weekday');
+    expect(ruleDateMismatch(r, '2026-08-14')).not.toBeNull();
   });
 
   it('pins no day for daily, plain, and off rules', () => {
@@ -468,21 +475,195 @@ describe('ruleDateMismatch', () => {
     expect(ruleDateMismatch(nextToLast, '2026-08-18')).toBeNull();
   });
 
-  it('checks weekday/weekend kinds by class', () => {
-    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekday' }), '2026-08-15')).toContain('weekday');
-    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekend' }), '2026-08-12')).toContain('weekend');
-    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekend' }), '2026-08-15')).toBeNull();
+  it('accepts fifth and next-to-last ordinals on their exact days (post-engine-fix)', () => {
+    const fifth = rule({ freq: 'monthly', weekOfMonth: 5, weekdayKind: 'tue' });
+    expect(ruleDateMismatch(fifth, '2026-09-29')).toBeNull(); // the fifth Tuesday of Sep 2026
+    expect(ruleDateMismatch(fifth, '2026-09-22')).toContain('fifth Tuesday'); // only the fourth
   });
 
-  it('checks the ordinal day-of-month kind', () => {
-    const r = rule({ freq: 'monthly', weekOfMonth: -1, weekdayKind: 'day' });
-    expect(ruleDateMismatch(r, '2026-08-31')).toBeNull();
-    expect(ruleDateMismatch(r, '2026-08-30')).toContain('last day');
+  it('refuses the aggregate weekday/weekend/day kinds — the sealed model stores a specific weekday', () => {
+    // Previously these validated by class; the chore/task Recurrence model has
+    // only a single dayOfWeek, so ruleToRecurrence dropped them entirely and
+    // the series saved as a plain monthly. They are now refused regardless of
+    // the date, matching the restricted Repeat picker.
+    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekday' }), '2026-08-03'))
+      .toContain('specific weekday');
+    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'weekend' }), '2026-08-01'))
+      .toContain('specific weekday');
+    expect(ruleDateMismatch(rule({ freq: 'monthly', weekOfMonth: -1, weekdayKind: 'day' }), '2026-08-31'))
+      .toContain('specific weekday');
   });
 
   it('checks yearly months', () => {
     const r = rule({ freq: 'yearly', months: [6, 12] });
     expect(ruleDateMismatch(r, '2026-12-05')).toBeNull();
     expect(ruleDateMismatch(r, '2026-08-12')).toContain('June or December');
+  });
+
+  it('flags a lossy rule even with no date picked yet', () => {
+    expect(ruleDateMismatch(rule({ freq: 'weekly', daysOfWeek: [2, 4] }), '')).toContain('one weekday');
+  });
+
+  // ── Short-month clamping (mirrors the engine's clampDay) ───────────────────
+  // The expansion engine clamps a day past the end of a month to that month's
+  // last day, so those clamped dates are dates the rule GENERATES — the form's
+  // own auto-reseed writes them, and a series edit opened on one must save.
+  describe('accepts the engine-clamped last day of a short month', () => {
+    it('rule 31: the last day of any shorter month, and the real 31st', () => {
+      const r = rule({ freq: 'monthly', daysOfMonth: [31] });
+      expect(ruleDateMismatch(r, '2026-08-31')).toBeNull(); // long month, exact
+      expect(ruleDateMismatch(r, '2026-09-30')).toBeNull(); // 30-day month, clamped
+      expect(ruleDateMismatch(r, '2027-02-28')).toBeNull(); // Feb, non-leap
+      expect(ruleDateMismatch(r, '2028-02-29')).toBeNull(); // Feb, leap
+    });
+
+    it('rule 31: still rejects days that are not the clamp target', () => {
+      const r = rule({ freq: 'monthly', daysOfMonth: [31] });
+      expect(ruleDateMismatch(r, '2026-09-29')).toContain('31st');
+      expect(ruleDateMismatch(r, '2026-08-30')).toContain('31st'); // Aug HAS a 31st
+      expect(ruleDateMismatch(r, '2027-02-27')).toContain('31st');
+      expect(ruleDateMismatch(r, '2028-02-28')).toContain('31st'); // leap Feb ends on the 29th
+    });
+
+    it('rule 30: clamps only in February', () => {
+      const r = rule({ freq: 'monthly', daysOfMonth: [30] });
+      expect(ruleDateMismatch(r, '2026-09-30')).toBeNull(); // exact
+      expect(ruleDateMismatch(r, '2027-02-28')).toBeNull(); // non-leap Feb, clamped
+      expect(ruleDateMismatch(r, '2028-02-29')).toBeNull(); // leap Feb, clamped
+      expect(ruleDateMismatch(r, '2026-04-29')).toContain('30th');
+      expect(ruleDateMismatch(r, '2026-08-31')).toContain('30th'); // past the rule day
+    });
+
+    it('rule 29: Feb 28 passes only in a non-leap year', () => {
+      const r = rule({ freq: 'monthly', daysOfMonth: [29] });
+      expect(ruleDateMismatch(r, '2027-02-28')).toBeNull(); // non-leap: clamped
+      expect(ruleDateMismatch(r, '2028-02-29')).toBeNull(); // leap: exact
+      expect(ruleDateMismatch(r, '2028-02-28')).toContain('29th'); // leap Feb has a real 29th
+      expect(ruleDateMismatch(r, '2026-03-28')).toContain('29th');
+    });
+
+    it('accepts the monthly-31 auto-reseeded due date end to end', () => {
+      // dueDateFor writes exactly what the engine generates; the validator must
+      // never refuse it (this was the unsaveable "monthly on the 31st" chore).
+      const r = rule({ freq: 'monthly', daysOfMonth: [31] });
+      const seeded = dueDateForRule(r, new Date(2026, 7, 14, 12)); // Aug 14 → Sep 30 (clamped)
+      const iso = seeded && `${seeded.getFullYear()}-${String(seeded.getMonth() + 1).padStart(2, '0')}-${String(seeded.getDate()).padStart(2, '0')}`;
+      expect(iso).toBe('2026-09-30');
+      expect(ruleDateMismatch(r, iso as string)).toBeNull();
+    });
+  });
+
+  describe('yearly rules with an anchor day (calendar-type round-trip)', () => {
+    it('checks the day of month, clamp-aware, plus the month set', () => {
+      const r = rule({ freq: 'yearly', months: [3, 9], daysOfMonth: [15] });
+      expect(ruleDateMismatch(r, '2026-09-15')).toBeNull();
+      expect(ruleDateMismatch(r, '2026-09-14')).toContain('15th');
+      expect(ruleDateMismatch(r, '2026-08-15')).toContain('March or September');
+      const feb = rule({ freq: 'yearly', months: [2], daysOfMonth: [31] });
+      expect(ruleDateMismatch(feb, '2027-02-28')).toBeNull(); // engine clamps Feb 31 → 28
+      expect(ruleDateMismatch(feb, '2027-02-27')).toContain('31st');
+    });
+  });
+});
+
+// ── ruleLossyForItem ─────────────────────────────────────────────────────────
+// The save-time backstop behind the restricted Repeat picker: the sealed
+// chore/task Recurrence stores ONE dayOfWeek / dayOfMonth and only Sun..Sat
+// ordinal kinds, and `ruleToRecurrence` degrades anything else silently
+// ("Tue & Thu" used to save as Tuesday-only). Any rule it flags is refused by
+// both forms via ruleDateMismatch — whatever entry point produced it.
+describe('ruleLossyForItem', () => {
+  const rule = (patch: Partial<RepeatRule>): RepeatRule => ({ ...EMPTY_REPEAT, ...patch });
+
+  it('refuses multi-day weekly and monthly rules, naming the days', () => {
+    expect(ruleLossyForItem(rule({ freq: 'weekly', daysOfWeek: [2, 4] })))
+      .toContain('Tuesday and Thursday');
+    expect(ruleLossyForItem(rule({ freq: 'monthly', daysOfMonth: [5, 20] })))
+      .toContain('5th and 20th');
+  });
+
+  it('refuses the day/weekday/weekend ordinal kinds', () => {
+    expect(ruleLossyForItem(rule({ freq: 'monthly', weekOfMonth: 1, weekdayKind: 'day' }))).not.toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'monthly', weekOfMonth: -1, weekdayKind: 'weekday' }))).not.toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'monthly', weekOfMonth: 2, weekdayKind: 'weekend' }))).not.toBeNull();
+  });
+
+  it('refuses a yearly within-year ordinal rule (nowhere to store it)', () => {
+    expect(ruleLossyForItem(rule({ freq: 'yearly', months: [6], weekOfMonth: 2, weekdayKind: 'tue' }))).not.toBeNull();
+  });
+
+  it('passes single-day rules and concrete ordinal weekdays, including 5 and -2', () => {
+    expect(ruleLossyForItem(rule({ freq: 'weekly', daysOfWeek: [4] }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'monthly', daysOfMonth: [20] }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'monthly', weekOfMonth: 2, weekdayKind: 'tue' }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'monthly', weekOfMonth: 5, weekdayKind: 'tue' }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'monthly', weekOfMonth: -2, weekdayKind: 'fri' }))).toBeNull();
+  });
+
+  it('passes daily, plain rules, yearly month sets, and "off"', () => {
+    expect(ruleLossyForItem(rule({ freq: 'daily' }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'weekly' }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'yearly', months: [3, 9] }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: '' }))).toBeNull();
+  });
+
+  it('passes a yearly rule carrying a single anchor day, refuses multiple', () => {
+    // The lossless calendar-type round-trip ({months, dayOfMonth} ⇄ rule) must
+    // not be refused; a multi-day set would degrade to its first day and is.
+    expect(ruleLossyForItem(rule({ freq: 'yearly', months: [3, 9], daysOfMonth: [15] }))).toBeNull();
+    expect(ruleLossyForItem(rule({ freq: 'yearly', months: [3, 9], daysOfMonth: [5, 20] })))
+      .toContain('one day of the month');
+  });
+});
+
+// ── calendar-type dayOfMonth round-trip ──────────────────────────────────────
+// "Mar & Sep on the 15th" (type 'calendar', written by web/legacy or the yearly
+// month-multiselect) used to lose its dayOfMonth through the Repeat-screen
+// bridge — recurrenceToRule dropped it and ruleToRecurrence rebuilt without it,
+// so the engine (day = r.dayOfMonth || 1) silently moved every occurrence to
+// the 1st on the next edit-save.
+describe('recurrenceToRule / ruleToRecurrence dayOfMonth round-trip', () => {
+  it('carries a calendar recurrence\'s dayOfMonth into the rule and back', () => {
+    const rec: Recurrence = { type: 'calendar', months: [3, 9], dayOfMonth: 15 };
+    const rule = recurrenceToRule(rec);
+    expect(rule).toMatchObject({ freq: 'yearly', months: [3, 9], daysOfMonth: [15] });
+    expect(ruleToRecurrence(rule)).toEqual({ type: 'calendar', months: [3, 9], dayOfMonth: 15 });
+  });
+
+  it('expansion of the round-tripped recurrence fires on the 15th', () => {
+    jest.useFakeTimers().setSystemTime(new Date(2026, 7, 4, 9)); // Aug 4 2026
+    try {
+      const rule = recurrenceToRule({ type: 'calendar', months: [3, 9], dayOfMonth: 15 });
+      const d = dueDateForRule(rule);
+      expect(d?.getMonth()).toBe(8); // September
+      expect(d?.getDate()).toBe(15);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('leaves a legacy record without dayOfMonth on the 1st, as today', () => {
+    jest.useFakeTimers().setSystemTime(new Date(2026, 7, 4, 9));
+    try {
+      const rule = recurrenceToRule({ type: 'calendar', months: [3, 9] });
+      expect(rule.daysOfMonth).toEqual([]);
+      const back = ruleToRecurrence(rule);
+      expect(back).toEqual({ type: 'calendar', months: [3, 9] });
+      expect('dayOfMonth' in back).toBe(false);
+      const d = dueDateForRule(rule);
+      expect(d?.getMonth()).toBe(8);
+      expect(d?.getDate()).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('carries the yearly interval anchor day too (single-month yearly)', () => {
+    const rec: Recurrence = { type: 'interval', intervalValue: 1, intervalUnit: 'years', months: [7], dayOfMonth: 4 };
+    const rule = recurrenceToRule(rec);
+    expect(rule).toMatchObject({ freq: 'yearly', months: [7], daysOfMonth: [4] });
+    expect(ruleToRecurrence(rule)).toEqual({
+      type: 'interval', intervalValue: 1, intervalUnit: 'years', months: [7], dayOfMonth: 4,
+    });
   });
 });

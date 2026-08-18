@@ -174,6 +174,86 @@ test('shopping session: weekStart is required; state upserts and round-trips', a
   assert.deepEqual(state.body.checked, { eggs: true, milk: true }, 'the upsert replaced the state');
 });
 
+test('shopping session: versioned writes — matching base increments, stale base 409s', async () => {
+  const u = await registerUser({ firstName: 'Versioned' });
+  const week = '2026-09-05';
+
+  // First versioned write against a not-yet-created session (base 0) upserts.
+  const first = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, state: { checked: { eggs: true } }, baseVersion: 0 });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.version, 1, 'the accepted write increments the version');
+
+  // A second device that read version 1 writes cleanly…
+  const second = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, state: { checked: { eggs: true, milk: true } }, baseVersion: 1 });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.version, 2);
+
+  // …and the first device's next write against its stale base is refused with
+  // the current version, instead of silently clobbering the other shopper.
+  const stale = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, state: { checked: { eggs: false } }, baseVersion: 1 });
+  assert.equal(stale.status, 409, 'stale base version is a conflict');
+  assert.equal(stale.body.version, 2, 'the 409 carries the version to merge against');
+
+  // The stale write changed nothing.
+  const state = await request().get(`/api/recipe-schedule/session?weekStart=${week}`)
+    .set('Authorization', u.auth);
+  assert.deepEqual(state.body.checked, { eggs: true, milk: true });
+  assert.equal(state.body.version, 2, 'GET returns the version the next write needs');
+});
+
+test('shopping session: a sealed write round-trips opaquely and clears the legacy plaintext', async () => {
+  const u = await registerUser({ firstName: 'Sealed' });
+  const week = '2026-09-12';
+
+  // Start from a legacy plaintext session (an old build wrote it).
+  await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, state: { checked: { eggs: true } } });
+
+  // A current build's first sealed write replaces it.
+  const enc = fakeEnc();
+  const sealed = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, enc, keyVersion: 1, baseVersion: 1 });
+  assert.equal(sealed.status, 200, JSON.stringify(sealed.body));
+
+  const got = await request().get(`/api/recipe-schedule/session?weekStart=${week}`)
+    .set('Authorization', u.auth);
+  assert.deepEqual(got.body.enc, enc, 'the sealed blob rides back untouched');
+  assert.equal(got.body.keyVersion, 1);
+  assert.equal(got.body.version, 2);
+  assert.equal(got.body.checked, undefined, 'the plaintext state was cleared by the sealed write');
+
+  // A malformed envelope is rejected, like every content route.
+  const bad = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, enc: { alg: 'nope' }, baseVersion: 2 });
+  assert.equal(bad.status, 400);
+});
+
+test('shopping session: an old build\'s plaintext write is still accepted (transition lane)', async () => {
+  const u = await registerUser({ firstName: 'OldBuild' });
+  const week = '2026-09-19';
+
+  // A new build sealed the session…
+  await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, enc: fakeEnc(), keyVersion: 1, baseVersion: 0 });
+
+  // …then an old build (no baseVersion, plaintext state) writes over it:
+  // accepted last-write-wins, clearing the sealed blob so newer readers see
+  // the newest write rather than a stale envelope. Documented transition
+  // exception (spec: features/kitchen.md) — tightens after rollout.
+  const legacy = await request().put('/api/recipe-schedule/session').set('Authorization', u.auth)
+    .send({ weekStart: week, state: { checked: { milk: true } } });
+  assert.equal(legacy.status, 200);
+
+  const got = await request().get(`/api/recipe-schedule/session?weekStart=${week}`)
+    .set('Authorization', u.auth);
+  assert.deepEqual(got.body.checked, { milk: true });
+  assert.equal(got.body.enc, undefined, 'the stale sealed blob went with the overwrite');
+  assert.equal(got.body.version, 2, 'legacy writes still advance the version');
+});
+
 test('scope: another household sees none of my planner or session', async () => {
   const mine = await registerUser({ firstName: 'Mine' });
   const other = await registerUser({ firstName: 'Other' });

@@ -14,6 +14,7 @@ import {
   groceryFingerprint, moveItemToSection, reconcileOrganizedList, sectionChoices,
 } from '../../lib/groceryOrganize';
 import { addExtraItem, extraKey, mergeExtraItems, removeExtraItem } from '../../lib/groceryExtras';
+import { openGrocerySession, saveGrocerySession } from '../../lib/grocerySession';
 import { BottomSheet, Card, Divider, Hint, HintDisclosure, Input, Skeleton, SwipeableRow } from '../../components/ui';
 import CreditsBanner from '../../components/CreditsBanner';
 import { useCalendarColors } from '../../lib/calendarPrefs';
@@ -46,6 +47,18 @@ export default function GroceryPane({ weekStart, onShowPlanner }: { weekStart: D
   const [subEditing, setSubEditing] = useState<string | null>(null);
   const [subDraft, setSubDraft] = useState('');
   const hydrating = useRef(false);
+  // Versioned session sync (lib/grocerySession): the server 409s a save whose
+  // base version is stale, and the conflict is merged on-device. Per-week
+  // version map (a pending save for last week must not poison this week's),
+  // a ready gate so nothing is PUT before the initial GET settles (interacting
+  // during load used to overwrite the household's saved session with the
+  // pane's empty defaults), and a promise chain so this device's own saves
+  // can't race — and 409 — each other.
+  const versionsRef = useRef<Record<string, number>>({});
+  const sessionReadyRef = useRef<Record<string, boolean>>({});
+  const saveChainRef = useRef(Promise.resolve());
+  const startRef = useRef(start);
+  startRef.current = start;
 
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
   // Built client-side over the decrypted recipes + schedules (Signal-parity D5
@@ -58,10 +71,9 @@ export default function GroceryPane({ weekStart, onShowPlanner }: { weekStart: D
   });
   const sessionQ = useQuery({ queryKey: ['grocery-session', start], queryFn: async () => (await recipeScheduleApi.sessionGet(start)).data });
 
-  // Hydrate session when the week (or its saved session) loads.
-  useEffect(() => {
+  // Push a session state into the pane's fields without triggering a save.
+  const applySessionState = (s: GrocerySessionState) => {
     hydrating.current = true;
-    const s = sessionQ.data;
     setChecked(s?.checked ?? {});
     setSubstitutions(s?.substitutions ?? {});
     setNotFound(s?.notFound ?? {});
@@ -72,19 +84,55 @@ export default function GroceryPane({ weekStart, onShowPlanner }: { weekStart: D
     // session shape and means "trusted as-is until the next organize".
     setOrganizedFor(s?.organizedFor && typeof s.organizedFor === 'object' ? s.organizedFor : null);
     setTimeout(() => { hydrating.current = false; }, 0);
-  }, [sessionQ.data, start]);
+  };
 
-  // Persist session on change (skip during hydration). Also write the state into
+  // Hydrate session when the week (or its saved session) loads. The fetched
+  // envelope is opened through lib/grocerySession (decrypts a sealed blob,
+  // falls back to legacy plaintext fields, tracks the concurrency version).
+  useEffect(() => {
+    hydrating.current = true;
+    sessionReadyRef.current[start] = false;
+    let cancelled = false;
+    void (async () => {
+      const opened = await openGrocerySession(start, sessionQ.data);
+      if (cancelled) return;
+      versionsRef.current[start] = opened.version;
+      // Writes stay gated until the initial GET settled — and stay gated for a
+      // sealed session this device can't open (writing blind would clobber
+      // state it can't see).
+      sessionReadyRef.current[start] = sessionQ.isSuccess && !opened.locked;
+      applySessionState(opened.state);
+    })();
+    return () => { cancelled = true; };
+  }, [sessionQ.data, sessionQ.isSuccess, start]);
+
+  // Persist session on change (skip during hydration; never before the week's
+  // initial fetch settled). Saves are serialized on a promise chain and go
+  // through the versioned seal/merge flow — a 409 from another shopper's write
+  // merges their changes in (both sides' checks and extras survive) and the
+  // merged result is shown. Also write the state into
   // the query cache so a quick unmount/remount (e.g. switching Kitchen panes)
   // rehydrates the latest edits instead of the pre-edit cached value — the
   // 30s global staleTime would otherwise serve stale data without refetching.
   useEffect(() => {
-    if (hydrating.current) return;
+    if (hydrating.current || !sessionReadyRef.current[start]) return;
     const state: GrocerySessionState = {
       checked, substitutions, notFound, haveHome, extras, organizedList: organized, organizedFor,
     };
-    qc.setQueryData(['grocery-session', start], state);
-    recipeScheduleApi.sessionPut(start, state).catch(() => {});
+    qc.setQueryData(['grocery-session', start], { ...state, version: versionsRef.current[start] ?? 0 });
+    const week = start;
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      try {
+        const result = await saveGrocerySession(week, state, versionsRef.current[week] ?? 0);
+        versionsRef.current[week] = result.version;
+        qc.setQueryData(['grocery-session', week], { ...result.state, version: result.version });
+        // A merge pulled in another shopper's changes — reflect them, but only
+        // if the pane is still showing that week.
+        if (result.merged && startRef.current === week) applySessionState(result.state);
+      } catch {
+        // Offline or retries exhausted — the next change (or refetch) retries.
+      }
+    });
   }, [checked, substitutions, notFound, haveHome, extras, organized, organizedFor, start, qc]);
 
   // The list the pane works over: the meal plan's ingredients plus the shopper's

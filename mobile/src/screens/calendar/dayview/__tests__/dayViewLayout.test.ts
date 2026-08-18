@@ -8,6 +8,7 @@ import {
   weekForIndex,
   selectionCols,
   initialScrollY,
+  longPressDraft,
   minutesInto,
   addDays,
   diffDays,
@@ -293,6 +294,41 @@ describe('initialScrollY', () => {
     expect(initialScrollY(null, [], viewport)).toBe(480);
     expect(initialScrollY(0, [], viewport)).toBe(0); // early-morning clamp
     expect(initialScrollY(DAY_MIN, [], viewport)).toBe(DAY_MIN - viewport); // late-night clamp
+  });
+});
+
+describe('longPressDraft (long-press → new-event seed)', () => {
+  it('snaps the press to its 15-minute slot, one hour long, all-day off', () => {
+    // 9:22 AM press (1 px/min) → the 9:15 slot.
+    expect(longPressDraft('2026-08-14', 9 * 60 + 22)).toEqual({
+      allDay: false,
+      startTime: '09:15',
+      endTime: '10:15',
+    });
+    expect(longPressDraft('2026-08-14', 0)).toEqual({
+      allDay: false,
+      startTime: '00:00',
+      endTime: '01:00',
+    });
+  });
+
+  it('rolls the end past midnight into the next day from a last-hour press', () => {
+    expect(longPressDraft('2026-08-14', 23 * 60 + 40)).toEqual({
+      allDay: false,
+      startTime: '23:30',
+      endTime: '00:30',
+      endDate: '2026-08-15',
+    });
+  });
+
+  it('clamps a press beyond the canvas to the last slot of the day', () => {
+    expect(longPressDraft('2026-08-14', DAY_MIN + 50)).toEqual({
+      allDay: false,
+      startTime: '23:45',
+      endTime: '00:45',
+      endDate: '2026-08-15',
+    });
+    expect(longPressDraft('2026-08-14', -10).startTime).toBe('00:00');
   });
 });
 

@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const PushTicket = require('../models/PushTicket');
 const push = require('./push');
 
 // Push is the only notification channel. Alerts are configured per item
@@ -13,6 +14,17 @@ async function pruneSubscription(userId, sub) {
   await User.updateOne({ _id: userId }, { $pull: { pushSubscriptions: match } }).catch(() => {});
 }
 
+// Remember a native send's Expo ticket so the receipt pass
+// (jobs/pushReceipts.js) can fetch its delivery receipt later. Expo reports
+// most DeviceNotRegistered results only in the receipt (~15 min after the
+// send), so pruning on the immediate ticket alone leaves dead tokens
+// accumulating forever. Fire-and-forget: losing a ticket only defers the
+// prune to a later send's receipt.
+function recordPushTicket(userId, sub, ticket) {
+  if (!ticket?.id || !sub?.expoToken) return;
+  PushTicket.create({ ticketId: ticket.id, userId, expoToken: sub.expoToken }).catch(() => {});
+}
+
 // Send a push payload to every device a user has subscribed.
 // Returns { sent, failed } counts. No-ops cleanly when push isn't configured
 // or the user has no subscriptions.
@@ -22,7 +34,8 @@ async function pushToUser(user, payload) {
   let sent = 0, failed = 0;
   for (const sub of subs) {
     try {
-      await push.sendToSubscription(sub, payload);
+      const ticket = await push.sendToSubscription(sub, payload);
+      recordPushTicket(user._id, sub, ticket);
       sent++;
     } catch (err) {
       failed++;
@@ -35,3 +48,4 @@ async function pushToUser(user, payload) {
 }
 
 module.exports = { pushToUser, pruneSubscription };
+

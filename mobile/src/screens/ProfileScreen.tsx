@@ -4,6 +4,7 @@ import {
   ScrollView,
   StyleSheet,
   Linking,
+  Platform,
   TouchableOpacity,
   Alert,
 } from 'react-native';
@@ -56,6 +57,11 @@ const GROUPS: { header: string; items: Section[] }[] = [
       // beside Reminders — the "things that arrive for you" cluster.
       { route: 'Invitations', label: 'Invitations', icon: 'mail-outline' },
       { route: 'Reminders', label: 'Reminders', icon: 'notifications-outline' },
+      // The widget promo's durable surface (the nudge is one-time) — iOS only,
+      // since only iOS ships the WidgetKit target.
+      ...(Platform.OS === 'ios'
+        ? [{ route: 'WidgetPromo', label: 'Home Screen Widget', icon: 'grid-outline' } as Section]
+        : []),
       { route: 'PrivacyData', label: 'Privacy & security', icon: 'lock-closed-outline' },
     ],
   },

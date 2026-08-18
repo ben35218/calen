@@ -18,6 +18,7 @@ import { isPurchasesConfigured } from '../../lib/purchases';
 import { useCalendarColors, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
   ADDON_CALENDAR_IDS,
+  ADDON_ICONS,
   PAID_ADDON_CALENDAR_IDS,
   FREE_ADDON_CALENDAR_IDS,
   type AddonId,
@@ -34,14 +35,6 @@ import type { RootStackParamList } from '../../navigation/types';
 // with the app but never default-added. Never titled "App Store" (App Review
 // 5.2.5). Apple requires the restore button and legal links near the purchase
 // CTAs, so they live here.
-
-const ADDON_ICONS: Record<AddonId, string> = {
-  recipes: 'silverware-fork-knife',
-  maintenance: 'wrench',
-  trips: 'airplane',
-  birthdays: 'calendar-heart',
-  chores: 'broom',
-};
 
 export default function AddOnsScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'AddOns'>>();

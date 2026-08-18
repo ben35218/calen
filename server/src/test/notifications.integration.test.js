@@ -92,6 +92,57 @@ test('native register validates, coerces platform, replaces per token, and unreg
   assert.equal((await subs(u)).length, 0);
 });
 
+// Single-ownership (fixed 2026-08-13): an Expo token names a DEVICE, and stays
+// APNs/FCM-deliverable across account switches — DeviceNotRegistered pruning
+// never fires for it. Registration must therefore strip the token from every
+// OTHER account, or a device whose best-effort sign-out unregister failed and
+// then signed into another account receives BOTH accounts' pushes (a
+// cross-household content leak).
+test('registering a token under a new account strips it from the previous account', async () => {
+  const a = await registerUser({ firstName: 'FirstOwner' });
+  const b = await registerUser({ firstName: 'SecondOwner' });
+  const expoToken = 'ExponentPushToken[shared-device-1]';
+
+  const regA = await request().post('/api/notifications/push/register-native')
+    .set('Authorization', a.auth).set('X-Device-Id', 'install-shared')
+    .send({ expoToken, platform: 'ios', label: 'Phone' });
+  assert.equal(regA.status, 200);
+  assert.equal((await subs(a)).length, 1);
+
+  // The device signs out of A (unregister silently fails) and into B.
+  const regB = await request().post('/api/notifications/push/register-native')
+    .set('Authorization', b.auth).set('X-Device-Id', 'install-shared')
+    .send({ expoToken, platform: 'ios', label: 'Phone' });
+  assert.equal(regB.status, 200);
+
+  assert.equal((await subs(a)).length, 0, 'the previous account no longer holds the token');
+  const rowsB = await subs(b);
+  assert.equal(rowsB.length, 1, 'the token now belongs to the new account alone');
+  assert.equal(rowsB[0].expoToken, expoToken);
+  assert.equal(rowsB[0].deviceId, 'install-shared', 'the install id is stamped for revocation pruning');
+});
+
+// Same single-ownership rule on the legacy web-push lane (endpoint = the
+// browser install's identity).
+test('subscribing a web endpoint under a new account strips it from the previous account', async () => {
+  const a = await registerUser({ firstName: 'WebFirst' });
+  const b = await registerUser({ firstName: 'WebSecond' });
+  const endpoint = 'https://push.example/shared-ep';
+
+  await request().post('/api/notifications/push/subscribe')
+    .set('Authorization', a.auth)
+    .send({ subscription: { endpoint, keys: { p256dh: 'k1', auth: 'a1' } }, label: 'Browser' });
+  const again = await request().post('/api/notifications/push/subscribe')
+    .set('Authorization', b.auth)
+    .send({ subscription: { endpoint, keys: { p256dh: 'k2', auth: 'a2' } }, label: 'Browser' });
+  assert.equal(again.status, 200);
+
+  assert.equal((await subs(a)).length, 0, 'the previous account no longer holds the endpoint');
+  const rowsB = await subs(b);
+  assert.equal(rowsB.length, 1);
+  assert.equal(rowsB[0].endpoint, endpoint);
+});
+
 test('local-reminders flag round-trips (the server cron skips on-device schedulers)', async () => {
   const u = await registerUser({ firstName: 'Local' });
 

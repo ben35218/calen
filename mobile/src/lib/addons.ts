@@ -30,6 +30,16 @@ export function isAddonCalendar(id: string): id is AddonId {
   return (ADDON_CALENDAR_IDS as readonly string[]).includes(id);
 }
 
+// Each add-on's store glyph (MaterialCommunityIcons), shared by the Add-Ons
+// store cards and the Discover modal so the same feature wears the same mark.
+export const ADDON_ICONS: Record<AddonId, string> = {
+  recipes: 'silverware-fork-knife',
+  maintenance: 'wrench',
+  trips: 'airplane',
+  birthdays: 'calendar-heart',
+  chores: 'broom',
+};
+
 export function isFreeAddon(id: string): boolean {
   return (FREE_ADDON_CALENDAR_IDS as readonly string[]).includes(id);
 }

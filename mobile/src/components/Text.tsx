@@ -9,7 +9,7 @@ import {
 // ── Dynamic Type caps ─────────────────────────────────────────────────────
 // iOS' largest accessibility size (AX5) scales text ~3.1x. Nothing in this app
 // is laid out to survive that, so every Text goes through a capped wrapper
-// instead of reading the system scale raw. See specs/features/accessibility.md.
+// instead of reading the system scale raw. See specs/platform/accessibility.md.
 
 /** Body text: lists, forms, detail screens. Reflows, so it can afford to grow. */
 export const TEXT_MAX_SCALE = 1.5;

@@ -65,6 +65,12 @@ async function calendarWriteBlocked(req, scope) {
 }
 const VIEW_ONLY_MESSAGE = 'You have view-only access to this calendar';
 
+// How far the returned sync cursor (`serverTime`) is backdated behind the
+// query. Covers write-stamp→commit latency (a write whose updatedAt was
+// stamped before the query snapshot but committed after it) plus clock skew
+// between server instances. Env-overridable so tests can shrink the window.
+const SYNC_OVERLAP_MS = Number(process.env.RECORDS_SYNC_OVERLAP_MS || 5000);
+
 // GET /records/sync?since=<iso> — the unified LWW pull. Every record in scope
 // updated after `since`, tombstones included, so the client replica converges.
 router.get('/sync', async (req, res) => {
@@ -72,10 +78,19 @@ router.get('/sync', async (req, res) => {
     const since = req.query.since ? new Date(req.query.since) : new Date(0);
     if (Number.isNaN(since.getTime())) return res.status(400).json({ error: 'invalid since' });
     const scope = await recordScope(req);
+    // Cursor-safety invariant: `serverTime` — which the client commits as its
+    // next `since` — MUST predate the query snapshot. It is captured BEFORE the
+    // find() runs, minus SYNC_OVERLAP_MS, so a write that lands mid-query (its
+    // updatedAt stamped before the snapshot, invisible to this pull) is still
+    // > cursor and re-delivered on the next pull instead of being skipped
+    // forever by the `$gt` cursor. The overlap re-delivers recent rows
+    // (including tombstones, which ride the same cursor); that is harmless —
+    // the client replica upserts/removes idempotently by _id (LWW).
+    const cursorTime = new Date(Date.now() - SYNC_OVERLAP_MS);
     const records = await Record.find({ ...scope, updatedAt: { $gt: since } })
       .sort('updatedAt')
       .lean();
-    res.json({ records, serverTime: new Date().toISOString() });
+    res.json({ records, serverTime: cursorTime.toISOString() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -827,9 +827,21 @@ export const recipeScheduleApi = {
       sectionOrder: sectionOrder?.length ? sectionOrder : undefined,
     }),
   sessionGet: (weekStart: string) =>
-    api.get<GrocerySessionState>('/recipe-schedule/session', { params: { weekStart } }),
-  sessionPut: (weekStart: string, state: GrocerySessionState) =>
-    api.put('/recipe-schedule/session', { weekStart, state }),
+    api.get<GrocerySessionEnvelope>('/recipe-schedule/session', { params: { weekStart } }),
+  // Versioned write: `baseVersion` is the version the client read; the server
+  // 409s on mismatch (the caller re-fetches, merges on-device, retries — see
+  // lib/grocerySession). A session seals as `enc` when the household key is
+  // held, falling back to plaintext `state` (the transition lane old builds
+  // still write).
+  sessionPut: (
+    weekStart: string,
+    body: {
+      state?: GrocerySessionState;
+      enc?: { alg: string; nonce: string; ct: string };
+      keyVersion?: number;
+      baseVersion?: number;
+    },
+  ) => api.put<{ ok: boolean; version: number }>('/recipe-schedule/session', { weekStart, ...body }),
 };
 
 export interface OrganizedGroceryList {
@@ -863,6 +875,16 @@ export interface GrocerySessionState {
   // diff against the current week patches it locally (New Items appended,
   // removed items dropped, re-portioned amounts rewritten) — no AI call.
   organizedFor?: Record<string, string> | null;
+}
+
+// What GET /recipe-schedule/session actually returns: legacy plaintext state
+// spread at the top level (old builds read the body AS the state), plus the
+// sealed envelope and the optimistic-concurrency version for current clients.
+// Opened/merged/saved through lib/grocerySession, never read raw by screens.
+export interface GrocerySessionEnvelope extends GrocerySessionState {
+  enc?: { alg: string; nonce: string; ct: string } | null;
+  keyVersion?: number;
+  version?: number;
 }
 
 export const historyApi = {

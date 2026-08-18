@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { AppState } from 'react-native';
 import { rescheduleReminders, cancelAllReminders } from '../lib/notifications';
 import { registerBackgroundRefresh, unregisterBackgroundRefresh } from '../lib/backgroundRefresh';
+import { flushPendingPhotoClaims } from '../lib/recipePhoto';
 import { queryClient } from '../lib/queryClient';
 
 // Coalesce the burst of ['calendar'] invalidations a single save can emit (the
@@ -34,9 +35,16 @@ export function useReminderScheduler(enabled: boolean) {
     }
     void rescheduleReminders();
     void registerBackgroundRefresh();
+    // Same signed-in start/foreground cadence: retry any recipe-photo claims
+    // that failed after their recipe saved (lib/recipePhoto) — an unclaimed
+    // photo is deleted by the server's 24h orphan sweep.
+    void flushPendingPhotoClaims();
 
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void rescheduleReminders();
+      if (state === 'active') {
+        void rescheduleReminders();
+        void flushPendingPhotoClaims();
+      }
     });
 
     let timer: ReturnType<typeof setTimeout> | null = null;

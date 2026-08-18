@@ -49,8 +49,14 @@ function seedRule(initial: RepeatRule, startDate: Date): RepeatRule {
 // Edits sync back to the form live through the repeatDraft store; going back is
 // the only "save". `date` is the event's start date, used to seed the pattern
 // defaults when a frequency is first selected.
+//
+// `singleDay` (the chore/task forms): the sealed item Recurrence keeps ONE
+// dayOfWeek / dayOfMonth and only concrete Sun..Sat ordinal kinds, so the
+// weekday list and month-date grid become single-select and the
+// day/weekday/weekend kinds + the yearly ordinal switch are hidden — shapes
+// `ruleToRecurrence` cannot store. The event form never passes it.
 export default function EventRepeatScreen() {
-  const { rule: initial, date } = useRoute<Rt>().params;
+  const { rule: initial, date, singleDay } = useRoute<Rt>().params;
   // Local noon avoids TZ day-rollover (matches the ui.tsx date parsing).
   const startDate = new Date(`${date}T12:00:00`);
 
@@ -86,17 +92,21 @@ export default function EventRepeatScreen() {
   };
 
   // At least one weekday / month date / month stays selected (a repeat on
-  // nothing has no meaning), so the last one can't be toggled off.
+  // nothing has no meaning), so the last one can't be toggled off. In
+  // `singleDay` mode the weekday/month-date pickers are radios instead: the
+  // tapped day replaces the selection.
   const toggleIn = (list: number[], v: number): number[] | null => {
     const on = list.includes(v);
     if (on && list.length === 1) return null;
     return on ? list.filter((x) => x !== v) : [...list, v].sort((a, b) => a - b);
   };
   const toggleWeekday = (d: number) => {
+    if (singleDay) return sync({ daysOfWeek: [d] });
     const next = toggleIn(rule.daysOfWeek, d);
     if (next) sync({ daysOfWeek: next });
   };
   const toggleMonthDay = (d: number) => {
+    if (singleDay) return sync({ daysOfMonth: [d] });
     const next = toggleIn(rule.daysOfMonth, d);
     if (next) sync({ daysOfMonth: next });
   };
@@ -124,9 +134,10 @@ export default function EventRepeatScreen() {
   const units = FREQ_UNITS[freq];
   const unitLabel = rule.interval === 1 ? units[0] : units[1];
   const tempUnitLabel = everyTemp === 1 ? units[0] : units[1];
-  // "Weekly on Monday" -> "Event will repeat weekly on Monday."
+  // "Weekly on Monday" -> "Event will repeat weekly on Monday." (or the
+  // subject-free "Will repeat …" when a chore/task form pushed the screen).
   const summary = repeatSummary(rule);
-  const summarySentence = `Event will repeat ${summary.charAt(0).toLowerCase()}${summary.slice(1)}.`;
+  const summarySentence = `${singleDay ? 'Will' : 'Event will'} repeat ${summary.charAt(0).toLowerCase()}${summary.slice(1)}.`;
 
   const openEvery = () => {
     setEveryTemp(Math.min(rule.interval, EVERY_MAX[freq]));
@@ -149,7 +160,9 @@ export default function EventRepeatScreen() {
       <Select
         inlineLabel="Day"
         value={rule.weekdayKind ?? 'sun'}
-        options={WEEKDAY_KIND_OPTIONS}
+        // Chores/tasks store only a concrete weekday, so the aggregate
+        // day/weekday/weekend kinds (the trailing three) are hidden for them.
+        options={singleDay ? WEEKDAY_KIND_OPTIONS.slice(0, 7) : WEEKDAY_KIND_OPTIONS}
         onChange={(v) => sync({ weekdayKind: (v as WeekdayKind) ?? 'sun' })}
         containerStyle={form.dtFieldWrap}
         fieldStyle={form.rowField}
@@ -252,17 +265,22 @@ export default function EventRepeatScreen() {
             </View>
           </View>
 
-          <View style={form.groupCard}>
-            <View style={form.groupPad}>
-              <SwitchRow label="Days of week" value={yearlyOrdinalOn} onValueChange={toggleYearlyOrdinal} />
+          {/* A yearly chore/task repeats on its date — `ruleToRecurrence` has
+              nowhere to store a within-year ordinal rule, so the switch is
+              hidden rather than offered and refused at save. */}
+          {!singleDay ? (
+            <View style={form.groupCard}>
+              <View style={form.groupPad}>
+                <SwitchRow label="Days of week" value={yearlyOrdinalOn} onValueChange={toggleYearlyOrdinal} />
+              </View>
+              {yearlyOrdinalOn ? (
+                <>
+                  <View style={form.cardDivider} />
+                  {ordinalSelects}
+                </>
+              ) : null}
             </View>
-            {yearlyOrdinalOn ? (
-              <>
-                <View style={form.cardDivider} />
-                {ordinalSelects}
-              </>
-            ) : null}
-          </View>
+          ) : null}
         </>
       ) : null}
 

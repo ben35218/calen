@@ -36,6 +36,35 @@ test('one-time returns its stored nextDueDate', () => {
   assert.equal(computeNextDueDate({ recurrence: { type: 'one-time' }, nextDueDate: d }), d);
 });
 
+// ── nth-weekday interval months (weekOfMonth + dayOfWeek) ────────────────────
+// Ordinals count like the events path's ordinalDayOfMonth: 1..5 from the start
+// (a month without an nth is skipped, consuming its interval step), -1/-2 from
+// the end. The old arithmetic overflowed 5 into the next month's FIRST weekday
+// and sent -2 into the previous month, which stalled the expander.
+test('positive ordinals 1..4 and last are unchanged', () => {
+  const rec = (weekOfMonth) => ({ recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1, weekOfMonth, dayOfWeek: 2 } });
+  // Base: second Tuesday of Aug 2026 → second Tuesday of Sep 2026.
+  assert.equal(ymd(computeNextDueDate(rec(2), new Date('2026-08-11T12:00:00'))), '2026-09-08');
+  // Base: last Tuesday of Aug 2026 → last Tuesday of Sep 2026 (the 5th one).
+  assert.equal(ymd(computeNextDueDate(rec(-1), new Date('2026-08-25T12:00:00'))), '2026-09-29');
+});
+
+test('next-to-last (-2) counts from the end of the month, never the previous month', () => {
+  const rec = { recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1, weekOfMonth: -2, dayOfWeek: 2 } };
+  // Aug 2026 Tuesdays: 4, 11, 18, 25 → -2 = 18th; Sep has five (1,8,15,22,29) → -2 = 22nd.
+  const next = computeNextDueDate(rec, new Date('2026-08-18T12:00:00'));
+  assert.equal(ymd(next), '2026-09-22');
+});
+
+test('fifth weekday skips months without a fifth occurrence (consuming interval steps)', () => {
+  const rec = { recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1, weekOfMonth: 5, dayOfWeek: 2 } };
+  // Sep 2026 has a 5th Tuesday (29th); Oct and Nov don't; Dec does (29th).
+  assert.equal(ymd(computeNextDueDate(rec, new Date('2026-09-29T12:00:00'))), '2026-12-29');
+  // Every 2 months: candidate months are Nov, Jan, Mar… — Mar 2027 is the first with a 5th Tuesday.
+  const every2 = { recurrence: { ...rec.recurrence, intervalValue: 2 } };
+  assert.equal(ymd(computeNextDueDate(every2, new Date('2026-09-29T12:00:00'))), '2027-03-30');
+});
+
 // ── expandRecurringEvent ──────────────────────────────────────────────────────
 test('weekly event expands to the right occurrences and preserves duration', () => {
   const event = {
@@ -237,6 +266,35 @@ test('calendar-type task fires in listed months only', () => {
   };
   const out = expandRecurringTaskChore(task, new Date('2026-01-01'), new Date('2026-12-31'));
   assert.deepEqual(out.map(o => o._instanceDate), ['2026-03-15', '2026-09-15']);
+});
+
+// A next-to-last-weekday series must keep walking month after month — the old
+// nthWeekdayOfMonth put -2 in the PREVIOUS month, so the non-advancing-cursor
+// guard ended the series right after its anchor (it emitted once, then nothing).
+test('next-to-last-Tuesday chore continues across many months', () => {
+  const task = {
+    nextDueDate: new Date('2026-09-22T12:00:00'), // next-to-last Tuesday of Sep 2026
+    recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1, weekOfMonth: -2, dayOfWeek: 2 },
+  };
+  const out = expandRecurringTaskChore(task, new Date('2026-09-01'), new Date('2027-02-28'));
+  assert.deepEqual(out.map(o => o._instanceDate), [
+    '2026-09-22', '2026-10-20', '2026-11-17', '2026-12-22', '2027-01-19', '2027-02-16',
+  ]);
+});
+
+// A fifth-Tuesday series yields exactly the months that HAVE a fifth Tuesday —
+// the old arithmetic emitted the FIRST Tuesday of the following month instead
+// (reproduced: Nov 3 and Feb 2 in place of skipping to Dec 29 / Mar 30).
+test('fifth-Tuesday chore yields only months with a fifth Tuesday', () => {
+  const task = {
+    nextDueDate: new Date('2026-09-29T12:00:00'), // fifth Tuesday of Sep 2026
+    recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1, weekOfMonth: 5, dayOfWeek: 2 },
+  };
+  const out = expandRecurringTaskChore(task, new Date('2026-09-01'), new Date('2027-06-30'));
+  const dates = out.map(o => o._instanceDate);
+  assert.deepEqual(dates, ['2026-09-29', '2026-12-29', '2027-03-30', '2027-06-29']);
+  assert.ok(!dates.includes('2026-11-03'));
+  assert.ok(!dates.includes('2027-02-02'));
 });
 
 // ── Per-occurrence scoping on tasks/chores ───────────────────────────────────

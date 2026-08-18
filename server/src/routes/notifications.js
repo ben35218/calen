@@ -5,6 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimit');
 const push = require('../services/push');
 const { pushToUser } = require('../services/notify');
+const { deviceFromReq } = require('../services/sessions');
 
 // Push is the only notification channel. Alerts themselves are configured per
 // item (event / chore / task); this route just manages a user's push devices.
@@ -19,11 +20,15 @@ router.post('/push/subscribe', async (req, res) => {
   try {
     const { subscription, label } = req.body;
     if (!subscription?.endpoint) return res.status(400).json({ error: 'Invalid subscription' });
-    // Replace any existing entry for this endpoint, then add the fresh one.
+    const { deviceId } = deviceFromReq(req);
+    // Single-ownership (same rule as register-native below): the endpoint names
+    // a browser install, so strip it from EVERY account before adding it fresh.
+    await User.updateMany(
+      { 'pushSubscriptions.endpoint': subscription.endpoint },
+      { $pull: { pushSubscriptions: { endpoint: subscription.endpoint } } },
+    );
     await User.updateOne({ _id: req.user._id },
-      { $pull: { pushSubscriptions: { endpoint: subscription.endpoint } } });
-    await User.updateOne({ _id: req.user._id },
-      { $push: { pushSubscriptions: { endpoint: subscription.endpoint, keys: subscription.keys, label } } });
+      { $push: { pushSubscriptions: { endpoint: subscription.endpoint, keys: subscription.keys, label, ...(deviceId ? { deviceId } : {}) } } });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -41,16 +46,26 @@ router.post('/push/unsubscribe', async (req, res) => {
 });
 
 // Native (mobile app) push registration. The Expo push token uniquely
-// identifies the device; replace any existing entry for it, then store fresh.
+// identifies the DEVICE (not the account), and APNs/FCM keep it valid across
+// account switches — so registration enforces single ownership: the token is
+// stripped from EVERY user before being added to the caller. Without that, a
+// device whose best-effort sign-out unregister failed and then signed into
+// another account would keep receiving the previous account's pushes (a
+// cross-household content leak that DeviceNotRegistered pruning can never
+// catch, because the token stays deliverable). The install's X-Device-Id is
+// stored alongside so session revocation can prune this device's subscription.
 router.post('/push/register-native', async (req, res) => {
   try {
     const { expoToken, platform, label } = req.body;
     if (!expoToken) return res.status(400).json({ error: 'Missing expoToken' });
     const plat = platform === 'ios' || platform === 'android' ? platform : 'ios';
+    const { deviceId } = deviceFromReq(req);
+    await User.updateMany(
+      { 'pushSubscriptions.expoToken': expoToken },
+      { $pull: { pushSubscriptions: { expoToken } } },
+    );
     await User.updateOne({ _id: req.user._id },
-      { $pull: { pushSubscriptions: { expoToken } } });
-    await User.updateOne({ _id: req.user._id },
-      { $push: { pushSubscriptions: { platform: plat, expoToken, label } } });
+      { $push: { pushSubscriptions: { platform: plat, expoToken, label, ...(deviceId ? { deviceId } : {}) } } });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

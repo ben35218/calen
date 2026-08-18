@@ -14,6 +14,13 @@ const PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 const SUBJECT     = process.env.VAPID_SUBJECT || 'mailto:admin@household-calendar.app';
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+const EXPO_RECEIPT_URL = 'https://exp.host/--/api/v2/push/getReceipts';
+
+function expoHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
+  return headers;
+}
 
 const webConfigured = Boolean(PUBLIC_KEY && PRIVATE_KEY);
 if (webConfigured) {
@@ -61,26 +68,39 @@ function buildExpoMessage(subscription, payload) {
 
 // Deliver to a native device via Expo. Throws an error tagged { statusCode: 410 }
 // when Expo reports the token is no longer registered, so callers prune it.
+// Returns the accepted ticket ({ status: 'ok', id }) — the immediate ticket is
+// only half the story: most DeviceNotRegistered results arrive in the RECEIPT
+// (fetchExpoReceipts, run later by jobs/pushReceipts.js), so callers should
+// persist the ticket id for the receipt pass.
 async function sendToExpo(subscription, payload) {
   const message = buildExpoMessage(subscription, payload);
-  const headers = { 'Content-Type': 'application/json' };
-  if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
   // Always post the array form: the response's `data` is then reliably an
   // array of tickets. (The old single-object read left ticket errors — e.g.
   // InvalidCredentials when the APNs key is missing — invisible, so a send
   // that could never deliver still counted as "sent".)
-  const { data } = await axios.post(EXPO_PUSH_URL, [message], { headers });
+  const { data } = await axios.post(EXPO_PUSH_URL, [message], { headers: expoHeaders() });
   const ticket = Array.isArray(data?.data) ? data.data[0] : data?.data;
   if (ticket?.status === 'error') {
     const err = new Error(ticket.message || 'Expo push error');
     if (ticket.details?.error === 'DeviceNotRegistered') err.statusCode = 410;
     throw err;
   }
+  return ticket || null;
+}
+
+// Batch-fetch delivery receipts for previously issued ticket ids. Returns
+// Expo's map of ticketId → { status, message?, details? }; a ticket absent
+// from the map has no receipt yet (or Expo already dropped it). Callers cap
+// `ids` at 300 per request (the getReceipts batch limit).
+async function fetchExpoReceipts(ids) {
+  const { data } = await axios.post(EXPO_RECEIPT_URL, { ids }, { headers: expoHeaders() });
+  return data?.data || {};
 }
 
 // Send to one subscription (web or native). Resolves on success or throws
 // { statusCode } so callers can prune subscriptions the platform has expired
-// (web: 404/410; Expo: DeviceNotRegistered → 410).
+// (web: 404/410; Expo: DeviceNotRegistered → 410). A native send resolves with
+// its Expo ticket (web sends resolve undefined).
 async function sendToSubscription(subscription, payload) {
   if (isNative(subscription)) {
     return sendToExpo(subscription, payload);
@@ -92,4 +112,4 @@ async function sendToSubscription(subscription, payload) {
   await webpush.sendNotification(subscription, JSON.stringify(payload));
 }
 
-module.exports = { isConfigured, publicKey, sendToSubscription, buildExpoMessage };
+module.exports = { isConfigured, publicKey, sendToSubscription, buildExpoMessage, fetchExpoReceipts };

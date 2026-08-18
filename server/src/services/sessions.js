@@ -87,10 +87,27 @@ async function createSession(userId, req, { quiet = false } = {}) {
 }
 
 // Revoke one session row. Returns true when something was removed.
+// Also prunes the revoked device's push subscription: the session row's
+// deviceId matches the deviceId stamped on pushSubscriptions at
+// register-native/subscribe time. A remotely signed-out device 401s on every
+// call from then on, so it can never run its own unregister — without this
+// prune the revoked device would keep receiving the account's pushes forever
+// (the token stays APNs/FCM-valid, so DeviceNotRegistered never fires).
+// Legacy rows without a deviceId can't be linked and are left as-is.
 async function revokeSession(userId, sid) {
+  const holder = await User.findOne(
+    { _id: userId, 'sessions._id': sid },
+    { 'sessions.$': 1 },
+  ).lean();
+  const deviceId = holder?.sessions?.[0]?.deviceId;
   const res = await User.updateOne(
     { _id: userId },
-    { $pull: { sessions: { _id: sid } } },
+    {
+      $pull: {
+        sessions: { _id: sid },
+        ...(deviceId ? { pushSubscriptions: { deviceId } } : {}),
+      },
+    },
   );
   if (res.modifiedCount) {
     await AuditLog.create({ userId, event: 'session_revoked', meta: { sid: String(sid) } });

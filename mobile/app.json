@@ -10,9 +10,15 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.householdcalendar.mobile",
+      "appleTeamId": "RXV5LML9T5",
       "associatedDomains": [
         "webcredentials:householdcalendar.com"
       ],
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.app.householdcalendar.mobile"
+        ]
+      },
       "infoPlist": {
         "CFBundleDisplayName": "Calen",
         "ITSAppUsesNonExemptEncryption": false,
@@ -162,12 +168,30 @@
           "speechRecognitionPermission": "Convert your speech to text on-device so you can talk to Calen. Your voice is transcribed on your device and isn’t sent to Apple.",
           "androidSpeechServicePackages": []
         }
-      ]
+      ],
+      "@bacons/apple-targets"
     ],
     "extra": {
       "apiBaseUrl": "http://localhost:3001",
       "eas": {
-        "projectId": "aca35cff-ab55-4811-9ad1-cf36b40c7ea8"
+        "projectId": "aca35cff-ab55-4811-9ad1-cf36b40c7ea8",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "CalenWidget",
+                  "bundleIdentifier": "app.householdcalendar.mobile.widget",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.app.householdcalendar.mobile"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
       }
     },
     "owner": "polk-tech"

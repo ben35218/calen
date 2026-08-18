@@ -291,6 +291,32 @@ export function initialScrollY(
   return clamp(8 * 60 * PX_PER_MIN);
 }
 
+// ── Long-press → new-event draft ────────────────────────────────────────────
+
+// The slot a grid press lands in: press Y (px from the column's midnight) →
+// the 15-minute slot under the finger, one hour long (Apple's default
+// duration). `endMin` may run past DAY_MIN for a last-hour press — the draft
+// below rolls it onto the next date; the ghost block clips it to the column.
+export function snapSlot(y: number): { startMin: number; endMin: number } {
+  const min = Math.min(DAY_MIN - 1, Math.max(0, Math.floor(y / PX_PER_MIN)));
+  const startMin = Math.floor(min / 15) * 15;
+  return { startMin, endMin: startMin + 60 };
+}
+
+// A long-press on empty grid space drafts a timed event at that spot: the
+// snapped slot as an EventForm prefill. A press in the last hour keeps its
+// slot and rolls the end past midnight into the next day.
+export function longPressDraft(
+  dateStr: string,
+  y: number
+): { allDay: false; startTime: string; endTime: string; endDate?: string } {
+  const { startMin, endMin } = snapSlot(y);
+  const hm = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+  return endMin > DAY_MIN - 1
+    ? { allDay: false, startTime: hm(startMin), endTime: hm(endMin - DAY_MIN), endDate: addDays(dateStr, 1) }
+    : { allDay: false, startTime: hm(startMin), endTime: hm(endMin) };
+}
+
 // ── Hourly weather rail ─────────────────────────────────────────────────────
 
 // One mark on a timeline column's weather rail: the hour's condition icon +

@@ -90,6 +90,8 @@ import ContactFormScreen from '../screens/profile/ContactFormScreen';
 import ContactImportScreen from '../screens/profile/ContactImportScreen';
 import HouseholdScreen from '../screens/profile/HouseholdScreen';
 import AddOnsScreen from '../screens/plan/AddOnsScreen';
+import DiscoverScreen from '../screens/plan/DiscoverScreen';
+import WidgetPromoScreen from '../screens/calendar/WidgetPromoScreen';
 import CreditsScreen from '../screens/plan/CreditsScreen';
 import CreditHistoryScreen from '../screens/plan/CreditHistoryScreen';
 import BuyCreditsSheet from '../screens/plan/BuyCreditsSheet';
@@ -324,6 +326,10 @@ export default function AppNavigator() {
           AI-surface nudges open as a modal. */}
       {/* The feature-calendar add-ons store. Never titled "App Store" (5.2.5). */}
       <Stack.Screen name="AddOns" component={AddOnsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add-ons' }} />
+      <Stack.Screen name="Discover" component={DiscoverScreen} options={modalTask('Discover')} />
+      {/* The widget promo: learn about / add the Home Screen widget and dismiss —
+          a self-contained task, so a modal from both the nudge and Profile. */}
+      <Stack.Screen name="WidgetPromo" component={WidgetPromoScreen} options={modalTask('Home Screen Widget')} />
       <Stack.Screen name="Credits" component={CreditsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'AI credits' }} />
       <Stack.Screen name="CreditHistory" component={CreditHistoryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Credit history' }} />
       {/* A modal: buy a pack and dismiss, back to whatever nudged the top-up. */}

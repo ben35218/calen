@@ -24,6 +24,14 @@ export interface VoiceCommand {
   // number slot: "step #" matches "step 3", "step three", and the homophones
   // recognizers substitute for spoken digits ("step to" → 2).
   phrases: string[];
+  // Destructive jumps (step #, top/bottom, back) must be utterance-anchored:
+  // the phrase only fires at the START of the transcript, or when the whole
+  // utterance is short enough to be a command rather than conversation
+  // (≤ ANCHOR_MAX_WORDS). Without this, kitchen chatter fires them by
+  // containment — "what is the next step to take" jumped to step 2 ("to" is a
+  // number homophone), "put the lid back on" went Back. Non-destructive
+  // commands stay permissive ("OK, next!" must keep working).
+  anchored?: boolean;
   // `value` is set only when the matched phrase carried a number slot.
   onMatch: (value?: number) => void;
 }
@@ -48,28 +56,52 @@ const NUMBER_PATTERN = `(\\d{1,3}|${Object.keys(NUMBER_WORDS).join('|')})`;
 const normalize = (transcript: string) =>
   ` ${transcript.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()} `;
 
+// Bounded filler words allowed BETWEEN a multi-word phrase's own words, so the
+// natural spoken form of a phrase command still matches: "read me the
+// ingredients" is the "read ingredients" command, not the bare "ingredients"
+// view toggle that used to win because exact adjacency failed the longer
+// phrase. A small whitelist ({0,2} of these per gap), never arbitrary words —
+// "read the recipe then check ingredients" must not become "read ingredients".
+const FILLER_WORDS = ['me', 'the', 'my', 'a', 'us'];
+const FILLER_GAP = `(?:\\s(?:${FILLER_WORDS.join('|')})){0,2}`;
+
+// A phrase spec ("go to step #") as a regex body: words joined with bounded
+// filler gaps, the `#` slot as the number alternation (its one capture group).
+const phrasePattern = (p: string) =>
+  p.split(' ').map((w) => (w === '#' ? NUMBER_PATTERN : w)).join(`${FILLER_GAP} `);
+
+// An anchored command may also fire mid-transcript when the whole utterance is
+// short enough to read as a command ("please go back" — 3 words), never inside
+// running commentary ("put the lid back on" — 5).
+const ANCHOR_MAX_WORDS = 4;
+
 // Match a transcript against the commands: whole-word phrase containment
 // ("OK, next!" matches "next"; "the necktie" doesn't), longest phrase wins so
-// "start timer" beats a bare "timer". A `#` slot captures its number. Returns
-// the matched command (+ number) or null.
+// "start timer" beats a bare "timer" and "read ingredients" beats the bare
+// "ingredients" toggle. A `#` slot captures its number. `anchored` commands
+// additionally require the phrase at the transcript's start, or a short
+// (≤ ANCHOR_MAX_WORDS) utterance. Returns the matched command (+ number) or
+// null.
 export function matchVoiceCommand(transcript: string, commands: VoiceCommand[]): VoiceMatch | null {
   const text = normalize(transcript);
+  const trimmed = text.trim();
+  const wordCount = trimmed ? trimmed.split(' ').length : 0;
   let best: VoiceMatch | null = null;
   let bestLen = 0;
   for (const c of commands) {
     for (const p of c.phrases) {
       if (p.length <= bestLen) continue;
+      const m = text.match(new RegExp(` ${phrasePattern(p)} `));
+      if (!m) continue;
+      // The regex includes the leading space, so index 0 = phrase at the start.
+      if (c.anchored && m.index !== 0 && wordCount > ANCHOR_MAX_WORDS) continue;
       if (p.includes('#')) {
-        const m = text.match(new RegExp(` ${p.replace('#', NUMBER_PATTERN)} `));
-        if (m) {
-          const raw = m[1];
-          best = { command: c, value: /^\d+$/.test(raw) ? parseInt(raw, 10) : NUMBER_WORDS[raw], phrase: p };
-          bestLen = p.length;
-        }
-      } else if (text.includes(` ${p} `)) {
+        const raw = m[1];
+        best = { command: c, value: /^\d+$/.test(raw) ? parseInt(raw, 10) : NUMBER_WORDS[raw], phrase: p };
+      } else {
         best = { command: c, phrase: p };
-        bestLen = p.length;
       }
+      bestLen = p.length;
     }
   }
   return best;
@@ -93,8 +125,10 @@ export function matchCouldExtend(transcript: string, match: VoiceMatch, commands
       const words = p.split(' ');
       for (let k = 1; k < words.length; k++) {
         const prefix = words.slice(0, k).join(' ');
-        const pattern = prefix.includes('#') ? prefix.replace('#', NUMBER_PATTERN) : prefix;
-        if (new RegExp(` ${pattern} $`).test(text)) return true;
+        // Same filler allowance as matching, including a trailing gap: "read
+        // me the" must still hold for "read ingredients" while "ingredients"
+        // is on its way.
+        if (new RegExp(` ${phrasePattern(prefix)}${FILLER_GAP} $`).test(text)) return true;
       }
     }
   }

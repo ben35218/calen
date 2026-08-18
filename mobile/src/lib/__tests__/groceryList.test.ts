@@ -53,6 +53,16 @@ test('a scheduled variation buys base + component groups + only the chosen kit',
   // No recorded choice (legacy schedule) fails open: everything is bought.
   const unchosen = aggregateGroceryList([{ recipeId: 'r3' }], byId);
   expect(unchosen.map((g) => g.name)).toEqual(['Blueberries', 'Drizzle', 'Oats', 'Peanut butter']);
+
+  // A DANGLING choice (the kit was deleted or renamed after scheduling) also
+  // fails open — it must behave exactly like no choice, not exclude every
+  // surviving kit and quietly buy base ingredients only.
+  const dangling = aggregateGroceryList([{ recipeId: 'r3', variation: 'Matcha' }], byId);
+  expect(dangling.map((g) => g.name)).toEqual(['Blueberries', 'Drizzle', 'Oats', 'Peanut butter']);
+
+  // …while a valid choice keeps excluding the other kits (existing behavior).
+  const stillChosen = aggregateGroceryList([{ recipeId: 'r3', variation: 'Chocolate PB' }], byId);
+  expect(stillChosen.map((g) => g.name)).toEqual(['Drizzle', 'Oats', 'Peanut butter']);
 });
 
 test('schedules pointing at unknown or ingredient-less recipes are skipped', () => {

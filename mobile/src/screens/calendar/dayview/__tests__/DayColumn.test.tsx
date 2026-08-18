@@ -1,12 +1,32 @@
 import React from 'react';
-import { render, cleanup } from '@testing-library/react-native';
+import { render, cleanup, fireEvent, act } from '@testing-library/react-native';
 
 // The day view's event card (calendar.md → Day view): title, location and the
 // start–end range, each meta line led by its glyph. What renders is governed by
 // the block's height, so a short event doesn't stack clipped rows. An event
 // with a drive time extends upward from its start with a labelled travel band.
+// The column canvas itself takes a long-press: empty grid space springs a
+// ghost "New Event" into the pressed 15-minute slot, then drafts it in the
+// event form; the ghost fades once the day view regains focus.
 
-jest.mock('@react-navigation/native', () => ({ useNavigation: () => ({ navigate: jest.fn() }) }));
+const mockNavigate = jest.fn();
+const mockListeners: Record<string, () => void> = {};
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    addListener: (event: string, cb: () => void) => {
+      mockListeners[event] = cb;
+      return () => {
+        delete mockListeners[event];
+      };
+    },
+  }),
+}));
+
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn(() => Promise.resolve()),
+  ImpactFeedbackStyle: { Light: 'light', Medium: 'medium' },
+}));
 
 // Glyphs render as their name so the rows can be asserted by what leads them.
 jest.mock('@expo/vector-icons', () => {
@@ -41,7 +61,10 @@ const laid = (over: Partial<LaidBlock> = {}): LaidBlock => ({
 const column = (over: Partial<LaidBlock> = {}) =>
   render(<DayColumn date="2026-08-12" blocks={[laid(over)]} width={200} />);
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  mockNavigate.mockClear();
+});
 
 describe('DayColumn — the event card', () => {
   it('renders title, location and the collapsed time range', async () => {
@@ -103,5 +126,53 @@ describe('DayColumn — the event card', () => {
     const view = await column({ height: MIN_BLOCK + 15, travelMinutes: 15, travelHeight: 15 });
     expect(view.queryByText('9 – 11AM')).toBeNull();
     view.getByText('15 min travel');
+  });
+});
+
+describe('DayColumn — long-press to create', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('springs a ghost New Event into the pressed slot, then pushes the form', async () => {
+    jest.useFakeTimers();
+    const view = await column();
+    // A 2:22 PM press (1 px/min) lands in the 2:15 slot.
+    await act(async () => {
+      fireEvent(view.root!, 'longPress', { nativeEvent: { locationY: 14 * 60 + 22 } });
+    });
+    // The ghost is there immediately — placement feedback before the push.
+    view.getByText('New Event');
+    view.getByText('2:15 – 3:15PM');
+    expect(mockNavigate).not.toHaveBeenCalled();
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('EventForm', {
+      date: '2026-08-12',
+      prefill: { allDay: false, startTime: '14:15', endTime: '15:15' },
+    });
+  });
+
+  it('fades the ghost out when the day view regains focus', async () => {
+    jest.useFakeTimers();
+    const view = await column();
+    await act(async () => {
+      fireEvent(view.root!, 'longPress', { nativeEvent: { locationY: 14 * 60 } });
+      jest.advanceTimersByTime(300);
+    });
+    view.getByText('New Event');
+    // Coming back from the form: focus fires, the fade runs, the ghost goes.
+    await act(async () => {
+      mockListeners.focus?.();
+      jest.runAllTimers();
+    });
+    expect(view.queryByText('New Event')).toBeNull();
+  });
+
+  it('still opens the detail screen from a tap on an event block', async () => {
+    const view = await column();
+    fireEvent.press(view.getByText('EarlyON Alfred'));
+    expect(mockNavigate).toHaveBeenCalledWith('EventDetail', { eventId: 'e1', date: '2026-08-12' });
   });
 });

@@ -303,12 +303,23 @@ export default function CookingModeScreen() {
   // finishing (leaving the screen) stays a deliberate tap. "Step 3" (or "go to
   // step three") jumps straight to that step; out-of-range numbers are ignored.
   // "Read" speaks the current step aloud (readStep below).
+  //
+  // Destructive jumps are `anchored` (phrase at the utterance's start, or a
+  // short command-shaped utterance): "step #" (whose number slot accepts the
+  // to/for homophones, so "what is the next step to take" used to yank the
+  // cook to step 2), "back" ("put the lid back on"), and the top/bottom edge
+  // jumps. "previous" stays permissive — it doesn't occur in kitchen chatter
+  // the way "back" does — as do next/repeat/ingredients per the bare-keyword
+  // design ("OK, next!" must keep working).
+  const goPrev = () => { if (step > 0) { flashHeard('Back'); goBackStep(); } };
   const voice = useVoiceCommands({
     commands: [
       { phrases: ['next', 'continue'], onMatch: () => { if (!last) { flashHeard('Next'); advance(); } } },
-      { phrases: ['back', 'previous'], onMatch: () => { if (step > 0) { flashHeard('Back'); goBackStep(); } } },
+      { phrases: ['previous'], onMatch: goPrev },
+      { phrases: ['back'], anchored: true, onMatch: goPrev },
       {
         phrases: ['go to step #', 'step #'],
+        anchored: true,
         onMatch: (n) => {
           if (n && n >= 1 && n <= visible.length) {
             flashHeard(`Step ${n}`);
@@ -321,12 +332,12 @@ export default function CookingModeScreen() {
       { phrases: ['read ingredients'], onMatch: () => readIngredients() },
       { phrases: ['down', 'scroll down'], onMatch: () => { flashHeard('Down'); stepScroll.scrollByPage(1); } },
       { phrases: ['up', 'scroll up'], onMatch: () => { flashHeard('Up'); stepScroll.scrollByPage(-1); } },
-      { phrases: ['top', 'scroll to top'], onMatch: () => { flashHeard('Top'); stepScroll.scrollToEdge('top'); } },
-      { phrases: ['bottom', 'scroll to bottom'], onMatch: () => { flashHeard('Bottom'); stepScroll.scrollToEdge('bottom'); } },
+      { phrases: ['top', 'scroll to top'], anchored: true, onMatch: () => { flashHeard('Top'); stepScroll.scrollToEdge('top'); } },
+      { phrases: ['bottom', 'scroll to bottom'], anchored: true, onMatch: () => { flashHeard('Bottom'); stepScroll.scrollToEdge('bottom'); } },
       { phrases: ['ingredients down', 'scroll ingredients down'], onMatch: () => { flashHeard('Ingredients down'); ingScroll.scrollByPage(1); } },
       { phrases: ['ingredients up', 'scroll ingredients up'], onMatch: () => { flashHeard('Ingredients up'); ingScroll.scrollByPage(-1); } },
-      { phrases: ['ingredients top'], onMatch: () => { flashHeard('Ingredients top'); ingScroll.scrollToEdge('top'); } },
-      { phrases: ['ingredients bottom'], onMatch: () => { flashHeard('Ingredients bottom'); ingScroll.scrollToEdge('bottom'); } },
+      { phrases: ['ingredients top'], anchored: true, onMatch: () => { flashHeard('Ingredients top'); ingScroll.scrollToEdge('top'); } },
+      { phrases: ['ingredients bottom'], anchored: true, onMatch: () => { flashHeard('Ingredients bottom'); ingScroll.scrollToEdge('bottom'); } },
       { phrases: ['start timer', 'timer'], onMatch: () => { if (stepTimerMins) { flashHeard('Timer started'); startTimer(step); } } },
       { phrases: ['ingredients', 'show ingredients'], onMatch: () => { flashHeard('Ingredients'); setShowAll((v) => !v); } },
     ],

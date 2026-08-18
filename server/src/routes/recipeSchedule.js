@@ -39,29 +39,82 @@ router.get('/', async (req, res) => {
 // recipes + schedules (mobile lib/groceryList.ts) and only the resulting item
 // names reach the AI organize endpoint below (explicit consent, as before).
 
+// The response spreads any legacy plaintext state at the top level (old builds
+// read the body AS the state), with the sealed envelope + concurrency version
+// riding along as extra keys new clients pick off. No session at all stays a
+// bare `{}` for both generations.
 router.get('/session', async (req, res) => {
   const { weekStart } = req.query;
   if (!weekStart) return res.status(400).json({ error: 'weekStart required' });
   try {
     const session = await ShoppingSession.findOne({ ...req.scopeFilter, weekStart }).lean();
-    res.json(session?.state ?? {});
+    if (!session) return res.json({});
+    res.json({
+      ...(session.state ?? {}),
+      ...(session.enc ? { enc: session.enc, keyVersion: session.keyVersion } : {}),
+      version: session.version ?? 0,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// Two write generations during the sealing transition:
+// - Current builds send `enc` (+`keyVersion`) and `baseVersion`; the write is
+//   accepted only against the version the client read (atomic version-predicate
+//   findOneAndUpdate + $inc — never read-then-write) and clears the legacy
+//   plaintext `state`. A mismatch is a 409 carrying the current version; the
+//   client re-fetches, merges on-device, and retries.
+// - Old builds send plaintext `state` with no baseVersion: accepted as before
+//   (last-write-wins), clearing `enc` so newer readers see the newest write
+//   instead of a stale sealed blob. This lane is a documented transition
+//   exception (spec: features/kitchen.md) and tightens after rollout.
+// The server never reads inside either blob.
 router.put('/session', async (req, res) => {
-  const { weekStart, state } = req.body;
+  const { weekStart, state, baseVersion } = req.body;
   if (!weekStart) return res.status(400).json({ error: 'weekStart required' });
+  let sealed = null;
+  if (req.body.enc != null) {
+    try { sealed = pickRecordEnc(req.body); }
+    catch (msg) { return res.status(400).json({ error: String(msg) }); }
+  }
+  const update = {
+    ...(sealed
+      ? { $set: sealed, $unset: { state: 1 } }
+      : { $set: { state }, $unset: { enc: 1, keyVersion: 1 } }),
+    $inc: { version: 1 },
+    // The scope clause is all operators ($or/$in), so the upsert can't derive
+    // any doc fields from the filter — seed the routing explicitly.
+    $setOnInsert: { userId: req.user._id, householdId: req.household?._id },
+  };
   try {
-    await ShoppingSession.findOneAndUpdate(
+    if (typeof baseVersion === 'number') {
+      // Pre-version docs carry no `version` field; base 0 must match them (and
+      // the not-yet-created session, via upsert — a concurrent insert surfaces
+      // as the unique-index E11000, which is the same stale-base conflict).
+      const versionClause = baseVersion === 0 ? { $in: [0, null] } : baseVersion;
+      let doc = null;
+      try {
+        doc = await ShoppingSession.findOneAndUpdate(
+          { ...req.scopeFilter, weekStart, version: versionClause },
+          update,
+          { upsert: baseVersion === 0, new: true }
+        );
+      } catch (err) {
+        if (err.code !== 11000) throw err;
+      }
+      if (!doc) {
+        const current = await ShoppingSession.findOne({ ...req.scopeFilter, weekStart }, 'version').lean();
+        return res.status(409).json({ error: 'Version conflict', version: current?.version ?? 0 });
+      }
+      return res.json({ ok: true, version: doc.version });
+    }
+    const doc = await ShoppingSession.findOneAndUpdate(
       { ...req.scopeFilter, weekStart },
-      // The scope clause is all operators ($or/$in), so the upsert can't derive
-      // any doc fields from the filter — seed the routing explicitly.
-      { $set: { state }, $setOnInsert: { userId: req.user._id, householdId: req.household?._id } },
+      update,
       { upsert: true, new: true }
     );
-    res.json({ ok: true });
+    res.json({ ok: true, version: doc.version });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -226,10 +279,16 @@ router.put('/:id', async (req, res) => {
 
     const weekChanged = oldWeekStart !== newWeekStart;
     if (weekChanged) {
+      // Server-side organized-list invalidation only reaches legacy plaintext
+      // state — a sealed session's blob is opaque, and its list is instead
+      // reconciled on-device against the moved plan (lib/groceryOrganize). The
+      // $inc keeps versioned clients from writing over the unset with a stale
+      // base.
+      const invalidate = { $unset: { 'state.organizedList': 1 }, $inc: { version: 1 } };
       const updates = [
         ShoppingSession.updateOne(
           { ...req.scopeFilter, weekStart: newWeekStart },
-          { $unset: { 'state.organizedList': 1 } }
+          invalidate
         ),
       ];
       // Only invalidate the old week's grocery list if the shopping day hasn't passed yet
@@ -239,7 +298,7 @@ router.put('/:id', async (req, res) => {
         updates.push(
           ShoppingSession.updateOne(
             { ...req.scopeFilter, weekStart: oldWeekStart },
-            { $unset: { 'state.organizedList': 1 } }
+            invalidate
           )
         );
       }

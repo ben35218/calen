@@ -165,8 +165,13 @@ export type RootStackParamList = {
   EventTravelTime: { enabled: boolean; fromAddress: string; mode: TravelMode; manualMinutes: number | null };
   // The event form's custom repeat rule (frequency / every N / weekday / month
   // patterns). Edits flow back to the form via lib/repeatDraft. `date` = the
-  // event's start date, seeding pattern defaults.
-  EventRepeat: { rule: RepeatRule; date: string };
+  // event's start date, seeding pattern defaults. The chore/task forms pass
+  // `singleDay`: the sealed item Recurrence stores ONE dayOfWeek / dayOfMonth
+  // and only concrete Sun..Sat ordinal kinds, so the screen switches its
+  // multi-selects to single-select and hides the day/weekday/weekend kinds and
+  // the yearly ordinal switch (none of which `ruleToRecurrence` can store).
+  // Calendar events never pass it and keep the full picker.
+  EventRepeat: { rule: RepeatRule; date: string; singleDay?: boolean };
   // The event's Location view. With `initial` (from the event form) the picked
   // location flows back via locationDraft; with `eventId` (e.g. Call to Cancel
   // needing a phone number) the checkmark saves straight onto the event.
@@ -321,4 +326,9 @@ export type RootStackParamList = {
   // The Add-ons store: one-time feature-calendar purchases (Meals, Maintenance,
   // Trips + bundle). `focus` highlights one add-on's card.
   AddOns: { focus?: 'recipes' | 'maintenance' | 'trips' | 'birthdays' | 'chores' } | undefined;
+  // The discovery nudge's full-screen modal (unowned add-ons + Calen brainstorm).
+  Discover: undefined;
+  // The Home Screen widget promo: own-data widget preview + manual add steps
+  // (the widget nudge's modal; also reached from the Profile row).
+  WidgetPromo: undefined;
 };

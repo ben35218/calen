@@ -35,6 +35,11 @@ TaskManager.defineTask(TASK, async () => {
       // Same runtime as the app when it's alive in memory: invalidate so any
       // mounted calendar refetches (from the now-fresh replica) immediately.
       require('./queryClient').queryClient.invalidateQueries({ queryKey: ['calendar'] });
+      // A housemate's write should reach this device's home-screen widget
+      // without the app being opened: rewrite the App Group snapshot from the
+      // replica the sync just refreshed (no-op when locked or bridge-less).
+      const { refreshWidgetSnapshot } = require('./widgetSnapshot') as typeof import('./widgetSnapshot');
+      await refreshWidgetSnapshot();
     }
   } catch {
     // Offline / signed out / locked — the next foreground pass covers it.

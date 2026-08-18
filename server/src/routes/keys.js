@@ -229,14 +229,22 @@ router.post('/rekey', rekeyLimiter, async (req, res) => {
     //    that automatically — the caller sat `pending` until someone happened to
     //    rotate — so flag the rotation the same way a departure does; the next
     //    unlocked member's lazy-rotation pass wraps everyone, new key included.
-    //  - nobody does → every record is sealed under a key that no longer exists
-    //    anywhere, forever. Keeping the ciphertext (and a currentKeyVersion that
-    //    points at it) would strand the account: the v1 mint is guarded to
-    //    version 0, so the session unlocks but can never save again. The caller
-    //    has already confirmed the loss above, so purge the dead rows and reset
-    //    the key version — the ordinary owner mint then issues a fresh HDK and
-    //    the account starts clean. Orphaned attachment files are left to the
-    //    upload store's sweep.
+    //  - nobody does → every HDK-SEALED record is sealed under a key that no
+    //    longer exists anywhere, forever. Keeping that ciphertext (and a
+    //    currentKeyVersion that points at it) would strand the account: the v1
+    //    mint is guarded to version 0, so the session unlocks but can never save
+    //    again. The caller has already confirmed the loss above, so purge the
+    //    dead rows and reset the key version — the ordinary owner mint then
+    //    issues a fresh HDK and the account starts clean. Orphaned attachment
+    //    files are left to the upload store's sweep.
+    //    RESOURCE-sealed rows (`enc.ks` 'cal'/'trip') are NOT dead: they seal
+    //    under their own CalendarKey/TripKey, which outside collaborators still
+    //    hold via `recipient: 'member'` ResourceKeyEnvelopes and read by
+    //    `scope.resource` — so the purge spares them (same exclusion as the
+    //    carry-over filter and the key/retire pass in routes/household.js), and
+    //    it deletes only the `recipient: 'household'` resource envelopes (those
+    //    ARE dead — wrapped under the dead HDK); collaborators' member envelopes
+    //    are untouched, so their list/sync lane keeps working.
     let householdReset = false;
     const household = user.householdId ? await Household.findById(user.householdId) : null;
     if (household && (household.currentKeyVersion || 0) > 0) {
@@ -246,7 +254,10 @@ router.post('/rekey', rekeyLimiter, async (req, res) => {
           await household.save();
         }
       } else {
-        const purged = await Record.deleteMany({ householdId: household._id });
+        const purged = await Record.deleteMany({
+          householdId: household._id,
+          'enc.ks': { $nin: ['cal', 'trip'] },
+        });
         await Promise.all([
           HouseholdKeyEnvelope.deleteMany({ householdId: household._id }),
           ResourceKeyEnvelope.deleteMany({ recipient: 'household', householdId: household._id }),

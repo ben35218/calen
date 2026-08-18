@@ -19,6 +19,7 @@ import { clearAll as clearReplica } from '../lib/replica';
 import { resetRecordCursor, syncRecords } from '../lib/records';
 import { resetCalendarPrefs, reloadCalendarPrefs } from '../lib/calendarPrefs';
 import { resetOwnedAddons } from '../lib/addons';
+import { clearWidgetData } from '../lib/widgetSnapshot';
 import { cacheUnlocked, clearUnlockCache } from '../lib/unlock';
 import { unregisterCurrentPushToken } from '../lib/push';
 import { clearViewerContentCache } from '../lib/viewerAccess';
@@ -121,6 +122,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // billing fetch AND a calendar refetch. Cleared → the next session starts
     // from the safe default (locked) and repaints when its own status lands.
     await resetOwnedAddons().catch(() => {});
+    // The home-screen widget's App Group snapshot is the account's decrypted
+    // calendar sitting outside the E2EE envelope — it goes the same way as the
+    // replica, or a signed-out device keeps showing the old account's events
+    // on the home screen.
+    await clearWidgetData();
   }, []);
 
   // Restore a stored token on launch and verify it against /auth/me.
@@ -227,6 +233,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // household change (join, leave, removal, re-key "start fresh").
       await reloadCalendarPrefs().catch(() => {});
       await resetOwnedAddons().catch(() => {});
+      // Same doctrine as the replica wipe above: the widget snapshot is the
+      // OLD household's decrypted calendar. Clear it now; the ['calendar']
+      // invalidation below re-runs the snapshot writer once the new
+      // household's records land.
+      await clearWidgetData();
       // Refill ONLY when this session actually holds the new household's key.
       // Syncing without one decrypts nothing, so it would leave the device on an
       // empty replica it just wiped — a blank app until something else happened

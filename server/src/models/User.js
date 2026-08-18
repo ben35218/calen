@@ -10,6 +10,12 @@ const pushSubscriptionSchema = new mongoose.Schema({
   keys:      { p256dh: String, auth: String },      // web push only
   expoToken: { type: String },                      // native (Expo) only
   label:     String,        // user-agent / device hint for management
+  // The registering install's X-Device-Id (same id that keys the User.sessions
+  // row). Links a subscription to its device session so remote session
+  // revocation (DELETE /auth/sessions/:sid) can prune this device's push
+  // subscription — a revoked device 401s on every call, so it can never
+  // unregister its own token. Absent on rows registered by legacy clients.
+  deviceId:  { type: String },
 }, { _id: false, timestamps: true });
 
 // A user's X25519 identity private key, stored server-side ONLY as ciphertext,

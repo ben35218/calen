@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { View, StyleSheet, Image, TouchableOpacity, Share } from 'react-native';
 import { Text } from '../../components/Text';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -8,7 +8,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { recipesApi, recipeScheduleApi } from '../../api';
 import { sealNew } from '../../lib/e2ee';
 import { openRecipe } from '../../lib/recipeNames';
-import { recipeImageUri } from '../../lib/recipePhoto';
+import { recipeImageUri, claimRecipePhoto, flushPendingPhotoClaims } from '../../lib/recipePhoto';
 import { featuredSchedule } from '../../lib/mealSchedule';
 import { ingredientRuns, pickVariation } from '../../lib/recipeVariations';
 import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
@@ -40,6 +40,18 @@ export default function RecipeDetailScreen() {
   const recipeQ = useQuery({ queryKey: ['recipes', id], queryFn: async () => openRecipe((await recipesApi.get(id)).data) });
   const schedulesQ = useQuery({ queryKey: ['recipe-schedule', 'forRecipe', id], queryFn: async () => (await recipeScheduleApi.forRecipe(id)).data });
   const recipe = recipeQ.data;
+
+  // Self-heal the photo claim on read: a recipe showing a hosted photo re-claims
+  // it (idempotent server-side; a swept file 404s and is dropped silently), so a
+  // claim that failed at save time — leaving the file on the 24h sweep's list —
+  // is repaired by simply opening the recipe. Opening a recipe also flushes any
+  // claims parked by earlier failed saves (lib/recipePhoto).
+  const hostedPhoto = recipe?.imageUrl?.startsWith('/uploads/recipes/') ? recipe.imageUrl : null;
+  useEffect(() => {
+    if (!hostedPhoto) return;
+    void claimRecipePhoto(id, hostedPhoto);
+    void flushPendingPhotoClaims();
+  }, [id, hostedPhoto]);
 
   const schedule = useMutation({
     // Sealed create (Signal-parity D5): schedule notes are content.

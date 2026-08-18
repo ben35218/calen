@@ -145,9 +145,23 @@ export default function AddCalendarScreen() {
     setSeeded(true);
   }, [seeded, existing]);
 
-  // Housemates get read access to calendars shared with them; only the
-  // creator edits (the server enforces this too).
-  const readOnly = !!existing && !existing.mine;
+  const { data: household } = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await householdApi.get()).data,
+  });
+  const others = (household?.members ?? []).filter((m) => m._id !== user?._id);
+
+  // A calendar shared TO this user: sharing and deletion stay the creator's,
+  // but a housemate holding Full Access edits the BASICS — name, colour,
+  // alerts — matching what Full Access already means for the events (the
+  // server enforces the same split). Outside collaborators (owner not in this
+  // household) are always read-only here.
+  const sharedWithMe = !!existing && !existing.mine;
+  const ownerIsHousemate =
+    !!existing?.ownerId && (household?.members ?? []).some((m) => m._id === existing.ownerId);
+  const canEditBasics = !sharedWithMe || (ownerIsHousemate && existing?.access === 'full');
+  // Gates the sharing sections, the outside-share field, and Delete.
+  const readOnly = sharedWithMe;
 
   // A subscribed (feed-backed) calendar: URL is immutable, events are always
   // read-only, and Outside/Alerts sections don't apply.
@@ -165,20 +179,14 @@ export default function AddCalendarScreen() {
           ? 'Edit Subscription'
           : isHoliday
           ? 'Edit Holiday Calendar'
-          : readOnly
+          : !canEditBasics
           ? 'Calendar'
           : 'Edit Calendar',
       });
     } else if (isHoliday) {
       nav.setOptions({ title: 'New Holiday Calendar' });
     }
-  }, [calendarId, readOnly, isSubscription, isHoliday, nav]);
-
-  const { data: household } = useQuery({
-    queryKey: ['household'],
-    queryFn: async () => (await householdApi.get()).data,
-  });
-  const others = (household?.members ?? []).filter((m) => m._id !== user?._id);
+  }, [calendarId, canEditBasics, isSubscription, isHoliday, nav]);
 
   // Deleting the Occasions calendar is a local, reversible hide — it does NOT
   // cancel the household's scheduled e-cards, which keep sending server-side.
@@ -225,7 +233,10 @@ export default function AddCalendarScreen() {
     };
     setSaving(true);
     try {
-      if (calendarId) await updateCalendar(calendarId, payload);
+      // A housemate saves basics only — sharing is the owner's; the server
+      // 403s a non-owner payload that touches it.
+      if (calendarId && sharedWithMe) await updateCalendar(calendarId, { name: trimmed, color, alertsEnabled });
+      else if (calendarId) await updateCalendar(calendarId, payload);
       else await addCalendar(payload);
       allowLeave();
       dismissAfterSave();
@@ -244,18 +255,18 @@ export default function AddCalendarScreen() {
       setSaving(false);
     }
   };
-  useHeaderCheckButton(nav, { onPress: save, disabled: !name.trim(), loading: saving, enabled: !readOnly });
+  useHeaderCheckButton(nav, { onPress: save, disabled: !name.trim(), loading: saving, enabled: canEditBasics });
 
   // Discard guard. Create + default calendars are ready on first render (their
   // fields seed synchronously); a custom-calendar edit loads async, gated by the
-  // existing `seeded` flag. Read-only (shared-with-me) calendars can't be edited.
+  // existing `seeded` flag. View-only (shared-with-me) calendars can't be edited.
   const formReady = isDefault || seeded;
   const baselineRef = useRef<string | null>(null);
   const snapshot = JSON.stringify({ name, sharedWithHousehold, householdAccess, memberAccess, outside, color, alertsEnabled });
   useEffect(() => {
     if (formReady && baselineRef.current === null) baselineRef.current = snapshot;
   }, [formReady, snapshot]);
-  const dirty = !readOnly && formReady && baselineRef.current !== null && snapshot !== baselineRef.current;
+  const dirty = canEditBasics && formReady && baselineRef.current !== null && snapshot !== baselineRef.current;
   const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   const toggleMember = (id: string) =>
@@ -487,7 +498,11 @@ export default function AddCalendarScreen() {
     <Screen>
       {readOnly ? (
         <Text style={styles.readOnlyNote}>
-          Shared with you by a housemate — only the calendar's owner can make changes.
+          {canEditBasics
+            ? 'Shared with you by a housemate — you can change its name, colour, and alerts. Sharing is managed by its owner.'
+            : ownerIsHousemate
+            ? "Shared with you by a housemate — only the calendar's owner can make changes."
+            : "Shared with you — only the calendar's owner can make changes."}
         </Text>
       ) : null}
 
@@ -503,7 +518,7 @@ export default function AddCalendarScreen() {
           // leaning on the platform's blur-on-submit default, which leaves the
           // keyboard up over the sharing/colour rows.
           onSubmitEditing={() => Keyboard.dismiss()}
-          editable={!readOnly && !isDefault}
+          editable={canEditBasics && !isDefault}
           containerStyle={fs.headField}
           style={fs.headInput}
         />
@@ -729,7 +744,7 @@ export default function AddCalendarScreen() {
 
       <SectionTitle>Colour</SectionTitle>
       <GroupCard style={styles.paletteCard}>
-        <ColorPicker value={color} onChange={setColor} options={COLOR_PRESETS} disabled={readOnly} />
+        <ColorPicker value={color} onChange={setColor} options={COLOR_PRESETS} disabled={!canEditBasics} />
       </GroupCard>
 
       {!isSubscription ? (
@@ -740,7 +755,7 @@ export default function AddCalendarScreen() {
               <SwitchRow
                 label="Event Alerts"
                 value={alertsEnabled}
-                onValueChange={readOnly ? () => {} : setAlertsEnabled}
+                onValueChange={canEditBasics ? setAlertsEnabled : () => {}}
                 color={color}
               />
             </View>

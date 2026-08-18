@@ -334,6 +334,52 @@ test('solo re-key starts the household fresh: dead ciphertext purged, key versio
   );
 });
 
+// The solo purge must be as narrow as the comment claims: only HDK-sealed rows
+// are dead ciphertext. A record sealed under a RESOURCE key (`enc.ks` 'cal')
+// is readable by every outside collaborator holding a member envelope for that
+// calendar — deleting it would destroy data OTHER people can still open.
+test('solo re-key purge spares resource-sealed records and the collaborators who read them', async () => {
+  const { owner, viewer, calendarKey } = await sharedCalendarSetup();
+  const householdId = owner.user.householdId;
+
+  // One plain HDK-sealed record (dies with the HDK) …
+  const plain = await request().post('/api/records').set('Authorization', owner.auth).send(sealedRecord());
+  assert.equal(plain.status, 201);
+  // … and one record sealed under the shared CalendarKey (must survive).
+  const calSealed = await request().post('/api/records').set('Authorization', owner.auth).send({
+    enc: { alg: 'xchacha20poly1305-ietf-v2', nonce: b64u(32), ct: b64u(96), ks: 'cal' },
+    keyVersion: 1,
+    scope: { kind: 'calendar', resource: calendarKey, version: 1 },
+  });
+  assert.equal(calSealed.status, 201);
+
+  // The OWNER re-keys. Solo household (the collaborator holds a resource
+  // envelope, not an HDK envelope, so peerEnvelopes === 0) → the purge runs.
+  const res = await request().post('/api/keys/rekey').set('Authorization', owner.auth)
+    .send({ ...keyMaterial(), confirmDataLoss: true });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.householdReset, true);
+
+  // The HDK-sealed row is gone; the CalendarKey-sealed row survives.
+  assert.equal(await Record.countDocuments({ _id: plain.body._id }), 0, 'dead HDK ciphertext purged');
+  assert.equal(await Record.countDocuments({ _id: calSealed.body._id }), 1, 'resource-sealed row spared');
+
+  // The collaborator's member envelope survives (only the household-wrapped
+  // copy — sealed under the dead HDK — dies with the reset).
+  assert.equal(
+    await ResourceKeyEnvelope.countDocuments({ recipient: 'member', userId: viewer.user._id, resourceKey: calendarKey }), 1,
+  );
+  assert.equal(
+    await ResourceKeyEnvelope.countDocuments({ recipient: 'household', householdId }), 0,
+  );
+
+  // And the collaborator can still pull the record over the ordinary sync lane.
+  const sync = await request().get('/api/records/sync').set('Authorization', viewer.auth);
+  assert.equal(sync.status, 200);
+  const ids = sync.body.records.map((r) => String(r._id));
+  assert.ok(ids.includes(String(calSealed.body._id)), 'the shared record still syncs to the collaborator');
+});
+
 test('re-key in a shared household keeps the data and flags the rotation that re-admits the new key', async () => {
   const owner = await registerUser({ firstName: 'Olive' });
   await enrollKeys(owner.auth);

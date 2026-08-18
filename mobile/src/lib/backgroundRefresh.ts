@@ -8,6 +8,7 @@
 import * as BackgroundFetch from 'expo-background-fetch';
 import * as TaskManager from 'expo-task-manager';
 import { rescheduleReminders } from './notifications';
+import { refreshWidgetSnapshot } from './widgetSnapshot';
 
 const TASK = 'reminder-refresh';
 
@@ -17,6 +18,9 @@ const TASK = 'reminder-refresh';
 TaskManager.defineTask(TASK, async () => {
   try {
     const scheduled = await rescheduleReminders();
+    // Same slot keeps the home-screen widget's snapshot window rolling
+    // forward between foregrounds (no-op when locked or bridge-less).
+    await refreshWidgetSnapshot();
     return scheduled > 0
       ? BackgroundFetch.BackgroundFetchResult.NewData
       : BackgroundFetch.BackgroundFetchResult.NoData;

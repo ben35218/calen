@@ -4,15 +4,40 @@
 // renders nothing at all, which is how the card thumbnail and the detail hero
 // were already broken before this existed.
 
-import { recipeImageUri, claimRecipePhoto } from '../recipePhoto';
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { recipeImageUri, claimRecipePhoto, flushPendingPhotoClaims } from '../recipePhoto';
 import { API_BASE_URL } from '../../config';
 
-const mockSetPhoto = jest.fn(async () => ({ data: { claimed: null, removed: 0 } }));
+const mockSetPhoto = jest.fn(async () => ({ data: { claimed: null as string | null, removed: 0 } }));
 jest.mock('../../api', () => ({
   recipesApi: { setPhoto: (...args: unknown[]) => mockSetPhoto(...(args as [])) },
 }));
 
-beforeEach(() => mockSetPhoto.mockClear());
+// An axios-shaped failure the server ANSWERED (retrying can't change it).
+const answered = (status: number) => Object.assign(new Error(`http ${status}`), { response: { status } });
+// A failure that never reached the server (offline/timeout) — retryable.
+const offline = () => new Error('Network Error');
+
+const PENDING_KEY = 'recipePhotoClaims.pending';
+const readQueue = async () => JSON.parse((await AsyncStorage.getItem(PENDING_KEY)) ?? '[]');
+
+beforeEach(async () => {
+  mockSetPhoto.mockReset();
+  mockSetPhoto.mockImplementation(async () => ({ data: { claimed: null, removed: 0 } }));
+  await AsyncStorage.clear();
+  jest.useFakeTimers();
+});
+afterEach(() => jest.useRealTimers());
+
+// Drive a claim/flush promise past its internal retry delays.
+const settle = async <T>(p: Promise<T>): Promise<T> => {
+  await jest.advanceTimersByTimeAsync(5_000);
+  return p;
+};
 
 describe('recipeImageUri', () => {
   it('joins the API host onto a stored server path', () => {
@@ -51,7 +76,71 @@ describe('claimRecipePhoto', () => {
   });
 
   it('never rejects — the recipe is already saved by the time it runs', async () => {
-    mockSetPhoto.mockRejectedValueOnce(new Error('offline'));
-    await expect(claimRecipePhoto('r1', '/uploads/recipes/abc.jpg')).resolves.toBeUndefined();
+    mockSetPhoto.mockRejectedValueOnce(offline());
+    await expect(settle(claimRecipePhoto('r1', '/uploads/recipes/abc.jpg'))).resolves.toBeUndefined();
+  });
+
+  it('retries a transient failure inline before giving up', async () => {
+    mockSetPhoto.mockRejectedValueOnce(offline()).mockRejectedValueOnce(offline());
+    await settle(claimRecipePhoto('r1', '/uploads/recipes/abc.jpg'));
+    expect(mockSetPhoto).toHaveBeenCalledTimes(3); // first try + 2 retries, third landed
+    expect(await readQueue()).toEqual([]); // nothing left to park
+  });
+
+  it('parks a claim the server never answered in the durable queue', async () => {
+    mockSetPhoto.mockRejectedValue(offline());
+    await settle(claimRecipePhoto('r1', '/uploads/recipes/abc.jpg'));
+    expect(await readQueue()).toEqual([{ recipeId: 'r1', imageUrl: '/uploads/recipes/abc.jpg' }]);
+  });
+
+  it('a newer save\'s claim supersedes the same recipe\'s parked one', async () => {
+    mockSetPhoto.mockRejectedValue(offline());
+    await settle(claimRecipePhoto('r1', '/uploads/recipes/old.jpg'));
+    await settle(claimRecipePhoto('r1', '/uploads/recipes/new.jpg'));
+    expect(await readQueue()).toEqual([{ recipeId: 'r1', imageUrl: '/uploads/recipes/new.jpg' }]);
+  });
+
+  it('an answered error (404: already swept) is dropped silently, never queued', async () => {
+    mockSetPhoto.mockRejectedValue(answered(404));
+    await settle(claimRecipePhoto('r1', '/uploads/recipes/gone.jpg'));
+    expect(mockSetPhoto).toHaveBeenCalledTimes(1); // no point retrying an answer
+    expect(await readQueue()).toEqual([]);
+  });
+});
+
+describe('flushPendingPhotoClaims', () => {
+  const park = async (recipeId: string, imageUrl: string) => {
+    mockSetPhoto.mockRejectedValue(offline());
+    await settle(claimRecipePhoto(recipeId, imageUrl));
+  };
+
+  it('a successful flush claims and dequeues', async () => {
+    await park('r1', '/uploads/recipes/abc.jpg');
+    mockSetPhoto.mockReset();
+    mockSetPhoto.mockResolvedValue({ data: { claimed: 'abc.jpg' as string | null, removed: 0 } });
+    await settle(flushPendingPhotoClaims());
+    expect(mockSetPhoto).toHaveBeenCalledWith('r1', '/uploads/recipes/abc.jpg');
+    expect(await readQueue()).toEqual([]);
+  });
+
+  it('a 404 (photo swept while parked) dequeues silently', async () => {
+    await park('r1', '/uploads/recipes/gone.jpg');
+    mockSetPhoto.mockReset();
+    mockSetPhoto.mockRejectedValue(answered(404));
+    await settle(flushPendingPhotoClaims());
+    expect(await readQueue()).toEqual([]);
+  });
+
+  it('a still-unreachable server keeps the claim parked for next time', async () => {
+    await park('r1', '/uploads/recipes/abc.jpg');
+    mockSetPhoto.mockReset();
+    mockSetPhoto.mockRejectedValue(offline());
+    await settle(flushPendingPhotoClaims());
+    expect(await readQueue()).toEqual([{ recipeId: 'r1', imageUrl: '/uploads/recipes/abc.jpg' }]);
+  });
+
+  it('an empty queue is a no-op', async () => {
+    await settle(flushPendingPhotoClaims());
+    expect(mockSetPhoto).not.toHaveBeenCalled();
   });
 });

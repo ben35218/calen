@@ -36,6 +36,41 @@ test('sign-ins create sessions; revoking one kills its token', async () => {
   assert.equal(alive.body.sessions.length, 1);
 });
 
+// F2 + push hygiene (fixed 2026-08-13): a remotely signed-out device 401s on
+// every call, so it can never run its own push unregister — and its Expo token
+// stays APNs/FCM-valid, so DeviceNotRegistered pruning never fires either.
+// Revoking a session must therefore prune the push subscription its deviceId
+// links to, or the revoked device keeps receiving the account's pushes forever.
+test('revoking a device session prunes that device\'s push subscription', async () => {
+  const User = require('../models/User');
+  const u = await registerUser({ firstName: 'Prue', password: 'test-password-1' });
+
+  // A second device signs in and registers for push (X-Device-Id links the
+  // session row to the push subscription).
+  const login = await request().post('/api/auth/login')
+    .set('X-Device-Name', 'Lost iPhone').set('X-Device-Platform', 'ios')
+    .set('X-Device-Id', 'install-lost')
+    .send({ email: u.user.email, password: 'test-password-1' });
+  assert.equal(login.status, 200);
+  const phoneAuth = `Bearer ${login.body.token}`;
+  const reg = await request().post('/api/notifications/push/register-native')
+    .set('Authorization', phoneAuth).set('X-Device-Id', 'install-lost')
+    .send({ expoToken: 'ExponentPushToken[lost-phone]', platform: 'ios', label: 'Lost iPhone' });
+  assert.equal(reg.status, 200);
+  assert.equal((await User.findById(u.user._id).lean()).pushSubscriptions.length, 1);
+
+  // "Sign out device" from the original device.
+  const list = await request().get('/api/auth/sessions').set('Authorization', u.auth);
+  const row = list.body.sessions.find((s) => s.deviceName === 'Lost iPhone');
+  assert.ok(row, 'the phone session is listed');
+  const revoke = await request().delete(`/api/auth/sessions/${row._id}`).set('Authorization', u.auth);
+  assert.equal(revoke.status, 200);
+
+  const after = await User.findById(u.user._id).lean();
+  assert.equal(after.sessions.some((s) => String(s._id) === String(row._id)), false, 'the session is gone');
+  assert.equal(after.pushSubscriptions.length, 0, 'the revoked device\'s push subscription is pruned with it');
+});
+
 test('X-Device-Id sign-ins coalesce to one session row per install', async () => {
   const u = await registerUser({ firstName: 'Hal', password: 'test-password-1' });
   const login = (deviceId) => request().post('/api/auth/login')

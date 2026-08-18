@@ -12,6 +12,7 @@ const mailer = require('../services/mailer');
 const { isConfigured: pushConfigured } = require('../services/push');
 const { cleanupOrphanUploads } = require('./cleanupOrphanUploads');
 const { runEmailReconcile } = require('./emailReconcile');
+const { runPushReceiptCheck } = require('./pushReceipts');
 
 const APP_URL = () => process.env.APP_URL || 'http://localhost:5174';
 
@@ -384,11 +385,15 @@ function startScheduler() {
   // Email delivery outbox: retry transient/provider-blocked sends on backoff.
   cron.schedule('*/10 * * * *', () => runEmailReconcile().catch(err =>
     console.error('[Scheduler] runEmailReconcile failed:', err.message)));
-  console.log('[Scheduler] Per-item push alerts: daily check hourly (fires each member\'s chosen local hour, 9am default, for tasks/chores/birthdays); event reminders every 15 min; occasion e-cards hourly (fire on the occasion date at the author\'s send-time); orphan-upload cleanup at 03:30; key-rotation age check at 03:45; email delivery reconcile every 10 min');
+  // Expo push receipts: fetch delivery receipts for recent sends and prune
+  // subscriptions whose receipt says DeviceNotRegistered (jobs/pushReceipts.js).
+  cron.schedule('*/15 * * * *', () => runPushReceiptCheck().catch(err =>
+    console.error('[Scheduler] runPushReceiptCheck failed:', err.message)));
+  console.log('[Scheduler] Per-item push alerts: daily check hourly (fires each member\'s chosen local hour, 9am default, for tasks/chores/birthdays); event reminders every 15 min; occasion e-cards hourly (fire on the occasion date at the author\'s send-time); orphan-upload cleanup at 03:30; key-rotation age check at 03:45; email delivery reconcile every 10 min; Expo push receipt check every 15 min');
 }
 
 module.exports = {
-  startScheduler, runDailyCheck, runEventReminderCheck, runKeyRotationCheck, runECardCheck, runEmailReconcile,
+  startScheduler, runDailyCheck, runEventReminderCheck, runKeyRotationCheck, runECardCheck, runEmailReconcile, runPushReceiptCheck,
   // Exported for tests.
   runDailyCheckForHousehold, inAudience, alertsToday, localHour, localDateStr,
 };

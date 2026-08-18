@@ -19,6 +19,7 @@ import {
   markInvitesPrompted,
 } from '../lib/inviteAlerts';
 import { currentUserId, subscribeKeysReady } from '../lib/e2ee';
+import { noteInterruption } from '../lib/securityNudges';
 import { customCalendarsApi, householdApi, invitationsApi, keysApi, tripsApi } from '../api';
 import { useAuth } from '../store/auth';
 import type { RootStackParamList } from '../navigation/types';
@@ -218,6 +219,9 @@ export function useInviteAlerts(
         // Remember before presenting: a re-trigger while the alert is up (a
         // foreground bounce, the push landing) must not stack a second copy.
         await markInvitesPrompted(me, fresh.map(inviteKey));
+        // Invitations outrank the security nudges — an open where this pop-up
+        // presents anything makes the nudge sit out (see useSecurityNudges).
+        noteInterruption();
         // Guardian requests present apart from (and before) ordinary
         // invitations; iOS queues the second alert behind the first.
         const guardianFresh = fresh.filter((i) => i.kind === 'guardianRequest');

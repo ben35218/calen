@@ -100,9 +100,8 @@ export function recurrenceLabel(r?: Recurrence | null): string {
     }
     if (r.intervalUnit === 'months') {
       if (r.weekOfMonth != null && r.dayOfWeek != null) {
-        const pos = r.weekOfMonth === -1
-          ? 'last'
-          : ['', 'first', 'second', 'third', 'fourth'][r.weekOfMonth];
+        // ORDINAL_LABELS covers the full engine range (1..5, -1, -2).
+        const pos = ORDINAL_LABELS[r.weekOfMonth] ?? '';
         label += ` on the ${pos} ${WEEKDAY_NAMES[r.dayOfWeek]}`;
       } else if (r.dayOfMonth) {
         label += ` on the ${ordinal(r.dayOfMonth)}`;
@@ -337,6 +336,10 @@ export function recurrenceToRule(r?: Recurrence | null): RepeatRule {
   if (r.type === 'calendar') {
     rule.freq = 'yearly';
     rule.months = r.months?.length ? [...r.months] : [];
+    // The day within each month rides in daysOfMonth (the rule's only
+    // day-of-month slot) so an edit round-trip keeps it — dropping it here
+    // silently moved every occurrence to the 1st on the next save.
+    if (r.dayOfMonth != null) rule.daysOfMonth = [r.dayOfMonth];
     return rule;
   }
   rule.interval = r.intervalValue || 1;
@@ -356,6 +359,9 @@ export function recurrenceToRule(r?: Recurrence | null): RepeatRule {
     case 'years':
       rule.freq = 'yearly';
       if (r.months?.length) rule.months = [...r.months];
+      // Same carry as the calendar branch: a yearly anchor day must survive
+      // the trip through the Repeat screen.
+      if (r.dayOfMonth != null) rule.daysOfMonth = [r.dayOfMonth];
       break;
     case 'weeks':
     default:
@@ -495,9 +501,41 @@ export function dueDateForRule(rule: RepeatRule, from: Date = new Date()): Date 
 
 const orList = (parts: string[]) =>
   parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} or ${parts[parts.length - 1]}`;
+const andList = (parts: string[]) =>
+  parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 const ORDINAL_LABELS: Record<number, string> = {
   1: 'first', 2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth', [-1]: 'last', [-2]: 'next to last',
 };
+
+// A rule the sealed chore/task Recurrence model cannot store losslessly. The
+// model keeps ONE dayOfWeek / dayOfMonth and only concrete Sun..Sat ordinal
+// kinds — `ruleToRecurrence` used to keep just the first day silently, so
+// "weekly on Tue & Thu" saved as Tuesday-only. The Repeat screen no longer
+// offers these shapes to chores/tasks (`singleDay` mode), and this backstop
+// refuses any that still reach save (legacy drafts, assistant drafts, future
+// entry points). Returns a user-facing message, or null when the rule is
+// storable as-is.
+export function ruleLossyForItem(rule: RepeatRule): string | null {
+  if (!rule.freq) return null;
+  if (rule.freq === 'weekly' && rule.daysOfWeek.length > 1) {
+    const days = [...rule.daysOfWeek].sort((a, b) => a - b).map((n) => WEEKDAY_NAMES[n]);
+    return `The repeat is on ${andList(days)}, but a chore or task can only repeat on one weekday. Keep a single day, or create one per day.`;
+  }
+  if ((rule.freq === 'monthly' || rule.freq === 'yearly') && rule.daysOfMonth.length > 1) {
+    const days = [...rule.daysOfMonth].sort((a, b) => a - b).map(ordinal);
+    return `The repeat is on the ${andList(days)}, but a chore or task can only repeat on one day of the month. Keep a single day, or create one per day.`;
+  }
+  if (rule.freq === 'yearly' && rule.weekOfMonth != null) {
+    return 'A yearly chore or task repeats on its date — it can\'t store a day-of-week rule within the year. Change the repeat.';
+  }
+  if (rule.freq === 'monthly' && rule.weekOfMonth != null && rule.weekdayKind
+      && !WEEKDAY_KINDS.includes(rule.weekdayKind)) {
+    const ord = ORDINAL_LABELS[rule.weekOfMonth] ?? '';
+    const kind = rule.weekdayKind === 'weekend' ? 'weekend day' : rule.weekdayKind === 'weekday' ? 'weekday' : 'day';
+    return `The repeat is on the ${ord} ${kind} of the month, but a chore or task needs a specific weekday (Sunday through Saturday). Change the repeat.`;
+  }
+  return null;
+}
 
 // A due date the repeat rule itself would never generate — "every week on
 // Tuesday" anchored on a Wednesday. The stored anchor IS the series' pattern
@@ -506,7 +544,15 @@ const ORDINAL_LABELS: Record<number, string> = {
 // "This Chore Only" copy, which saves as one-time and may land anywhere).
 // Returns a user-facing message naming the conflict, or null when the date
 // fits — or when the rule pins no days at all (daily, plain weekly/monthly).
+//
+// Also folds in `ruleLossyForItem`: its consumers are exactly the chore/task
+// save paths, and a rule the sealed model would silently degrade is refused
+// on the same inline-error channel (checked first, and even with no date —
+// callers pass '' when the date field is empty). The detached-occurrence
+// exemption is right for it too: that scope discards the rule entirely.
 export function ruleDateMismatch(rule: RepeatRule, date: string): string | null {
+  const lossy = ruleLossyForItem(rule);
+  if (lossy) return lossy;
   const clause = mismatchClause(rule, date);
   return clause ? `${clause} Pick a matching date or change the repeat.` : null;
 }
@@ -552,7 +598,11 @@ function mismatchClause(rule: RepeatRule, date: string): string | null {
         return `The repeat is on the ${ord} day of the month, but this date is the ${ordinal(d.getDate())}.`;
       }
     }
-  } else if (rule.freq === 'monthly' && rule.daysOfMonth.length && !rule.daysOfMonth.includes(d.getDate())) {
+  } else if (
+    (rule.freq === 'monthly' || rule.freq === 'yearly') &&
+    rule.daysOfMonth.length &&
+    !clampedDayMatch(rule.daysOfMonth, d)
+  ) {
     const days = [...rule.daysOfMonth].sort((a, b) => a - b).map(ordinal);
     return `The repeat is on the ${orList(days)} of the month, but this date is the ${ordinal(d.getDate())}.`;
   }
@@ -565,11 +615,29 @@ function mismatchClause(rule: RepeatRule, date: string): string | null {
   return null;
 }
 
+// Mirrors the expansion engine's `clampDay` (shared/calendar/index.js:
+// `setDate(date, Math.min(day, getDaysInMonth(date)))`): a configured
+// day-of-month past the end of a short month legitimately fires on that month's
+// LAST day — monthly on the 31st runs Sep 30 and Feb 28/29, on the 30th runs
+// Feb 28/29, on the 29th runs Feb 28 only in a non-leap year. A date therefore
+// satisfies a configured day exactly when it lands where clampDay would put it;
+// anything else (rule 31 on Sep 29) is still a mismatch. Without this the form
+// rejected its own auto-reseeded due date (`dueDateFor` writes the clamped
+// date), and a series edit opened on a clamped occurrence could never save.
+function clampedDayMatch(days: number[], d: Date): boolean {
+  const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return days.some((day) => d.getDate() === Math.min(day, daysInMonth));
+}
+
 export function ruleToRecurrence(rule: RepeatRule): Recurrence {
   if (!rule.freq) return { type: 'one-time' };
   // Multiple months only exist in the task 'calendar' type.
   if (rule.freq === 'yearly' && rule.months.length > 1) {
-    return { type: 'calendar', months: [...rule.months].sort((a, b) => a - b) };
+    const rec: Recurrence = { type: 'calendar', months: [...rule.months].sort((a, b) => a - b) };
+    // Write the anchor day back — without it the engine defaults every
+    // occurrence to the 1st (shared/calendar `day = r.dayOfMonth || 1`).
+    if (rule.daysOfMonth.length) rec.dayOfMonth = [...rule.daysOfMonth].sort((a, b) => a - b)[0];
+    return rec;
   }
   const rec: Recurrence = { type: 'interval', intervalValue: rule.interval || 1, months: [] };
   switch (rule.freq) {
@@ -597,6 +665,7 @@ export function ruleToRecurrence(rule: RepeatRule): Recurrence {
     case 'yearly':
       rec.intervalUnit = 'years';
       if (rule.months.length) rec.months = [...rule.months];
+      if (rule.daysOfMonth.length) rec.dayOfMonth = [...rule.daysOfMonth].sort((a, b) => a - b)[0];
       break;
   }
   return rec;

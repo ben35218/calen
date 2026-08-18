@@ -21,10 +21,16 @@ export function aggregateGroceryList(
     const multiplier = s.servings && recipe.servings ? s.servings / recipe.servings : 1;
     // Variation groups are mutually exclusive flavor kits: when the schedule
     // records a choice, buy only the chosen kit (base + component groups always
-    // count). A schedule with no recorded choice buys everything, as before.
+    // count). A schedule with no recorded choice buys everything, as before —
+    // and so does a DANGLING choice: the sealed `s.variation` can outlive the
+    // kit it names (deleted when its last ingredient went, or renamed by an AI
+    // edit), and excluding "every kit that isn't the chosen one" against a kit
+    // that no longer exists would quietly buy base ingredients only. No current
+    // kit matching the recorded choice ⇒ fail open, exclude nothing.
     const variationSet = new Set(recipe.variations ?? []);
+    const chosen = s.variation && variationSet.has(s.variation) ? s.variation : null;
     for (const ing of recipe.ingredients) {
-      if (s.variation && ing.group && variationSet.has(ing.group) && ing.group !== s.variation) continue;
+      if (chosen && ing.group && variationSet.has(ing.group) && ing.group !== chosen) continue;
       const key = ing.name.toLowerCase().trim();
       let item = map.get(key);
       if (!item) {

@@ -64,6 +64,78 @@ describe('matchVoiceCommand', () => {
   });
 });
 
+// Destructive jumps are utterance-anchored: the phrase must open the (trimmed)
+// transcript, or the whole utterance must be short enough (≤4 words) to read
+// as a command. Kitchen chatter that merely CONTAINS the phrase — including
+// the number homophones "to"/"for" after "step" — must not move the cook.
+describe('anchored commands', () => {
+  const anchored = (...phrases: string[]): VoiceCommand => ({ phrases, anchored: true, onMatch: jest.fn() });
+  const next = cmd('next', 'continue');
+  const back = anchored('back');
+  const previous = cmd('previous');
+  const jump = anchored('go to step #', 'step #');
+  const top = anchored('top', 'scroll to top');
+  const bottom = anchored('bottom', 'scroll to bottom');
+  const all = [next, back, previous, jump, top, bottom];
+
+  it('"what is the next step to take" no longer jumps to step 2', () => {
+    const m = matchVoiceCommand('what is the next step to take', all);
+    expect(m?.command).not.toBe(jump); // the bare-keyword "next" may still fire — by design
+  });
+
+  it('chatter containing "back" mid-sentence does not go back', () => {
+    expect(matchVoiceCommand('put the lid back on it', all)).toBeNull();
+    expect(matchVoiceCommand("I'll be right back in a minute", all)).toBeNull();
+  });
+
+  it('command-shaped jumps still fire', () => {
+    expect(matchVoiceCommand('step 3', all)).toEqual({ command: jump, value: 3, phrase: 'step #' });
+    expect(matchVoiceCommand('go to step 3', all)).toEqual({ command: jump, value: 3, phrase: 'go to step #' });
+    expect(matchVoiceCommand('step to', all)?.value).toBe(2); // recognizer's "step two"
+    expect(matchVoiceCommand('back', all)?.command).toBe(back);
+    expect(matchVoiceCommand('go back please', all)?.command).toBe(back); // short utterance
+    expect(matchVoiceCommand('bottom', all)?.command).toBe(bottom);
+    expect(matchVoiceCommand('scroll to top', all)?.command).toBe(top);
+  });
+
+  it('an anchored phrase at the start of a longer utterance fires', () => {
+    expect(matchVoiceCommand('go to step 4 and start the sauce', all)?.command).toBe(jump);
+  });
+
+  it('non-destructive keywords stay permissive', () => {
+    expect(matchVoiceCommand('ok next', all)?.command).toBe(next);
+    expect(matchVoiceCommand('and now the previous one thanks please', all)?.command).toBe(previous);
+  });
+});
+
+// Longer phrase commands win over contained bare keywords even with natural
+// filler between their words: "read me the ingredients" is the read-aloud
+// command, not the ingredients view toggle.
+describe('filler words inside phrase commands', () => {
+  const toggle = cmd('ingredients', 'show ingredients');
+  const read = cmd('read', 'read step', 'read it');
+  const readIng = cmd('read ingredients');
+  const all = [toggle, read, readIng];
+
+  it('"read me the ingredients" reads instead of flipping the view', () => {
+    expect(matchVoiceCommand('read me the ingredients', all)?.command).toBe(readIng);
+    expect(matchVoiceCommand('read the ingredients', all)?.command).toBe(readIng);
+    expect(matchVoiceCommand('read ingredients', all)?.command).toBe(readIng);
+  });
+
+  it('arbitrary words between phrase words do not bridge the phrase', () => {
+    // Non-whitelisted words break the phrase: this is NOT "read ingredients"
+    // (the bare keywords it contains still compete as usual).
+    expect(matchVoiceCommand('read the recipe then check ingredients', all)?.command).not.toBe(readIng);
+  });
+
+  it('the interim hold survives a filler tail while the phrase may complete', () => {
+    const m = matchVoiceCommand('read me the', all)!;
+    expect(m.command).toBe(read);
+    expect(matchCouldExtend('read me the', m, all)).toBe(true); // "ingredients" may still arrive
+  });
+});
+
 // Interim-result ambiguity (the hook holds these until the transcript grows or
 // the final lands): a match whose occurrence ends the transcript, while a
 // DIFFERENT command has a longer phrase that continues it, must not fire yet —

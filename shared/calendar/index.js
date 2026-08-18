@@ -58,18 +58,24 @@ function snapToWeekday(date, targetWeekday) {
 function clampDay(date, day) {
   return setDate(date, Math.min(day, getDaysInMonth(date)));
 }
-// nth occurrence of dayOfWeek within date's month. weekOfMonth: 1..4, -1=last.
+// nth occurrence of dayOfWeek within date's month, or null when the month has
+// no such occurrence (e.g. no 5th Tuesday). weekOfMonth: 1..5 count from the
+// start; -1=last, -2=next to last, … count from the end (every month has at
+// least four of each weekday, so -1..-4 always exist). Same ordinal semantics
+// as ordinalDayOfMonth below (the events path) — the old addWeeks arithmetic
+// overflowed a missing 5th into the NEXT month's first weekday and sent -2
+// into the PREVIOUS month, where the expander's non-advancing-cursor guard
+// killed the series after its anchor.
 function nthWeekdayOfMonth(date, weekOfMonth, dayOfWeek) {
   const year = date.getFullYear();
   const month = date.getMonth();
-  if (weekOfMonth === -1) {
-    let d = new Date(year, month + 1, 0);
-    while (getDay(d) !== dayOfWeek) d = addDays(d, -1);
-    return d;
+  const dim = getDaysInMonth(new Date(year, month, 1));
+  const matches = [];
+  for (let day = 1; day <= dim; day++) {
+    if (getDay(new Date(year, month, day)) === dayOfWeek) matches.push(new Date(year, month, day));
   }
-  let d = new Date(year, month, 1);
-  while (getDay(d) !== dayOfWeek) d = addDays(d, 1);
-  return addWeeks(d, weekOfMonth - 1);
+  const idx = weekOfMonth > 0 ? weekOfMonth - 1 : matches.length + weekOfMonth;
+  return matches[idx] ?? null;
 }
 
 function computeNextDueDate(task, fromDate) {
@@ -87,7 +93,20 @@ function computeNextDueDate(task, fromDate) {
     }
     if (u === 'months') {
       const next = addMonths(base, v);
-      if (r.weekOfMonth != null && dayOfWeek != null) return nthWeekdayOfMonth(next, r.weekOfMonth, dayOfWeek);
+      if (r.weekOfMonth != null && dayOfWeek != null) {
+        // A month with no nth occurrence (no 5th Tuesday) yields nothing and
+        // the walk advances to the next candidate month. Skipped months still
+        // consume an interval step — matching the events path, whose monthly
+        // expander steps `month += interval` unconditionally and just doesn't
+        // emit for a month missing the ordinal.
+        let cand = next;
+        let d = nthWeekdayOfMonth(cand, r.weekOfMonth, dayOfWeek);
+        for (let safety = 0; !d && safety < 48; safety++) {
+          cand = addMonths(cand, v);
+          d = nthWeekdayOfMonth(cand, r.weekOfMonth, dayOfWeek);
+        }
+        return d;
+      }
       return dayOfMonth ? clampDay(next, dayOfMonth) : next;
     }
     if (u === 'years') {

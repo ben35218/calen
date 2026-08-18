@@ -118,9 +118,14 @@ export const CALENDARS: CalendarDef[] = [
 // calendarType. Sharing tiers: the whole household (supersedes `sharedWith`),
 // specific household members (user ids), or contacts outside the household
 // (emails; stored intent — no invitation flow yet). `mine` = created by this
-// user; only the creator can edit or delete.
+// user; the creator manages sharing and deletion, while a housemate with Full
+// Access may also edit the calendar's basics (name / colour / alerts).
 export interface CustomCalendar {
   id: string;
+  // The creator's userId. Screens compare it against the household member list
+  // to tell a housemate's calendar (basics editable at Full Access) from an
+  // outside collaborator's (always read-only). Absent only on stale caches.
+  ownerId?: string;
   name: string;
   color: string;
   // When off, events on this calendar never display alerts.
@@ -151,6 +156,7 @@ export interface CustomCalendar {
 function fromRecord(r: CustomCalendarRecord): CustomCalendar {
   return {
     id: r.key,
+    ownerId: r.userId ? String(r.userId) : undefined,
     name: r.name,
     color: r.color,
     alertsEnabled: r.alertsEnabled !== false,
@@ -1331,6 +1337,20 @@ export async function getHolidayCalendars(): Promise<HolidayCalendar[]> {
   return deriveHolidayCals();
 }
 
+// Non-hook reads of the effective colour map and visibility toggles, for
+// consumers outside React (the widget snapshot writer). Same values the
+// useCalendarColors()/useCalendarVisibility() hooks expose, minus reactivity —
+// callers run per-pass (after a data change), so they re-read every time.
+export async function getCalendarColorMap(): Promise<ColorMap> {
+  await ensureLoaded();
+  return mergedColors();
+}
+
+export async function getCalendarVisibility(): Promise<VisMap> {
+  await ensureLoaded();
+  return { ...(visState ?? defaultVis()) };
+}
+
 // ── Holiday calendars hook ──────────────────────────────────────────────────
 export function useHolidayCalendars() {
   const [calendars, setCalendars] = useState<HolidayCalendar[]>(deriveHolidayCals());
@@ -1533,14 +1553,14 @@ export function useCustomCalendars() {
 
   // Mutations are server-first (they throw offline — callers surface the
   // error); local state and the cache follow only after the server accepts.
-  async function addCalendar(cal: Omit<CustomCalendar, 'id' | 'mine' | 'access'>): Promise<CustomCalendar> {
+  async function addCalendar(cal: Omit<CustomCalendar, 'id' | 'ownerId' | 'mine' | 'access'>): Promise<CustomCalendar> {
     const key = `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const { data } = await customCalendarsApi.create({ key, ...cal });
     const created = fromRecord(data);
     commitCustom([...(customState ?? []), created]);
     return created;
   }
-  async function updateCalendar(id: string, patch: Partial<Omit<CustomCalendar, 'id' | 'mine' | 'access'>>) {
+  async function updateCalendar(id: string, patch: Partial<Omit<CustomCalendar, 'id' | 'ownerId' | 'mine' | 'access'>>) {
     const { data } = await customCalendarsApi.update(id, patch);
     commitCustom((customState ?? []).map((c) => (c.id === id ? fromRecord(data) : c)));
   }

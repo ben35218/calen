@@ -1,7 +1,7 @@
 ---
 title: Accessibility — Dynamic Type
 status: current
-last-verified: 1d42ed2+ (2026-08-12); initial spec — every `Text`/`TextInput` in the app now renders through a capped wrapper (`mobile/src/components/Text.tsx`) instead of the react-native primitive, so iOS Dynamic Type scales the UI to a ceiling the layouts survive (1.5x body, 1.1x fixed-geometry chrome) rather than to AX5's ~3.1x
+last-verified: 3cfa750+ (2026-08-14); **the raw-import guard scan is hardened** — the old scan inspected only the FIRST brace-import from react-native per file and matched exact `Text`/`TextInput` specifiers, so a second import statement, an alias (`Text as RNText`), the default+named form, a namespace import used as `RN.Text`, a `require('react-native')` destructure in app code, or `Animated.Text` all slipped past; the scan now covers every route to the raw primitive (see Verification), is itself unit-tested against each evasion form, and its exemptions are explicit (the wrapper itself; require-based jest.mock factories in test files) (3cfa750+, 2026-08-14); initial spec — every `Text`/`TextInput` in the app now renders through a capped wrapper (`mobile/src/components/Text.tsx`) instead of the react-native primitive, so iOS Dynamic Type scales the UI to a ceiling the layouts survive (1.5x body, 1.1x fixed-geometry chrome) rather than to AX5's ~3.1x (1d42ed2+, 2026-08-12)
 code:
   - mobile/src/components/Text.tsx
 tests:
@@ -58,10 +58,36 @@ Dark/light appearance is **not** covered here — the app is dark-only
 
 ### The wrapper is the only door
 
-A screen that imports `Text` or `TextInput` straight from `react-native` silently
-scales to AX5 and breaks its layout, and the failure is invisible until someone
-runs the app at an accessibility size. The suite therefore scans every file under
-`mobile/src` and fails on any such import.
+A screen that renders `Text` or `TextInput` from `react-native` silently scales
+to AX5 and breaks its layout, and the failure is invisible until someone runs
+the app at an accessibility size. The suite therefore scans every `.ts`/`.tsx`
+file under `mobile/src` and fails on any route to the raw primitive:
+
+- every `import … from 'react-native'` statement in a file (not just the
+  first), including the default+named form;
+- aliased specifiers (`Text as RNText` — flagged on the react-native-side
+  name);
+- namespace or default module objects later used as `<ns>.Text` /
+  `<ns>.TextInput`;
+- `require('react-native')` destructures (plain or renamed), module-object
+  requires used the same way, and direct `require('react-native').Text`
+  members — in app code;
+- `Animated.Text` where `Animated` comes from react-native (an animated Text
+  is still a raw, uncapped Text; `Animated.createAnimatedComponent` of the
+  *wrapper* is fine — the cap still applies underneath).
+
+Type-only specifiers (`type TextProps`, `import type { … }`) cannot render and
+are ignored. Exemptions are deliberate and exhaustive: the wrapper itself
+(`components/Text.tsx`, which imports the primitives by design), the scanner's
+own test file (its fixtures are offender-shaped strings), and — for the
+**require-based checks only** — test files (`__tests__/`, `__mocks__/`,
+`*.test.*`), whose jest.mock factories must lazy-require react-native and whose
+rendered mocks never meet Dynamic Type. ESM imports in test files are still
+scanned.
+
+The scan is a source scan (regex, no parser dependency), and it does **not**
+prove the absence of every conceivable indirection (e.g. re-exporting the
+primitive through another module) — it enforces the conventional routes.
 
 ## Data & API surface
 
@@ -85,8 +111,15 @@ Not applicable; no data crosses a boundary here.
   `FIXED_MAX_SCALE` → the two "applies the … cap" cases
 - a caller's own `maxFontSizeMultiplier` / `allowFontScaling` beats the default
   → "lets a caller override the cap"
-- no file under `mobile/src` imports `Text`/`TextInput` from `react-native`
-  → "imports Text/TextInput from components/Text, never react-native"
+- no file under `mobile/src` reaches the raw `Text`/`TextInput` by any of the
+  scanned routes (imports in any form, namespace/module-object member use,
+  app-code requires, `Animated.Text`) → "imports Text/TextInput from
+  components/Text, never react-native"
+- the scan itself catches each evasion form and passes each legitimate one
+  (aliases, second import statements, default+named, namespace use, require
+  variants, `Animated.Text`, type-only imports, wrapper-based
+  `createAnimatedComponent`, the test-file require exemption) → the "the scan
+  catches every route to the raw primitive" describe block
 
 **Not yet verified on device.** The caps are enforced in code and under test, but
 nobody has run the app at AX5 to confirm 1.5x is actually the right ceiling, or

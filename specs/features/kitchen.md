@@ -1,7 +1,7 @@
 ---
 title: Kitchen (recipes, meal planning, grocery)
 status: current
-last-verified: 3cd3b36+ (2026-08-11); the recipe add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); recipe sharing is now device-composed via the OS share sheet (`RecipeDetail` `Share.share`) — the server-sent styled email (`POST /recipes/:id/share-email`) was retired 2026-08-01, removing the decrypted-recipe plaintext round-trip (2026-08-01); kitchen search fields (Recipes search, Add-meal header search, step ingredient-linker browse search) set `autoCapitalize="none"` + `autoCorrect={false}` per the app-wide input-hint convention (mobile/CLAUDE.md) (2026-08-10); the meal planner's week window + recipe-title join moved on-device (`lib/mealSchedule.ts`) — the leftover `{start,end}` range param hit the record store's equality-only filter and emptied both the Meals view and the grocery list (2026-08-10); a recipe's upcoming "Next scheduled" date is now a link into the meal planner — it opens the Meals view on that shopping period with the day scrolled to and highlighted, and the featured-schedule pick moved to `lib/mealSchedule.featuredSchedule` (sorted, so "next" is genuinely next) (2026-08-10); planner meal rows lost their red ✕ for swipe-to-Remove behind the native confirm, and the `SwipeableRow` that was local to `RecipesScreen` was promoted to the shared kit (components/ui) so both use one implementation (2026-08-10); the grocery cart now queues a planner highlight for the shopping day (`pane` alone picks a pane — `scrollToDate` no longer implies the Planner), scheduled meals get their real recipe name back on the calendar via an on-device title join (`lib/mealSchedule.populateRecipeRefs`), and the meal/shopping glyphs moved to shared `RECIPE_ICON`/`GROCERY_ICON` constants used by the month grid, list, day view, search, and the planner (2026-08-10); the shared `SwipeableRow`'s revealed action now follows the row's measured height — the word alone on a short interior row (the planner meal row, where the glyph + word pair didn't fit), glyph over word on a tall card — and the reveal became undoable: swipe back or tap the open row to put it away, with the screen's back gesture suspended while any row is open so the undo swipe stops popping the user out of the Meals view (2026-08-10); Organize now returns shopper-facing item names — Title Case with the prep clause and filler stripped ("garlic cloves, minced" → "Garlic Cloves", "fresh basil leaves" → "Basil") — set by the prompt and made deterministic by `services/groceryNames.js`, which also abbreviates spoon units to tbsp/tsp (every recipe spelling, single-letter T/t left alone as ambiguous) and merges items whose cleaned names collide inside a section; an empty section no longer renders its header (dropped server-side and skipped at render, since pre-existing organized lists are persisted in `ShoppingSession`) (2026-08-10); the grocery card's header was decrowded — title + progress stack with only the sections glyph beside them, and the Organize / view-flip control moved to its own band below the divider (filled accent = the billable AI call, outline = the free flip) — and "Plain list" stopped discarding the organized result, so flipping back is free; the organized list was made change-aware via `organizedFor` (2026-08-10); the Meals view's top was rebuilt: above the tabs there is now only the period (relative label + the concrete date range it stands for, non-interactive), the Grocery Schedule card appears only while the schedule is unset, and this screen's two settings (Grocery Shopping Schedule, Grocery List Sections) moved out of the content into a single `⋯` nav-bar overflow sheet — the grocery card's unlabelled sort glyph went with them; Recipes then joined that menu too, leaving `headerRight` with the `⋯` alone so the "Meals" title sits centred like every other view (2026-08-10); the planner's shopping-day marker now distinguishes the next upcoming trip (accent ring + "Next Shopping Day") from one already taken ("Shopped") — and the day comparison behind it, shared with the "Today" pill, was moved off `iso(new Date())`, which read the UTC date and rolled the day over after ~8pm Eastern (2026-08-10); the `n of m` shopping progress now counts the rows on screen rather than the raw aggregated list — it sat frozen at "0 of 13" for anyone shopping the organized view, whose renamed rows share no keys with the plain list — and every wordless control on an item row gained an accessibility label (2026-08-10); the recipe library's "All" view became a flat alphabetical list showing each recipe once — the old group-by-tag sections repeated a multi-tagged recipe under every tag it carried, reading as duplicates — with per-tag sections now appearing only when a chip is selected (2026-08-11); the recipe form's Title input now enforces a capital first letter on the value itself via `lib/strings.capFirst` — the `sentences` keyboard hint alone let a lowercase title through (2026-08-11); cooking mode and the recipe edit form now decrypt their fetched recipe via `openRecord` like every other reader — both fetched the raw sealed row, so per-step ingredient tags and timers never rendered in cooking mode, and an edit form seeded from a sealed row could save enc-only fields back emptied (2026-08-11); the quick import gained multi-photo capture — up to 5 photos of one recipe extracted in a single `from-photo` request (library multi-select, or a camera "Add another page?" loop) — the form body shimmers a form-shaped skeleton while any import is in flight (replacing a lone spinner over the empty form), and a successful import now swaps the Quick import card for the AI assistant so the result can be refined before first save (2026-08-11); a drifted organized list is now patched locally instead of retired — added ingredients surface in a leading "New Items" section, removed ones drop out, re-portioned amounts are rewritten deterministically, and a Re-organize pill appears only while the plan has drifted — with the name normalizer promoted to the shared `@household/grocery` package so the server's organize response and the client's reconcile clean names identically; the sections also became hand-editable — tap an item's name in the organized view to file it via a section sheet, with the first move from the plain list creating the organized list (no mode, no button — a standing gesture explained by an ⓘ disclosure on the card title), manual moves committing the patched list + fingerprint, and the AI Organize/Re-organize action always present in the band (2026-08-11); the recipe form now seals saves with the canonical `lib/encSubsets.RECIPE_ENC` — its stale local subset omitted `instructionIngredients`/`instructionTimers`/`imageUrl`/`sourceUrl`, and since only `enc` reaches the opaque store those fields were dropped on every save (why per-step tags and timers stayed missing in cooking mode even after the reader-side decrypt fix; pre-fix recipes need them re-entered) (2026-08-11); cooking mode went hands-free — an opt-in mic pill runs continuous on-device keyword spotting (`hooks/useVoiceCommands`: next/back/start timer/ingredients, no AI or telephony cost, restarts across OS session ends, shares the dictation recognizer behind active-flag guards) with haptic + pill-label feedback, knuckle-tap zones on the step area (right two-thirds = next, left third = back, screen-reader-hidden), and the screen now stays awake via `expo-keep-awake` (NEW NATIVE MODULE → needs EAS rebuild; voice + tap zones work on existing builds) (2026-08-11); voice commands then got faster and richer — matching moved to the first interim result (a final only lands after the utterance ends, and that delay read as "not heard", inviting repeats; one command per utterance, reset on the final), the grammar gained "go to step # / step #" jumps (digits, number words, and to/for-style homophones; out-of-range ignored), the mic pill widened to read at arm's length (fixed minWidth, "Listening…" while live), and an ⓘ HintDisclosure under the progress bar lists the spoken commands (2026-08-11); recipes gained ingredient groups + flavor variations — `Ingredient.group` sections with `Recipe.variations` naming the mutually exclusive flavor kits (a shared base + "Lemon Blueberry" / "Chocolate Peanut Butter" options, the baking pattern), taught to every AI capture/edit prompt, rendered as section headers on the detail/form/share/cooking surfaces, chosen per-meal at scheduling (`RecipeSchedule.variation`, sealed; detail-pad chips / Add-meal prompt / create-then-schedule prompt) and honored by the grocery aggregation, which buys base + component groups + only the chosen kit (no recorded choice fails open) (2026-08-11); variations reached cooking — steps are variation-tagged (`instructionVariations`, sealed, taught to every AI prompt, editable via per-step chips on the form, annotated "X only" on the detail page), "Start Cooking" asks which variation is being made (cancel doesn't start), and cooking mode walks only the applicable steps by real instruction index (tags/timers stay aligned; progress counts the visible set) with other kits' ingredients filtered out of the reference panel (2026-08-11); ingredient names are now title-cased everywhere they are read — every word capitalized except the minor ones, anything the writer already capitalized left alone, and the prep clause kept (unlike the shopping row) — using the same shared `@household/grocery` `titleCase` the grocery normalizer uses, applied on the way in: server-side as an AI draft is parsed (`services/recipeDraft.js`, the one door for from-url/from-photo/from-ai/generate/edit-with-ai) and on-device at every recipe read (`lib/recipeNames.openRecipe` — decrypt, then case, which is what makes already-sealed recipes imported all-lowercase display correctly) plus each keystroke in the form's ingredient-name field (2026-08-11); the Plain list ⇄ By section toggle was removed — once an organized list exists it is the only view (New Items already guarantees every item is visible), the action band holds just the always-present AI pill, and a pre-fingerprint legacy list now diffs against an empty fingerprint so items it doesn't cover surface in New Items instead of hiding with no plain list to fall back on; that pill then moved up onto the card title's row (top-aligned, so the ⓘ hint can't push it off the title) and lost its second label — always "Organize", since the "Re-" prefix claimed a prior AI run that a hand-filed or member-organized list never had; the period caption then became the trip that opens the period and how far off it is ("Shop Sat, Aug 15 (in 4 days)", in the true tense, the span dropped since a period starts on its shopping day, and the period labels themselves became fully relative ("Three Weeks" / "Three Weeks Ago" instead of a date range, counted in weeks so biweekly reads true), omitted until a shopping day is configured) — the Grocery tab carried no date at all and the header only implied one, and since the shopping day is a property of the period both tabs now read it from one place, with the Planner's three-state logic extracted to a shared `shoppingDayState` helper so the two can't disagree about what day it is (2026-08-11); leaving cooking mode no longer kills a running timer — the countdowns moved to a module store (`lib/cookTimers`) as wall-clock deadlines that outlive the screen, and the exit asks through `usePreventRemove` (a bare `beforeRemove` preventDefault does not hold a NATIVE stack — Cancel popped the screen anyway) whether to keep them running (armed as per-deadline local notifications, disarmed on return, re-armed after the reminder scheduler's cancel-everything pass) or stop them (2026-08-11); cooking mode gained a "read" voice command (also "read step"/"read it"/"repeat") — the current step is spoken via on-device `expo-speech` TTS ("Step N. <instruction>"), with the recognizer parked while the phone talks (`useVoiceCommands.suspend/resume`; a suspended session's trailing end/error are no-ops) and resumed however the speech ends, narration cut short on step change and on leaving the screen; `expo-speech` is a SECOND NEW NATIVE MODULE (bundle with the keep-awake EAS rebuild — on an older binary "read" flashes "Reading needs an app update") (2026-08-11); voice mode gained "down"/"up" (also "scroll down"/"scroll up") for steps too long for their viewport — each command scrolls the step area by a partial page (60% of the visible height, `lib/scrollPage.pagedScrollTarget`) so repeated commands walk the whole instruction with overlap, clamped at both ends, with consecutive scrolls stacking optimistically and a step change rewinding to the top (2026-08-11); recipes gained a real photo: the add/edit form can attach a picture OF the dish (`POST /recipes/photo` — no AI, no meter), a URL import copies the page's own hero image (og:image/twitter:image/JSON-LD, read from the raw HTML and downloaded rather than hot-linked), and a photo import crops the finished-dish photograph out of the scanned page — taking NOTHING when the page shows no food, and no longer keeping the scans themselves; `imageUrl` is stored as a path with the API host joined at display time (`lib/recipePhoto.recipeImageUri`), which is also what makes the library thumbnail and the detail hero render at all; and photo files are now OWNED (`RecipePhoto` rows claimed by `PUT /recipes/:id/photo` after a save, reaped on recipe delete) — the nightly orphan sweep asked the empty post-C3b plaintext `Recipe` collection and so deleted every household's recipe photos 24h after upload (2026-08-11); deleting a recipe now cascades to the meal plan — both delete doors (library swipe, edit form) run `lib/recipeDelete.deleteRecipeWithSchedules`, which removes every schedule pointing at the recipe (legacy populated-ref rows and past meals included) before the recipe itself, client-driven because `recipeId` is sealed content the server can't query; both confirms say the planned meals go too, and the grocery list — a saved organized list included — needs no step of its own (the derived aggregation + fingerprint reconcile drop the removed items while sections and checked state survive), and the edit form's delete now pops past the deleted recipe's own detail screen instead of landing back on it (`popCountAfterDelete` — a plain goBack returned to a view whose query could only 404; a form reached without a detail underneath still pops one step) (2026-08-11); the recipe form's assistant card was retitled to Calen (`ASSISTANT_NAME`) and its input now rests at one line, growing only while focused or holding text; the separate "Tag ingredients to instructions" action was retired end-to-end — Apply changes covers it because `/edit-with-ai` returns the modified recipe with `instructionIngredients` already recomputed (`attachIngredientTags`), so `POST /recipes/compute-ingredient-tags`, the client's `recipesApi.computeIngredientTags`, and the dead `runTagging` helper were all removed (manual links stay editable in the per-step linker) (2026-08-11); the Calen card then became collapsible — tapping its header (trailing chevron) folds it to the header alone, open by default — and instruction-step timer derivation moved into the one parse door: `deriveInstructionTimers` relocated from routes/recipes.js into `services/recipeDraft.parseRecipeDraft`, so every AI draft path (from-url, from-photo, from-ai, generate, edit-with-ai — previously generate only) returns steps with their stated wait times as `instructionTimers`, unit-covered in recipeDraft.test.js (2026-08-11); voice scrolling reached the ingredient panel — "ingredients down"/"ingredients up" (also "scroll ingredients …") page the reference panel while bare "down"/"up" stay on the step area (noun-scoped commands, no spoken focus mode), the two panes sharing one `usePagedScroll` plumbing (partial-page targets, optimistic stacking; the ingredient panel rewinds on step change AND the this-step ⇄ view-all flip), and the interim matcher gained a prefix-ambiguity hold (`matchCouldExtend`) so a bare "ingredients" interim no longer flips the toggle and swallows the scroll while "ingredients down" is still arriving — held only while the match ends the transcript, released by the final, never for longer phrases of the same command (2026-08-11); the planner meal row's title no longer truncates to one line — it wraps to as many lines as the recipe name (plus variation) needs, with the meal glyph top-aligned to the first line (2026-08-11); the recipe form's Calen card was unified onto the shared FormAssist panel — "Ask Calen" + CalenChatIcon header (was "Calen" + a sparkles glyph), collapsed by default on a plain edit, expanded (without stealing the keyboard) after a quick import / AI review, Apply changes still → /edit-with-ai via FormAssist's onSubmit mode (3cd3b36+, 2026-08-11); the "Ask Calen" card header now wears the `CalenGlyph` gradient-"C" brand mark (shared with the calendar's assistant FAB) instead of the chat-bubble CalenChatIcon (3cd3b36+, 2026-08-12); the grocery list stopped being only what the meal plan implies — an "Add item" row at the foot of the card takes a name + optional amount, and hand-added rows are merged into the derived list on-device (`lib/groceryExtras`, persisted as `ShoppingSession.state.extras` so the household shares them) as ordinary items: they check off, substitute, file into sections, organize, and reconcile through the same code, with swipe-to-delete on the hand-added rows alone; and the move-to-section sheet was retitled from the item's own name to "Grocery List Sections" (the item moved to a caption line beneath it) (3cd3b36+, 2026-08-12); cooking mode's voice grammar gained "read ingredients" (speaks the ingredient panel's current list via the same parked-mic TTS path as "read") and edge jumps — "top"/"bottom" ("scroll to top"/"scroll to bottom") on the step area, "ingredients top"/"ingredients bottom" on the panel (`usePagedScroll.scrollToEdge`) — and the spoken-command list moved out of the folded prose `HintDisclosure` into a pop-up command chart: a "Voice commands" ⓘ row under the progress bar opens a `BottomSheet` of grouped say-this → get-that rows (`VOICE_GUIDE`) (3cd3b36+, 2026-08-12)
+last-verified: 3cfa750+ (2026-08-15); the recipe add/edit form guards against discarding unsaved edits with the shared `useUnsavedChangesGuard` "Discard Changes?" prompt (2026-07-29); recipe sharing is now device-composed via the OS share sheet (`RecipeDetail` `Share.share`) — the server-sent styled email (`POST /recipes/:id/share-email`) was retired 2026-08-01, removing the decrypted-recipe plaintext round-trip (2026-08-01); kitchen search fields (Recipes search, Add-meal header search, step ingredient-linker browse search) set `autoCapitalize="none"` + `autoCorrect={false}` per the app-wide input-hint convention (mobile/CLAUDE.md) (2026-08-10); the meal planner's week window + recipe-title join moved on-device (`lib/mealSchedule.ts`) — the leftover `{start,end}` range param hit the record store's equality-only filter and emptied both the Meals view and the grocery list (2026-08-10); a recipe's upcoming "Next scheduled" date is now a link into the meal planner — it opens the Meals view on that shopping period with the day scrolled to and highlighted, and the featured-schedule pick moved to `lib/mealSchedule.featuredSchedule` (sorted, so "next" is genuinely next) (2026-08-10); planner meal rows lost their red ✕ for swipe-to-Remove behind the native confirm, and the `SwipeableRow` that was local to `RecipesScreen` was promoted to the shared kit (components/ui) so both use one implementation (2026-08-10); the grocery cart now queues a planner highlight for the shopping day (`pane` alone picks a pane — `scrollToDate` no longer implies the Planner), scheduled meals get their real recipe name back on the calendar via an on-device title join (`lib/mealSchedule.populateRecipeRefs`), and the meal/shopping glyphs moved to shared `RECIPE_ICON`/`GROCERY_ICON` constants used by the month grid, list, day view, search, and the planner (2026-08-10); the shared `SwipeableRow`'s revealed action now follows the row's measured height — the word alone on a short interior row (the planner meal row, where the glyph + word pair didn't fit), glyph over word on a tall card — and the reveal became undoable: swipe back or tap the open row to put it away, with the screen's back gesture suspended while any row is open so the undo swipe stops popping the user out of the Meals view (2026-08-10); Organize now returns shopper-facing item names — Title Case with the prep clause and filler stripped ("garlic cloves, minced" → "Garlic Cloves", "fresh basil leaves" → "Basil") — set by the prompt and made deterministic by `services/groceryNames.js`, which also abbreviates spoon units to tbsp/tsp (every recipe spelling, single-letter T/t left alone as ambiguous) and merges items whose cleaned names collide inside a section; an empty section no longer renders its header (dropped server-side and skipped at render, since pre-existing organized lists are persisted in `ShoppingSession`) (2026-08-10); the grocery card's header was decrowded — title + progress stack with only the sections glyph beside them, and the Organize / view-flip control moved to its own band below the divider (filled accent = the billable AI call, outline = the free flip) — and "Plain list" stopped discarding the organized result, so flipping back is free; the organized list was made change-aware via `organizedFor` (2026-08-10); the Meals view's top was rebuilt: above the tabs there is now only the period (relative label + the concrete date range it stands for, non-interactive), the Grocery Schedule card appears only while the schedule is unset, and this screen's two settings (Grocery Shopping Schedule, Grocery List Sections) moved out of the content into a single `⋯` nav-bar overflow sheet — the grocery card's unlabelled sort glyph went with them; Recipes then joined that menu too, leaving `headerRight` with the `⋯` alone so the "Meals" title sits centred like every other view (2026-08-10); the planner's shopping-day marker now distinguishes the next upcoming trip (accent ring + "Next Shopping Day") from one already taken ("Shopped") — and the day comparison behind it, shared with the "Today" pill, was moved off `iso(new Date())`, which read the UTC date and rolled the day over after ~8pm Eastern (2026-08-10); the `n of m` shopping progress now counts the rows on screen rather than the raw aggregated list — it sat frozen at "0 of 13" for anyone shopping the organized view, whose renamed rows share no keys with the plain list — and every wordless control on an item row gained an accessibility label (2026-08-10); the recipe library's "All" view became a flat alphabetical list showing each recipe once — the old group-by-tag sections repeated a multi-tagged recipe under every tag it carried, reading as duplicates — with per-tag sections now appearing only when a chip is selected (2026-08-11); the recipe form's Title input now enforces a capital first letter on the value itself via `lib/strings.capFirst` — the `sentences` keyboard hint alone let a lowercase title through (2026-08-11); cooking mode and the recipe edit form now decrypt their fetched recipe via `openRecord` like every other reader — both fetched the raw sealed row, so per-step ingredient tags and timers never rendered in cooking mode, and an edit form seeded from a sealed row could save enc-only fields back emptied (2026-08-11); the quick import gained multi-photo capture — up to 5 photos of one recipe extracted in a single `from-photo` request (library multi-select, or a camera "Add another page?" loop) — the form body shimmers a form-shaped skeleton while any import is in flight (replacing a lone spinner over the empty form), and a successful import now swaps the Quick import card for the AI assistant so the result can be refined before first save (2026-08-11); a drifted organized list is now patched locally instead of retired — added ingredients surface in a leading "New Items" section, removed ones drop out, re-portioned amounts are rewritten deterministically, and a Re-organize pill appears only while the plan has drifted — with the name normalizer promoted to the shared `@household/grocery` package so the server's organize response and the client's reconcile clean names identically; the sections also became hand-editable — tap an item's name in the organized view to file it via a section sheet, with the first move from the plain list creating the organized list (no mode, no button — a standing gesture explained by an ⓘ disclosure on the card title), manual moves committing the patched list + fingerprint, and the AI Organize/Re-organize action always present in the band (2026-08-11); the recipe form now seals saves with the canonical `lib/encSubsets.RECIPE_ENC` — its stale local subset omitted `instructionIngredients`/`instructionTimers`/`imageUrl`/`sourceUrl`, and since only `enc` reaches the opaque store those fields were dropped on every save (why per-step tags and timers stayed missing in cooking mode even after the reader-side decrypt fix; pre-fix recipes need them re-entered) (2026-08-11); cooking mode went hands-free — an opt-in mic pill runs continuous on-device keyword spotting (`hooks/useVoiceCommands`: next/back/start timer/ingredients, no AI or telephony cost, restarts across OS session ends, shares the dictation recognizer behind active-flag guards) with haptic + pill-label feedback, knuckle-tap zones on the step area (right two-thirds = next, left third = back, screen-reader-hidden), and the screen now stays awake via `expo-keep-awake` (NEW NATIVE MODULE → needs EAS rebuild; voice + tap zones work on existing builds) (2026-08-11); voice commands then got faster and richer — matching moved to the first interim result (a final only lands after the utterance ends, and that delay read as "not heard", inviting repeats; one command per utterance, reset on the final), the grammar gained "go to step # / step #" jumps (digits, number words, and to/for-style homophones; out-of-range ignored), the mic pill widened to read at arm's length (fixed minWidth, "Listening…" while live), and an ⓘ HintDisclosure under the progress bar lists the spoken commands (2026-08-11); recipes gained ingredient groups + flavor variations — `Ingredient.group` sections with `Recipe.variations` naming the mutually exclusive flavor kits (a shared base + "Lemon Blueberry" / "Chocolate Peanut Butter" options, the baking pattern), taught to every AI capture/edit prompt, rendered as section headers on the detail/form/share/cooking surfaces, chosen per-meal at scheduling (`RecipeSchedule.variation`, sealed; detail-pad chips / Add-meal prompt / create-then-schedule prompt) and honored by the grocery aggregation, which buys base + component groups + only the chosen kit (no recorded choice fails open) (2026-08-11); variations reached cooking — steps are variation-tagged (`instructionVariations`, sealed, taught to every AI prompt, editable via per-step chips on the form, annotated "X only" on the detail page), "Start Cooking" asks which variation is being made (cancel doesn't start), and cooking mode walks only the applicable steps by real instruction index (tags/timers stay aligned; progress counts the visible set) with other kits' ingredients filtered out of the reference panel (2026-08-11); ingredient names are now title-cased everywhere they are read — every word capitalized except the minor ones, anything the writer already capitalized left alone, and the prep clause kept (unlike the shopping row) — using the same shared `@household/grocery` `titleCase` the grocery normalizer uses, applied on the way in: server-side as an AI draft is parsed (`services/recipeDraft.js`, the one door for from-url/from-photo/from-ai/generate/edit-with-ai) and on-device at every recipe read (`lib/recipeNames.openRecipe` — decrypt, then case, which is what makes already-sealed recipes imported all-lowercase display correctly) plus each keystroke in the form's ingredient-name field (2026-08-11); the Plain list ⇄ By section toggle was removed — once an organized list exists it is the only view (New Items already guarantees every item is visible), the action band holds just the always-present AI pill, and a pre-fingerprint legacy list now diffs against an empty fingerprint so items it doesn't cover surface in New Items instead of hiding with no plain list to fall back on; that pill then moved up onto the card title's row (top-aligned, so the ⓘ hint can't push it off the title) and lost its second label — always "Organize", since the "Re-" prefix claimed a prior AI run that a hand-filed or member-organized list never had; the period caption then became the trip that opens the period and how far off it is ("Shop Sat, Aug 15 (in 4 days)", in the true tense, the span dropped since a period starts on its shopping day, and the period labels themselves became fully relative ("Three Weeks" / "Three Weeks Ago" instead of a date range, counted in weeks so biweekly reads true), omitted until a shopping day is configured) — the Grocery tab carried no date at all and the header only implied one, and since the shopping day is a property of the period both tabs now read it from one place, with the Planner's three-state logic extracted to a shared `shoppingDayState` helper so the two can't disagree about what day it is (2026-08-11); leaving cooking mode no longer kills a running timer — the countdowns moved to a module store (`lib/cookTimers`) as wall-clock deadlines that outlive the screen, and the exit asks through `usePreventRemove` (a bare `beforeRemove` preventDefault does not hold a NATIVE stack — Cancel popped the screen anyway) whether to keep them running (armed as per-deadline local notifications, disarmed on return, re-armed after the reminder scheduler's cancel-everything pass) or stop them (2026-08-11); cooking mode gained a "read" voice command (also "read step"/"read it"/"repeat") — the current step is spoken via on-device `expo-speech` TTS ("Step N. <instruction>"), with the recognizer parked while the phone talks (`useVoiceCommands.suspend/resume`; a suspended session's trailing end/error are no-ops) and resumed however the speech ends, narration cut short on step change and on leaving the screen; `expo-speech` is a SECOND NEW NATIVE MODULE (bundle with the keep-awake EAS rebuild — on an older binary "read" flashes "Reading needs an app update") (2026-08-11); voice mode gained "down"/"up" (also "scroll down"/"scroll up") for steps too long for their viewport — each command scrolls the step area by a partial page (60% of the visible height, `lib/scrollPage.pagedScrollTarget`) so repeated commands walk the whole instruction with overlap, clamped at both ends, with consecutive scrolls stacking optimistically and a step change rewinding to the top (2026-08-11); recipes gained a real photo: the add/edit form can attach a picture OF the dish (`POST /recipes/photo` — no AI, no meter), a URL import copies the page's own hero image (og:image/twitter:image/JSON-LD, read from the raw HTML and downloaded rather than hot-linked), and a photo import crops the finished-dish photograph out of the scanned page — taking NOTHING when the page shows no food, and no longer keeping the scans themselves; `imageUrl` is stored as a path with the API host joined at display time (`lib/recipePhoto.recipeImageUri`), which is also what makes the library thumbnail and the detail hero render at all; and photo files are now OWNED (`RecipePhoto` rows claimed by `PUT /recipes/:id/photo` after a save, reaped on recipe delete) — the nightly orphan sweep asked the empty post-C3b plaintext `Recipe` collection and so deleted every household's recipe photos 24h after upload (2026-08-11); deleting a recipe now cascades to the meal plan — both delete doors (library swipe, edit form) run `lib/recipeDelete.deleteRecipeWithSchedules`, which removes every schedule pointing at the recipe (legacy populated-ref rows and past meals included) before the recipe itself, client-driven because `recipeId` is sealed content the server can't query; both confirms say the planned meals go too, and the grocery list — a saved organized list included — needs no step of its own (the derived aggregation + fingerprint reconcile drop the removed items while sections and checked state survive), and the edit form's delete now pops past the deleted recipe's own detail screen instead of landing back on it (`popCountAfterDelete` — a plain goBack returned to a view whose query could only 404; a form reached without a detail underneath still pops one step) (2026-08-11); the recipe form's assistant card was retitled to Calen (`ASSISTANT_NAME`) and its input now rests at one line, growing only while focused or holding text; the separate "Tag ingredients to instructions" action was retired end-to-end — Apply changes covers it because `/edit-with-ai` returns the modified recipe with `instructionIngredients` already recomputed (`attachIngredientTags`), so `POST /recipes/compute-ingredient-tags`, the client's `recipesApi.computeIngredientTags`, and the dead `runTagging` helper were all removed (manual links stay editable in the per-step linker) (2026-08-11); the Calen card then became collapsible — tapping its header (trailing chevron) folds it to the header alone, open by default — and instruction-step timer derivation moved into the one parse door: `deriveInstructionTimers` relocated from routes/recipes.js into `services/recipeDraft.parseRecipeDraft`, so every AI draft path (from-url, from-photo, from-ai, generate, edit-with-ai — previously generate only) returns steps with their stated wait times as `instructionTimers`, unit-covered in recipeDraft.test.js (2026-08-11); voice scrolling reached the ingredient panel — "ingredients down"/"ingredients up" (also "scroll ingredients …") page the reference panel while bare "down"/"up" stay on the step area (noun-scoped commands, no spoken focus mode), the two panes sharing one `usePagedScroll` plumbing (partial-page targets, optimistic stacking; the ingredient panel rewinds on step change AND the this-step ⇄ view-all flip), and the interim matcher gained a prefix-ambiguity hold (`matchCouldExtend`) so a bare "ingredients" interim no longer flips the toggle and swallows the scroll while "ingredients down" is still arriving — held only while the match ends the transcript, released by the final, never for longer phrases of the same command (2026-08-11); the planner meal row's title no longer truncates to one line — it wraps to as many lines as the recipe name (plus variation) needs, with the meal glyph top-aligned to the first line (2026-08-11); the recipe form's Calen card was unified onto the shared FormAssist panel — "Ask Calen" + CalenChatIcon header (was "Calen" + a sparkles glyph), collapsed by default on a plain edit, expanded (without stealing the keyboard) after a quick import / AI review, Apply changes still → /edit-with-ai via FormAssist's onSubmit mode (3cd3b36+, 2026-08-11); the "Ask Calen" card header now wears the `CalenGlyph` gradient-"C" brand mark (shared with the calendar's assistant FAB) instead of the chat-bubble CalenChatIcon (3cd3b36+, 2026-08-12); the grocery list stopped being only what the meal plan implies — an "Add item" row at the foot of the card takes a name + optional amount, and hand-added rows are merged into the derived list on-device (`lib/groceryExtras`, persisted as `ShoppingSession.state.extras` so the household shares them) as ordinary items: they check off, substitute, file into sections, organize, and reconcile through the same code, with swipe-to-delete on the hand-added rows alone; and the move-to-section sheet was retitled from the item's own name to "Grocery List Sections" (the item moved to a caption line beneath it) (3cd3b36+, 2026-08-12); cooking mode's voice grammar gained "read ingredients" (speaks the ingredient panel's current list via the same parked-mic TTS path as "read") and edge jumps — "top"/"bottom" ("scroll to top"/"scroll to bottom") on the step area, "ingredients top"/"ingredients bottom" on the panel (`usePagedScroll.scrollToEdge`) — and the spoken-command list moved out of the folded prose `HintDisclosure` into a pop-up command chart: a "Voice commands" ⓘ row under the progress bar opens a `BottomSheet` of grouped say-this → get-that rows (`VOICE_GUIDE`) (3cd3b36+, 2026-08-12); a DANGLING scheduled variation now fails open — a sealed `RecipeSchedule.variation` naming a kit the recipe no longer has (deleted on save, renamed by AI edit) buys every kit like no choice at all, instead of excluding every surviving kit and quietly buying base ingredients only (`aggregateGroceryList` applies the exclusion only when the choice is a current variation) (3cfa750+, 2026-08-15); destructive voice jumps became utterance-anchored — "step # / go to step #", bare "back", and the top/bottom edge jumps fire only at the transcript's start or in a ≤4-word utterance, so "what is the next step to take" (the "to"→2 homophone) and "put the lid back on" stop yanking the cook, while "OK next!"-style bare keywords stay permissive — and multi-word phrase commands now tolerate ≤2 whitelisted fillers between their words so "read me the ingredients" reads aloud instead of flipping the ingredients view (`useVoiceCommands` `anchored` flag + filler-aware matching/hold; command chart wording unchanged) (3cfa750+, 2026-08-15); the recipe-photo claim stopped being fire-and-forget — the save-path claim is awaited with two quick retries, an unanswered claim parks in a durable AsyncStorage queue flushed on app start/foreground and recipe-detail open, and opening a recipe self-heals by re-claiming its hosted photo (idempotent; a swept file 404s and dequeues silently) — closing the hole where a failed claim after a successful save let the 24h orphan sweep delete a photo the sealed recipe still pointed at (3cfa750+, 2026-08-15); the shopping session was SEALED and versioned — `ShoppingSession` gained `enc`/`keyVersion` (whole-blob household-key envelope, weekStart as AAD id, first sealed write clears the legacy plaintext `state`; old builds' plaintext writes stay accepted as a transition exception that tightens after rollout) and a `version` counter with atomic version-predicate PUTs that 409 stale bases, and `GroceryPane` now saves through `lib/grocerySession` — serialized, gated until the initial GET settles (interacting during load used to overwrite the saved session with empty defaults) and while a sealed blob can't be opened, with 409s merged on-device (checked/not-found/at-home flag unions, extras union by cleaned name, per-key substitutions, last organize wins) so two concurrent shoppers stop clobbering each other's whole blob (3cfa750+, 2026-08-15); the recipe URL import's fetches are SSRF-guarded — the pasted page and its og:image both go through `services/urlGuard.fetchPublicUrl` (http/https only, every DNS answer must be public with loopback/RFC1918/link-local incl. 169.254.169.254/fc00::/fe80::/0.0.0.0/CGNAT/NAT64/v4-mapped blocked, the vetted address pinned into the socket, redirects stepped manually and re-vetted per hop, size+time capped), a blocked page URL answering 400 and a blocked image just meaning no picture (3cfa750+, 2026-08-15)
 code:
   - mobile/src/screens/kitchen/
   - server/src/routes/recipes.js
@@ -203,10 +203,27 @@ rather than a stand-in.
   picture while the user is still deciding whether to keep the recipe at all —
   and bound to the recipe by `PUT /recipes/:id/photo` after the save
   (`imageUrl: null` removes it). The claim also drops the recipe's *other*
-  photos, so replacing one doesn't leave the old bytes on disk. It is
-  best-effort on the client: the recipe is already saved by then, and a failed
-  claim costs a picture at worst, never an error the cook has to read. A file
+  photos, so replacing one doesn't leave the old bytes on disk. A file
   that predates this tracking is **adopted** on claim rather than rejected.
+  - **The claim is quiet but durable** (`lib/recipePhoto`): it never surfaces
+    an error the cook has to read and never fails the save — but it is no
+    longer fire-and-forget, because a claim lost after a successful save left
+    the row unclaimed and the 24h sweep deleted the file while the sealed
+    recipe still pointed at it. The save-path claim is **awaited with two
+    quick inline retries**; a claim the server never answered (offline,
+    timeout) is parked in a **durable AsyncStorage queue** (one entry per
+    recipe — a newer save's claim supersedes) and flushed opportunistically on
+    app start / foreground (alongside the reminder pass,
+    `useReminderScheduler`) and whenever a recipe detail opens. An error the
+    server *answered* (404 = already swept, 400 = never ours) is dropped
+    silently — retrying can't change an answer.
+  - **Reads self-heal.** Opening a recipe whose `imageUrl` is a hosted path
+    re-fires the claim for that photo (and flushes the queue): the claim route
+    is idempotent — re-claiming an already-claimed photo just re-binds it, and
+    a swept file 404s cleanly — so simply looking at a recipe repairs a claim
+    that failed at save time. The one unclosed window stays accepted: a photo
+    picked into a draft left unsaved for >24h is swept before any claim
+    exists.
   - A claim only binds a row this household uploaded, and only clears rows on
     its own recipes; a path that isn't a recipe photo is a 400.
   - **Deleting a recipe reaps its photo.** A delete is a `/records` tombstone,
@@ -220,6 +237,40 @@ rather than a stand-in.
     collection for referenced `imageUrl`s; that collection is empty post-C3b, so
     it answered "nothing is referenced" and **deleted every recipe photo in
     every household a day after upload**.
+
+### Recipe import fetches are SSRF-guarded
+
+Two kitchen routes fetch URLs an outsider influences — `POST /recipes/from-url`
+fetches the pasted page itself, and the photo pipeline then fetches the
+og:image URL **that page** advertises (`storeRemoteImage`). Both responses feed
+the AI extraction, which reads content back to the user, so an unguarded fetch
+was a proxy into anything the server can reach: cloud metadata
+(169.254.169.254), localhost admin ports, the private network. Both now go
+through the shared guard (`services/urlGuard.fetchPublicUrl`):
+
+- **http/https only**, and never a URL with embedded credentials.
+- **Judged by resolution, not by hostname string**: the host is DNS-resolved
+  and **every** returned address must be public — loopback (127/8, ::1),
+  RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16 incl. the
+  metadata IP, fe80::/10), unique-local (fc00::/7), "this network" (0/8 incl.
+  0.0.0.0), CGNAT (100.64/10), NAT64 (64:ff9b::/96), v4-mapped v6 forms,
+  multicast/reserved — one private answer among several blocks the whole URL.
+  IP-literal hosts are judged directly.
+- **The socket pins the vetted address** (custom `lookup`), so the actual
+  request cannot re-resolve to a different host behind the guard's back (DNS
+  rebinding).
+- **Redirects are never followed automatically**: axios follows nothing
+  (`maxRedirects: 0`); each `Location` is resolved against the hop that sent
+  it and re-vetted from scratch before it is fetched, closing the
+  public-page-redirects-to-metadata hole (`storeRemoteImage` previously let
+  axios walk 3 hops unguarded). Bounded hops; overrun is a block.
+- **Size and time stay capped** on every hop (page: 5 MB / 10 s; image: 8 MB /
+  10 s, as before).
+
+A blocked page URL answers the import with a 400 ("That URL can't be imported
+from."), never a 500; a blocked og:image is simply **no picture** — the recipe
+import itself still succeeds, per the photo pipeline's fail-soft rule. Normal
+public recipe sites are unaffected.
 
 ### Ingredient groups & flavor variations
 
@@ -260,7 +311,15 @@ rather than a stand-in.
   ingredients whose group is a variation other than the schedule's recorded
   choice; base ingredients and component groups always count. A schedule with
   **no** recorded choice fails open and buys every kit (legacy rows, or a
-  declined prompt).
+  declined prompt) — and so does a **dangling** choice: the sealed
+  `RecipeSchedule.variation` can outlive the kit it names (the form prunes a
+  variation whose last ingredient was deleted; an AI edit can rename one), and
+  a recorded choice that matches **no current `variations` entry** is treated
+  exactly like no choice. The exclusion applies only when the choice itself is
+  a current variation; anything else buys everything. Before this rule, a
+  stale choice excluded *every remaining kit* — the week's list quietly bought
+  base ingredients only, the failure mode the fail-open principle exists to
+  prevent.
 - **Cooking is done as ONE variation.** "Start Cooking" on a recipe with
   variations asks which one is being made (`pickVariation`, cooking wording;
   cancel doesn't start) and passes it as the `CookingMode` route's `variation`.
@@ -585,13 +644,48 @@ rather than a stand-in.
   - **Clear** clears shopping *state* (checked / not-found / substitutions /
     at-home); it does not empty the list, so hand-added rows survive it.
 - Shopping progress persists per week in `ShoppingSession`
-  (`weekStart` + a `state` blob — checked / not-found / at-home /
+  (checked / not-found / at-home /
   substitutions / `extras` / `organizedList` + `organizedFor`):
   `GET/PUT /recipe-schedule/session`. The
   session is **household-shared** (one row per household × week, carrying
   `householdId` routing so the household scope clause can match and upsert it);
   moving a meal across shopping weeks invalidates the affected weeks'
-  `organizedList` while leaving the rest of the state (checked items) intact.
+  `organizedList` while leaving the rest of the state (checked items) intact —
+  server-side that unset only reaches a legacy plaintext `state` (a sealed
+  blob is opaque; the on-device fingerprint reconcile covers sealed sessions),
+  and it bumps the session `version` so a versioned client can't overwrite it
+  from a stale base.
+  - **The session blob is SEALED** — see "Encryption boundary" below for the
+    envelope and the legacy-plaintext transition lane.
+  - **Concurrent shoppers don't clobber each other.** `ShoppingSession`
+    carries a `version` counter: GET returns it, and every PUT from a current
+    build sends the `baseVersion` it read. The server accepts a write **only**
+    against that base (atomic — a version-predicate `findOneAndUpdate` with
+    `$inc`, never read-then-write; a base-0 write upserts the missing row, a
+    concurrent insert surfacing as the same 409) and answers a mismatch with
+    **409 + the current version**. The whole blob used to be last-write-wins:
+    two people shopping at once silently erased each other's checked flags and
+    hand-added extras.
+  - **The merge is client-side** (`lib/grocerySession.mergeGrocerySession`,
+    pure — the server can't merge what it can't read). On a 409 the client
+    re-fetches, merges, and retries, bounded (3 attempts). Semantics, simple
+    and safe over clever: **checked / not-found / at-home** = union of set
+    flags (both shoppers' ticks survive; an uncheck racing a check loses —
+    re-unchecking is cheap, a lost tick mid-store is not); **extras** = union
+    by cleaned name, local order first (both sides' additions survive; an
+    extra deleted locally while present remotely comes back — accepted:
+    resurrection beats losing the other shopper's addition);
+    **substitutions** = union by key, local winning per-key;
+    **organizedList/organizedFor** = one side's taken whole — the local one
+    when it exists (the merging device is performing the later action), else
+    the remote one: last organize wins.
+  - **`GroceryPane` never writes before it has read**: saves are gated until
+    the week's initial GET settles (interacting during load used to overwrite
+    the household's saved session with the pane's empty defaults), gated
+    entirely while a sealed session can't be opened on this device (writing
+    blind would clobber state it can't see), and serialized on a promise chain
+    so this device's own saves can't 409 each other. A merge that pulled in
+    another shopper's changes is applied back to the visible pane.
 - **A planned meal is removed by swiping it, not by a delete glyph.** Each meal
   row on a day card is a shared `SwipeableRow` (components/ui): the row's own tap
   opens the recipe, and swiping it left reveals **Remove**, which raises the
@@ -729,9 +823,34 @@ rather than a stand-in.
     result** that matches — a final only arrives after the recognizer decides
     the utterance is over, and that beat of delay read as "it didn't hear me"
     and invited repeating the word. One utterance fires at most one command
-    (the hold resets on the final). One exception to interim firing: a match
+    (the hold resets on the final).
+    **Destructive jumps are utterance-anchored** (`VoiceCommand.anchored`):
+    *step # / go to step #*, bare *back*, and the edge jumps (*top / bottom /
+    scroll to top / scroll to bottom / ingredients top / ingredients bottom*)
+    fire only when the phrase opens the (trimmed) transcript **or** the whole
+    utterance is short enough to read as a command (≤ 4 words). Pure
+    containment plus the number homophones made kitchen chatter destructive:
+    "what is the next step **to** take" jumped the cook to step 2 off its
+    first interim, and "put the lid **back** on" / "I'll be right **back**"
+    went Back. "Step to" alone (the recognizer's rendering of "step two")
+    still jumps — it's short — and the homophones stay in the number slot for
+    exactly that reason. Non-destructive commands (*next*, *previous*,
+    *repeat*, *ingredients*, the partial-page scrolls) stay permissive by
+    containment: "OK, next!" must keep working, and that permissiveness is the
+    accepted trade-off of the bare-keyword design. (*previous* stays
+    permissive while *back* is anchored — same action, but only "back" occurs
+    inside kitchen chatter.)
+    **Longer phrase commands beat the bare keywords they contain, even spoken
+    naturally**: a multi-word phrase tolerates up to two whitelisted filler
+    words ("me", "the", "my", "a", "us") *between* its own words, so "read me
+    the ingredients" is the read-aloud command — it used to fail exact
+    adjacency and fall through to the bare *ingredients* view toggle. The
+    whitelist is bounded and closed: arbitrary words never bridge a phrase
+    ("read the recipe then check ingredients" is not "read ingredients").
+    One exception to interim firing: a match
     the transcript might still extend into a longer phrase of a **different**
-    command is held (`matchCouldExtend`) until a later interim resolves it or
+    command is held (`matchCouldExtend`, filler-aware — "read me the" holds
+    for "read ingredients") until a later interim resolves it or
     the final lands — a bare "ingredients" must not flip the ingredient panel
     while "ingredients down" may still be on its way (which would also swallow
     the scroll: one utterance, one command). The hold applies only while the
@@ -821,8 +940,12 @@ rather than a stand-in.
 
 ## Data & API surface
 
-- **Models:** `Recipe`, `RecipeSchedule`, `ShoppingSession` (all content records;
-  sealed in the opaque store — see [platform/data-model.md](../platform/data-model.md)).
+- **Models:** `Recipe`, `RecipeSchedule` (content records; sealed in the opaque
+  store — see [platform/data-model.md](../platform/data-model.md)), and
+  `ShoppingSession` — its own row (not the opaque store), sealed in place:
+  `enc` + `keyVersion` under the household key with weekStart as the AAD id,
+  a `version` concurrency counter, and the legacy plaintext `state` accepted
+  during the transition (see "Encryption boundary").
 - **Endpoints:** `recipes.js` (AI/utility only — sharing is device-composed),
   `recipeSchedule.js` (planner, grocery, session).
 - **Client:** `screens/kitchen/*` (Kitchen, Recipes, RecipeDetail/Form,
@@ -836,6 +959,33 @@ device-composed from the decrypted on-device recipe (OS share sheet), so a
 recipe's plaintext never round-trips through the server — the former
 `share-email` outside-share was retired 2026-08-01. Grocery aggregation happens
 on-device over decrypted recipes.
+
+**Shopping state is sealed as of 2026-08-15** — this resolves the long-open
+contradiction where this section claimed it while `ShoppingSession.state`
+stored a plaintext Mixed blob (the blob carries grocery names derived from
+sealed recipe ingredients, plus the household's checked/extras behavior;
+sealing was the approved resolution):
+
+- Current builds write the whole `GrocerySessionState` as an `enc` envelope
+  (+ `keyVersion`) on `ShoppingSession`, encrypted under the household key by
+  `lib/grocerySession` with **AAD id = the `weekStart` string** — the session
+  has no client-minted `_id`; one row per household × week makes `weekStart`
+  the stable identity (same posture as the `Household` settings blob sealing
+  under its own id). The server stores and returns the envelope; it never
+  reads inside it. A device holding no HDK falls back to a plaintext `state`
+  write — a session never blocks on the key, matching `sealNew`'s posture.
+- Reads fall back: `enc` when present, else the legacy plaintext `state`
+  (spread at the response's top level, which is also what keeps old builds
+  reading). The **first sealed write clears `state`** server-side, so a
+  household converges the moment one current build saves.
+- **Transition exception (temporary):** the server still accepts plaintext
+  `state` writes from old builds (no `baseVersion`, last-write-wins, clearing
+  a stale `enc` so newer readers see the newest write). An old build reading a
+  week a new build already sealed sees an empty session for that week — its
+  next write plaintexts it again; annoying, converges, loses at most one
+  week's check-offs, never recipes. This lane **tightens after rollout**: once
+  current builds are the fleet, plaintext session writes get refused like
+  every other sealed-content route (`plaintextCreateBlocked` posture).
 
 ## Verification
 
@@ -984,7 +1134,43 @@ on-device over decrypted recipes.
   `mobile/src/lib/__tests__/scrollPage.test.ts`. The keyword
   grammar itself (whole-word containment, case/punctuation-insensitive, longest
   phrase wins, number slots as digits/words/homophones, a slot phrase without a
-  number not matching) — `hooks/__tests__/useVoiceCommands.test.ts`.
+  number not matching; utterance anchoring — "what is the next step to take"
+  never jumps, "put the lid back on" / "I'll be right back" never go Back,
+  while "step 3" / "go to step 3" / "step to" / a short "go back please" all
+  fire and anchored phrases opening a longer utterance still fire; bounded
+  fillers — "read me the ingredients" reads instead of flipping the view,
+  arbitrary words never bridge a phrase, and the interim hold survives a
+  filler tail) — `hooks/__tests__/useVoiceCommands.test.ts`.
+- The dangling-variation fail-open (a recorded choice matching no current kit
+  buys every kit, exactly like no choice; a valid choice still excludes the
+  other kits) — `mobile/src/lib/__tests__/groceryList.test.ts`.
+- The photo-claim retry/queue (inline retries before parking; a claim the
+  server never answered queued durably and superseded by the same recipe's
+  newer claim; an answered 404/400 dropped silently; flush claiming +
+  dequeuing, keeping still-unreachable claims, and no-oping on an empty
+  queue) — `mobile/src/lib/__tests__/recipePhoto.test.ts`.
+- The shopping-session merge and sync (both shoppers' checks and extras
+  surviving a concurrent write, flag unions dropping unset flags, extras
+  deduped by cleaned name with local amounts winning, per-key substitution
+  merge, last-organize-wins; legacy plaintext opened from the top level, a
+  sealed blob decrypted against its weekStart AAD, an unopenable blob
+  surfaced as locked; sealed saves clearing the legacy lane, the keyless
+  plaintext fallback, 409 → fetch → merge → retry at the new version, bounded
+  retries, non-409s rethrown, and never writing blind over a locked blob) —
+  `mobile/src/lib/__tests__/grocerySession.test.ts`. The server's half
+  (matching base increments, stale base 409s carrying the current version
+  with nothing written, sealed writes round-tripping opaquely and clearing
+  `state`, malformed envelopes 400ing, and the old-build plaintext
+  transition lane still accepted — clearing `enc`, still advancing the
+  version) — `kitchen.integration.test.js`.
+- The SSRF guard (every blocked v4/v6 range incl. v4-mapped and NAT64 forms,
+  public addresses allowed, scheme/credential rules, IP-literal hosts judged
+  directly, hostnames judged by all resolved answers with one private answer
+  poisoning the set, the vetted address pinned into the socket's lookup,
+  redirect-to-private blocked before it is fetched, public→public redirects
+  followed hop-by-hop, and redirect loops bounded) —
+  `services/urlGuard.test.js`; the import routes stay green over it —
+  `recipePhotos.integration.test.js` + the recipe suites.
 - The canonical Recipe seal subset carries every persisted content field
   (incl. per-step ingredient tags, timers, image and source URLs) —
   `mobile/src/lib/__tests__/encSubsets.test.ts`.
@@ -1001,6 +1187,12 @@ on-device over decrypted recipes.
 
 ## Open questions
 
-- Confirm whether `ShoppingSession.state` (Mixed) is sealed like other content or
-  stored plaintext, and pin it in [platform/data-model.md](../platform/data-model.md).
+- ~~Confirm whether `ShoppingSession.state` (Mixed) is sealed like other
+  content or stored plaintext~~ — **resolved 2026-08-15**: sealed, with a
+  temporary legacy-plaintext transition lane (see "Encryption boundary").
+  Still to do once the other specs are next touched: pin the
+  `ShoppingSession` `enc`/`keyVersion`/`version` fields in
+  [platform/data-model.md](../platform/data-model.md) and the
+  `GET/PUT /session` version contract in
+  [platform/api-reference.md](../platform/api-reference.md).
 - Document the meal-planner week model + settings (`MealPlannerSettingsScreen`).

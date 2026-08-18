@@ -8,8 +8,12 @@ import { useViewerContent } from '../lib/viewerAccess';
 import UnlockPaywallScreen from '../screens/plan/UnlockPaywallScreen';
 import ViewerNavigator from './ViewerNavigator';
 import { useReminderScheduler } from '../hooks/useReminderScheduler';
+import { useWidgetSnapshot } from '../hooks/useWidgetSnapshot';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useInviteAlerts } from '../hooks/useInviteAlerts';
+import { useSecurityNudges } from '../hooks/useSecurityNudges';
+import { useWidgetNudge } from '../hooks/useWidgetNudge';
+import { useDiscoverNudge } from '../hooks/useDiscoverNudge';
 import { useRecordSync } from '../hooks/useRecordSync';
 import { useAppLock } from '../hooks/useAppLock';
 import { useSelfContactSeed } from '../hooks/useSelfContactSeed';
@@ -78,6 +82,11 @@ export default function RootNavigator() {
   // the pending schedule (the hook's cleanup path).
   useReminderScheduler(isLoggedIn && !bootstrapping && remindersEnabled);
 
+  // Home-screen widget (iOS): keep the App Group snapshot in step with the
+  // calendar — on sign-in, on foreground, and after any calendar mutation.
+  // Not gated on remindersEnabled: the widget isn't a notification.
+  useWidgetSnapshot(isLoggedIn && !bootstrapping);
+
   // Remote push: register this device's token (sign-in + foreground) and route
   // notification taps to the right screen (household event invites/replies,
   // invitation alerts). See hooks/usePushNotifications.
@@ -90,6 +99,34 @@ export default function RootNavigator() {
   // push banner was missed. Gated to the full app shell: the viewer and
   // paywall shells have no Invitations inbox to route into.
   useInviteAlerts(
+    navRef,
+    isLoggedIn && !bootstrapping && onboarding.complete && !needsUnlock,
+  );
+
+  // Security nudges, one-time: from the second app open on, the passkey prompt
+  // for password-only accounts, else the guardian-recovery discovery prompt
+  // once the household has a second member. At most one per open; skips any
+  // open where the invitation pop-up presented. See hooks/useSecurityNudges.
+  useSecurityNudges(
+    navRef,
+    isLoggedIn && !bootstrapping && onboarding.complete && !needsUnlock,
+  );
+
+  // Widget-adoption nudge (iOS builds that ship the widget): from the second
+  // app open, the one-time WidgetPromo modal (own-data preview + add steps),
+  // with a single 14-day re-nudge if the widget still isn't installed. Skips
+  // any open where an invitation or security nudge presented, and users who
+  // already added the widget are never interrupted. See hooks/useWidgetNudge.
+  useWidgetNudge(
+    navRef,
+    isLoggedIn && !bootstrapping && onboarding.complete && !needsUnlock,
+  );
+
+  // Discovery nudge, last in the pecking order: from the third app open on a
+  // spaced/capped cadence, the full-screen Discover modal (unowned add-ons +
+  // Calen brainstorm; brainstorm alone, once, when everything is owned). Skips
+  // any open where an invitation, security, or widget nudge presented.
+  useDiscoverNudge(
     navRef,
     isLoggedIn && !bootstrapping && onboarding.complete && !needsUnlock,
   );

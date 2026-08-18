@@ -1,7 +1,7 @@
 ---
 title: Guardian recovery (dual-control)
 status: current
-last-verified: 3cd3b36+ (2026-08-12); **an approval no longer dies with the requester's app state** — the ephemeral secret + requestId lived only in module memory and the recover screen ALWAYS started a fresh request on mount, so the shared-device flow (sign out → guardian signs in → approves → sign back in) or an app kill during the wait orphaned the approval unrecoverably (the new request's poll waited forever, the sealed payload sat unclaimable until TTL sweep); the pending request now persists to the keychain per user, the screen resumes it before starting fresh, and the sealed handoff is persisted the moment polling claims it (burn-on-delivery makes the device copy the only copy); same day: **the guardian now finds out** — the request push is typed `guardian_recovery_request` and guardian requests joined the app-open/foreground pop-up lane (presented apart from ordinary invitations, routed at the approve screen; see notifications.md); the approve card's copy was rewritten ("They're locked out … you'll be shown a security code to compare") with real spacing before Review & approve; earlier same day: guardian audit events (`guardian_armed` / `guardian_disarmed` / `guardian_approved`) added to the `AUDIT_EVENTS` enum — arming a guardian 500'd on enum validation because keys.js wrote events the AuditLog model never allowed
+last-verified: 3cfa750+ (2026-08-13); **the feature gets discovered: a one-time pop-up nudge once arming becomes possible** — a solo user literally can't arm a guardian, so once the household has another member and no guardian is armed, the pop-up lane's security-nudge channel (mechanics in notifications.md) prompts ONCE per device per user ("Add a Recovery Guardian", Set Up / Not Now, routed at the setup screen) on an app open from the second open on; worded as a capability and deliberately NOT naming the newest member (the joiner may be exactly who the user shouldn't hand recovery power to — the trust model requires someone you'd trust to see your data), outranked by the passkey nudge and by any invitation pop-up on the same open (2026-08-13); 3cd3b36+ (2026-08-12); **an approval no longer dies with the requester's app state** — the ephemeral secret + requestId lived only in module memory and the recover screen ALWAYS started a fresh request on mount, so the shared-device flow (sign out → guardian signs in → approves → sign back in) or an app kill during the wait orphaned the approval unrecoverably (the new request's poll waited forever, the sealed payload sat unclaimable until TTL sweep); the pending request now persists to the keychain per user, the screen resumes it before starting fresh, and the sealed handoff is persisted the moment polling claims it (burn-on-delivery makes the device copy the only copy); same day: **the guardian now finds out** — the request push is typed `guardian_recovery_request` and guardian requests joined the app-open/foreground pop-up lane (presented apart from ordinary invitations, routed at the approve screen; see notifications.md); the approve card's copy was rewritten ("They're locked out … you'll be shown a security code to compare") with real spacing before Review & approve; earlier same day: guardian audit events (`guardian_armed` / `guardian_disarmed` / `guardian_approved`) added to the `AUDIT_EVENTS` enum — arming a guardian 500'd on enum validation because keys.js wrote events the AuditLog model never allowed
 code:
   - shared/crypto/src/core.ts                        # createGuardianEnvelope / unsealGuardianOuter / resealGuardianInner / recoverWithGuardian
   - server/src/routes/keys.js                        # /keys/guardian* endpoints (blind store + relay)
@@ -164,6 +164,19 @@ has `inner` without the guardian. ✔ dual control.
   the guardian alone. The recover UI prompts for this on success.
 - The whole feature MUST be opt-in; an un-armed account behaves exactly as today
   ("lose every factor → unrecoverable").
+- **Discovery:** the feature is surfaced by a **one-time** pop-up nudge the
+  moment arming becomes *possible* — the household has ≥1 other member (a solo
+  user can't arm a guardian, so the entry point in Privacy & security is
+  undiscoverable exactly until then) and no guardian is armed. The nudge is
+  worded as a capability ("choose someone you trust…") and MUST NOT name or
+  preselect the newest member: the person who just joined may be exactly who
+  the user should not hand recovery power to, and the trust model above
+  requires a deliberate choice. **Set Up** routes at the setup screen (which
+  enforces the unlocked-vault + PIN + safety-number ceremony as usual); **Not
+  Now** is a real answer — prompted once per device per user, with the
+  Recovery-methods badge as the durable surface. Pop-up mechanics (second-open
+  floor, one nudge per open, passkey nudge and invitations outrank it) are
+  owned by [notifications.md](notifications.md) "Security nudges".
 
 ## Data & API surface
 

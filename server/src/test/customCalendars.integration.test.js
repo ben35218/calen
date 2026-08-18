@@ -1,7 +1,8 @@
 // Integration tests for custom calendars (routes/calendars.js): create/list,
 // the three access tiers (private, shared with a member, shared household-wide),
-// creator-only edit/delete, and the `mine` flag the client keys read-only mode
-// off. Real app + in-memory MongoDB.
+// the write split (full-access housemates edit basics; sharing/holiday/delete
+// stay the creator's), and the `mine`/`access` flags the client keys its edit
+// gates off. Real app + in-memory MongoDB.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { startDb, stopDb, request, registerUser, enrollKeys, joinHousehold, b64u } = require('./harness');
@@ -77,17 +78,43 @@ test('outsiders see nothing, even when a calendar is household-wide', async () =
   assert.ok(!list.body.some((c) => c.key === hhWide.body.key));
 });
 
-test('creator-only writes: a member with read access cannot edit or delete', async () => {
+test('calendar writes: a full-access housemate edits basics; sharing and delete stay the creator’s', async () => {
   const { owner, member } = await setupHouseholdOfTwo();
+  // householdAccess defaults to 'full'.
   const cal = await createCalendar(owner.auth, { sharedWithHousehold: true });
 
-  const memberEdit = await request().put(`/api/calendars/${cal.body.key}`)
-    .set('Authorization', member.auth).send({ name: 'Hijacked' });
-  assert.equal(memberEdit.status, 404);
+  // Full Access housemate: name / colour / alerts are editable…
+  const memberRename = await request().put(`/api/calendars/${cal.body.key}`)
+    .set('Authorization', member.auth)
+    .send({ name: 'Family Stuff', color: '#43A047', alertsEnabled: false });
+  assert.equal(memberRename.status, 200);
+  assert.equal(memberRename.body.name, 'Family Stuff');
+  assert.equal(memberRename.body.color, '#43A047');
+  assert.equal(memberRename.body.alertsEnabled, false);
+  assert.equal(memberRename.body.mine, false);
 
+  // …but sharing is not, even bundled with an allowed field.
+  const memberShare = await request().put(`/api/calendars/${cal.body.key}`)
+    .set('Authorization', member.auth)
+    .send({ name: 'Fine', sharedWithHousehold: false });
+  assert.equal(memberShare.status, 403);
+
+  // Nor is delete.
   const memberDelete = await request().delete(`/api/calendars/${cal.body.key}`)
     .set('Authorization', member.auth);
   assert.equal(memberDelete.status, 404);
+
+  // A view-only housemate cannot edit anything.
+  const viewCal = await createCalendar(owner.auth, { sharedWithHousehold: true, householdAccess: 'view' });
+  const viewEdit = await request().put(`/api/calendars/${viewCal.body.key}`)
+    .set('Authorization', member.auth).send({ name: 'Hijacked' });
+  assert.equal(viewEdit.status, 403);
+
+  // A calendar not shared with the member stays invisible (404, not 403).
+  const priv = await createCalendar(owner.auth);
+  const privEdit = await request().put(`/api/calendars/${priv.body.key}`)
+    .set('Authorization', member.auth).send({ name: 'Hijacked' });
+  assert.equal(privEdit.status, 404);
 
   const ownerEdit = await request().put(`/api/calendars/${cal.body.key}`)
     .set('Authorization', owner.auth)
@@ -274,6 +301,12 @@ test('full-access outside collaborator: the invitation carries access:full', asy
   // the collaborator holds the CalendarKey to seal events into the /records lane).
   const list = await request().get('/api/calendars').set('Authorization', outsider.auth);
   assert.equal(list.body.find((c) => c.key === cal.body.key).access, 'full');
+
+  // Full access covers the calendar's EVENTS only: an outside collaborator
+  // never edits the calendar record itself (basics editing is housemates-only).
+  const edit = await request().put(`/api/calendars/${cal.body.key}`)
+    .set('Authorization', outsider.auth).send({ name: 'Hijacked' });
+  assert.equal(edit.status, 403);
 });
 
 // ── Subscribed (ICS feed) calendars ──────────────────────────────────────────

@@ -307,8 +307,11 @@ export default function RecipeFormScreen() {
       // Bind the photo to the saved recipe. The server can't read the sealed
       // imageUrl, so until it is told, the file counts as an abandoned draft and
       // the nightly sweep takes it; this also drops the bytes of a photo that was
-      // replaced. Best-effort — never at the cost of the save (lib/recipePhoto).
-      void claimRecipePhoto(id ?? newId, form.imageUrl);
+      // replaced. Awaited (with quick retries inside) so a transient failure gets
+      // its chances before navigation, but still quiet — a claim that can't get
+      // through is parked in a durable queue and flushed on the next foreground /
+      // detail open, never an error the cook has to read (lib/recipePhoto).
+      await claimRecipePhoto(id ?? newId, form.imageUrl);
       // Came from the planner's "Add recipe" for a date: schedule the new recipe
       // to that date, then return to the Meals/Planner view (not the detail page).
       if (!isEdit && newId && scheduleDate) {

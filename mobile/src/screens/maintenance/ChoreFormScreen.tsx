@@ -457,8 +457,11 @@ export default function ChoreFormScreen() {
     // generates ("every week on Tuesday" due on a Wednesday) can't be saved —
     // except by "Save for This Chore Only", which detaches the day as a
     // one-time copy and so may land anywhere. That scope skips this check in
-    // the prompt callback below.
-    const mismatch = form.nextDueDate ? ruleDateMismatch(repeatRule, form.nextDueDate) : null;
+    // the prompt callback below. Called with '' when no date is picked: the
+    // check also refuses a rule the sealed chore recurrence can't store
+    // losslessly (multi-day, weekday/weekend kinds — ruleLossyForItem), which
+    // needs no date to be wrong.
+    const mismatch = ruleDateMismatch(repeatRule, form.nextDueDate || '');
     const original = decryptedChore.current;
     if (!isEdit || !original || !dirtyRef.current) {
       if (mismatch) {
@@ -532,10 +535,14 @@ export default function ChoreFormScreen() {
   dirtyRef.current = dirty;
 
   // Tapping the Repeat field opens the shared Repeat screen directly.
+  // `singleDay`: the sealed chore recurrence stores one weekday / month-day
+  // and only Sun..Sat ordinal kinds, so the screen restricts its pickers to
+  // what will actually persist.
   const openRepeatScreen = () =>
     navigation.navigate('EventRepeat', {
       rule: repeatRule,
       date: form.nextDueDate || new Date().toISOString().slice(0, 10),
+      singleDay: true,
     });
 
   if (isEdit && choreQ.isLoading) {

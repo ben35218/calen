@@ -35,13 +35,105 @@ export async function uploadRecipePhoto(file: PickedFile): Promise<string | null
 // Tell the server which photo a just-saved recipe kept, so the nightly sweep
 // stops treating it as an abandoned draft (and so a replaced photo's bytes go).
 //
-// Best-effort on purpose: the recipe itself is already saved by the time this
-// runs, and a failed claim costs a picture at worst — never the recipe, and
-// never an error the cook has to read. The photo survives until the sweep, so a
-// later save re-claims it.
-export function claimRecipePhoto(recipeId: string, imageUrl?: string | null): Promise<void> {
+// Quiet but no longer fire-and-forget: a claim that dies (offline, server
+// blip) after the recipe itself saved used to leave the RecipePhoto row
+// unclaimed, and the 24h orphan sweep deleted the file while the sealed
+// recipe's imageUrl still pointed at it — a permanently broken hero. The claim
+// now retries a couple of times inline, and a claim that still can't reach the
+// server is parked in a durable AsyncStorage queue, flushed opportunistically
+// (app foreground, recipe detail open). It still never rejects and never
+// surfaces an error the cook has to read.
+
+const PENDING_CLAIMS_KEY = 'recipePhotoClaims.pending';
+const CLAIM_RETRIES = 2; // quick inline retries after the first attempt
+const CLAIM_RETRY_DELAY_MS = 700;
+
+// Required lazily: AsyncStorage is a native module, and most importers of this
+// file (thumbnails, heroes) never touch the claim queue — a static import
+// would drag it into every one of their test module graphs.
+const storage = () => {
+  const mod = require('@react-native-async-storage/async-storage');
+  return (mod.default ?? mod) as {
+    getItem(key: string): Promise<string | null>;
+    setItem(key: string, value: string): Promise<void>;
+    removeItem(key: string): Promise<void>;
+  };
+};
+
+interface PendingClaim {
+  recipeId: string;
+  imageUrl: string;
+}
+
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// One claim attempt. 'done' = nothing left to do — success, or the server
+// ANSWERED with an error (a 404 means the file was already swept, a 400 means
+// it was never ours; retrying can't change either answer). 'retry' = the
+// request never got an answer (offline, timeout) — worth trying again later.
+async function attemptClaim(recipeId: string, imageUrl: string | null): Promise<'done' | 'retry'> {
+  try {
+    await recipesApi.setPhoto(recipeId, imageUrl);
+    return 'done';
+  } catch (err) {
+    return (err as { response?: unknown })?.response ? 'done' : 'retry';
+  }
+}
+
+async function readPendingClaims(): Promise<PendingClaim[]> {
+  try {
+    const raw = await storage().getItem(PENDING_CLAIMS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writePendingClaims(list: PendingClaim[]): Promise<void> {
+  try {
+    if (list.length) await storage().setItem(PENDING_CLAIMS_KEY, JSON.stringify(list));
+    else await storage().removeItem(PENDING_CLAIMS_KEY);
+  } catch {
+    // Losing the queue costs a picture at worst — same posture as the claim.
+  }
+}
+
+// Park a claim for a later flush. One entry per recipe (a newer save's claim
+// supersedes an older one — the server claim unbinds the rest anyway).
+async function enqueuePendingClaim(claim: PendingClaim): Promise<void> {
+  const queue = await readPendingClaims();
+  await writePendingClaims([...queue.filter((c) => c.recipeId !== claim.recipeId), claim]);
+}
+
+export async function claimRecipePhoto(recipeId: string, imageUrl?: string | null): Promise<void> {
   // Only a file we host is ours to claim or delete; an absolute URL on an older
   // recipe points at someone else's server, where there is nothing to keep.
   const ours = imageUrl?.startsWith('/uploads/recipes/') ? imageUrl : null;
-  return recipesApi.setPhoto(recipeId, ours).then(() => undefined, () => undefined);
+  for (let attempt = 0; attempt <= CLAIM_RETRIES; attempt++) {
+    if (attempt) await delay(CLAIM_RETRY_DELAY_MS);
+    if ((await attemptClaim(recipeId, ours)) === 'done') return;
+  }
+  // A null "claim" (photo removed/external) that can't get through is not
+  // queued: nothing is at risk of the sweep — the cost is a replaced photo's
+  // bytes lingering, which the next successful save clears.
+  if (ours) await enqueuePendingClaim({ recipeId, imageUrl: ours });
+}
+
+// Retry every parked claim once. Called opportunistically (app foreground,
+// recipe detail open); serialized so overlapping flushes can't double-send or
+// resurrect each other's dequeued entries.
+let flushInFlight: Promise<void> | null = null;
+export function flushPendingPhotoClaims(): Promise<void> {
+  if (flushInFlight) return flushInFlight;
+  flushInFlight = (async () => {
+    const queue = await readPendingClaims();
+    if (!queue.length) return;
+    const remaining: PendingClaim[] = [];
+    for (const claim of queue) {
+      if ((await attemptClaim(claim.recipeId, claim.imageUrl)) === 'retry') remaining.push(claim);
+    }
+    await writePendingClaims(remaining);
+  })().finally(() => { flushInFlight = null; });
+  return flushInFlight;
 }

@@ -42,6 +42,15 @@ let timings = {
   pokeDelayMs: 250,
   pushDelayMs: 3000,
   streamSuppressMs: 2000,
+  // Change-stream reconnect backoff: starts at the initial value, doubles per
+  // failed attempt up to the max, and resets to the initial once a reconnected
+  // stream proves healthy (see startChangeStream).
+  streamRetryInitialMs: 5000,
+  streamRetryMaxMs: 60_000,
+  // "Demonstrably healthy" = the stream delivered a change event OR simply
+  // stayed up this long — a quiet household may not write for hours, so
+  // survival is evidence enough that the connection is good.
+  streamHealthyAfterMs: 30_000,
 };
 
 function setTimings(next) {
@@ -134,8 +143,11 @@ function recordTouched({ householdId, userId, sessionId } = {}) {
 // ── Change stream (out-of-band writes) ──────────────────────────────────────
 
 let stream = null;
-let streamRetryMs = 5000;
+// Current reconnect backoff; null = at the initial value (healthy).
+let streamRetryMs = null;
 let streamDisabled = false;
+let streamDown = false;   // a death was logged; the next healthy stream logs recovery
+let restartTimer = null;
 
 function handleStreamEvent(ev) {
   if (!['insert', 'update', 'replace'].includes(ev.operationType)) return;
@@ -157,24 +169,104 @@ function startChangeStream() {
     stream = Record.watch([], { fullDocument: 'updateLookup' });
   } catch (err) {
     console.warn('[recordChanges] change stream unavailable:', err.message);
+    stream = null;
     return;
   }
-  stream.on('change', handleStreamEvent);
-  stream.on('error', (err) => {
-    const unsupported = err?.code === 40573 || /only supported on replica sets/i.test(err?.message || '');
-    try { stream.close(); } catch { /* already closed */ }
-    stream = null;
+  const s = stream;
+  let died = false;    // one death → one teardown + one scheduled restart,
+                       // however many of error/close/end fire for it
+  let healthy = false;
+
+  // Backoff reset: a reconnected stream is "demonstrably healthy" once it
+  // delivers a change event or stays up streamHealthyAfterMs — only then does
+  // the NEXT outage start over at the initial retry interval. Resetting on
+  // mere reconnect would defeat the backoff when the server accepts the
+  // connection and immediately drops it in a loop.
+  const healthyTimer = setTimeout(markHealthy, timings.streamHealthyAfterMs);
+  if (healthyTimer.unref) healthyTimer.unref();
+  function markHealthy() {
+    if (died || healthy) return;
+    healthy = true;
+    streamRetryMs = null;
+    if (streamDown) {
+      streamDown = false;
+      console.error('[recordChanges] change stream recovered — cross-instance poke fanout restored');
+    }
+  }
+
+  s.on('change', (ev) => {
+    markHealthy();
+    handleStreamEvent(ev);
+  });
+
+  // A stream can die every way a socket can: 'error', but also a clean
+  // 'close'/'end' with no error at all (primary stepdown, idle LB reset).
+  // Before this handled only 'error', a silent close left `stream` non-null,
+  // so every later startChangeStream() no-op'd and cross-instance poke fanout
+  // stayed dead until the process restarted.
+  const onDeath = (label) => (err) => {
+    if (died) return;
+    died = true;
+    clearTimeout(healthyTimer);
+    try { s.close(); } catch { /* already closed */ }
+    if (stream === s) stream = null;
+    if (s.__intentionalClose) return; // stopChangeStream — no restart
+    const unsupported = err && (err.code === 40573 || /only supported on replica sets/i.test(err.message || ''));
     if (unsupported) {
       // Standalone mongod (dev/tests) — local-only mode is the whole story.
       streamDisabled = true;
       console.warn('[recordChanges] change streams unsupported here — running local-only');
       return;
     }
-    console.error('[recordChanges] change stream error, retrying:', err?.message);
-    const retry = setTimeout(() => startChangeStream(), streamRetryMs);
-    if (retry.unref) retry.unref();
-    streamRetryMs = Math.min(streamRetryMs * 2, 60_000);
-  });
+    const wait = streamRetryMs ?? timings.streamRetryInitialMs;
+    streamDown = true;
+    console.error(
+      `[recordChanges] change stream ${label}${err ? `: ${err.message}` : ''} — cross-instance poke fanout down, reconnecting in ${wait}ms`,
+    );
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      startChangeStream();
+    }, wait);
+    if (restartTimer.unref) restartTimer.unref();
+    streamRetryMs = Math.min(wait * 2, timings.streamRetryMaxMs);
+  };
+  s.on('error', onDeath('error'));
+  s.on('close', onDeath('closed'));
+  s.on('end', onDeath('ended'));
 }
 
-module.exports = { channelFor, subscribe, recordTouched, startChangeStream, setTimings };
+// Tear the stream down without scheduling a restart (shutdown / tests).
+function stopChangeStream() {
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+  const s = stream;
+  stream = null;
+  if (s) {
+    s.__intentionalClose = true;
+    try { s.close(); } catch { /* already closed */ }
+  }
+}
+
+// Test-only visibility into the reconnect state machine.
+function streamStateForTest() {
+  return {
+    active: Boolean(stream),
+    retryMs: streamRetryMs ?? timings.streamRetryInitialMs,
+    disabled: streamDisabled,
+    restartScheduled: Boolean(restartTimer),
+  };
+}
+function resetStreamForTest() {
+  stopChangeStream();
+  streamRetryMs = null;
+  streamDisabled = false;
+  streamDown = false;
+}
+
+module.exports = {
+  channelFor, subscribe, recordTouched, startChangeStream, stopChangeStream, setTimings,
+  streamStateForTest, resetStreamForTest,
+};

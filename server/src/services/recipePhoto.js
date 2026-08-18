@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const axios = require('axios');
+const { fetchPublicUrl } = require('./urlGuard');
 
 const RECIPES_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads', 'recipes');
 
@@ -200,13 +200,20 @@ function pageImageUrl(html, pageUrl) {
 // Download a remote image and store it. Returns null on anything unexpected —
 // the import must still succeed with the recipe it extracted; a missing picture
 // is a smaller loss than a failed import.
+//
+// The fetch is SSRF-guarded (services/urlGuard): the og:image URL comes off an
+// attacker-authored page, so a perfectly public recipe page could otherwise
+// point this download at cloud metadata or the private network — and axios's
+// own redirect following re-resolved each hop unguarded. The guard vets the
+// URL and every redirect hop, and pins the socket to the vetted address; a
+// blocked image URL is just "no picture", never a failed import.
 async function storeRemoteImage(url) {
   if (!url) return null; // the page advertised no image — not an error
   try {
-    const res = await axios.get(url, {
+    const res = await fetchPublicUrl(url, {
       responseType: 'arraybuffer',
       timeout: REMOTE_TIMEOUT_MS,
-      maxContentLength: REMOTE_MAX_BYTES,
+      maxBytes: REMOTE_MAX_BYTES,
       maxRedirects: 3,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HouseholdCalendar/1.0)' },
     });

@@ -12,6 +12,13 @@
 // Mirrors the authorHiding / calendarKeys / tripKeys / invitations suites.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+
+// Shrink the sync-cursor overlap (prod default 5s) so the cursor tests don't
+// need multi-second sleeps. Set BEFORE the app loads (routes/records.js reads
+// it at module load, which happens on the first request()).
+process.env.RECORDS_SYNC_OVERLAP_MS = '500';
+const SYNC_OVERLAP_MS = 500;
+
 const {
   startDb, stopDb, request, b64u, fakeEnc, registerUser, enrollKeys, joinHousehold,
 } = require('./harness');
@@ -85,6 +92,10 @@ test('C3: an opaque create requires ciphertext (opaque-only store)', async () =>
 test('C3: the sync cursor returns records newer than `since`, and delete tombstones propagate', async () => {
   const { owner } = await setupActiveHousehold('Dan');
   const a = await request().post('/api/records').set('Authorization', owner.auth).send({ enc: opaqueEnc(), keyVersion: 1 });
+  // Age the record past the cursor-overlap window: `serverTime` is backdated by
+  // SYNC_OVERLAP_MS, so a just-written row is (deliberately) re-delivered on the
+  // next pull; only once it's older than the overlap does the pull go quiet.
+  await new Promise((r) => setTimeout(r, SYNC_OVERLAP_MS + 100));
   // Full pull sees the record.
   const full = await request().get('/api/records/sync').set('Authorization', owner.auth);
   assert.equal(full.status, 200);
@@ -103,6 +114,55 @@ test('C3: the sync cursor returns records newer than `since`, and delete tombsto
   const tomb = afterDelete.body.records.find((r) => String(r._id) === String(a.body._id));
   assert.ok(tomb, 'the tombstone appears in the incremental pull');
   assert.equal(tomb.deleted, true);
+});
+
+// The sync-cursor race (fixed 2026-08-13): `serverTime` used to be stamped
+// AFTER the find() returned. A record whose write committed while the query ran
+// had updatedAt < serverTime but was not in the response — and since the client
+// commits serverTime as its next `since` and the cursor is `$gt`, that record
+// was skipped FOREVER (it reappeared only when next edited). The fix captures
+// serverTime BEFORE the query, minus an overlap epsilon, so such a record is
+// re-delivered by the following pull (idempotent-upsert-safe on the client).
+test('C3: sync-cursor race — a write landing mid-pull is re-delivered by the next pull, not skipped forever', async () => {
+  const mongoose = require('mongoose');
+  const { owner } = await setupActiveHousehold('Racy');
+
+  const t0 = Date.now(); // wall clock just before the pull's query snapshot
+  const first = await request().get('/api/records/sync').set('Authorization', owner.auth);
+  assert.equal(first.status, 200);
+  const cursor = first.body.serverTime;
+
+  // The invariant under test: the returned cursor PREDATES the query snapshot
+  // (by about the overlap). Under the old code it postdated it.
+  assert.ok(
+    new Date(cursor).getTime() <= Date.now() - SYNC_OVERLAP_MS / 2,
+    'serverTime must be backdated behind the query by the overlap',
+  );
+  assert.ok(
+    new Date(cursor).getTime() < t0,
+    'precondition: the overlap covers this pull\'s request latency',
+  );
+
+  // Simulate the race victim: a record stamped just BEFORE the pull's query ran
+  // (updatedAt = t0) whose commit the query snapshot never saw — so it was
+  // absent from `first`. Under the old response-time cursor this row sat at
+  // updatedAt < serverTime and the `$gt` pull never returned it again.
+  const rec = await request().post('/api/records')
+    .set('Authorization', owner.auth).send({ enc: opaqueEnc(), keyVersion: 1 });
+  assert.equal(rec.status, 201);
+  await Record.collection.updateOne(
+    { _id: new mongoose.Types.ObjectId(String(rec.body._id)) },
+    { $set: { updatedAt: new Date(t0) } },
+  );
+
+  // A follow-up pull from the committed cursor must re-deliver it.
+  const next = await request().get('/api/records/sync')
+    .query({ since: cursor }).set('Authorization', owner.auth);
+  assert.equal(next.status, 200);
+  assert.ok(
+    next.body.records.find((r) => String(r._id) === String(rec.body._id)),
+    'the mid-pull write is inside the overlap window and re-delivered',
+  );
 });
 
 test('C3b: deleting a record reaps its orphaned EventAttachments (rows + files)', async () => {

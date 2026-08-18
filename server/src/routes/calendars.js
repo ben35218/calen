@@ -689,12 +689,36 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Only the creator edits or deletes; housemates and collaborators read via GET.
+// The creator manages sharing, holiday config, and deletion. A housemate with
+// Full Access ('full' effective access, same household) may edit the calendar's
+// BASICS — name, colour, alertsEnabled — matching what Full Access already
+// means for its events. Sharing stays creator-only because sharing edits drive
+// invitations and CalendarKey wraps only the owner's device can perform, and
+// outside collaborators never edit the calendar record at all.
 router.put('/:key', async (req, res) => {
   try {
     const { name, color, alertsEnabled, sharedWithHousehold, householdAccess, sharedWith, sharedWithOutside, holiday } = req.body;
-    const existing = await CustomCalendar.findOne({ key: req.params.key, userId: req.user._id }).lean();
+    const existing = await CustomCalendar.findOne({ key: req.params.key, ...accessFilter(req) }).lean();
     if (!existing) return res.status(404).json({ error: 'Calendar not found' });
+
+    if (String(existing.userId) !== String(req.user._id)) {
+      const sameHousehold = req.scopeIds.some((id) => String(id) === String(existing.userId));
+      const access = effectiveCalendarAccess(existing, req.user._id, req.scopeIds);
+      if (!sameHousehold || access !== 'full') {
+        return res.status(403).json({ error: "Only the calendar's owner can edit it" });
+      }
+      if (sharedWithHousehold !== undefined || householdAccess !== undefined ||
+          sharedWith !== undefined || sharedWithOutside !== undefined || holiday !== undefined) {
+        return res.status(403).json({ error: "Only the calendar's owner can change how it's shared" });
+      }
+      const updates = {};
+      if (name !== undefined)          updates.name          = name;
+      if (color !== undefined)         updates.color         = color;
+      if (alertsEnabled !== undefined) updates.alertsEnabled = alertsEnabled;
+      const cal = await CustomCalendar.findOneAndUpdate({ _id: existing._id }, updates, { new: true }).lean();
+      if (!cal) return res.status(404).json({ error: 'Calendar not found' });
+      return res.json(serialize(cal, req));
+    }
 
     const prevOutside = (existing.sharedWithOutside || []).map(normalizeOutsideEntry);
     const nextOutside = sharedWithOutside !== undefined

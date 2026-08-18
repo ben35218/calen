@@ -1,6 +1,5 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
-const axios = require('axios');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -16,6 +15,7 @@ const {
   storeCropOfPage, pageImageUrl, storeRemoteImage,
 } = require('../services/recipePhoto');
 const { plaintextCreateBlocked, E2EE_REQUIRED_MESSAGE, stripSealedContent } = require('../services/e2eePolicy');
+const { fetchPublicUrl } = require('../services/urlGuard');
 
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads', 'recipes');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -206,10 +206,15 @@ router.post('/from-url', requireAiEnabled, async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
 
-    const response = await axios.get(url, {
+    // SSRF-guarded fetch (services/urlGuard): the URL is user-supplied and the
+    // extraction below reads the response back to the user, so a bare fetch
+    // was a proxy into localhost / cloud-metadata / the private network.
+    // http(s) only, every DNS answer must be public, the socket pins the
+    // vetted address, and each redirect hop is re-vetted; size + time capped.
+    const response = await fetchPublicUrl(url, {
       timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HouseholdCalendar/1.0)' },
-      maxContentLength: 5 * 1024 * 1024,
+      maxBytes: 5 * 1024 * 1024,
     });
 
     const html = String(response.data);
@@ -231,6 +236,9 @@ router.post('/from-url', requireAiEnabled, async (req, res) => {
     if (err instanceof SyntaxError) {
       return res.status(422).json({ error: 'Could not parse a recipe from that URL. Try adding it manually.' });
     }
+    // A guarded URL (private/loopback/metadata target, bad scheme, redirect
+    // overrun) is the caller's input, not a server fault.
+    if (err.blocked) return res.status(400).json({ error: 'That URL can’t be imported from.' });
     res.status(500).json({ error: err.message });
   }
 });

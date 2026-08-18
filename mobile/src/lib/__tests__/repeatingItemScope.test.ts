@@ -193,6 +193,18 @@ describe('nextOccurrenceFrom', () => {
     expect(nextOccurrenceFrom(c, NOW)).toBe('2026-08-01');
   });
 
+  it('walks a next-to-last-weekday (-2) series forward like any other', () => {
+    // Anchored the next-to-last Tuesday of May 2026 (the 19th); the June
+    // occurrence is the 23rd (June Tuesdays: 2, 9, 16, 23, 30). The old
+    // engine's -2 arithmetic landed in the previous month, so the walk died
+    // and this returned the stale anchor's month forever.
+    const c = chore({
+      nextDueDate: '2026-05-19T12:00:00.000Z',
+      recurrence: { type: 'interval', intervalUnit: 'months', intervalValue: 1, weekOfMonth: -2, dayOfWeek: 2 },
+    });
+    expect(nextOccurrenceFrom(c, NOW)).toBe('2026-06-23');
+  });
+
   it('is null for a one-time item whose day has passed', () => {
     const c = chore({ recurrence: { type: 'one-time' } });
     expect(nextOccurrenceFrom(c, NOW)).toBeNull();
