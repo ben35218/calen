@@ -12,7 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 //   recovery-code ceremony (and, for an invitee, the join flow); a second
 //   security ask stacked there trains reflexive dismissal.
 // - Each kind prompts ONCE per device per user — "Not Now" is a real answer,
-//   not a snooze. The Recovery-methods badges on Privacy & security stay the
+//   not a snooze. The Recovery-methods badges on Privacy & Security stay the
 //   durable surface for anything dismissed.
 
 export type SecurityNudgeKind = 'passkey' | 'guardian';

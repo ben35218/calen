@@ -12,6 +12,7 @@ import {
   subscribeKeysReady, subscribeHouseholdChanged, rememberSessionPassword, getHDK,
 } from '../lib/e2ee';
 import { passkeysSupported, assertPasskeyForLogin } from '../lib/passkeys';
+import { latestPasskeyHint } from '../lib/passkeyHints';
 import { maintainKeyHygiene } from '../lib/dropMigration';
 import { ensureSharedCalendarKeys } from '../lib/calendarKeys';
 import { queryClient } from '../lib/queryClient';
@@ -283,27 +284,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(data.user);
   }, []);
 
-  // Pass an email for the username-first flow (one assertion signs in AND
-  // unlocks E2EE via the credential's PRF salt). Omit it for usernameless
-  // sign-in: the OS account picker chooses the passkey, the server resolves the
-  // user from the assertion, and E2EE unlocks post-auth (the challenge couldn't
-  // carry a PRF salt for an unknown user).
+  // Pass an email for the username-first flow (the challenge carries each
+  // credential's PRF salt, so one assertion signs in AND unlocks E2EE). Omit it
+  // for usernameless sign-in: the OS account picker chooses the passkey and the
+  // server resolves the user from the assertion. The usernameless challenge
+  // can't carry a PRF salt for an unknown user, so the device's cached
+  // last-used hint (passkeyHints.ts) rides along instead — when the picker
+  // chooses that credential (signing back into this device's account, the
+  // overwhelmingly common case) the same single gesture still unlocks E2EE.
   const loginWithPasskey = useCallback(async (email?: string) => {
     const { data: ch } = await authApi.passkeyChallenge(email ? { email } : {});
-    const assertion = await assertPasskeyForLogin(ch);
+    const hint = ch.allowCredentials.some((c) => c.prfSalt) ? null : await latestPasskeyHint();
+    const assertion = await assertPasskeyForLogin(ch, hint);
     if (!assertion) return false; // user canceled the Face ID sheet
     const { data } = await authApi.passkeyLogin({ challengeId: ch.challengeId, response: assertion.response });
     await saveToken(data.token);
     setUser(data.user);
     // Best-effort E2EE unlock (like initE2EE — a crypto failure must not block
-    // sign-in). Username-first assertions already evaluated the PRF, so unlock
-    // in the same gesture. Usernameless ones didn't, so fall back to the same
-    // path a relaunch uses: the biometric device-key cache (no prompt), then a
-    // passkey assertion (a second Face ID only when the cache is cold).
+    // sign-in). When the assertion evaluated a PRF (username-first salts, or a
+    // usernameless hint the picker matched) unlock in the same gesture. If it
+    // didn't — or the wrapped factor doesn't open (a stale hint after a factor
+    // re-enroll) — fall back to the same path a relaunch uses: the biometric
+    // device-key cache (no prompt), then a passkey assertion (a second Face ID,
+    // whose unlock refreshes the hint so the next sign-in is one prompt again).
     try {
-      const unlocked = assertion.prfOutput
+      let unlocked = assertion.prfOutput
         ? await unlockWithPasskeyPrfOutput(assertion.credentialId, assertion.prfOutput)
-        : (await unlockFromDeviceCache()) || (await unlockWithPasskey());
+        : false;
+      if (!unlocked) unlocked = (await unlockFromDeviceCache()) || (await unlockWithPasskey());
       if (unlocked) await ensureHouseholdKey();
     } catch (err) {
       console.warn('[e2ee] passkey unlock skipped:', (err as Error)?.message ?? err);

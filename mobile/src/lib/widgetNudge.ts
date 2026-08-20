@@ -14,7 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 //   via the widget gallery gets NOTHING — `installed` vetoes everything;
 // - at most TWO showings ever: the promo, and one re-nudge after a 14-day
 //   cooldown for users who saw it but never added the widget. After that the
-//   Profile row ("Home Screen Widget") is the only surface, forever.
+//   Profile widget promo card is the only surface, forever.
 
 export interface WidgetNudgeMemory {
   // Cold starts counted while the full app shell was up for this user.

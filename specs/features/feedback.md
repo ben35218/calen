@@ -1,7 +1,7 @@
 ---
 title: In-app feedback (questions, bugs, ideas)
 status: current
-last-verified: f8e4627+ (2026-07-29)   # new feature
+last-verified: 909fb0f+ (2026-08-19); the Profile row and screen title are title-cased — **"Help & Feedback"** (2026-08-19); f8e4627+ (2026-07-29)   # new feature
 code:
   - mobile/src/screens/profile/HelpFeedbackScreen.tsx
   - mobile/src/lib/diagnostics.ts
@@ -17,7 +17,7 @@ tests:
 ## Purpose
 
 Let a signed-in user ask a question, report a bug, or suggest an idea from
-inside the app (Profile → "Help & feedback") without leaving for email or
+inside the app (Profile → "Help & Feedback") without leaving for email or
 GitHub. Each submission lands in a durable queue an admin triages in the admin
 portal. This replaces "there is no in-app channel" — the only prior report path
 was the AI content-moderation long-press (see [ai-assistant.md](ai-assistant.md))

@@ -16,6 +16,7 @@ import {
   reauthWithBiometric, rekeyIdentity, hasSessionPassword,
 } from '../../lib/e2ee';
 import { isDeviceKeyEnabled } from '../../lib/deviceKey';
+import { getRecoveryProgress } from '../../lib/guardianRecovery';
 import { passkeysSupported } from '../../lib/passkeys';
 import { useRecoveryHealth } from '../../hooks/useRecoveryHealth';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
@@ -35,7 +36,7 @@ import { colors, spacing } from '../../theme';
 type Focus = 'unlock' | 'recovery' | 'aiPersonalInfo';
 type KeyStatus = 'locked' | 'ready' | 'pending' | null;
 
-// The dedicated Privacy & security screen. Split out of AccountScreen so the "how
+// The dedicated Privacy & Security screen. Split out of AccountScreen so the "how
 // protected am I / how do I get back in" story lives in one place: the
 // encryption status hero (+ unlock UI), a Recovery methods roll-up that shows
 // every way back into the encrypted data and which ones are set up, devices,
@@ -91,6 +92,18 @@ export default function PrivacyDataScreen() {
     queryFn: async () => (await keysApi.guardianRequests()).data.requests,
     refetchInterval: 15000,
   });
+  // The caller's OWN in-flight recovery (requester side): the keychain slot +
+  // one poll. Drives the banner below the hero — an approval can land while
+  // the user is anywhere, and the recover link inside the locked hero is easy
+  // to miss, so the "enter your PIN" step gets its own surface. Locked only:
+  // an unlocked vault has nothing left to recover.
+  const recoveryProgressQ = useQuery({
+    queryKey: ['guardianRecoveryProgress'],
+    queryFn: getRecoveryProgress,
+    enabled: keyStatus === 'locked',
+    refetchInterval: 15000,
+  });
+  const recoveryProgress = keyStatus === 'locked' ? recoveryProgressQ.data : undefined;
 
   async function afterUnlock() {
     setUnlockPw('');
@@ -482,6 +495,39 @@ export default function PrivacyDataScreen() {
 
   return (
     <Screen>
+      {/* Requester-side recovery banner — the user's own guardian recovery in
+          flight. Sits ABOVE the hero: once the guardian approves, entering the
+          PIN is the single most useful action on this screen, and while
+          waiting it confirms the request is alive. Routes at the recover
+          screen (which resumes the persisted request). */}
+      {recoveryProgress && recoveryProgress.status !== 'none' ? (
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => (navigation as any).navigate('GuardianRecovery', { mode: 'recover' })}
+        >
+          <Card
+            style={[
+              styles.sectionCard,
+              recoveryProgress.status === 'ready' ? styles.recoveryReadyPrompt : styles.guardianPrompt,
+            ]}
+          >
+            <View style={styles.rowCenter}>
+              <Ionicons
+                name={recoveryProgress.status === 'ready' ? 'key' : 'hourglass-outline'}
+                size={20}
+                color={recoveryProgress.status === 'ready' ? colors.success : colors.primary}
+              />
+              <Text style={styles.guardianPromptText}>
+                {recoveryProgress.status === 'ready'
+                  ? 'Your guardian approved your recovery — enter your PIN to unlock your data'
+                  : 'Recovery in progress — waiting for your guardian to approve'}
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+            </View>
+          </Card>
+        </TouchableOpacity>
+      ) : null}
+
       {/* Encryption status. When unlocked (the common case) this is a slim trust
           line, not a card — the full "how protected am I" detail lives in the
           Recovery methods intro and the transparency card below. The heavy card
@@ -695,6 +741,10 @@ export default function PrivacyDataScreen() {
       </Card>
 
       {/* ── Recovery methods ── */}
+      {/* focus: 'recovery' (security nudges, recovery deep-links) opens the
+          screen scrolled to this section — with the locked hero above it, the
+          rows it points at otherwise start below the fold. */}
+      <ScrollToSection active={focus === 'recovery'}>
       <SectionHeader>Recovery methods</SectionHeader>
       <Card style={styles.sectionCard}>
         <Text style={styles.cardNote}>
@@ -756,6 +806,7 @@ export default function PrivacyDataScreen() {
       ) : passwordStale ? (
         <Hint>Heads up: you reset your password, so it can no longer unlock your data — a recovery method above is now your only way back in.</Hint>
       ) : null}
+      </ScrollToSection>
 
       {/* ── Devices ── */}
       <SectionHeader>Devices</SectionHeader>
@@ -987,6 +1038,7 @@ const styles = StyleSheet.create({
   error: { color: colors.error, fontSize: 13, marginBottom: spacing.sm },
   summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   guardianPrompt: { borderWidth: 1, borderColor: colors.primary + '66', backgroundColor: colors.primary + '0D' },
+  recoveryReadyPrompt: { borderWidth: 1, borderColor: colors.success + '66', backgroundColor: colors.success + '0D' },
   guardianPromptText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text, lineHeight: 19 },
   summaryText: { fontSize: 14, fontWeight: '600', color: colors.text },
   appLockRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },

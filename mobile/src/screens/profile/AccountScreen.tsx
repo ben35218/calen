@@ -39,7 +39,7 @@ import { colors, spacing } from '../../theme';
 // (changing it re-authenticates — a fresh device unlock, or the password as a
 // fallback). Reminders live on
 // their own screen (RemindersScreen); password management, encryption, recovery
-// methods, devices, and data controls all live on the dedicated Privacy & security
+// methods, devices, and data controls all live on the dedicated Privacy & Security
 // screen (PrivacyDataScreen) — Account stays focused on "who you are", plus the
 // device-local invite mail-app preference (surfaced here because the chooser
 // sheet remembers a pick silently and points users here to change it).
@@ -447,7 +447,7 @@ export default function AccountScreen() {
         {/* Email — the account's contact identity, so it sits directly above
             the phone number. The whole row is the affordance (tap to reveal the
             change form + chevron), matching the Sign-in → Password card on the
-            Privacy & security screen rather than a separate "Change" button.
+            Privacy & Security screen rather than a separate "Change" button.
             Changing email re-authenticates (biometric-first, password fallback).
             Passwordless accounts keep the existing "not available yet" treatment
             here — so the row is inert (no chevron)

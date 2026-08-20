@@ -28,9 +28,13 @@ import {
   EVENT_CALENDAR_TYPES, ymd, eventWhenFromStored, eventStoredFromWhen, shouldAutoFocusTitle,
   shiftEventWhen, occurrenceShiftDays,
   ALL_DAY_ALERT_OFFSETS, DEFAULT_DAY_ALERT_TIME, allDayAlertLabel, alertsForAllDay,
-  AlertAnchor, LEAVE_ALERT_BUFFERS, effectiveAlertAnchor, inferAlertAnchor,
-  leaveAlertMinutes, promoteSecondAlert, rebaseLeaveAlert, timedAlertLabel,
+  AlertAnchor, effectiveAlertAnchor, inferAlertAnchor,
+  promoteSecondAlert, rebaseLeaveAlert,
 } from '../../lib/calendar';
+import {
+  ALERT_OPTIONS, AlertItem, CUSTOM_ALERT,
+  alertKey, buildAlertItems, excludeUsedAlertKey,
+} from '../../lib/eventAlertOptions';
 import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars, useDeletedDefaultCalendars } from '../../lib/calendarPrefs';
 import {
@@ -48,8 +52,9 @@ import {
 import CustomAlertSheet from '../../components/CustomAlertSheet';
 import {
   getQueuedInvitees, clearQueuedInvitees, useQueuedInvitees,
-  getDraftGuestListVisible, setDraftGuestListVisible,
+  getDraftGuestListVisible, setDraftGuestListVisible, useDraftGuestListVisible,
   getQueuedHouseholdInvitees, setQueuedHouseholdInvitees, useQueuedHouseholdInvitees,
+  getQueuedRevokes, useQueuedRevokes,
 } from '../../lib/inviteeDraft';
 import { inviteeKey, sendInvitations, formatWhen } from '../../lib/invitees';
 import { notifyHouseholdInvitees, rsvpsForEvent } from '../../lib/householdRsvp';
@@ -65,40 +70,6 @@ import { colors, spacing } from '../../theme';
 
 type Nav = NativeStackNavigationProp<CalendarStackParamList, 'EventForm'>;
 type Rt = RouteProp<CalendarStackParamList, 'EventForm'>;
-
-// Alert offsets for a TIMED event — minutes before its start. An all-day event
-// has no start time, so it gets the whole-day grid instead (ALL_DAY_ALERT_OFFSETS
-// in lib/calendar, labelled with the hour they fire at); see `alertItems`.
-const ALERT_OPTIONS = [
-  { label: 'None', value: -1 },
-  { label: 'At time of event', value: 0 },
-  { label: '15 min before', value: 15 },
-  { label: '30 min before', value: 30 },
-  { label: '1 hour before', value: 60 },
-  { label: '1 day before', value: 1440 },
-];
-
-// The alert Selects are keyed by "<anchor>:<minutes>", not by the minute count:
-// the same number means two different settings depending on its anchor (with a
-// 45-minute drive, 60 minutes before the event and 15 minutes before leaving are
-// both "60"), and they diverge the moment the drive time changes. Two sentinel
-// keys sit alongside: no alert, and the row that opens the custom sheet.
-const NONE_ALERT = 'none';
-const CUSTOM_ALERT = 'custom';
-
-type AlertItem = { value: string; label: string; minutes: number | null; anchor: AlertAnchor };
-
-const alertKey = (minutes: number | null, anchor: AlertAnchor): string =>
-  minutes == null ? NONE_ALERT : `${anchor === 'leave' ? 'l' : 'e'}:${minutes}`;
-
-// The other slot's alert, dropped from this slot's list — two alerts on the same
-// instant would just fire the same notification twice. Sentinels and the slot's
-// own current selection always stay (mirrors `excludeUsedAlert`, by minutes
-// rather than by key, so the two framings of one instant can't both be picked).
-function excludeUsedAlertKey(options: AlertItem[], used: number | null, self: number | null): AlertItem[] {
-  if (used == null) return options;
-  return options.filter((o) => o.minutes == null || o.minutes === self || o.minutes !== used);
-}
 
 // Leading glyph for an attachment row, by broad file kind.
 function attachmentIcon(fileType?: string): keyof typeof Ionicons.glyphMap {
@@ -270,6 +241,27 @@ export default function EventFormScreen() {
   // Set when a scoped save's attachment copy failed, so onSuccess can say so.
   // A failed copy must not fail the save the user already confirmed.
   const attachmentCopyFailedRef = useRef(false);
+  // The saved event's own household-invitee list and guest-list flag, captured
+  // at seed time. The staging area is compared against these to tell a real
+  // change (notify the members newly added, prompt before discarding) from
+  // merely re-saving what the event already carried.
+  const hhSeedRef = useRef<string[] | null>(null);
+  const guestSeedRef = useRef<boolean | null>(null);
+  // What the Invitees screen's staging area holds when a form session opens:
+  // nothing. Every session starts clean — an abandoned draft or a discarded edit
+  // must not leak its staged invitees into the next event's save. Declared ABOVE
+  // the edit seed below so the seed's household/guest-list values always win
+  // (both effects run on the same commit when the event is already cached).
+  useEffect(() => {
+    clearQueuedInvitees();
+    // A new event's baseline is simply "nothing staged" — an edit's is filled in
+    // by the seed below, once the event has loaded.
+    if (!isEdit) {
+      hhSeedRef.current = [];
+      guestSeedRef.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [travelLoading, setTravelLoading] = useState(false);
   const [travelError, setTravelError] = useState('');
   // Set when the assistant asked for a "time to leave" alert before the drive
@@ -701,76 +693,26 @@ export default function EventFormScreen() {
     }));
   }, [form.travelMinutes]);
 
-  // Alert options.
-  //
-  // An ALL-DAY event has no start time, so minute offsets have nothing to count
-  // back from: its alerts are whole days off the day-alert hour (see the alert
-  // note in lib/calendar), and that is the only list it may be offered — the
-  // minute list would be describing a time the event doesn't have. Travel time
-  // is meaningless there too, which is why the departure options below are
-  // already all-day-gated.
-  //
-  // On a TIMED event, when a drive time is available, prepend a set of
-  // departure-anchored choices so the user can be alerted when it's time to
-  // leave — or a chosen number of minutes before that. Every row carries the
-  // anchor it was built with, so picking one records the framing the user chose
-  // instead of leaving it to be guessed back out of the number later.
-  const alertItems = useMemo<AlertItem[]>(() => {
-    const none: AlertItem = { value: NONE_ALERT, label: 'None', minutes: null, anchor: 'event' };
-    const custom: AlertItem = { value: CUSTOM_ALERT, label: 'Custom…', minutes: null, anchor: 'event' };
-    if (form.allDay) {
-      const items: AlertItem[] = [
-        none,
-        ...ALL_DAY_ALERT_OFFSETS.map((v) => ({
-          value: alertKey(v, 'event'), label: allDayAlertLabel(v, dayAlertTime), minutes: v, anchor: 'event' as AlertAnchor,
-        })),
-      ];
-      // A saved value off the grid — a custom day count, or a minute offset
-      // carried by an event saved before all-day alerts became day-based —
-      // still needs a row, or the field would fall back to its placeholder.
-      for (const v of [form.reminderMinutes, form.alert2Minutes]) {
-        if (v == null || items.some((i) => i.minutes === v)) continue;
-        items.push({ value: alertKey(v, 'event'), label: allDayAlertLabel(v, dayAlertTime), minutes: v, anchor: 'event' });
-      }
-      items.push(custom);
-      return items;
-    }
-    const travel = form.travelMinutes;
-    const leaveItems: AlertItem[] = [];
-    if (travel) {
-      for (const buf of LEAVE_ALERT_BUFFERS) {
-        // No computable departure time (e.g. no start time yet) — omit "Time to leave".
-        if (buf === 0 && !leaveByTime) continue;
-        const minutes = leaveAlertMinutes(buf, travel);
-        leaveItems.push({
-          value: alertKey(minutes, 'leave'),
-          label: timedAlertLabel(minutes, 'leave', travel, leaveByTime),
-          minutes,
-          anchor: 'leave',
-        });
-      }
-    }
-    const base: AlertItem[] = ALERT_OPTIONS.filter((o) => o.value >= 0).map((o) => ({
-      value: alertKey(o.value, 'event'), label: o.label, minutes: o.value, anchor: 'event',
-    }));
-    // "None" stays first; departure-anchored options follow it so they're
-    // visible without scrolling (the option modal caps at 70% screen height).
-    const items: AlertItem[] = [none, ...leaveItems, ...base];
-    // A saved custom value has no canned row — synthesize one in its own
-    // framing, so the field shows the setting back rather than its placeholder.
-    for (const [v, anchor] of [
-      [form.reminderMinutes, alertAnchor],
-      [form.alert2Minutes, alert2Anchor],
-    ] as const) {
-      if (v == null || items.some((i) => i.value === alertKey(v, anchor))) continue;
-      items.push({ value: alertKey(v, anchor), label: timedAlertLabel(v, anchor, travel, leaveByTime), minutes: v, anchor });
-    }
-    items.push(custom);
-    return items;
-  }, [
-    form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes,
-    alertAnchor, alert2Anchor, dayAlertTime,
-  ]);
+  // Alert options — built by the shared builder (lib/eventAlertOptions), which
+  // the event detail view's in-place alert pickers read from too, so the two
+  // surfaces can never offer different rows for the same event.
+  const alertItems = useMemo<AlertItem[]>(
+    () =>
+      buildAlertItems({
+        allDay: form.allDay,
+        travelMinutes: form.travelMinutes,
+        leaveByTime,
+        dayAlertTime,
+        reminderMinutes: form.reminderMinutes,
+        alertAnchor,
+        alert2Minutes: form.alert2Minutes,
+        alert2Anchor,
+      }),
+    [
+      form.travelMinutes, form.allDay, leaveByTime, form.reminderMinutes, form.alert2Minutes,
+      alertAnchor, alert2Anchor, dayAlertTime,
+    ],
+  );
 
   // Repeat options + the select's value. A custom rule ("every 2 weeks on
   // Monday") selects the Custom row and labels it with the rule's summary.
@@ -882,10 +824,12 @@ export default function EventFormScreen() {
       // Seed the Invitees screen's guest-list switch (missing on events that
       // predate the setting — treated as visible).
       setDraftGuestListVisible(e.guestListVisible !== false);
+      guestSeedRef.current = e.guestListVisible !== false;
       // Same seed-through for the household invitee list: a whole-payload
       // re-save re-seals it from the draft store, so seeding here is what keeps
       // an edit from wiping it out of `enc`.
       setQueuedHouseholdInvitees(e.householdInvitees ?? []);
+      hhSeedRef.current = e.householdInvitees ?? [];
       // The form now mirrors the saved event — let the guard snapshot it as the
       // clean baseline (any later edit registers as unsaved).
       setSeeded(true);
@@ -1100,26 +1044,55 @@ export default function EventFormScreen() {
       return created;
     },
     onSuccess: async (res, scope) => {
-      // A new event sends the invitees queued on its Invitees screen — a draft
-      // has no event id, so this is the first moment invitations CAN go out.
-      // Emails post in parallel; each phone entry opens the Messages composer
-      // in turn (send failures are dropped — the form is already closing).
+      // ── The Invitees screen's staged work lands HERE, on the save ──────────
+      // Both a new event and an edit stage their invitee changes (the screen
+      // never sends on its own when the form pushed it), so this is the single
+      // moment invitations go out, get revoked, and housemates are notified.
+      // For a new event it's also the first moment it CAN happen — a draft has
+      // no event id. Emails post in parallel; each phone entry opens the
+      // Messages composer in turn.
+      const savedId = res.data._id;
+      const queued = getQueuedInvitees();
+      const stagedRevokes = getQueuedRevokes();
+      const queuedHousehold = getQueuedHouseholdInvitees();
+      // Who is newly asked to respond: everyone for a new event, only the
+      // additions for an edit (the rest already answered, or were already
+      // asked — re-notifying them on every save would be spam).
+      const hhAdded = isEdit
+        ? queuedHousehold.filter((id) => !(hhSeedRef.current ?? []).includes(id))
+        : queuedHousehold;
+      // Removals first, so an address dropped and re-added in one session ends
+      // up invited rather than revoked.
+      for (const id of stagedRevokes) {
+        await invitationsApi.revoke(id).catch(() => {});
+      }
+      // Household members picked on the Invitees screen get their "accept or
+      // decline?" push now that the change is real. Best-effort — the durable
+      // channel is their Invitations inbox (synced records).
+      if (hhAdded.length) {
+        notifyHouseholdInvitees(
+          savedId, hhAdded, 'Event invitation',
+          `${myDisplayName} invited you to “${form.title.trim()}” — accept or decline`,
+        ).catch(() => {});
+      }
+      if (queued.length) {
+        const failures = await sendInvitations(savedId, queued, buildSnapshot(), getDraftGuestListVisible(), composeEmail);
+        // The form is closing, so a failure has nowhere inline to live — say it
+        // plainly rather than letting the user believe an invitation went out.
+        if (failures.length) {
+          Alert.alert(
+            'Some invitations didn’t send',
+            `The event was saved, but these invitations failed: ${failures
+              .map((f) => `${inviteeKey(f.entry)} (${f.error})`)
+              .join(', ')}. Open the event's Invitees screen to try again.`,
+          );
+        }
+      }
+      if (queued.length || stagedRevokes.length) {
+        qc.invalidateQueries({ queryKey: ['invitations', 'sent', isEdit ? eventId : savedId] });
+      }
+      clearQueuedInvitees();
       if (!isEdit) {
-        const queued = getQueuedInvitees();
-        // Household members picked on the Invitees screen get their instant
-        // "accept or decline?" push now that the event exists. Best-effort —
-        // the durable channel is their Invitations inbox (synced records).
-        const queuedHousehold = getQueuedHouseholdInvitees();
-        if (queuedHousehold.length) {
-          notifyHouseholdInvitees(
-            res.data._id, queuedHousehold, 'Event invitation',
-            `${myDisplayName} invited you to “${form.title.trim()}” — accept or decline`,
-          ).catch(() => {});
-        }
-        if (queued.length) {
-          await sendInvitations(res.data._id, queued, buildSnapshot(), getDraftGuestListVisible(), composeEmail);
-        }
-        if (queued.length || queuedHousehold.length) clearQueuedInvitees();
         // Attachments picked on the draft form upload now that the event exists.
         // A failed upload doesn't block the save the user just confirmed, but we
         // no longer swallow it silently — the user is told which files didn't
@@ -1151,7 +1124,10 @@ export default function EventFormScreen() {
       // override / series fork writes a NEW record, whose RSVPs start fresh.
       if (isEdit && res.data?._id === eventId) {
         const before = decryptedRef.current;
-        const hhIds = getQueuedHouseholdInvitees();
+        // Read from the value captured above: the staging area is already
+        // cleared by this point. Members added in this same save just got the
+        // invitation push, so they're excluded — one save, one notification.
+        const hhIds = queuedHousehold.filter((id) => !hhAdded.includes(id));
         const snap = buildSnapshot();
         const whenChanged =
           !!before &&
@@ -1320,15 +1296,19 @@ export default function EventFormScreen() {
     enabled: isEdit && !!eventQ.data && !readOnlyView,
   });
 
-  // A NEW event's invitees queue in the draft store until save can send them.
-  // Start each new form with a clean queue (an abandoned draft leaves one behind).
+  // Invitee edits made on the Invitees screen queue in the draft store until
+  // this form's save sends them (the queue is emptied on mount, above). The row
+  // previews what the event WILL have once saved: everyone already invited,
+  // minus the ones staged for removal, plus the ones staged to go out.
   const queuedInvitees = useQueuedInvitees();
-  useEffect(() => {
-    if (!isEdit) clearQueuedInvitees();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const queuedRevokes = useQueuedRevokes();
   const inviteeEmails = isEdit
-    ? (inviteesQ.data ?? []).map((i) => i.toEmail ?? i.toPhone ?? '')
+    ? [
+        ...(inviteesQ.data ?? [])
+          .filter((i) => !queuedRevokes.includes(i._id))
+          .map((i) => i.toEmail ?? i.toPhone ?? ''),
+        ...queuedInvitees.map(inviteeKey),
+      ]
     : queuedInvitees.map(inviteeKey);
 
   // Household invitees join the row's count/preview by name. The draft store is
@@ -1418,13 +1398,24 @@ export default function EventFormScreen() {
     baselineRef.current = JSON.stringify(form);
   }, [seeded, form]);
 
-  // The form differs from its clean baseline, or a new event has queued invitees
-  // or attachments that would be lost on leave. Read-only viewers can't edit, so
-  // they never trigger the discard prompt.
+  // The form differs from its clean baseline, or the Invitees screen staged work
+  // that would be lost on leave — invitees to send or revoke, a changed
+  // household selection, a flipped guest-list switch. None of those live in
+  // `form`, so each is compared against what the event was seeded with; without
+  // that, backing out of an invitee-only edit would silently drop it with no
+  // discard prompt. Read-only viewers can't edit, so they never prompt.
+  const guestListVisible = useDraftGuestListVisible();
+  const stagedInviteeWork =
+    queuedInvitees.length > 0 ||
+    queuedRevokes.length > 0 ||
+    (hhSeedRef.current !== null &&
+      JSON.stringify(queuedHouseholdIds) !== JSON.stringify(hhSeedRef.current)) ||
+    (guestSeedRef.current !== null && guestListVisible !== guestSeedRef.current);
   const dirty =
     !readOnlyView &&
     ((baselineRef.current !== null && JSON.stringify(form) !== baselineRef.current) ||
-      (!isEdit && (queuedInvitees.length > 0 || queuedAttachments.length > 0)));
+      stagedInviteeWork ||
+      (!isEdit && queuedAttachments.length > 0));
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
   // `onSave` is declared above this line but only ever runs from a tap, by which
   // point the ref holds the current render's value. It reads dirtiness to decide
@@ -1754,6 +1745,8 @@ export default function EventFormScreen() {
             navigation.navigate('EventInvitees', {
               eventId: isEdit ? eventId : undefined,
               snapshot: buildSnapshot(),
+              // Everything done there is staged and lands with THIS form's save.
+              stageOnly: true,
             })
           }
         >

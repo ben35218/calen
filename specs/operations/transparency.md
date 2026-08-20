@@ -10,7 +10,7 @@ code:
 
 The **canonical, user-facing** long form is
 [`docs/TRANSPARENCY.md`](../../docs/TRANSPARENCY.md) — it is the source for the
-in-app Privacy & security section and the website page, and is written for users, not
+in-app Privacy & Security section and the website page, and is written for users, not
 engineers. It must be updated whenever a change alters what the server stores.
 This spec is the engineering pointer + the internal contract it commits us to.
 

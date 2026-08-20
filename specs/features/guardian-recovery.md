@@ -1,7 +1,7 @@
 ---
 title: Guardian recovery (dual-control)
 status: current
-last-verified: 3cfa750+ (2026-08-13); **the feature gets discovered: a one-time pop-up nudge once arming becomes possible** — a solo user literally can't arm a guardian, so once the household has another member and no guardian is armed, the pop-up lane's security-nudge channel (mechanics in notifications.md) prompts ONCE per device per user ("Add a Recovery Guardian", Set Up / Not Now, routed at the setup screen) on an app open from the second open on; worded as a capability and deliberately NOT naming the newest member (the joiner may be exactly who the user shouldn't hand recovery power to — the trust model requires someone you'd trust to see your data), outranked by the passkey nudge and by any invitation pop-up on the same open (2026-08-13); 3cd3b36+ (2026-08-12); **an approval no longer dies with the requester's app state** — the ephemeral secret + requestId lived only in module memory and the recover screen ALWAYS started a fresh request on mount, so the shared-device flow (sign out → guardian signs in → approves → sign back in) or an app kill during the wait orphaned the approval unrecoverably (the new request's poll waited forever, the sealed payload sat unclaimable until TTL sweep); the pending request now persists to the keychain per user, the screen resumes it before starting fresh, and the sealed handoff is persisted the moment polling claims it (burn-on-delivery makes the device copy the only copy); same day: **the guardian now finds out** — the request push is typed `guardian_recovery_request` and guardian requests joined the app-open/foreground pop-up lane (presented apart from ordinary invitations, routed at the approve screen; see notifications.md); the approve card's copy was rewritten ("They're locked out … you'll be shown a security code to compare") with real spacing before Review & approve; earlier same day: guardian audit events (`guardian_armed` / `guardian_disarmed` / `guardian_approved`) added to the `AUDIT_EVENTS` enum — arming a guardian 500'd on enum validation because keys.js wrote events the AuditLog model never allowed
+last-verified: 909fb0f+ (2026-08-19); **the requester now finds out the moment their guardian approves** — the approval push (`POST /keys/guardian/approve`) was untyped (no `data`), so a tap just opened the app, a foreground arrival surfaced nothing, and the requester learned of approval only through the recover screen's 2.5s poll while that screen stayed mounted; the push is now typed `guardian_recovery_approved` (a tap routes at the recover screen, which resumes the persisted request into PIN entry), the pop-up lane gained the requester-side `guardianApproved` kind ("Recovery Approved", **Enter PIN / Not Now**, presented apart from and before every other alert, once per request, skipped when the recover screen is already up — mechanics in notifications.md), requester-side state is derived by `getRecoveryProgress()` (resume the keychain slot + one poll — there is no server list), `pollGuardianRecovery` now tolerates the two-poller burn-on-delivery race (a 404 after the handoff was already claimed re-checks the local stash instead of clearing the slot), and Privacy & Security gained a requester-side recovery banner above the encryption hero (waiting → "Recovery in progress…", approved → success-tinted "enter your PIN", both routed at the recover screen) plus the previously-declared-but-unread `focus: 'recovery'` scroll target (the Recovery-methods section); 3cfa750+ (2026-08-13); **the feature gets discovered: a one-time pop-up nudge once arming becomes possible** — a solo user literally can't arm a guardian, so once the household has another member and no guardian is armed, the pop-up lane's security-nudge channel (mechanics in notifications.md) prompts ONCE per device per user ("Add a Recovery Guardian", Set Up / Not Now, routed at the setup screen) on an app open from the second open on; worded as a capability and deliberately NOT naming the newest member (the joiner may be exactly who the user shouldn't hand recovery power to — the trust model requires someone you'd trust to see your data), outranked by the passkey nudge and by any invitation pop-up on the same open (2026-08-13); 3cd3b36+ (2026-08-12); **an approval no longer dies with the requester's app state** — the ephemeral secret + requestId lived only in module memory and the recover screen ALWAYS started a fresh request on mount, so the shared-device flow (sign out → guardian signs in → approves → sign back in) or an app kill during the wait orphaned the approval unrecoverably (the new request's poll waited forever, the sealed payload sat unclaimable until TTL sweep); the pending request now persists to the keychain per user, the screen resumes it before starting fresh, and the sealed handoff is persisted the moment polling claims it (burn-on-delivery makes the device copy the only copy); same day: **the guardian now finds out** — the request push is typed `guardian_recovery_request` and guardian requests joined the app-open/foreground pop-up lane (presented apart from ordinary invitations, routed at the approve screen; see notifications.md); the approve card's copy was rewritten ("They're locked out … you'll be shown a security code to compare") with real spacing before Review & approve; earlier same day: guardian audit events (`guardian_armed` / `guardian_disarmed` / `guardian_approved`) added to the `AUDIT_EVENTS` enum — arming a guardian 500'd on enum validation because keys.js wrote events the AuditLog model never allowed
 code:
   - shared/crypto/src/core.ts                        # createGuardianEnvelope / unsealGuardianOuter / resealGuardianInner / recoverWithGuardian
   - server/src/routes/keys.js                        # /keys/guardian* endpoints (blind store + relay)
@@ -138,6 +138,30 @@ has `inner` without the guardian. ✔ dual control.
   request; a re-request after expiry mints a new `requestId` and prompts
   afresh. Pop-up mechanics owned by
   [notifications.md](notifications.md).
+- The guardian's approval MUST reach the **requester** the same two ways: the
+  approval push is typed `guardian_recovery_approved` (a tap routes at the
+  recover screen, which resumes the persisted request and asks for the PIN),
+  and the pop-up lane raises "Recovery Approved" ("«guardian» approved your
+  recovery request. Enter your recovery PIN to unlock your data on this
+  device.", **Enter PIN / Not Now**) on app open / foreground / that push
+  landing — presented apart from and **before** every other alert (the user is
+  locked out and one PIN away from their data), prompted once per request, and
+  skipped when the recover screen is already showing the PIN field. There is
+  no server list for requester-side state: the lane resumes the keychain slot
+  and polls once (`getRecoveryProgress` in `lib/guardianRecovery.ts`), which
+  claims and persists the sealed handoff exactly like the recover screen's own
+  poll. Concurrent pollers are safe by construction: a poll that 404s on the
+  burned relay slot re-checks the locally stashed handoff before declaring the
+  request expired (the loser of the burn-on-delivery race must not clear a
+  claimed recovery).
+- **Privacy & Security surfaces the requester's in-flight recovery** (locked
+  vault only — an unlocked vault has nothing left to recover): a banner above
+  the encryption hero, "Recovery in progress — waiting for your guardian to
+  approve" while pending and a success-tinted "Your guardian approved your
+  recovery — enter your PIN to unlock your data" once approved, both routed at
+  the recover screen. The "Recover with your household guardian" link inside
+  the locked hero remains, but reaching the PIN step no longer depends on
+  finding it.
 - Disarming MUST delete `User.guardianRecovery` and cancel in-flight requests
   (implemented). Removing the guardian from the household MUST prevent recovery
   through them — currently enforced at **request time** (`POST
@@ -166,7 +190,7 @@ has `inner` without the guardian. ✔ dual control.
   ("lose every factor → unrecoverable").
 - **Discovery:** the feature is surfaced by a **one-time** pop-up nudge the
   moment arming becomes *possible* — the household has ≥1 other member (a solo
-  user can't arm a guardian, so the entry point in Privacy & security is
+  user can't arm a guardian, so the entry point in Privacy & Security is
   undiscoverable exactly until then) and no guardian is armed. The nudge is
   worded as a capability ("choose someone you trust…") and MUST NOT name or
   preselect the newest member: the person who just joined may be exactly who
@@ -197,7 +221,8 @@ has `inner` without the guardian. ✔ dual control.
   - `GET /keys/guardian/requests` — guardian lists pending requests + the
     requester's `outer` + ephemeral key.
   - `POST /keys/guardian/approve` — guardian posts the re-sealed `inner`; alerts
-    the requester.
+    the requester (push typed `guardian_recovery_approved`, carrying the
+    `requestId`).
   - `GET /keys/guardian/request/:requestId` — requester polls; burned on delivery.
 - **Audit trail:** arm, disarm, and approve each write an `AuditLog` row —
   `guardian_armed` / `guardian_disarmed` / `guardian_approved` (all in the
@@ -206,12 +231,13 @@ has `inner` without the guardian. ✔ dual control.
   - No `POST /keys/reenroll` — recovery restores the same key, so existing
     `PUT /keys/factors` re-enrols fresh factors (see the flow note above).
 - **Client:** `GuardianRecoveryScreen` with `mode: setup | recover | approve`;
-  entry points in **Privacy & security** — a "Household guardian" row in Recovery
+  entry points in **Privacy & Security** — a "Household guardian" row in Recovery
   methods (status badge), a "Recover with your household guardian" link in the
-  locked-state hero, and an approval banner when the caller is someone's guardian
-  and has a pending request. `lib/guardianRecovery.ts` orchestrates; no camera/QR
-  (the ephemeral key rides the authenticated relay, verified out-of-band by the
-  fingerprint).
+  locked-state hero, an approval banner when the caller is someone's guardian
+  and has a pending request, and the requester-side in-flight-recovery banner
+  above the hero (waiting / enter-your-PIN, see Behavior). `lib/guardianRecovery.ts`
+  orchestrates; no camera/QR (the ephemeral key rides the authenticated relay,
+  verified out-of-band by the fingerprint).
 
 ## Encryption boundary
 

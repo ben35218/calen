@@ -143,6 +143,11 @@ export async function pollGuardianRecovery(requestId: string): Promise<'pending'
     res = await keysApi.guardianPoll(requestId);
   } catch (e: any) {
     if (e?.response?.status === 404) {
+      // Two pollers can race the burn-on-delivery slot (the recover screen's
+      // interval + the pop-up lane's check): the loser's 404 just means the
+      // winner already claimed and stashed the handoff — re-check before
+      // treating the request as dead.
+      if (sealedInner) return 'ready';
       await clearStored(currentUserId());
       return 'expired';
     }
@@ -157,6 +162,22 @@ export async function pollGuardianRecovery(requestId: string): Promise<'pending'
     if (s && s.requestId === requestId) await saveStored(userId, { ...s, sealedInner });
   }
   return 'ready';
+}
+
+// The requester's in-flight recovery, summarized for surfaces OUTSIDE the
+// recover screen (the app-open pop-up lane, the Privacy & Security banner).
+// There is no server list to query — the state lives in the keychain slot plus
+// one poll (which stashes the sealed handoff exactly like the screen's poll
+// would, so claiming it here never loses it). 'none' = nothing worth resuming.
+export async function getRecoveryProgress(): Promise<{
+  status: 'none' | 'waiting' | 'ready';
+  requestId: string | null;
+}> {
+  const resumed = await resumeGuardianRecovery();
+  if (!resumed) return { status: 'none', requestId: null };
+  const polled = await pollGuardianRecovery(resumed.requestId);
+  if (polled === 'expired') return { status: 'none', requestId: null };
+  return { status: polled === 'ready' ? 'ready' : 'waiting', requestId: resumed.requestId };
 }
 
 // Open the stashed handoff with the ephemeral key + the user's 4-digit PIN →

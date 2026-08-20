@@ -1,0 +1,15 @@
+{
+  "name": "Calen — Household Calendar",
+  "short_name": "Calen",
+  "description": "A shared household calendar with chores, meals, trips and home maintenance, and an AI assistant. End-to-end encrypted.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b7fc4",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

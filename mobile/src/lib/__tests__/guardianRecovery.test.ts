@@ -36,6 +36,10 @@ const mockRelay = {
   outer: null as string | null,
   ephemeralPublicKey: null as string | null,
   sealedPayload: null as string | null,
+  // Opt-in real-server semantics: delivering the sealed payload burns the slot,
+  // and any later poll 404s (for the two-poller race test).
+  burnOnDelivery: false,
+  slotBurned: false,
 };
 jest.mock('../../api', () => ({
   keysApi: {
@@ -46,11 +50,20 @@ jest.mock('../../api', () => ({
       mockRelay.ephemeralPublicKey = ephemeralPublicKey;
       return { data: { requestId: 'req-1', expiresAt: new Date(Date.now() + 30 * 60_000).toISOString() } };
     },
-    guardianPoll: async () => ({
-      data: mockRelay.sealedPayload
-        ? { status: 'sealed', sealedPayload: mockRelay.sealedPayload }
-        : { status: 'pending' },
-    }),
+    guardianPoll: async () => {
+      if (mockRelay.slotBurned) {
+        const e: any = new Error('That recovery request has expired');
+        e.response = { status: 404 };
+        throw e;
+      }
+      if (!mockRelay.sealedPayload) return { data: { status: 'pending' } };
+      const sealedPayload = mockRelay.sealedPayload;
+      if (mockRelay.burnOnDelivery) {
+        mockRelay.sealedPayload = null;
+        mockRelay.slotBurned = true;
+      }
+      return { data: { status: 'sealed', sealedPayload } };
+    },
     guardianApprove: async ({ sealedPayload }: { sealedPayload: string }) => {
       mockRelay.sealedPayload = sealedPayload;
       return { data: { ok: true } };
@@ -62,7 +75,7 @@ jest.mock('../../api', () => ({
 import { loadHouseholdCrypto } from '@household/crypto/adapters/web';
 import {
   armGuardian, startGuardianRecovery, pollGuardianRecovery,
-  finishGuardianRecovery, approveGuardianRecovery,
+  finishGuardianRecovery, approveGuardianRecovery, getRecoveryProgress,
 } from '../guardianRecovery';
 
 const PIN = '4321';
@@ -170,4 +183,70 @@ test('an in-flight recovery survives losing module state (sign-out / restart)', 
 
   // Finishing cleared the slot — the next visit starts a fresh request.
   expect(await fresh.resumeGuardianRecovery()).toBeNull();
+});
+
+// The pop-up lane and the Privacy & Security banner read the requester's state
+// through getRecoveryProgress: 'none' without a keychain slot, 'waiting'
+// before the guardian acts, 'ready' after — and reaching 'ready' claims and
+// persists the sealed handoff exactly like the recover screen's poll would.
+test('getRecoveryProgress: none → waiting → ready across the journey', async () => {
+  mockKeychain.clear();
+  mockRelay.sealedPayload = null;
+  mockRelay.slotBurned = false;
+  expect(await getRecoveryProgress()).toEqual({ status: 'none', requestId: null });
+
+  mockActiveKeyPair = user;
+  await armGuardian('guardian-1', PIN);
+  mockActiveKeyPair = null;
+  await startGuardianRecovery();
+  expect(await getRecoveryProgress()).toEqual({ status: 'waiting', requestId: 'req-1' });
+
+  mockActiveKeyPair = guardian;
+  await approveGuardianRecovery({
+    requestId: 'req-1',
+    outer: mockRelay.outer!,
+    ephemeralPublicKey: mockRelay.ephemeralPublicKey!,
+  } as never);
+  mockActiveKeyPair = null;
+  expect(await getRecoveryProgress()).toEqual({ status: 'ready', requestId: 'req-1' });
+
+  // The handoff it claimed still finishes with the PIN.
+  expect(await finishGuardianRecovery(PIN)).toBe(true);
+});
+
+// Two pollers race the burn-on-delivery slot in real life: the recover
+// screen's 2.5s interval and the pop-up lane's check. The winner claims the
+// handoff and the server burns it; the loser's 404 must re-check the local
+// stash instead of clearing the slot and reporting the recovery expired.
+test('the burn-on-delivery race: a losing 404 poll never kills a claimed recovery', async () => {
+  mockKeychain.clear();
+  mockRelay.sealedPayload = null;
+  mockRelay.slotBurned = false;
+  mockRelay.burnOnDelivery = true;
+
+  mockActiveKeyPair = user;
+  await armGuardian('guardian-1', PIN);
+  mockActiveKeyPair = null;
+  await startGuardianRecovery();
+
+  mockActiveKeyPair = guardian;
+  await approveGuardianRecovery({
+    requestId: 'req-1',
+    outer: mockRelay.outer!,
+    ephemeralPublicKey: mockRelay.ephemeralPublicKey!,
+  } as never);
+  mockActiveKeyPair = null;
+
+  // Both polls pass the local stash check before either response lands; the
+  // first delivery burns the server slot, so the second poll 404s.
+  const results = await Promise.all([
+    pollGuardianRecovery('req-1'),
+    pollGuardianRecovery('req-1'),
+  ]);
+  expect(results).toEqual(['ready', 'ready']);
+
+  // Nothing was cleared: the persisted slot still resumes and the PIN finishes.
+  expect(await getRecoveryProgress()).toEqual({ status: 'ready', requestId: 'req-1' });
+  expect(await finishGuardianRecovery(PIN)).toBe(true);
+  mockRelay.burnOnDelivery = false;
 });

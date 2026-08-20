@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://householdcalendar.com/sitemap.xml

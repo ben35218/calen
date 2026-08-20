@@ -311,7 +311,7 @@ export default function AppNavigator() {
       <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Profile' }} />
       <Stack.Screen name="Account" component={AccountScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Account' }} />
       <Stack.Screen name="Reminders" component={RemindersScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Reminders' }} />
-      <Stack.Screen name="PrivacyData" component={PrivacyDataScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy & security' }} />
+      <Stack.Screen name="PrivacyData" component={PrivacyDataScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Privacy & Security' }} />
       <Stack.Screen name="LinkDevice" component={LinkDeviceScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Link device' }} />
       <Stack.Screen name="GuardianRecovery" component={GuardianRecoveryScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Guardian recovery' }} />
       <Stack.Screen name="RecoveryCode" component={RecoveryCodeScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Recovery code' }} />
@@ -320,7 +320,7 @@ export default function AppNavigator() {
       <Stack.Screen name="ContactForm" component={ContactFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Contact' }} />
       <Stack.Screen name="ContactImport" component={ContactImportScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Import Contacts' }} />
       <Stack.Screen name="Household" component={HouseholdScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Household' }} />
-      <Stack.Screen name="HelpFeedback" component={HelpFeedbackScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Help & feedback' }} />
+      <Stack.Screen name="HelpFeedback" component={HelpFeedbackScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Help & Feedback' }} />
       {/* Billing: the credits summary card lives inline on ProfileHome; these
           are its drill-ins — the Credits screen and the top-up sheet the
           AI-surface nudges open as a modal. */}

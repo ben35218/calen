@@ -625,6 +625,9 @@ router.post('/guardian/approve', keyLimiter, async (req, res) => {
       title: 'Recovery approved',
       body: `${req.user.firstName} approved your recovery. Enter your recovery PIN to finish.`,
       tag: `guardian-approved-${reqDoc.userId}`,
+      // Typed so a tap lands on the recover screen's PIN entry and a foreground
+      // arrival raises the same pop-up (mirrors the request-side push above).
+      data: { type: 'guardian_recovery_approved', requestId: reqDoc.requestId },
     }));
     res.json({ ok: true });
   } catch (e) {

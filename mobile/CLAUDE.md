@@ -89,9 +89,12 @@ its rule, is drift.
   A **multi-add** field (invitees: type, pick, type the next) keeps the
   keyboard open, like a mail To: field.
 - **Contact autocomplete on a share/invite field** (household invite, calendar
-  outside-share) → `useRosterSuggestions(query, takenSet)` — the decrypted
-  contacts roster matched by name/email/phone, resolved to primary email else
-  E.164 phone. Don't re-roll the matching per screen.
+  outside-share, event invitees) → `useRosterSuggestions(query, takenSet)` — the
+  decrypted contacts roster matched by name/email/phone, offered as **one row per
+  reachable address** (every email, then every canonical-E.164 phone, shown as
+  `label · address`); a taken address drops the whole contact. Don't re-roll the
+  matching per screen — the event-invitee picker did, and quietly offered only
+  each contact's first email.
 - **Lists** → `FlatList` / `SectionList` (not a `ScrollView.map`). Every
   top-level, query-backed list gets pull-to-refresh:
   `refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} />}`.

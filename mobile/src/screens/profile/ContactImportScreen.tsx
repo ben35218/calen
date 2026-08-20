@@ -745,7 +745,7 @@ export default function ContactImportScreen() {
               ? "AI assistant is off because you're out of AI credits."
               : `AI assistant is off because ${
                   prefs.aiEnabled ? '“Use personal & contact info in prompts” is' : '“Use AI features” is'
-                } turned off in Privacy & security.`}
+                } turned off in Privacy & Security.`}
           </Text>
         )}
 

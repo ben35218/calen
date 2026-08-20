@@ -15,6 +15,7 @@ import * as passkeys from 'react-native-passkeys';
 import { loadHouseholdCrypto } from '@household/crypto/adapters/native';
 import { authApi, type PasskeyChallenge } from '../api';
 import { PASSKEY_RP_ID } from '../config';
+import type { PasskeyPrfHint } from './passkeyHints';
 
 export function passkeysSupported(): boolean {
   try {
@@ -52,8 +53,19 @@ export async function createPasskeyWithPrf(opts: {
 // Passkey SIGN-IN assertion against a server-issued challenge. Evaluates each
 // credential's PRF salt in the same ceremony, so the one Face ID tap yields
 // both the assertion (session) and the PRF output (E2EE unlock).
+//
+// A USERNAMELESS challenge carries no salts (unknown user), and WebAuthn
+// forbids `evalByCredential` next to an empty allowCredentials — so pass the
+// device's cached last-used hint (passkeyHints.ts) and its salt rides as a
+// top-level `prf.eval` instead. That form evaluates against WHICHEVER
+// credential the account picker chooses, so the output only opens the factor
+// when the choice matches the hint; on any other pick it's discarded here
+// (prfOutput null) and the caller falls back to its post-auth unlock path.
 // Returns null on cancel.
-export async function assertPasskeyForLogin(ch: PasskeyChallenge): Promise<{
+export async function assertPasskeyForLogin(
+  ch: PasskeyChallenge,
+  hint?: PasskeyPrfHint | null,
+): Promise<{
   response: unknown;
   credentialId: string;
   prfOutput: string | null;
@@ -66,12 +78,19 @@ export async function assertPasskeyForLogin(ch: PasskeyChallenge): Promise<{
     userVerification: 'required',
     extensions: withSalts.length
       ? { prf: { evalByCredential: Object.fromEntries(withSalts.map((c) => [c.id, { first: c.prfSalt as string }])) } }
-      : undefined,
+      : hint
+        ? { prf: { eval: { first: hint.prfSalt } } }
+        : undefined,
   });
   if (!res) return null;
   const prf = (res.clientExtensionResults as any)?.prf;
   const first = prf?.results?.first;
-  return { response: res, credentialId: res.id, prfOutput: typeof first === 'string' ? first : null };
+  const foreignPick = !withSalts.length && !!hint && res.id !== hint.credentialId;
+  return {
+    response: res,
+    credentialId: res.id,
+    prfOutput: typeof first === 'string' && !foreignPick ? first : null,
+  };
 }
 
 // Assert with one of the given credentials and get the PRF output evaluated at

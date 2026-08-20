@@ -25,6 +25,10 @@ import { HouseholdEventRequest } from './householdRsvp';
 //                    approve screen, not the inbox — it's a security approval,
 //                    and its requests expire, so it's presented on its own and
 //                    never folded into the "N new invitations" count)
+//   guardianApproved — MY guardian approved MY in-flight recovery; only the
+//                    PIN remains (routes to the Guardian recovery recover
+//                    screen; presented on its own, like guardianRequest — at
+//                    most one exists, since opening a request cancels any prior)
 // Every kind except householdEvent routes to the Invitations inbox to act —
 // their accept flows are multi-step (key unwraps, join carry-over, calendar
 // merge), not one-tap answers.
@@ -35,7 +39,8 @@ export type PendingInviteKind =
   | 'trip'
   | 'household'
   | 'joinRequest'
-  | 'guardianRequest';
+  | 'guardianRequest'
+  | 'guardianApproved';
 
 export interface PendingInvite {
   kind: PendingInviteKind;
@@ -225,6 +230,11 @@ export function inviteAlertContent(fresh: PendingInvite[]): { title: string; mes
       return {
         title: 'Recovery Request',
         message: `${inv.from || 'A household member'} is locked out of their account and asked for your help getting back in.`,
+      };
+    case 'guardianApproved':
+      return {
+        title: 'Recovery Approved',
+        message: `${inv.from || 'Your guardian'} approved your recovery request. Enter your recovery PIN to unlock your data on this device.`,
       };
   }
 }

@@ -1,32 +1,298 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Calen</title>
-  <meta name="description" content="Calen — your family's shared calendar, chores, recipes, trips, and home maintenance, with an AI copilot.">
-  <style>
-    :root { color-scheme: light dark; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-           margin: 0; display: flex; min-height: 100vh; align-items: center; justify-content: center; }
-    main { max-width: 560px; padding: 2rem; text-align: center; }
-    h1 { font-size: 2rem; margin-bottom: .5rem; }
-    p { line-height: 1.5; opacity: .85; }
-    footer { margin-top: 2.5rem; font-size: .85rem; opacity: .7; }
-    footer a { color: inherit; margin: 0 .5rem; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calen — the shared calendar your whole household actually uses</title>
+<meta name="description" content="Calen keeps your family's events, chores, meals, trips and home maintenance in one shared, end-to-end encrypted app — with an AI assistant that does the organizing.">
+<link rel="canonical" href="https://householdcalendar.com/">
+
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/icon.svg" type="image/svg+xml" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Calen">
+<meta property="og:url" content="https://householdcalendar.com/">
+<meta property="og:title" content="Calen — the shared calendar your whole household actually uses">
+<meta property="og:description" content="Events, chores, meals, trips and home maintenance in one shared, end-to-end encrypted app — with an AI assistant that does the organizing.">
+<meta property="og:image" content="https://householdcalendar.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Calen app icon above the Calen wordmark.">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="stylesheet" href="/assets/site.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Calen",
+  "url": "https://householdcalendar.com/",
+  "applicationCategory": "LifestyleApplication",
+  "operatingSystem": "iOS",
+  "image": "https://householdcalendar.com/og-image.png",
+  "description": "A shared household calendar with chores, meals, trips and home maintenance, an AI assistant, and end-to-end encryption.",
+  "featureList": [
+    "Shared family calendar",
+    "Chores and home maintenance",
+    "Recipes, meal planning and grocery lists",
+    "Trip planning and expense settling",
+    "AI assistant",
+    "End-to-end encryption"
+  ]
+}
+</script>
 </head>
+
 <body>
-  <main>
-    <h1>Calen</h1>
-    <p>Your family's shared calendar, chores, recipes, trips, and home
-       maintenance — with an AI copilot that keeps it all organized.</p>
-    <p>Coming soon to the App Store.</p>
-    <footer>
-      <a href="/terms">Terms of Use</a> ·
-      <a href="/privacy">Privacy Policy</a> ·
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <img src="/icon.svg" width="32" height="32" alt="" aria-hidden="true">
+      Calen
+    </a>
+    <nav class="site-nav" aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#faq">FAQ</a>
+      <a href="mailto:support@householdcalendar.com">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="stack" style="--flow: 1.5rem">
+        <p><span class="eyebrow">Coming soon to the App Store</span></p>
+        <h1>The shared calendar your whole household actually uses.</h1>
+        <p class="lede">Events, chores, meals, trips and home maintenance — in one
+          app everyone in the house can see. End-to-end encrypted, with an
+          assistant that does the organizing.</p>
+        <div class="actions">
+          <a class="btn btn--primary" href="mailto:support@householdcalendar.com?subject=Calen%20early%20access">Ask for early access</a>
+          <a class="btn btn--ghost" href="#privacy">How your data is protected</a>
+        </div>
+      </div>
+
+      <div class="mock" aria-hidden="true">
+        <div class="mock-head">
+          <strong>Everyone's month</strong>
+          <span>5 calendars</span>
+        </div>
+        <div class="mock-grid">
+          <b>S</b><b>M</b><b>T</b><b>W</b><b>T</b><b>F</b><b>S</b>
+          <div class="mock-day">1</div>
+          <div class="mock-day">2<i></i></div>
+          <div class="mock-day">3</div>
+          <div class="mock-day">4<i class="alt"></i></div>
+          <div class="mock-day">5</div>
+          <div class="mock-day">6<i></i><i class="alt2"></i></div>
+          <div class="mock-day">7</div>
+          <div class="mock-day">8</div>
+          <div class="mock-day">9<i class="alt2"></i></div>
+          <div class="mock-day is-today">10<i></i></div>
+          <div class="mock-day">11</div>
+          <div class="mock-day">12<i></i><i class="alt"></i></div>
+          <div class="mock-day">13</div>
+          <div class="mock-day">14</div>
+          <div class="mock-day">15<i class="alt"></i></div>
+          <div class="mock-day">16</div>
+          <div class="mock-day">17<i></i></div>
+          <div class="mock-day">18</div>
+          <div class="mock-day">19</div>
+          <div class="mock-day">20<i class="alt2"></i></div>
+          <div class="mock-day">21<i></i></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section--sunk" id="features">
+    <div class="wrap">
+      <div class="prose stack">
+        <h2>One app for the parts of home life that need a plan.</h2>
+        <p style="color: var(--text-muted)">Every area is its own calendar you can
+          turn on, colour, and share — so the house sees the whole picture, and
+          you see only what you care about.</p>
+      </div>
+
+      <div class="cards">
+        <article class="card">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>
+            </svg>
+          </div>
+          <h3>A calendar everyone shares</h3>
+          <p>Day and month views, repeats, alerts, holidays, hourly weather, and
+            invitations that reach people outside the household. Today's plan
+            also lives on your home screen as a widget.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 11l2 2 4-4"/><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M8 2v4M16 2v4"/>
+            </svg>
+          </div>
+          <h3>Chores that assign themselves</h3>
+          <p>Set a chore once, choose who it falls to and how often it repeats,
+            and let the reminders do the nagging. Skip, reschedule, or hand one
+            occurrence to someone else without breaking the series.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 3v8a3 3 0 0 0 6 0V3M9 11v10"/><path d="M18 3c-1.5 2-2 3.5-2 6s.7 3 2 3v9"/>
+            </svg>
+          </div>
+          <h3>Meals, planned and shopped</h3>
+          <p>Save recipes (or import them from a link or a photo), drop them onto
+            the week, and let the grocery list build itself. Cooking mode reads
+            the steps and runs the timers hands-free.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/>
+            </svg>
+          </div>
+          <h3>Trips without the group chat</h3>
+          <p>Flights, stays and plans in one itinerary, shared with whoever is
+            coming — including people outside your household — plus a running
+            tally of who paid for what.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>
+            </svg>
+          </div>
+          <h3>A home that reminds you</h3>
+          <p>Track the things in your house and what they need — filters, service
+            intervals, warranties, manuals — so the next furnace check shows up
+            on the calendar instead of in your memory.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M18 16.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z"/>
+            </svg>
+          </div>
+          <h3>Ask Calen</h3>
+          <p>Describe what you need in plain language — "swim lessons every
+            Tuesday until June", "something quick for Thursday dinner" — and Calen
+            drafts it for you to approve. It can even ring a business to
+            reschedule an appointment.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="privacy">
+    <div class="wrap split">
+      <div class="stack" style="--flow: 1.25rem">
+        <h2>Your household's life isn't our business model.</h2>
+        <p style="color: var(--text-muted)">Calen is end-to-end encrypted by
+          default, for every household. Your events, recipes, trips and notes are
+          sealed on your device before they ever reach us, and our servers hold
+          ciphertext we cannot read. There are no ads and no advertising trackers,
+          because there is nothing here to sell.</p>
+        <p><a class="link-block" href="/privacy">Read the privacy policy</a></p>
+      </div>
+
+      <ul class="checks">
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><strong>Sealed on your device.</strong> Household content is
+            encrypted with keys only your devices hold — not ours.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><strong>Sign in with a passkey.</strong> Face ID or Touch ID
+            instead of a password you'd reuse anywhere else.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><strong>Recovery you control.</strong> Recovery codes, plus
+            trusted guardians who can help you back in — without anyone,
+            including us, seeing your data.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><strong>The assistant sees the minimum.</strong> AI requests carry
+            only what the question needs, and are never used to train models.</span>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section section--sunk" id="faq">
+    <div class="wrap">
+      <h2>Questions</h2>
+      <div class="faq">
+        <details>
+          <summary>Which devices does Calen run on?</summary>
+          <p>Calen is an iPhone and iPad app, heading to the App Store. There is
+            no web version — this site is just the front door.</p>
+        </details>
+        <details>
+          <summary>What does it cost?</summary>
+          <p>Calen is a paid app: one purchase unlocks it for you, a few of the
+            feature calendars are optional add-ons, and the AI assistant runs on
+            credits with an optional monthly plan. Exact prices will be shown on
+            the App Store listing and in the app before you buy anything.</p>
+        </details>
+        <details>
+          <summary>Can I share with people outside my household?</summary>
+          <p>Yes. Individual calendars and trips can be shared with people who
+            aren't in your household, and event invitations reach anyone by
+            email — they don't have to be a member to reply.</p>
+        </details>
+        <details>
+          <summary>If it's end-to-end encrypted, how do the AI features work?</summary>
+          <p>Your device decrypts only the details needed for the request you
+            made and sends those with your question. The servers never hold the
+            keys to your household's data, and your content is not used to train
+            models.</p>
+        </details>
+        <details>
+          <summary>What happens if I lose my phone?</summary>
+          <p>You can restore access on a new device with a recovery code, or with
+            the help of a guardian you chose in advance. Because the encryption
+            keys are yours, that recovery step is what protects you — keep your
+            codes somewhere safe.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>© 2026 Calen · Built for households, not advertisers.</p>
+    <nav class="footer-links" aria-label="Legal and support">
+      <a href="/terms">Terms of Use</a>
+      <a href="/privacy">Privacy Policy</a>
       <a href="mailto:support@householdcalendar.com">support@householdcalendar.com</a>
-    </footer>
-  </main>
+    </nav>
+  </div>
+</footer>
+
 </body>
 </html>

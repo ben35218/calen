@@ -129,6 +129,18 @@ describe('inviteAlertContent — single invitation per kind', () => {
       'Alan Polk is locked out of their account and asked for your help getting back in.',
     );
   });
+
+  it('a guardian recovery approval names the guardian and asks for the PIN', () => {
+    const { title, message } = inviteAlertContent([
+      { kind: 'guardianApproved', id: 'req-1', from: 'Alan Polk' },
+    ]);
+    expect(title).toBe('Recovery Approved');
+    expect(message).toBe(
+      'Alan Polk approved your recovery request. Enter your recovery PIN to unlock your data on this device.',
+    );
+    expect(inviteAlertContent([{ kind: 'guardianApproved', id: 'req-1', from: null }]).message)
+      .toMatch(/^Your guardian approved/);
+  });
 });
 
 describe('inviteAlertContent — several invitations', () => {

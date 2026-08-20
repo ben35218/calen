@@ -17,7 +17,7 @@ import { colors, radius, spacing } from '../../theme';
 // whole pitch: a mock of the widget rendered from the user's OWN next days
 // (computeWidgetSnapshot — the same pipeline that feeds the real widget), then
 // the manual add steps. Reached from the widget-adoption nudge and, durably,
-// from the Profile "Home Screen Widget" row.
+// from the Profile screen's widget promo card (below the menu groups).
 
 // Mirror of the widget's own sample day (targets/widget/index.swift) — the
 // preview falls back to it when the user's next two weeks are empty or the

@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
-import { Text } from '../components/Text';
+import { FixedText, Text } from '../components/Text';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
@@ -21,7 +21,7 @@ import { humanCredits } from './plan/shared';
 import { Badge, Button, Card, ListRow, SectionHeader } from '../components/ui';
 import { useE2eeLocked } from '../hooks/useE2eeLocked';
 import { useInvitationsCount } from '../hooks/useInvitationsCount';
-import { colors, spacing } from '../theme';
+import { colors, radius, spacing } from '../theme';
 import type { ProfileStackParamList } from '../navigation/ProfileNavigator';
 
 type Section = {
@@ -57,12 +57,7 @@ const GROUPS: { header: string; items: Section[] }[] = [
       // beside Reminders — the "things that arrive for you" cluster.
       { route: 'Invitations', label: 'Invitations', icon: 'mail-outline' },
       { route: 'Reminders', label: 'Reminders', icon: 'notifications-outline' },
-      // The widget promo's durable surface (the nudge is one-time) — iOS only,
-      // since only iOS ships the WidgetKit target.
-      ...(Platform.OS === 'ios'
-        ? [{ route: 'WidgetPromo', label: 'Home Screen Widget', icon: 'grid-outline' } as Section]
-        : []),
-      { route: 'PrivacyData', label: 'Privacy & security', icon: 'lock-closed-outline' },
+      { route: 'PrivacyData', label: 'Privacy & Security', icon: 'lock-closed-outline' },
     ],
   },
   {
@@ -75,10 +70,56 @@ const GROUPS: { header: string; items: Section[] }[] = [
   {
     header: 'Help & support',
     items: [
-      { route: 'HelpFeedback', label: 'Help & feedback', icon: 'chatbubble-ellipses-outline' },
+      { route: 'HelpFeedback', label: 'Help & Feedback', icon: 'chatbubble-ellipses-outline' },
     ],
   },
 ];
+
+// The Home-screen-widget ad. A miniature of the small widget — today's weekday
+// eyebrow, day number, two colour-tinted chips — drawn locally in the widget's
+// visual language, beside the pitch. It deliberately does NOT compute a real
+// snapshot: this is the teaser, and the WidgetPromo screen it opens is where
+// the user's own day gets rendered through the real pipeline. Fixed geometry
+// throughout, so FixedText per the Dynamic Type rules.
+function WidgetPromoCard({ onPress }: { onPress: () => void }) {
+  const today = new Date();
+  const weekday = today.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase();
+  return (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Home Screen Widget"
+      accessibilityHint="Shows how to add the Calen widget to your Home Screen"
+    >
+      <Card style={styles.promo}>
+        <View style={styles.promoTile}>
+          <FixedText style={styles.promoTileWeekday}>{weekday}</FixedText>
+          <FixedText style={styles.promoTileDay}>{today.getDate()}</FixedText>
+          <View style={styles.promoTileChips}>
+            {['#4CAF50', '#4F9DF5', '#5E35B1'].map((c) => (
+              <View key={c} style={[styles.promoChip, { backgroundColor: c + '2B' }]}>
+                <View style={[styles.promoChipBar, { backgroundColor: c }]} />
+                <View style={[styles.promoChipLine, { backgroundColor: c }]} />
+              </View>
+            ))}
+          </View>
+        </View>
+        <View style={styles.promoText}>
+          <Text style={styles.promoTitle}>Your day, on your Home Screen</Text>
+          <Text style={styles.promoBody}>
+            The Calen widget shows today's schedule at a glance and keeps itself up to date — no
+            need to open the app.
+          </Text>
+          <View style={styles.promoCta}>
+            <Text style={styles.promoCtaText}>Add the widget</Text>
+            <Ionicons name="chevron-forward" size={14} color={colors.primary} />
+          </View>
+        </View>
+      </Card>
+    </TouchableOpacity>
+  );
+}
 
 export default function ProfileScreen() {
   const nav = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
@@ -95,7 +136,7 @@ export default function ProfileScreen() {
 
   // Landing on Profile while encrypted data is locked on this device (e.g. after
   // an email-code sign-in with no passkey): prompt the user to resolve it, and
-  // deep-link straight to Privacy & security where the unlock UI lives. Prompt once
+  // deep-link straight to Privacy & Security where the unlock UI lives. Prompt once
   // per visit — re-armed each time the screen is left.
   const dataLocked = useE2eeLocked();
   const isFocused = useIsFocused();
@@ -198,6 +239,13 @@ export default function ProfileScreen() {
         </View>
       ))}
 
+      {/* The widget's durable adoption surface (spec: features/calendar.md —
+          Home-screen widget). It is a pitch for something the user doesn't have
+          yet, not a setting, so it sits BELOW the menu groups as a promo card
+          rather than as a Personal row where it read as one more setting to
+          skim past. iOS only — only iOS ships the WidgetKit target. */}
+      {Platform.OS === 'ios' ? <WidgetPromoCard onPress={() => nav.navigate('WidgetPromo')} /> : null}
+
       <View style={styles.signOut}>
         <Button title="Sign out" variant="danger" onPress={() => logout()} />
       </View>
@@ -256,6 +304,39 @@ const styles = StyleSheet.create({
   creditBalance: { fontSize: 26, fontWeight: '700', color: colors.text },
   creditCaption: { fontSize: 13, color: colors.textMuted },
   creditNote: { fontSize: 12, color: colors.textMuted, marginTop: 6 },
+
+  // Home-screen-widget ad: mini widget tile + pitch, sized to read as a promo
+  // rather than as another settings row.
+  promo: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  promoTile: {
+    width: 84,
+    height: 84,
+    borderRadius: radius.lg,
+    backgroundColor: '#000',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  promoTileWeekday: { fontSize: 8, fontWeight: '600', color: colors.primary, letterSpacing: 0.5 },
+  promoTileDay: { fontSize: 18, fontWeight: '500', color: colors.text, lineHeight: 20 },
+  promoTileChips: { marginTop: 4, gap: 3 },
+  promoChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderRadius: 4,
+    height: 9,
+    paddingLeft: 2,
+    paddingRight: 4,
+  },
+  promoChipBar: { width: 2, borderRadius: 1, alignSelf: 'stretch', marginVertical: 1 },
+  promoChipLine: { flex: 1, height: 2, borderRadius: 1, opacity: 0.7 },
+  promoText: { flex: 1, minWidth: 0, gap: 4 },
+  promoTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
+  promoBody: { fontSize: 13, color: colors.textMuted },
+  promoCta: { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 2 },
+  promoCtaText: { fontSize: 13, fontWeight: '600', color: colors.primary },
 
   legalRow: {
     flexDirection: 'row',

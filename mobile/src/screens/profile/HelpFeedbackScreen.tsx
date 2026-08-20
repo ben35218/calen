@@ -25,7 +25,7 @@ const PLACEHOLDER: Record<FeedbackType, string> = {
   idea: "What would you like to see? We read every one.",
 };
 
-// Profile → "Help & feedback": one simple form to ask a question, report a bug,
+// Profile → "Help & Feedback": one simple form to ask a question, report a bug,
 // or suggest an idea. Diagnostics (app/device context) are captured
 // automatically and shown before sending, so a report is actionable without a
 // back-and-forth. Deliberately plaintext support content — nothing is sealed

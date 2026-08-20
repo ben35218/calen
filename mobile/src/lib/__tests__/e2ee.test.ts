@@ -100,6 +100,13 @@ jest.mock('../../api', () => ({
   },
 }));
 
+// The usernameless sign-in hint cache (lib/passkeyHints — AsyncStorage-backed,
+// so faked here): every unlock that holds the factor list refreshes it.
+const mockRememberHints = jest.fn(async () => {});
+jest.mock('../passkeyHints', () => ({
+  rememberPasskeyHints: (hints: unknown, used?: unknown) => mockRememberHints(hints, used),
+}));
+
 import { loadHouseholdCrypto } from '@household/crypto/adapters/web';
 import {
   ensureEnrolledOnLogin, ensureHouseholdKey, isUnlocked, lock,
@@ -166,6 +173,25 @@ test('the recovery code (reformatted, as a user would type it) also unlocks', as
   expect(await unlockWithRecoveryCode(reentered)).toBe(true);
   expect(await unlockWithRecoveryCode.call(null, recoveryCode)).toBe(true); // canonical form too
   expect(await ensureHouseholdKey()).toBe('ready');
+});
+
+test('an unlock holding a passkey factor refreshes the usernameless sign-in hint', async () => {
+  // The device half of the one-prompt passkey sign-in (auth-identity.md
+  // "Passkey" — Usernameless): any unlock that reads the factor list pushes
+  // each passkey credential's {credentialId, prfSalt} into lib/passkeyHints.
+  (mockServer.enrollment!.factors as Record<string, unknown>[]).push({
+    factor: 'passkey', credentialId: 'cred-hint', prfSalt: 'salt-hint',
+  });
+  lock();
+  mockRememberHints.mockClear();
+  expect(await unlockWithPassword(PASSWORD)).toBe(true);
+  expect(mockRememberHints).toHaveBeenCalledWith(
+    [{ credentialId: 'cred-hint', prfSalt: 'salt-hint' }],
+    undefined,
+  );
+  // Put the story's factor set back for the tests that follow.
+  mockServer.enrollment!.factors = (mockServer.enrollment!.factors as Record<string, unknown>[])
+    .filter((f) => f.factor !== 'passkey');
 });
 
 test('lazy rotation: a pending flag mints v2, new seals use it, v1 records stay readable', async () => {

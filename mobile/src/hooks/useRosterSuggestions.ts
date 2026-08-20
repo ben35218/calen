@@ -96,10 +96,13 @@ export function matchRoster(contacts: Contact[], query: string, taken: Set<strin
   return rows;
 }
 
-// Contacts-roster autocomplete backing the share/invite fields (household
-// invite, calendar outside-share): the decrypted Contacts records — same query
-// key as the event-invitee picker, so the on-device decrypt is shared — run
-// through `matchRoster` against the typed text. The source is the in-app
+// Contacts-roster autocomplete backing every share/invite field (household
+// invite, calendar outside-share, event invitees): the decrypted Contacts
+// records — one query key across all of them, so the on-device decrypt is
+// shared — run through `matchRoster` against the typed text. Every invite field
+// resolves addresses the same way; a screen that re-rolls the match drifts (the
+// event-invitee picker did, and silently offered only each contact's primary
+// email). The source is the in-app
 // roster, not the device address book; typing a raw email/phone for someone
 // not on file still works in every caller.
 export function useRosterSuggestions(query: string, taken: Set<string>, enabled = true): RosterSuggestion[] {

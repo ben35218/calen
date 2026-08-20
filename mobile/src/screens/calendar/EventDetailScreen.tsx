@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, Alert, Linking, Share, Image, ActivityIndicator } from 'react-native';
 import { Text } from '../../components/Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,12 +14,16 @@ import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { decryptDownloadedFile } from '../../lib/attachments';
-import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar, SkeletonDetail } from '../../components/ui';
+import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar, SkeletonDetail, Select } from '../../components/ui';
+import CustomAlertSheet from '../../components/CustomAlertSheet';
 import {
   EVENT_CALENDAR_TYPES, eventWhenFromStored, eventStoredFromWhen, shiftEventWhen, occurrenceShiftDays,
-  DEFAULT_DAY_ALERT_TIME, allDayAlertLabel,
-  effectiveAlertAnchor, inferAlertAnchor, timedAlertLabel,
+  DEFAULT_DAY_ALERT_TIME, AlertAnchor,
+  effectiveAlertAnchor, inferAlertAnchor, promoteSecondAlert,
 } from '../../lib/calendar';
+import {
+  CUSTOM_ALERT, alertKey, buildAlertItems, excludeUsedAlertKey,
+} from '../../lib/eventAlertOptions';
 import { useCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { formatDuration } from '../../lib/format';
@@ -639,28 +643,114 @@ export default function EventDetailScreen() {
   // minutes before a start time the event doesn't have.
   const settingsQ = useQuery({ queryKey: ['settings'], queryFn: async () => (await settingsApi.get()).data });
   const dayAlertTime = settingsQ.data?.dayAlertTime || DEFAULT_DAY_ALERT_TIME;
+
+  // ── Alerts, managed in place ────────────────────────────────────────────────
+  // The alert pair the pickers are showing. It is held in local state rather
+  // than read straight off `event` so a pick lands on the row instantly — the
+  // write is a re-seal plus a refetch behind it, and a row that only caught up
+  // once that round trip finished read as a tap that did nothing.
+  //
   // A timed event's alert reads in the framing it was set in — "2 hours before"
   // or "15 min before leaving" — which is what the stored anchor records; the
   // number alone can't tell the two apart (lib/calendar). An event saved before
-  // the anchor existed falls back to the same reading the form gives it.
-  const fmtAlert = (m: number | null | undefined, anchor: 'event' | 'leave' | null | undefined) => {
-    if (m == null) return null;
-    if (event?.allDay) return allDayAlertLabel(m, dayAlertTime);
-    const resolved = effectiveAlertAnchor(
-      anchor ?? inferAlertAnchor(m, event?.allDay, event?.travelMinutes),
-      event?.allDay,
-      event?.travelMinutes,
-    );
-    return timedAlertLabel(m, resolved, event?.travelMinutes, travelLabel?.leaveBy);
+  // the anchor existed falls back to `inferAlertAnchor`, the same reading the
+  // form gives it.
+  type AlertPair = {
+    reminderMinutes: number | null;
+    alertAnchor: AlertAnchor;
+    alert2Minutes: number | null;
+    alert2Anchor: AlertAnchor;
   };
-  const alertLabel = useMemo(
-    () => fmtAlert(event?.reminderMinutes, event?.alertAnchor) ?? 'None',
-    [event, dayAlertTime, travelLabel],
+  const [alerts, setAlerts] = useState<AlertPair | null>(null);
+  // Which slot the custom dual-wheel sheet is editing (null = closed).
+  const [customFor, setCustomFor] = useState<'reminderMinutes' | 'alert2Minutes' | null>(null);
+  // Set while our own write is in flight, so the re-seed below doesn't stomp the
+  // value the user just picked with the pre-write copy of the event that a
+  // concurrent refetch (focus, background sync) may still be holding.
+  const writingRef = useRef(false);
+
+  useEffect(() => {
+    if (!event || writingRef.current) return;
+    // An event holding only a SECOND alert (written before the promotion rule)
+    // opens with it in the first slot rather than with an invisible alert set.
+    setAlerts(
+      promoteSecondAlert({
+        reminderMinutes: event.reminderMinutes ?? null,
+        alertAnchor: event.alertAnchor ?? inferAlertAnchor(event.reminderMinutes, event.allDay, event.travelMinutes),
+        alert2Minutes: event.alert2Minutes ?? null,
+        alert2Anchor: event.alert2Anchor ?? inferAlertAnchor(event.alert2Minutes, event.allDay, event.travelMinutes),
+      }),
+    );
+  }, [event]);
+
+  // The anchor each slot can actually honour right now — a departure anchor
+  // survives only while the event is timed and its drive time is known.
+  const alertAnchor = effectiveAlertAnchor(alerts?.alertAnchor, event?.allDay, event?.travelMinutes);
+  const alert2Anchor = effectiveAlertAnchor(alerts?.alert2Anchor, event?.allDay, event?.travelMinutes);
+
+  // The same rows the edit form offers, from the same builder — the two surfaces
+  // set the same field and must never disagree about what can be picked.
+  const alertItems = useMemo(
+    () =>
+      buildAlertItems({
+        allDay: !!event?.allDay,
+        travelMinutes: event?.travelMinutes ?? null,
+        leaveByTime: travelLabel?.leaveBy ?? null,
+        dayAlertTime,
+        reminderMinutes: alerts?.reminderMinutes ?? null,
+        alertAnchor,
+        alert2Minutes: alerts?.alert2Minutes ?? null,
+        alert2Anchor,
+      }),
+    [event?.allDay, event?.travelMinutes, travelLabel, dayAlertTime, alerts, alertAnchor, alert2Anchor],
   );
-  const alert2Label = useMemo(
-    () => fmtAlert(event?.alert2Minutes, event?.alert2Anchor),
-    [event, dayAlertTime, travelLabel],
-  );
+
+  // Write both slots as one patch. Only the alert fields travel; `resealInLane`
+  // merges them over the decrypted record from the replica and re-seals under
+  // whichever key the event already lives under, so an event on an outside-shared
+  // calendar keeps its CalendarKey lane instead of being flipped to the household
+  // key (which would lock its collaborators out).
+  const saveAlerts = useMutation({
+    mutationFn: async (next: AlertPair) => {
+      writingRef.current = true;
+      return calendarApi.setAlerts(eventId, {
+        reminderMinutes: next.reminderMinutes ?? undefined,
+        alertAnchor: effectiveAlertAnchor(next.alertAnchor, event?.allDay, event?.travelMinutes),
+        // The form's rule, enforced on this surface too: a second alert without a
+        // first is an alert the user can neither see nor edit.
+        alert2Minutes: next.reminderMinutes !== null && next.alert2Minutes !== null ? next.alert2Minutes : undefined,
+        alert2Anchor: effectiveAlertAnchor(next.alert2Anchor, event?.allDay, event?.travelMinutes),
+      });
+    },
+    onSuccess: () => {
+      // Invalidating ['calendar'] also re-runs the on-device reminder schedule
+      // (hooks/useReminderScheduler watches that key), which is what makes the
+      // alert the user just set real.
+      qc.invalidateQueries({ queryKey: ['calendar'] });
+    },
+    onError: (e: any) => {
+      // Put the row back to what the event still says rather than leaving it
+      // showing an alert that was never stored.
+      if (event) {
+        setAlerts(
+          promoteSecondAlert({
+            reminderMinutes: event.reminderMinutes ?? null,
+            alertAnchor: event.alertAnchor ?? 'event',
+            alert2Minutes: event.alert2Minutes ?? null,
+            alert2Anchor: event.alert2Anchor ?? 'event',
+          }),
+        );
+      }
+      Alert.alert('Couldn’t save the alert', e?.response?.data?.error || 'Please try again.');
+    },
+    onSettled: () => { writingRef.current = false; },
+  });
+
+  // Show the pick, then write it.
+  const applyAlerts = (next: AlertPair) => {
+    setAlerts(next);
+    saveAlerts.mutate(next);
+  };
 
   // "Repeats weekly" / "Repeats every 2 weeks on Monday until Jul 29, 2027" —
   // the recurrence summary, mirroring the form's Repeat + End Repeat rows.
@@ -839,23 +929,101 @@ export default function EventDetailScreen() {
         ) : null}
 
         {/* Alert + Second alert share one card (divided), mirroring the form's
-            two Alert slots and Apple Calendar's grouped alert block. */}
+            two Alert slots and Apple Calendar's grouped alert block. Both are
+            live pickers: setting or clearing an alert is the single most common
+            reason to open an event you've already made, and routing that through
+            the whole edit form (open, pick, save, scope-prompt) was the long way
+            round to a one-tap change. */}
         <Card style={styles.alertCard}>
-          <View style={styles.alertRow}>
-            <Text style={styles.alertTitle}>Alert</Text>
-            <Text style={styles.rightValue}>{alertLabel}</Text>
-          </View>
-          {alert2Label ? (
+          <Select
+            inlineLabel="Alert"
+            value={alertKey(alerts?.reminderMinutes ?? null, alertAnchor)}
+            options={excludeUsedAlertKey(alertItems, alerts?.alert2Minutes ?? null, alerts?.reminderMinutes ?? null)}
+            placeholder="None"
+            onChange={(v) => {
+              if (v === CUSTOM_ALERT) setCustomFor('reminderMinutes');
+              else {
+                const opt = alertItems.find((i) => i.value === v);
+                // Clearing this one hands the slot to the second alert, which the
+                // card would otherwise hide while leaving it set.
+                applyAlerts(
+                  promoteSecondAlert({
+                    reminderMinutes: opt?.minutes ?? null,
+                    alertAnchor: opt?.anchor ?? 'event',
+                    alert2Minutes: alerts?.alert2Minutes ?? null,
+                    alert2Anchor: alerts?.alert2Anchor ?? 'event',
+                  }),
+                );
+              }
+            }}
+            containerStyle={styles.alertField}
+            fieldStyle={styles.alertFieldInner}
+            inlineLabelStyle={styles.alertTitle}
+            valueStyle={styles.alertValue}
+            chevronIcon="chevron-expand"
+          />
+          {alerts?.reminderMinutes != null ? (
             <>
               <View style={styles.alertDivider} />
-              <View style={styles.alertRow}>
-                <Text style={styles.alertTitle}>Second alert</Text>
-                <Text style={styles.rightValue}>{alert2Label}</Text>
-              </View>
+              <Select
+                inlineLabel="Second alert"
+                value={alertKey(alerts?.alert2Minutes ?? null, alert2Anchor)}
+                options={excludeUsedAlertKey(alertItems, alerts?.reminderMinutes ?? null, alerts?.alert2Minutes ?? null)}
+                placeholder="None"
+                onChange={(v) => {
+                  if (v === CUSTOM_ALERT) setCustomFor('alert2Minutes');
+                  else {
+                    const opt = alertItems.find((i) => i.value === v);
+                    applyAlerts({
+                      reminderMinutes: alerts?.reminderMinutes ?? null,
+                      alertAnchor: alerts?.alertAnchor ?? 'event',
+                      alert2Minutes: opt?.minutes ?? null,
+                      alert2Anchor: opt?.anchor ?? 'event',
+                    });
+                  }
+                }}
+                containerStyle={styles.alertField}
+                fieldStyle={styles.alertFieldInner}
+                inlineLabelStyle={styles.alertTitle}
+                valueStyle={styles.alertValue}
+                chevronIcon="chevron-expand"
+              />
             </>
           ) : null}
         </Card>
+        {/* A repeating event is ONE record, so its alerts belong to the series —
+            there is no per-occurrence alert to set. Say so before the tap rather
+            than after: the user is looking at a single day, and the form (which
+            can detach an occurrence) is where a one-day change belongs. */}
+        {eventRecurs ? <Text style={styles.alertNote}>Alerts apply to every occurrence of this event.</Text> : null}
       </View>
+
+      <CustomAlertSheet
+        visible={customFor !== null}
+        dayOnly={!!event.allDay}
+        travelMinutes={event.travelMinutes ?? null}
+        initialMinutes={customFor ? alerts?.[customFor] ?? null : null}
+        initialAnchor={customFor === 'alert2Minutes' ? alert2Anchor : alertAnchor}
+        onSave={(minutes, anchor) => {
+          if (!customFor) return;
+          applyAlerts(
+            customFor === 'alert2Minutes'
+              ? {
+                  reminderMinutes: alerts?.reminderMinutes ?? null,
+                  alertAnchor: alerts?.alertAnchor ?? 'event',
+                  alert2Minutes: minutes,
+                  alert2Anchor: anchor,
+                }
+              : {
+                  reminderMinutes: minutes,
+                  alertAnchor: anchor,
+                  alert2Minutes: alerts?.alert2Minutes ?? null,
+                  alert2Anchor: alerts?.alert2Anchor ?? 'event',
+                },
+          );
+        }}
+        onClose={() => setCustomFor(null)}
+      />
 
       {event.url ? (
         <View style={styles.rows}>
@@ -965,15 +1133,24 @@ const styles = StyleSheet.create({
   timeBlockMeta: { flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 2 },
   timeBlockMetaText: { fontSize: 11, flexShrink: 1 },
   rows: { gap: spacing.md },
-  // Alert + Second alert grouped in one card (rows own their padding; a hairline
-  // divides them), matching Apple Calendar's alert block.
-  alertCard: { padding: 0 },
-  alertRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 14, paddingHorizontal: spacing.md,
+  // Alert + Second alert grouped in one card (the picker rows own their padding;
+  // a hairline divides them), matching Apple Calendar's alert block. Each row is
+  // a `Select` stripped of its own field chrome so the card supplies it — the
+  // same borderless-row treatment the edit form's grouped cards use.
+  alertCard: { padding: 0, overflow: 'hidden' },
+  alertField: { marginBottom: 0 },
+  alertFieldInner: {
+    backgroundColor: 'transparent', borderWidth: 0, borderRadius: 0,
+    paddingHorizontal: spacing.md, paddingVertical: 14,
   },
+  // The row's label wears the detail screen's row title (matching CardRow), not
+  // the form's lighter field label — these sit under Calendar / Invitees rows.
   alertTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
+  // flex: 0 so the value sizes to its text and stays right-aligned against the
+  // flex: 1 label (Select's default value style stretches).
+  alertValue: { flex: 0, color: colors.textMuted },
   alertDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: spacing.md },
+  alertNote: { fontSize: 13, color: colors.textMuted, marginTop: spacing.xs, marginHorizontal: spacing.xs },
   rightRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   rightValue: { fontSize: 16, color: colors.textMuted },
   dot: { width: 12, height: 12, borderRadius: 6 },

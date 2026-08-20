@@ -19,6 +19,7 @@ import {
   markInvitesPrompted,
 } from '../lib/inviteAlerts';
 import { currentUserId, subscribeKeysReady } from '../lib/e2ee';
+import { getRecoveryProgress } from '../lib/guardianRecovery';
 import { noteInterruption } from '../lib/securityNudges';
 import { customCalendarsApi, householdApi, invitationsApi, keysApi, tripsApi } from '../api';
 import { useAuth } from '../store/auth';
@@ -34,6 +35,7 @@ const INVITE_PUSH_TYPES = new Set([
   'calendar_invitation',
   'trip_invitation',
   'guardian_recovery_request',
+  'guardian_recovery_approved',
 ]);
 
 // The in-app half of invitations (mounted once in RootNavigator, beside
@@ -44,8 +46,10 @@ const INVITE_PUSH_TYPES = new Set([
 // the app is open, it gathers every pending invitation the Invitations inbox
 // lists — household event requests, cross-household event invitations,
 // calendar shares, trip and household invitations, and approver-side join
-// requests — plus guardian recovery approvals awaiting the user — and pops the
-// app's iOS-style native alert for the ones this device has never prompted. A single household event request is answerable
+// requests — plus guardian recovery in both directions: requests awaiting the
+// user's approval, and the user's own in-flight recovery once their guardian
+// approved it (only the PIN remains) — and pops the app's iOS-style native
+// alert for the ones this device has never prompted. A single household event request is answerable
 // inline (Accept / Decline / View Invitation / Not Now — the answer is one
 // sealed EventRsvp write); every other kind, and any multiple, routes to the
 // Invitations inbox where its real accept flow lives. "Not Now" leaves the
@@ -106,6 +110,23 @@ export function useInviteAlerts(
       ]);
     };
 
+    // The other direction of the same ceremony: MY guardian approved MY
+    // recovery, and only the PIN remains. Presented on its own (a locked-out
+    // user's way back in, not a social invite), routed at the recover screen —
+    // which resumes the keychain-persisted request and asks for the PIN.
+    const presentGuardianApproved = (fresh: PendingInvite[]) => {
+      const { title, message } = inviteAlertContent(fresh);
+      Alert.alert(title, message, [
+        {
+          text: 'Enter PIN',
+          onPress: () => {
+            if (navRef.isReady()) navRef.navigate('GuardianRecovery', { mode: 'recover' });
+          },
+        },
+        { text: 'Not Now', style: 'cancel' },
+      ]);
+    };
+
     const present = (fresh: PendingInvite[]) => {
       const { title, message } = inviteAlertContent(fresh);
       if (fresh.length > 1) {
@@ -153,7 +174,7 @@ export function useInviteAlerts(
     // soft to [] — one lane erroring (offline, no household) must not hide the
     // others.
     const gather = async (): Promise<PendingInvite[]> => {
-      const [hhEvents, events, cals, trips, hhInvs, joinReqs, guardianReqs] = await Promise.all([
+      const [hhEvents, events, cals, trips, hhInvs, joinReqs, guardianReqs, guardianApproved] = await Promise.all([
         // Locked replica → rows don't decrypt → derives empty; the keys-ready
         // subscription below re-runs this once records become readable.
         listMyHouseholdEventRequests().catch(() => [] as HouseholdEventRequest[]),
@@ -163,6 +184,17 @@ export function useInviteAlerts(
         householdApi.myInvitations().then((r) => r.data).catch(() => []),
         householdApi.joinRequests().then((r) => r.data).catch(() => []),
         keysApi.guardianRequests().then((r) => r.data.requests).catch(() => []),
+        // MY OWN in-flight recovery, once approved (no server list — the state
+        // is the keychain slot + one poll; without a slot this is a no-op
+        // keychain read). Only 'ready' is worth interrupting for: 'waiting' is
+        // the recover screen's own spinner state, not news.
+        getRecoveryProgress()
+          .then(async (p): Promise<PendingInvite[]> => {
+            if (p.status !== 'ready' || !p.requestId) return [];
+            const from = await keysApi.guardianStatus().then((r) => r.data.guardianName ?? null).catch(() => null);
+            return [{ kind: 'guardianApproved', id: p.requestId, from }];
+          })
+          .catch(() => [] as PendingInvite[]),
       ]);
       const from = (i: { fromName?: string; fromEmail?: string }) => i.fromName || i.fromEmail || null;
       return [
@@ -203,6 +235,7 @@ export function useInviteAlerts(
         ...guardianReqs.map(
           (r): PendingInvite => ({ kind: 'guardianRequest', id: r.requestId, from: r.requesterName }),
         ),
+        ...guardianApproved,
       ];
     };
 
@@ -222,10 +255,16 @@ export function useInviteAlerts(
         // Invitations outrank the security nudges — an open where this pop-up
         // presents anything makes the nudge sit out (see useSecurityNudges).
         noteInterruption();
-        // Guardian requests present apart from (and before) ordinary
-        // invitations; iOS queues the second alert behind the first.
+        // Guardian recovery (both directions) presents apart from (and before)
+        // ordinary invitations; iOS queues each next alert behind the current.
+        // My own approval outranks everything — the user is locked out and one
+        // PIN away from their data. Skipped when the recover screen is already
+        // up: the user is looking at the PIN field the alert would point at.
+        const approvedFresh = fresh.filter((i) => i.kind === 'guardianApproved');
         const guardianFresh = fresh.filter((i) => i.kind === 'guardianRequest');
-        const inviteFresh = fresh.filter((i) => i.kind !== 'guardianRequest');
+        const inviteFresh = fresh.filter((i) => i.kind !== 'guardianRequest' && i.kind !== 'guardianApproved');
+        const onRecoverScreen = navRef.isReady() && navRef.getCurrentRoute()?.name === 'GuardianRecovery';
+        if (approvedFresh.length && !onRecoverScreen) presentGuardianApproved(approvedFresh);
         if (guardianFresh.length) presentGuardian(guardianFresh);
         if (!inviteFresh.length) return;
         // A lone household event request names its inviter from the member

@@ -158,8 +158,12 @@ export type RootStackParamList = {
   UnlockPaywall: undefined;
   // Manage one event's invitees. `snapshot` is the decrypted event content the
   // invite emails/.ics are built from; no `eventId` = a new-event draft whose
-  // invitees queue in lib/inviteeDraft until the event is saved.
-  EventInvitees: { eventId?: string; snapshot: InvitationEventSnapshot };
+  // invitees queue in lib/inviteeDraft until the event is saved. `stageOnly`
+  // says this screen is part of an event-form session that hasn't been saved
+  // yet: its ✓ stages into lib/inviteeDraft and the FORM's ✓ sends. The event
+  // form always passes it; the event detail screen never does (nothing is
+  // pending behind that entry, so its ✓ commits).
+  EventInvitees: { eventId?: string; snapshot: InvitationEventSnapshot; stageOnly?: boolean };
   // The event form's travel-time settings (switch / starting location / manual
   // duration). Edits flow back to the form via lib/travelDraft.
   EventTravelTime: { enabled: boolean; fromAddress: string; mode: TravelMode; manualMinutes: number | null };
@@ -274,7 +278,7 @@ export type RootStackParamList = {
   // time (see features/notifications.md). `promptEnable` deep-links from a Calen
   // "setup" chip: shows a SetupCallout nudging the user to turn reminders on.
   Reminders: { promptEnable?: boolean } | undefined;
-  // The dedicated Privacy & security screen. `focus` deep-links intent: 'unlock'
+  // The dedicated Privacy & Security screen. `focus` deep-links intent: 'unlock'
   // (locked-data prompt — auto-presents Face ID), 'recovery', or 'aiPersonalInfo'
   // (a Calen "setup" chip — SetupCallout on the "Use personal & contact info" toggle).
   PrivacyData: { focus?: 'unlock' | 'recovery' | 'aiPersonalInfo' } | undefined;
@@ -313,7 +317,7 @@ export type RootStackParamList = {
   // share/assign but has no household members — SetupCallout nudging them to
   // invite someone.
   Household: { promptInvite?: boolean } | undefined;
-  // Help & feedback — submit a question, bug report, or idea (features/feedback.md).
+  // Help & Feedback — submit a question, bug report, or idea (features/feedback.md).
   HelpFeedback: undefined;
 
   // ----- Billing (credits summary card is inlined on ProfileHome) -----
@@ -329,6 +333,6 @@ export type RootStackParamList = {
   // The discovery nudge's full-screen modal (unowned add-ons + Calen brainstorm).
   Discover: undefined;
   // The Home Screen widget promo: own-data widget preview + manual add steps
-  // (the widget nudge's modal; also reached from the Profile row).
+  // (the widget nudge's modal; also reached from the Profile promo card).
   WidgetPromo: undefined;
 };

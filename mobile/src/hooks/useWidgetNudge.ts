@@ -63,7 +63,7 @@ export function useWidgetNudge(
         await markWidgetNudgeShown(me, Date.now());
         navRef.navigate('WidgetPromo');
       } catch {
-        // Best-effort surface — the Profile "Home Screen Widget" row stays the
+        // Best-effort surface — the Profile widget promo card stays the
         // durable path.
       }
     };

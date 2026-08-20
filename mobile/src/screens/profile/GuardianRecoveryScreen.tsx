@@ -207,7 +207,7 @@ function RecoverMode() {
     try {
       const ok = await finishGuardianRecovery(pin);
       if (ok) {
-        Alert.alert('Recovered', 'Your data is unlocked on this device. Set up a new password and recovery code in Privacy & security.', [
+        Alert.alert('Recovered', 'Your data is unlocked on this device. Set up a new password and recovery code in Privacy & Security.', [
           { text: 'Done', onPress: () => navigation.goBack() },
         ]);
       } else {
@@ -227,7 +227,7 @@ function RecoverMode() {
 
       {state === 'waiting' ? (
         <View style={styles.center}>
-          <Hint>Ask your guardian to open Privacy & security and approve your request. Confirm this code matches on their screen:</Hint>
+          <Hint>Ask your guardian to open Privacy & Security and approve your request. Confirm this code matches on their screen:</Hint>
           <View style={styles.fpBox}>
             <Text style={styles.fp}>{fingerprint}</Text>
           </View>

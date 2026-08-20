@@ -19,6 +19,10 @@ const mockExisting = {
   calendarType: 'appointments',
   startDate: '2026-08-01T15:00:00.000Z',
   guestListVisible: true,
+  reminderMinutes: 30,
+  alertAnchor: 'event',
+  alert2Minutes: 1440,
+  alert2Anchor: 'event',
 };
 jest.mock('../../../lib/replica', () => ({ getAll: async () => [mockExisting] }));
 
@@ -61,4 +65,36 @@ test('mark-cancelled re-seals the event with cancelled: true', async () => {
   const [, , body] = sentBody() as [string, string, Record<string, any>];
   expect(body.enc).toBeTruthy();
   expect(body.enc.fields).toMatchObject({ cancelled: true, title: 'Dentist' });
+});
+
+// The event detail view's in-place alert pickers write through the same lane.
+test('setting an alert from the event view re-seals both slots with the event intact', async () => {
+  await calendarApi.setAlerts('e1', {
+    reminderMinutes: 60,
+    alertAnchor: 'leave',
+    alert2Minutes: 1440,
+    alert2Anchor: 'event',
+  });
+  const [, , body] = sentBody() as [string, string, Record<string, any>];
+  expect(body.enc).toBeTruthy();
+  expect(body.enc.fields).toMatchObject({
+    reminderMinutes: 60,
+    alertAnchor: 'leave',
+    alert2Minutes: 1440,
+    // Untouched content survives — the patch is merged over the replica row, not
+    // sealed on its own.
+    title: 'Dentist',
+    startDate: '2026-08-01T15:00:00.000Z',
+  });
+});
+
+// Clearing a slot must actually clear it: `undefined` drops the field out of the
+// sealed blob, so an alert removed on the detail view can't come back on the
+// next decrypt.
+test('clearing both alerts drops them from the sealed subset', async () => {
+  await calendarApi.setAlerts('e1', { alertAnchor: 'event', alert2Anchor: 'event' });
+  const [, , body] = sentBody() as [string, string, Record<string, any>];
+  expect(body.enc.fields.reminderMinutes).toBeUndefined();
+  expect(body.enc.fields.alert2Minutes).toBeUndefined();
+  expect(body.enc.fields.title).toBe('Dentist');
 });

@@ -250,7 +250,7 @@ export const moderationApi = {
     api.post<{ ok: boolean }>('/moderation/report', data),
 };
 
-// In-app "Help & feedback" — a question, bug report, or idea (spec:
+// In-app "Help & Feedback" — a question, bug report, or idea (spec:
 // features/feedback.md). Plaintext support content by design (not sealed).
 export const feedbackApi = {
   submit: (data: { type: 'question' | 'bug' | 'idea'; message: string; contactEmail?: string; diagnostics?: Diagnostics }) =>
@@ -1796,6 +1796,27 @@ export const calendarApi = {
       { householdInvitees: userIds.length ? userIds : undefined }),
   cancelEvent: (id: string) =>
     resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, { cancelled: true }),
+  // Both alert slots, written together from the event detail view's in-place
+  // pickers (calendar.md → Reminders/alerts). The pair travels as one patch
+  // because they are set as one: clearing the first PROMOTES the second into
+  // its place, so a per-slot write would leave the record in a state the form's
+  // own rule forbids. `undefined` clears a slot — a field set to undefined drops
+  // out of the sealed blob.
+  setAlerts: (
+    id: string,
+    alerts: {
+      reminderMinutes?: number;
+      alertAnchor?: string;
+      alert2Minutes?: number;
+      alert2Anchor?: string;
+    },
+  ) =>
+    resealInLane('CalendarEvent', require('../lib/encSubsets').EVENT_ENC, id, {
+      reminderMinutes: alerts.reminderMinutes,
+      alertAnchor: alerts.alertAnchor,
+      alert2Minutes: alerts.alert2Minutes,
+      alert2Anchor: alerts.alert2Anchor,
+    }),
   // Turn an accepted cross-household copy back into an ordinary household event
   // by clearing the sealed `invitationId` that marks it read-only and renames its
   // delete action to "Leave event". Used by the merge pass (lib/invitationMerge)

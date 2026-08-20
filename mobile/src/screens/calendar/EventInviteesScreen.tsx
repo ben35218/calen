@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { calendarApi, householdApi, invitationsApi, contactsApi, EventInvitation, HouseholdMember, Contact } from '../../api';
+import { calendarApi, householdApi, invitationsApi, settingsApi, EventInvitation, HouseholdMember } from '../../api';
 import {
   Badge, HintDisclosure, Input, RevealWrap, Screen, SectionHeader, SwitchRow,
   useHeaderCheckButton,
@@ -14,6 +14,7 @@ import { form as fs, GroupCard, CardDivider } from '../../components/formStyles'
 import {
   getQueuedInvitees, setQueuedInvitees, useDraftGuestListVisible, setDraftGuestListVisible,
   getQueuedHouseholdInvitees, setQueuedHouseholdInvitees,
+  getQueuedRevokes, setQueuedRevokes,
 } from '../../lib/inviteeDraft';
 import { notifyHouseholdInvitees, rsvpsForEvent } from '../../lib/householdRsvp';
 import { eventInvitationExpired } from '../../lib/inviteAlerts';
@@ -22,27 +23,32 @@ import {
   InviteeEntry, inviteeKey, normalizePhone, composeSmsInvite, sendInvitations, eventInviteEmailContent,
 } from '../../lib/invitees';
 import { useEmailComposer } from '../../components/EmailAppSheet';
-import { normalizeContact, NormalizedContact } from '../../lib/contactFields';
+import { useRosterSuggestions } from '../../hooks/useRosterSuggestions';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
-import { openRecord } from '../../lib/e2ee';
 import { useAuth } from '../../store/auth';
 import { CalendarStackParamList } from '../../navigation/CalendarNavigator';
 import { colors, spacing } from '../../theme';
 
 type Rt = RouteProp<CalendarStackParamList, 'EventInvitees'>;
 
-// Manage who is invited to one event, reached from the Invitees card on the
-// event form. ONE input takes both channels: each return keystroke parses the
-// text — pieces with an @ are emails, anything else must read as a phone
-// number — and stages it in the New section. Nothing sends until the header ✓:
-//   - saved event (eventId set): ✓ sends everything at once (emails server-
-//     side; texts open the Messages composer one per number, prefilled with
-//     the event and its public .ics link);
-//   - new-event draft (no eventId): ✓ commits the list to lib/inviteeDraft and
-//     EventFormScreen sends it the same way once the event is saved.
+// Manage who is invited to one event. ONE input takes both channels: each
+// return keystroke parses the text — pieces with an @ are emails, anything else
+// must read as a phone number — and stages it in the New section. Nothing sends
+// until a ✓, and WHICH ✓ depends on how this screen was reached:
+//   - from the EVENT FORM (`stageOnly`, new or saved event): this screen's ✓
+//     only commits the session's staging — added invitees, removed ones, the
+//     household selection, the guest-list flag — to lib/inviteeDraft, and the
+//     FORM's ✓ does the sending/revoking/notifying after the event saves.
+//     Nothing the user can still discard is allowed to have gone out already:
+//     an outsider invited on an edit the user then backs out of would be holding
+//     an invitation to changes that were never saved.
+//   - from the EVENT DETAIL screen (no `stageOnly`): there is no pending save
+//     behind this screen, so its ✓ IS the commit — it sends everything at once
+//     (emails server-side; texts open the Messages composer one per number,
+//     prefilled with the event and its public .ics link) and applies the
+//     household selection immediately.
 // The X close button discards whatever was staged this visit. The "Guests can
-// see guest list" switch lives here too: a draft commits it with the event's
-// save, a saved event applies it immediately on toggle. The list is
+// see guest list" switch lives here too, following the same rule. The list is
 // grouped by where each invitee stands: New (not sent yet), Received (sent,
 // awaiting reply — SMS invites live here for good, replies to a text never
 // come back through the app), Accepted, Declined (incl. accepted-then-left).
@@ -77,10 +83,13 @@ function parseInvitees(text: string): { entries: InviteeEntry[]; invalid: string
 }
 
 export default function EventInviteesScreen() {
-  const { eventId, snapshot } = useRoute<Rt>().params;
+  const { eventId, snapshot, stageOnly: stageParam } = useRoute<Rt>().params;
   const navigation = useNavigation<NativeStackNavigationProp<CalendarStackParamList>>();
   const qc = useQueryClient();
   const isDraft = !eventId;
+  // Stage instead of commit. A draft has no choice (there is no event to invite
+  // to yet); a saved event stages whenever the event form is what pushed us.
+  const stageOnly = isDraft || !!stageParam;
 
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
@@ -89,14 +98,20 @@ export default function EventInviteesScreen() {
   // Mail composer for non-account email invitees (and the per-row Remind) —
   // the mail-app chooser sheet renders at the bottom of this screen.
   const { composeEmail, emailSheet } = useEmailComposer();
-  // Entries added this visit, committed/sent only on ✓. A draft starts from
-  // the queue so previously added entries can still be removed.
-  const [staged, setStaged] = useState<InviteeEntry[]>(() => (isDraft ? getQueuedInvitees() : []));
-  // Clean baseline for the unsaved-changes guard: the staged list this visit
-  // opened with (a draft starts from the queued invitees; a saved event starts
-  // empty). Anything added/removed since — or half-typed in the field — is
-  // unsaved and prompts before leaving.
-  const initialStaged = useRef(JSON.stringify(isDraft ? getQueuedInvitees() : []));
+  // Entries added this visit, committed/sent only on ✓. A staging session starts
+  // from the queue so entries added on an earlier visit can still be removed.
+  const [staged, setStaged] = useState<InviteeEntry[]>(() => (stageOnly ? getQueuedInvitees() : []));
+  // Already-sent invitations the user removed. In a staging session the revoke
+  // waits for the event's save (so backing out of the edit leaves the invitee
+  // in place); otherwise the row's confirm revokes on the spot and this stays
+  // empty.
+  const [revoked, setRevoked] = useState<string[]>(() => (stageOnly ? getQueuedRevokes() : []));
+  // Clean baseline for the unsaved-changes guard: what this visit opened with (a
+  // staging session starts from the queue; a committing one starts empty).
+  // Anything added/removed since — or half-typed in the field — is unsaved and
+  // prompts before leaving.
+  const initialStaged = useRef(JSON.stringify(stageOnly ? getQueuedInvitees() : []));
+  const initialRevoked = useRef(JSON.stringify(stageOnly ? getQueuedRevokes() : []));
   const { user } = useAuth();
 
   // The event's calendar colour tints the inline ✓, same as the event form's
@@ -116,8 +131,9 @@ export default function EventInviteesScreen() {
 
   // ── "Your household" section — members asked to accept/decline ────────────
   // Housemates already see every event; selecting one here stamps them into the
-  // sealed householdInvitees list, notifies them right away (saved event) or on
-  // save (draft), and tracks their accept/decline (per-member EventRsvp records).
+  // sealed householdInvitees list, notifies them when the change actually lands
+  // (the event's save in a staging session, this screen's ✓ from the detail
+  // screen), and tracks their accept/decline (per-member EventRsvp records).
   const householdQ = useQuery({
     queryKey: ['household'],
     queryFn: async () => (await householdApi.get()).data,
@@ -132,35 +148,39 @@ export default function EventInviteesScreen() {
     queryFn: () => rsvpsForEvent(eventId!),
     enabled: !isDraft,
   });
-  // Selection: a draft starts from the queued list; a saved event seeds from the
-  // decrypted event once it loads (replica rows are already decrypted).
-  const [hhSelected, setHhSelected] = useState<string[]>(() => (isDraft ? getQueuedHouseholdInvitees() : []));
-  const hhInitial = useRef<string[] | null>(isDraft ? getQueuedHouseholdInvitees() : null);
+  // Selection: a staging session starts from the queued list — which the event
+  // form seeds from the fetched event before this screen can be opened, so it
+  // holds the saved event's members plus anything picked earlier this session.
+  // The detail-screen entry has no form behind it and seeds from the decrypted
+  // event once it loads (replica rows are already decrypted).
+  const [hhSelected, setHhSelected] = useState<string[]>(() => (stageOnly ? getQueuedHouseholdInvitees() : []));
+  const hhInitial = useRef<string[] | null>(stageOnly ? getQueuedHouseholdInvitees() : null);
   const eventQ = useQuery({
     queryKey: ['calendar', 'event', eventId, 'invitees'],
     queryFn: async () => (await calendarApi.getEvent(eventId!)).data,
-    enabled: !isDraft,
+    enabled: !isDraft && !stageOnly,
   });
   useEffect(() => {
-    if (isDraft || hhInitial.current !== null || !eventQ.data) return;
+    if (stageOnly || hhInitial.current !== null || !eventQ.data) return;
     const ids = eventQ.data.householdInvitees ?? [];
     hhInitial.current = ids;
     setHhSelected(ids);
-  }, [isDraft, eventQ.data]);
+  }, [stageOnly, eventQ.data]);
   const toggleMember = (id: string) =>
     setHhSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
-  // Contacts (decrypted on-device) back the field's autocomplete.
-  const contactsQ = useQuery({
-    queryKey: ['contacts', 'decrypted'],
-    queryFn: async () => {
-      const rows = (await contactsApi.list()).data;
-      return Promise.all(rows.map((p) => openRecord('Contact', p)));
-    },
+  // The account's own phone number, for the self-exclusion below (`user` carries
+  // only the email). Shares the Account screen's cache.
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: async () => (await settingsApi.get()).data,
   });
 
-  // Everyone already staged or sent (plus the user's own email — the server
-  // rejects self-invites), so suggestions and adds can skip them.
+  // Everyone already staged or sent (plus the user's own email and phone — the
+  // server rejects self-invites), so suggestions and adds can skip them. One hit
+  // anywhere on a contact card removes that CONTACT from the dropdown, not just
+  // the address that matched (see matchRoster): the card's other addresses reach
+  // the same person, who is already invited.
   const taken = useMemo(() => {
     const set = new Set(
       [...staged.map(inviteeKey), ...(inviteesQ.data ?? []).map((i) => i.toEmail ?? i.toPhone ?? '')].map(
@@ -168,43 +188,19 @@ export default function EventInviteesScreen() {
       ),
     );
     if (user?.email) set.add(user.email.toLowerCase());
+    if (settings?.phone) set.add(settings.phone.toLowerCase());
     return set;
-  }, [staged, inviteesQ.data, user?.email]);
+  }, [staged, inviteesQ.data, user?.email, settings?.phone]);
 
-  // What a contact suggestion would stage: their primary email, unless the typed
-  // text is digit-y and they have a number (or email is all they're missing).
-  // Reads the multi-value fields (via normalizeContact) so contacts stored as
-  // emails[]/phones[] arrays — not just the legacy single scalars — resolve.
-  const entryFor = (n: NormalizedContact, queryIsDigits: boolean): InviteeEntry | null => {
-    const email = n.emails[0]?.value.trim().toLowerCase();
-    const phone = n.phones[0]?.value ? normalizePhone(n.phones[0].value) : null;
-    const emailOk = !!email && EMAIL_RE.test(email) && !taken.has(email);
-    const phoneOk = !!phone && !taken.has(phone);
-    if (queryIsDigits && phoneOk) return { phone: phone! };
-    if (emailOk) return { email: email! };
-    if (phoneOk) return { phone: phone! };
-    return null;
-  };
-
-  // Contacts matching the piece being typed (the text after the last comma),
-  // by name, or any of their emails/phones.
-  const suggestions = useMemo(() => {
-    const q = (input.split(/[,;\n]+/).pop() ?? '').trim().toLowerCase();
-    if (!q) return [];
-    const qDigits = q.replace(/[^\d]/g, '');
-    const queryIsDigits = qDigits.length > 0 && qDigits.length >= q.replace(/[\s()+.-]/g, '').length;
-    return (contactsQ.data ?? [])
-      .map((p: Contact) => ({ contact: p, n: normalizeContact(p) }))
-      .filter(({ contact: p, n }) => {
-        if (!entryFor(n, queryIsDigits)) return false;
-        if ((p.name ?? '').toLowerCase().includes(q)) return true;
-        if (n.emails.some((e) => e.value.toLowerCase().includes(q))) return true;
-        if (qDigits && n.phones.some((ph) => ph.value.replace(/[^\d]/g, '').includes(qDigits))) return true;
-        return false;
-      })
-      .slice(0, 5)
-      .map(({ contact, n }) => ({ contact, entry: entryFor(n, queryIsDigits)! }));
-  }, [contactsQ.data, input, taken]);
+  // The piece being typed — the text after the last comma — is what the roster
+  // matches against.
+  const query = useMemo(() => (input.split(/[,;\n]+/).pop() ?? '').trim(), [input]);
+  // The same shared autocomplete every share/invite field uses: contacts matched
+  // by name, email, or phone digits, expanded to ONE ROW PER REACHABLE ADDRESS
+  // (each email, then each canonical-E.164 phone), so the sender picks which
+  // address gets the invite instead of accepting whichever one happened to be
+  // first on the card.
+  const suggestions = useRosterSuggestions(query, taken);
 
   // The inline ✓ inside the field shows once the text parses cleanly — a
   // tap-friendly stand-in for the return key.
@@ -234,17 +230,20 @@ export default function EventInviteesScreen() {
     return { ok: !invalid.length, entries: next };
   };
 
-  // ✓ — commit the field, then queue (draft) or send (saved event). Entries
-  // that fail to send stay staged with the reason, so ✓ can retry just those.
-  // Household selection: a draft queues it beside the outside entries; a saved
-  // event re-seals householdInvitees now and instantly notifies newly added
-  // members (best-effort — the durable channel is their Invitations inbox).
+  // ✓ — commit the field, then stage everything for the event's save (a form
+  // session) or send it now (the detail-screen entry). Staging writes the whole
+  // session state: added invitees, removed invitations, the household selection.
+  // Sending: entries that fail stay staged with the reason, so ✓ can retry just
+  // those; the household selection re-seals householdInvitees and instantly
+  // notifies newly added members (best-effort — the durable channel is their
+  // Invitations inbox).
   const onConfirm = async () => {
     const { ok, entries } = commitInput();
     if (!ok) return;
-    if (isDraft) {
+    if (stageOnly) {
       setQueuedHouseholdInvitees(hhSelected);
       setQueuedInvitees(entries);
+      setQueuedRevokes(revoked);
       allowLeave();
       navigation.goBack();
       return;
@@ -301,6 +300,7 @@ export default function EventInviteesScreen() {
   // half-typed text; `allowLeave` above lets ✓ exit without the prompt.
   const dirty =
     JSON.stringify(staged) !== initialStaged.current ||
+    JSON.stringify(revoked) !== initialRevoked.current ||
     !!input.trim() ||
     (hhInitial.current !== null && JSON.stringify(hhSelected) !== JSON.stringify(hhInitial.current));
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
@@ -313,11 +313,10 @@ export default function EventInviteesScreen() {
 
   // Whether invitees can see who else is invited. The live value rides the
   // invitee draft store (EventFormScreen seeds it from the fetched event and
-  // sends it with a draft's create payload). On a saved event a toggle saves
+  // seals it into every save payload), so in a form session the toggle lands
+  // with the event like everything else here. From the detail screen it saves
   // right away — `guestListVisible` is sealed event content (C3b), so the
-  // client re-seals the event rather than PUTting the field plaintext — with
-  // no event query invalidation, so the form underneath keeps its unsaved
-  // edits.
+  // client re-seals the event rather than PUTting the field plaintext.
   const guestListVisible = useDraftGuestListVisible();
   const saveGuestList = useMutation({
     mutationFn: (v: boolean) => calendarApi.setGuestListVisible(eventId!, v),
@@ -328,22 +327,31 @@ export default function EventInviteesScreen() {
   });
   const toggleGuestList = (v: boolean) => {
     setDraftGuestListVisible(v);
-    if (!isDraft) saveGuestList.mutate(v);
+    if (!stageOnly) saveGuestList.mutate(v);
   };
 
   const removeStaged = (entry: InviteeEntry) =>
     setStaged((s) => s.filter((e) => inviteeKey(e) !== inviteeKey(entry)));
 
+  // Removing someone already invited. In a form session the removal is staged
+  // like everything else — the row leaves the list now, the revoke happens when
+  // the event saves — so the confirm has to say WHEN it takes effect, or "the
+  // event will be removed from their calendar" reads as already done.
   const confirmRevoke = (inv: EventInvitation) => {
     const to = inv.toEmail ?? inv.toPhone;
+    const effect = inv.status === 'accepted'
+      ? `The event will be removed from ${to}'s calendar`
+      : `${to} will no longer be able to accept this invitation`;
     Alert.alert(
       'Remove invitee?',
-      inv.status === 'accepted'
-        ? `The event will be removed from ${to}'s calendar.`
-        : `${to} will no longer be able to accept this invitation.`,
+      stageOnly ? `${effect} when you save the event.` : `${effect}.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: () => revoke.mutate(inv._id) },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => (stageOnly ? setRevoked((r) => [...r, inv._id]) : revoke.mutate(inv._id)),
+        },
       ],
     );
   };
@@ -395,7 +403,12 @@ export default function EventInviteesScreen() {
       {busy ? (
         <ActivityIndicator size="small" color={calColor} style={styles.remove} />
       ) : (
-        <TouchableOpacity style={styles.remove} hitSlop={HIT_SLOP} onPress={() => removeStaged(entry)}>
+        <TouchableOpacity
+          style={styles.remove}
+          hitSlop={HIT_SLOP}
+          onPress={() => removeStaged(entry)}
+          accessibilityLabel={`Remove ${inviteeKey(entry)}`}
+        >
           <Ionicons name="close-circle" size={20} color={colors.textMuted} />
         </TouchableOpacity>
       )}
@@ -431,13 +444,21 @@ export default function EventInviteesScreen() {
           <Ionicons name="paper-plane-outline" size={18} color={calColor} />
         </TouchableOpacity>
       ) : null}
-      <TouchableOpacity style={styles.remove} hitSlop={HIT_SLOP} onPress={() => confirmRevoke(inv)}>
+      <TouchableOpacity
+        style={styles.remove}
+        hitSlop={HIT_SLOP}
+        onPress={() => confirmRevoke(inv)}
+        accessibilityLabel={`Remove ${inv.toEmail ?? inv.toPhone}`}
+      >
         <Ionicons name="close-circle" size={20} color={colors.textMuted} />
       </TouchableOpacity>
     </View>
   );
 
-  const sent = inviteesQ.data ?? [];
+  // Invitations staged for removal leave the list the moment they're confirmed —
+  // the user said remove, so the screen must show them gone even though the
+  // revoke itself waits for the event's save.
+  const sent = (inviteesQ.data ?? []).filter((i) => !revoked.includes(i._id));
   // The guest list is a cross-household concern only — housemates aren't part
   // of it, and it governs nothing until at least one outside contact is staged
   // or already invited. Staged counts: the switch must be settable BEFORE the
@@ -469,7 +490,11 @@ export default function EventInviteesScreen() {
             label="Notify household members"
             labelStyle={styles.sectionHeading}
             hintStyle={styles.zoneHint}
-            hint="Housemates already see this event. Selecting someone asks them to accept or decline and notifies them right away — declining doesn’t remove the event from their calendar."
+            hint={
+              stageOnly
+                ? 'Housemates already see this event. Selecting someone asks them to accept or decline and notifies them when you save the event — declining doesn’t remove the event from their calendar.'
+                : 'Housemates already see this event. Selecting someone asks them to accept or decline and notifies them right away — declining doesn’t remove the event from their calendar.'
+            }
             accessibilityLabel="About notifying household members"
           />
           <GroupCard>
@@ -489,7 +514,7 @@ export default function EventInviteesScreen() {
           labelStyle={styles.sectionHeading}
           hintStyle={styles.zoneHint}
           hint={
-            isDraft
+            stageOnly
               ? 'Add someone outside your household by email address or phone number — press return after each. Invitations go out when you save the event.'
               : 'Add someone outside your household by email address or phone number — press return after each. Invitations go out when you tap the check mark.'
           }
@@ -529,9 +554,9 @@ export default function EventInviteesScreen() {
           </GroupCard>
           {suggestOpen && suggestions.length > 0 ? (
             <View style={styles.dropdown}>
-              {suggestions.map(({ contact: p, entry }) => (
+              {suggestions.map(({ key, p, entry, label, display }) => (
                 <TouchableOpacity
-                  key={p._id}
+                  key={key}
                   style={styles.suggestRow}
                   onPress={() => {
                     setStaged((s) => [...s, entry]);
@@ -541,13 +566,18 @@ export default function EventInviteesScreen() {
                   }}
                 >
                   <Ionicons
-                    name={entry.phone ? 'chatbubble-outline' : 'mail-outline'}
+                    name={'phone' in entry ? 'chatbubble-outline' : 'mail-outline'}
                     size={16}
                     color={colors.textMuted}
                   />
                   <View style={styles.suggestText}>
                     <Text style={styles.suggestName} numberOfLines={1}>{p.name}</Text>
-                    <Text style={styles.suggestEmail} numberOfLines={1}>{inviteeKey(entry)}</Text>
+                    {/* The address, with its card label ("work · dee@work.com") —
+                        the same card can list several, so which one this row
+                        would invite has to be readable at a glance. */}
+                    <Text style={styles.suggestEmail} numberOfLines={1}>
+                      {label ? `${label} · ${display}` : display}
+                    </Text>
                   </View>
                 </TouchableOpacity>
               ))}

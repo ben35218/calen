@@ -49,7 +49,7 @@ export function useSecurityNudges(
 
     const addPasskeyNow = async () => {
       // The ceremony wraps the private key, so a locked vault can't finish it —
-      // land on Privacy & security, where the unlock UI and passkey row live.
+      // land on Privacy & Security, where the unlock UI and passkey row live.
       if (!isUnlocked()) {
         if (navRef.isReady()) navRef.navigate('PrivacyData', { focus: 'recovery' });
         return;
@@ -70,7 +70,7 @@ export function useSecurityNudges(
         Alert.alert(
           'Could not add passkey',
           (e?.message || 'Please try again.') +
-            '\n\nOn TestFlight and beta builds, passkeys aren’t available yet — you can add one from Privacy & security after the App Store release.',
+            '\n\nOn TestFlight and beta builds, passkeys aren’t available yet — you can add one from Privacy & Security after the App Store release.',
         );
       }
     };
@@ -134,7 +134,7 @@ export function useSecurityNudges(
         await markNudgePrompted(me, kind);
         present(kind);
       } catch {
-        // Best-effort surface — Privacy & security still carries both setups.
+        // Best-effort surface — Privacy & Security still carries both setups.
       }
     };
 

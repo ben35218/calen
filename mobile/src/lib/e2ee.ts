@@ -11,6 +11,7 @@ import { createEnrollment, type StoredKeyMaterial, type IdentityKeyPair, type Re
 import { loadHouseholdCrypto } from '@household/crypto/adapters/native';
 import { keysApi, householdApi, customCalendarsApi, tripsApi, type HDKEnvelopePayload } from '../api';
 import { saveDeviceKey, loadDeviceKey, clearDeviceKey, isDeviceKeyEnabled } from './deviceKey';
+import { rememberPasskeyHints } from './passkeyHints';
 
 let enrollment: Awaited<ReturnType<typeof buildEnrollment>> | null = null;
 let keyPair: IdentityKeyPair | null = null;
@@ -978,6 +979,18 @@ export async function wrapHDKForJoiner(
   };
 }
 
+// Refresh the device's usernameless sign-in hints (passkeyHints.ts) from the
+// account's factor list whenever we hold it — public metadata, so best-effort
+// and never awaited. `usedCredentialId` marks which passkey just unlocked, so
+// the next usernameless sign-in evaluates ITS salt in the sign-in gesture.
+function rememberPasskeyHintsFromMaterial(material: StoredKeyMaterial, usedCredentialId?: string): void {
+  const hints = (material.wrappedPrivateKey || [])
+    .filter((f): f is Extract<typeof f, { factor: 'passkey' | 'recovery' }> => f.factor === 'passkey')
+    .filter((f) => f.credentialId && f.prfSalt)
+    .map((f) => ({ credentialId: f.credentialId as string, prfSalt: f.prfSalt as string }));
+  if (hints.length) void rememberPasskeyHints(hints, usedCredentialId).catch(() => {});
+}
+
 // Called after a successful login/register. Enrolls on first use (raising the
 // one-time recovery code) or unlocks the existing keypair with the password.
 // Returns the resulting status; 'locked' means the password didn't unlock it and
@@ -1002,6 +1015,7 @@ export async function ensureEnrolledOnLogin(
   try {
     setKeyPair(enroll.unlockWithPassword(material, password));
     await cacheKeyPairToDevice();
+    rememberPasskeyHintsFromMaterial(material);
     return 'unlocked';
   } catch {
     setKeyPair(null);
@@ -1093,6 +1107,7 @@ export async function unlockWithPassword(password: string): Promise<boolean> {
   try {
     setKeyPair(enroll.unlockWithPassword(data as unknown as StoredKeyMaterial, password));
     await cacheKeyPairToDevice();
+    rememberPasskeyHintsFromMaterial(data as unknown as StoredKeyMaterial);
     return true;
   } catch {
     setKeyPair(null);
@@ -1107,6 +1122,7 @@ export async function unlockWithRecoveryCode(code: string): Promise<boolean> {
   try {
     setKeyPair(enroll.unlockWithRecovery(data as unknown as StoredKeyMaterial, code));
     await cacheKeyPairToDevice();
+    rememberPasskeyHintsFromMaterial(data as unknown as StoredKeyMaterial);
     return true;
   } catch {
     return false;
@@ -1162,6 +1178,9 @@ export async function addPasskeyFactor(): Promise<boolean> {
 
   const factor = enroll.addPasskey(keyPair.privateKey, crypto.unb64(prf), created.credentialId, prfSalt);
   await keysApi.putFactor(factor);
+  // Seed the usernameless sign-in hint so this passkey's very first sign-in
+  // already unlocks in one gesture.
+  void rememberPasskeyHints([{ credentialId: created.credentialId, prfSalt }], created.credentialId).catch(() => {});
   return true;
 }
 
@@ -1188,6 +1207,7 @@ export async function unlockWithPasskey(): Promise<boolean> {
   try {
     setKeyPair(enroll.unlockWithPasskeyPrf(material, got.credentialId, crypto.unb64(got.prfOutput)));
     await cacheKeyPairToDevice();
+    rememberPasskeyHintsFromMaterial(material, got.credentialId);
     return true;
   } catch {
     return false;
@@ -1205,6 +1225,7 @@ export async function unlockWithPasskeyPrfOutput(credentialId: string, prfOutput
   try {
     setKeyPair(enroll.unlockWithPasskeyPrf(data as unknown as StoredKeyMaterial, credentialId, crypto.unb64(prfOutputB64)));
     await cacheKeyPairToDevice();
+    rememberPasskeyHintsFromMaterial(data as unknown as StoredKeyMaterial, credentialId);
     return true;
   } catch {
     setKeyPair(null);

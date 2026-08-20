@@ -60,6 +60,12 @@ export function usePushNotifications(
             navRef.navigate('EventDetail', { eventId: data.eventId });
           }
           break;
+        case 'guardian_recovery_approved':
+          // The requester's guardian approved: land on the recover screen,
+          // which resumes the keychain-persisted request and asks for the PIN.
+          routedRef.current = id;
+          navRef.navigate('GuardianRecovery', { mode: 'recover' });
+          break;
         default:
           // Unknown/absent type (e.g. a local reminder): just open the app.
           break;

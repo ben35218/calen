@@ -1451,6 +1451,7 @@ export function Select<T extends string | number>({
   valueStyle,
   chevronIcon,
   inlineLabel,
+  inlineLabelStyle,
   initialScrollValue,
 }: {
   label?: string;
@@ -1472,6 +1473,11 @@ export function Select<T extends string | number>({
   // Label rendered inside the touchable, left of the value — makes the whole
   // row (label included) open the picker. Also titles the option modal.
   inlineLabel?: string;
+  // Restyle that label. A picker dropped into a DETAIL screen's row group has to
+  // wear that screen's row title (semibold, matching CardRow) rather than the
+  // form's lighter field label — the event view's in-place alert pickers sit
+  // directly under Calendar / Invitees / Travel Time rows.
+  inlineLabelStyle?: StyleProp<TextStyle>;
   // Open the option list scrolled so this option sits at the top (the user can
   // still scroll up to earlier options). E.g. the e-card hour picker opens at
   // noon so PM times are the visible default.
@@ -1505,7 +1511,7 @@ export function Select<T extends string | number>({
         activeOpacity={0.7}
         disabled={disabled}
       >
-        {inlineLabel ? <Text style={styles.inlineLabel}>{inlineLabel}</Text> : null}
+        {inlineLabel ? <Text style={[styles.inlineLabel, inlineLabelStyle]}>{inlineLabel}</Text> : null}
         <Text style={[styles.selectValue, !selectedLabel && styles.selectPlaceholder, valueStyle]} numberOfLines={1}>
           {selectedLabel || placeholder}
         </Text>

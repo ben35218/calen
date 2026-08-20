@@ -27,6 +27,41 @@ services:
       - path: /.well-known/apple-app-site-association
         name: Content-Type
         value: application/json
+      # --- baseline security headers (three static pages, no third-party JS) ---
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains
+      # `script-src 'unsafe-inline'` covers the one inline block on the site —
+      # the JSON-LD in index.html. A hash would be tighter but silently breaks
+      # structured data the next time that block is edited, and with no external
+      # script origin allowed there is nothing here for an inline script to load.
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
+      # --- caching: icons are regenerated rarely (npm run web:icons) ---
+      - path: /*.png
+        name: Cache-Control
+        value: public, max-age=604800
+      - path: /*.svg
+        name: Cache-Control
+        value: public, max-age=604800
+      - path: /favicon.ico
+        name: Cache-Control
+        value: public, max-age=604800
+      # The stylesheet is unversioned, so keep it short enough that a copy edit
+      # to the site is live the same day.
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=3600, must-revalidate
 
   - type: web
     name: household-calendar-api
