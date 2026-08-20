@@ -103,7 +103,15 @@ a:hover { color: var(--brand-strong); }
 .section { padding-block: clamp(3rem, 8vw, 6rem); }
 .section--sunk { background: var(--bg-sunk); border-block: 1px solid var(--border); }
 .stack > * + * { margin-block-start: var(--flow, 1rem); }
+/* Flow overrides live here rather than in a `style="--flow: …"` attribute:
+   the site's CSP sets `style-src 'self'`, which blocks inline style attributes
+   as well as <style> blocks, so an inline override is silently dropped. */
+.stack--flow-md { --flow: 1.25rem; }
+.stack--flow-lg { --flow: 1.5rem; }
 .prose { max-inline-size: var(--measure); }
+
+/* Same reason — the muted-paragraph override had been inline. */
+.muted { color: var(--text-muted); }
 
 /* ---------- site header ---------- */
 .site-header {

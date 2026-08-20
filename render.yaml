@@ -27,6 +27,11 @@ services:
       - path: /.well-known/apple-app-site-association
         name: Content-Type
         value: application/json
+      # `.webmanifest` isn't in Render's MIME table, so it fell back to
+      # application/octet-stream and Chrome ignored the manifest.
+      - path: /site.webmanifest
+        name: Content-Type
+        value: application/manifest+json
       # --- baseline security headers (three static pages, no third-party JS) ---
       - path: /*
         name: X-Content-Type-Options
@@ -44,6 +49,11 @@ services:
       # the JSON-LD in index.html. A hash would be tighter but silently breaks
       # structured data the next time that block is edited, and with no external
       # script origin allowed there is nothing here for an inline script to load.
+      #
+      # `style-src` deliberately does NOT get 'unsafe-inline', which also bans
+      # inline `style="…"` ATTRIBUTES, not just <style> blocks — the browser
+      # drops them with no visible error. Keep every rule in assets/site.css;
+      # a one-off needs a class there (see .muted / .stack--flow-*).
       - path: /*
         name: Content-Security-Policy
         value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
