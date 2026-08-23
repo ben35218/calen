@@ -4,20 +4,15 @@ import { Text } from '../../components/Text';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useQuery } from '@tanstack/react-query';
-import { householdApi } from '../../api';
 import {
   CALENDARS,
   CalendarDef,
   CustomCalendar,
   useCalendarVisibility,
   useCalendarColors,
-  useCustomCalendars,
-  useDeletedDefaultCalendars,
-  useCalendarOrder,
-  sortByCalendarOrder,
   refreshCustomCalendars,
 } from '../../lib/calendarPrefs';
+import { useCalendarGroups } from '../../hooks/useCalendarGroups';
 import { ADDON_CALENDAR_IDS, useOwnedAddons } from '../../lib/addons';
 import { useBilling } from '../../hooks/useBilling';
 import { colors, spacing } from '../../theme';
@@ -33,14 +28,6 @@ const LINK_TARGETS: Record<string, keyof CalendarStackParamList> = {
   birthdays: 'Birthdays',
   weather: 'Weather',
 };
-
-// Where a custom calendar sorts: Just me (no sharing), Household (everyone),
-// or Shared (specific members / outside contacts, incl. calendars shared to us).
-function customGroup(cal: CustomCalendar): 'justMe' | 'household' | 'shared' {
-  if (cal.sharedWithHousehold) return 'household';
-  if (!cal.mine || cal.sharedWith.length > 0 || cal.sharedWithOutside.length > 0) return 'shared';
-  return 'justMe';
-}
 
 // "Meals, Maintenance, Trips, Occasions & Chores" — the storefront row's subtitle.
 function listNames(names: string[]): string {
@@ -60,9 +47,6 @@ export default function CalendarsScreen() {
   const nav = useNavigation<NativeStackNavigationProp<CalendarStackParamList>>();
   const { visibility, setVisible } = useCalendarVisibility();
   const { colors: calColors } = useCalendarColors();
-  const { calendars: customCalendars } = useCustomCalendars();
-  const { deletedIds } = useDeletedDefaultCalendars();
-  const { order } = useCalendarOrder();
   const { isUnlocked } = useOwnedAddons();
   // The billing query refreshes the owned-add-on cache used by isUnlocked.
   useBilling();
@@ -71,43 +55,18 @@ export default function CalendarsScreen() {
     void refreshCustomCalendars();
   }, []);
 
-  // Honour the display order set in Colours & Order (per-group, so the
-  // sharing tiers stay intact while calendars sort within them).
+  // Sections and their contents both honour what the user arranged in Colors &
+  // Order — the section sequence (HOUSEHOLD → JUST ME → SHARED by default) and
+  // the calendars within each. Holiday calendars are custom records, so they
+  // sort by who can see them alongside subscriptions and hand-made calendars.
   // Locked add-on calendars leave the HOUSEHOLD group and are named on the
   // storefront row below it instead.
-  const defaults = sortByCalendarOrder(
-    CALENDARS.filter((c) => !deletedIds.includes(c.id) && isUnlocked(c.id)),
-    order
-  );
+  const { groups } = useCalendarGroups();
+
   // Locked add-ons in the store's canonical order (matches the AddOns screen).
   const lockedAddons = ADDON_CALENDAR_IDS.filter((id) => !isUnlocked(id))
     .map((id) => CALENDARS.find((c) => c.id === id))
     .filter((c): c is CalendarDef => !!c);
-  const inGroups = (...gs: ('justMe' | 'household' | 'shared')[]) =>
-    sortByCalendarOrder(customCalendars.filter((c) => gs.includes(customGroup(c))), order);
-
-  // In a single-member household the Just me / Household split carries no
-  // information — everything IS the household — so JUST ME merges into
-  // HOUSEHOLD for display. The data stays unshared: when a second member
-  // joins, unshared calendars move to a now-meaningful JUST ME group instead
-  // of being silently exposed. Unknown member count (first load) keeps the
-  // split, the safe reading.
-  const membersQ = useQuery({
-    queryKey: ['household', 'memberCount'],
-    queryFn: async () => (await householdApi.get()).data.members?.length ?? 1,
-    staleTime: 5 * 60_000,
-  });
-  const solo = membersQ.data === 1;
-
-  // Holiday calendars are custom records now, so they sort by who can see them
-  // alongside subscriptions and hand-made calendars. HOUSEHOLD leads: it holds
-  // the built-ins and is where most interaction happens (most-used content
-  // first beats the mine→ours narrative on a scrolling list).
-  const groups: { label: string; defaults: CalendarDef[]; custom: CustomCalendar[] }[] = [
-    { label: 'HOUSEHOLD', defaults, custom: solo ? inGroups('household', 'justMe') : inGroups('household') },
-    { label: 'JUST ME', defaults: [], custom: solo ? [] : inGroups('justMe') },
-    { label: 'SHARED', defaults: [], custom: inGroups('shared') },
-  ];
 
   // The storefront row names every add-on calendar (the full catalog, in store
   // order) with no price — the store screen does the selling. Once everything
@@ -118,7 +77,7 @@ export default function CalendarsScreen() {
 
   // The tappable toggle body of a row: a leading Apple-style on/off circle + name
   // (+subtitle). The whole area flips visibility; dimming signals "hidden by
-  // choice". The circle carries the calendar's colour (dimmed when hidden), so
+  // choice". The circle carries the calendar's color (dimmed when hidden), so
   // no separate accent bar is needed.
   const toggleArea = (
     id: string,
@@ -137,7 +96,7 @@ export default function CalendarsScreen() {
       accessibilityHint={on ? 'Hides its events on the calendar' : 'Shows its events on the calendar'}
     >
       {/* Apple-style on/off control: a filled check-circle when the calendar is
-          shown, an empty circle when hidden — tinted with the calendar's colour. */}
+          shown, an empty circle when hidden — tinted with the calendar's color. */}
       <Ionicons
         name={on ? 'checkmark-circle' : 'ellipse-outline'}
         size={24}
@@ -152,7 +111,7 @@ export default function CalendarsScreen() {
   );
 
   // Every row carries the edit (info) button — the one consistent path to a
-  // calendar's colour/alerts/delete. Feature-backed calendars additionally get
+  // calendar's color/alerts/delete. Feature-backed calendars additionally get
   // the Open pill to their home screen, so neither destination is buried.
   const renderDefault = (cal: CalendarDef) => {
     const on = visibility[cal.id] !== false;
@@ -235,12 +194,15 @@ export default function CalendarsScreen() {
       {groups
         // HOUSEHOLD always renders — it hosts the permanent storefront row,
         // even if every household calendar is deleted/locked.
-        .filter((g) => g.defaults.length + g.custom.length > 0 || g.label === 'HOUSEHOLD')
+        .filter((g) => g.items.length > 0 || g.key === 'household')
         .map((group) => (
-          <View key={group.label} style={styles.group}>
+          <View key={group.key} style={styles.group}>
             <Text style={styles.groupLabel}>{group.label}</Text>
-            {group.defaults.map(renderDefault)}
-            {group.custom.map(renderCustom)}
+            {/* Built-in and custom rows are one sequence in the order the user
+                arranged, so a custom calendar sits wherever they put it. */}
+            {group.items.map((item) =>
+              item.kind === 'default' ? renderDefault(item.cal) : renderCustom(item.cal)
+            )}
 
             {/* The permanent Add-ons entry: the group's closing row, where
                 locked calendars would otherwise sit. Full saturation —
@@ -248,7 +210,7 @@ export default function CalendarsScreen() {
                 It stays once everything is owned (subtitle flips to status)
                 so the entry point keeps its learned location and future
                 add-ons surface here without a new affordance. */}
-            {group.label === 'HOUSEHOLD' ? (
+            {group.key === 'household' ? (
               <TouchableOpacity
                 style={styles.storeRow}
                 activeOpacity={0.7}
@@ -277,7 +239,7 @@ export default function CalendarsScreen() {
           onPress={() => nav.navigate('CalendarColors')}
         >
           <Ionicons name="options-outline" size={20} color={colors.primary} />
-          <Text style={styles.manageText}>Calendar colours & order</Text>
+          <Text style={styles.manageText}>Calendar colors & order</Text>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </TouchableOpacity>
         <View style={styles.manageDivider} />

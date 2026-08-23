@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Keyboard, StyleProp, TextStyle, ViewStyle } from 'react-native';
 import { Text } from './Text';
 import { Ionicons } from '@expo/vector-icons';
@@ -70,35 +70,62 @@ export default function PlacesAutocomplete({
   // of this: its results live in their own scroll area above the keyboard.)
   const [focused, setFocused] = useState(false);
   const { ref: wrapRef, reveal } = useReveal();
+  // Whether tappable rows are on screen RIGHT NOW. Every reveal below reads
+  // this (not a value it closed over) because the one that matters — the
+  // keyboardDidShow listener — is registered once on focus and then fires again
+  // and again while the user types, long after its closure was created.
+  const showingRows = open && suggestions.length > 0;
+  const showingRowsRef = useRef(false);
+  showingRowsRef.current = showingRows;
+  // Animate only while there is nothing to tap. Once the dropdown is showing, a
+  // tap landing during an in-flight scroll animation is eaten as "catch the
+  // scroll" instead of pressing the row — which reads as "I have to tap the
+  // suggestion twice" (see useReveal). An instant jump leaves nothing to eat it.
+  const revealForRows = useCallback(
+    () => reveal({ animated: !showingRowsRef.current }),
+    [reveal]
+  );
   useEffect(() => {
-    if (expand || !open || suggestions.length === 0) return;
-    reveal();
-  }, [expand, open, suggestions.length, reveal]);
+    if (expand || !showingRows) return;
+    reveal({ animated: false });
+  }, [expand, showingRows, reveal]);
   useEffect(() => {
     if (expand || !focused) return;
-    reveal();
+    revealForRows();
     // Focus fires before the keyboard finishes animating in, so the measurement
-    // that matters is the one after it has actually taken its space.
-    const sub = Keyboard.addListener('keyboardDidShow', reveal);
+    // that matters is the one after it has actually taken its space. iOS also
+    // re-fires this every time the keyboard CHANGES height — the QuickType
+    // suggestion bar coming and going as the user types an airport name — so
+    // this listener keeps running with the dropdown already open, which is
+    // exactly why it can't animate then.
+    const sub = Keyboard.addListener('keyboardDidShow', () => revealForRows());
     return () => sub.remove();
-  }, [expand, focused, reveal]);
+  }, [expand, focused, revealForRows]);
 
   const query = value.trim();
+  // Generation stamp for in-flight autocomplete requests. Picking a suggestion
+  // (or clearing the field) bumps it, so a response that was already on the
+  // wire can't land afterwards and reopen the dropdown over the form — the
+  // race that made a pick look like it hadn't taken.
+  const fetchGen = useRef(0);
   useEffect(() => {
     if (justSelected.current) { justSelected.current = false; return; }
     if (!userTyped.current) return;
     if (timer.current) clearTimeout(timer.current);
-    if (query.length < 3) { setSuggestions([]); setOpen(false); return; }
+    if (query.length < 3) { fetchGen.current++; setSuggestions([]); setOpen(false); return; }
     timer.current = setTimeout(async () => {
+      const gen = ++fetchGen.current;
       setLoading(true);
       try {
         const bias = await getPlaceBias();
         const { data } = await placesApi.autocomplete(query, type, bias);
+        if (gen !== fetchGen.current) return; // superseded by a pick, a clear, or a newer query
         setSuggestions(data.predictions ?? []);
         setOpen(true);
       } catch {
-        setSuggestions([]);
+        if (gen === fetchGen.current) setSuggestions([]);
       } finally {
+        // Unconditional: a superseded request still owes the spinner an off.
         setLoading(false);
       }
     }, 350);
@@ -112,6 +139,7 @@ export default function PlacesAutocomplete({
 
   function pick(p: PlacePrediction) {
     justSelected.current = true;
+    fetchGen.current++; // orphan any request still in flight so it can't reopen the dropdown
     onChangeText(p.description);
     onSelect?.(p);
     setSuggestions([]);

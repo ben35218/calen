@@ -13,7 +13,7 @@ import { choresApi, contactsApi, Chore, Contact } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
 import { useAuth } from '../../store/auth';
-import { CenteredLoader, RoundIconButton, SkeletonList, EmptyState, IconAvatar, CardRow, Fab } from '../../components/ui';
+import { CenteredLoader, headerAddOptions, SkeletonList, EmptyState, IconAvatar, CardRow, Fab } from '../../components/ui';
 import { useOwnedAddons } from '../../lib/addons';
 import AddonLockedView from '../plan/AddonLockedView';
 import CalenChatIcon from '../../components/CalenChatIcon';
@@ -45,11 +45,7 @@ function ChoresHome() {
   const accent = useCalendarColors().colors.chores;
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <RoundIconButton icon="add" onPress={() => navigation.navigate('AddChore')} bg={accent} />
-      ),
-    });
+    navigation.setOptions(headerAddOptions(accent, () => navigation.navigate('AddChore'), 'Add chore'));
   }, [navigation, accent]);
 
   const choresQ = useQuery({

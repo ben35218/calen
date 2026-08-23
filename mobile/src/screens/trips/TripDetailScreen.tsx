@@ -1,25 +1,28 @@
-import React, { useLayoutEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Text } from '../../components/Text';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { KeyboardAwareScrollViewRef } from 'react-native-keyboard-controller';
+import { useQuery } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { loadWeatherForAddress, loadDailyClimate, geocodePlace } from '@household/weather';
-import { tripsApi, Trip, TripItem, TripStatus } from '../../api';
-import { Card, Badge, Divider, RoundIconButton, SectionHeader, SkeletonDetail, Fab } from '../../components/ui';
+import type { NativeStackNavigationProp, NativeStackHeaderItem } from '@react-navigation/native-stack';
+import { loadWeatherForAddress, loadDailyClimate, buildTripWeather, geocodePlace } from '@household/weather';
+import { tripsApi, Trip, TripItem } from '../../api';
+import { Card, Divider, Hint, RoundIconButton, SectionHeader, SkeletonDetail, glassHeaderItems } from '../../components/ui';
+import { vividOnDark } from '../../lib/color';
 import WeatherIcon from '../../components/WeatherIcon';
 import { weatherCardColors } from '../../lib/weatherTheme';
 import HourlyForecast from '../../components/HourlyForecast';
-import { tripTypeMeta, tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
+import { tripTypeMeta } from '../../lib/tripTypes';
 import { outfitSuggestion } from '../../lib/outfit';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { zonedParts, zonedTimeLabel } from '../../lib/tz';
 import TripTimeline from '../../components/TripTimeline';
-import CalenChatIcon from '../../components/CalenChatIcon';
+import AssistantButton from '../../components/AssistantButton';
 import { useAiEnabled } from '../../lib/privacyPrefs';
-import { openRecord, sealUpdate, getHDK, loadResourceKeys, currentResourceKeyVersion, sealForResource } from '../../lib/e2ee';
+import { fetchTripDetail } from '../../lib/tripData';
+import { lodgingCoveringDate, lodgingCheckins, lodgingCheckouts } from '../../lib/tripLodging';
 import { useHorizontalSwipe } from '../../lib/useHorizontalSwipe';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
 import { colors, spacing } from '../../theme';
@@ -28,6 +31,8 @@ type Nav = NativeStackNavigationProp<TripsStackParamList, 'TripDetail'>;
 type Rt = RouteProp<TripsStackParamList, 'TripDetail'>;
 
 const todayStr = new Date().toISOString().slice(0, 10);
+// Last date the 7-day destination forecast can cover (today + 6).
+const forecastHorizon = new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 10);
 
 function eachDay(startISO: string, endISO: string): string[] {
   const out: string[] = [];
@@ -44,62 +49,27 @@ export default function TripDetailScreen() {
   const navigation = useNavigation<Nav>();
   const aiEnabled = useAiEnabled();
   const accent = useCalendarColors().colors.trips;
-  const { id } = useRoute<Rt>().params;
-  const qc = useQueryClient();
+  const { id, date: focusDate, focus } = useRoute<Rt>().params;
   const [dayIndex, setDayIndex] = useState<number | null>(null); // null = grid view
   const [expandedType, setExpandedType] = useState<string | null>(null); // budget category drill-down
   const [showUncosted, setShowUncosted] = useState(false);
-  const [climateOpen, setClimateOpen] = useState(false); // typical-weather card, collapsed by default
+  const [weatherOpen, setWeatherOpen] = useState(false); // overview weather card, collapsed by default
 
-  const tripQ = useQuery({ queryKey: ['trips', id], queryFn: async () => (await tripsApi.get(id)).data });
+  // The shared decrypting fetcher (lib/tripData): everything this screen shows —
+  // the trip name in the header, each booking's title and location on the day
+  // timeline — is sealed content, so the fetched row has to be opened before it
+  // can be rendered.
+  const tripQ = useQuery({ queryKey: ['trips', id], queryFn: () => fetchTripDetail(id) });
   const budgetQ = useQuery({ queryKey: ['trips', id, 'budget'], queryFn: async () => (await tripsApi.budget(id)).data });
   // GET /trips/:id returns { trip, items, isOwner }; flatten into a single Trip-with-items.
-  const data = tripQ.data as unknown as { trip: Trip; items: TripItem[]; isOwner?: boolean } | undefined;
+  const data = tripQ.data;
   const trip = data ? { ...data.trip, items: data.items } : undefined;
   const tz = trip?.destinationTz || '';
-
-  // Status-only update. The seal rebuilds the enc blob from the fields we pass, so
-  // re-seal the current decrypted content (name/destination/notes) or the trip
-  // would lose it. Signal-parity D2: a shared trip re-seals under its TripKey.
-  const statusMut = useMutation({
-    mutationFn: async (status: TripStatus) => {
-      const dec: any = data ? await openRecord('Trip', data.trip as any) : {};
-      const content = { name: dec.name, destination: dec.destination, notes: dec.notes };
-      const shared = ((data?.trip?.sharedWithOutside?.length ?? 0) > 0) || ((data?.trip?.collaborators?.length ?? 0) > 0);
-      if (shared && getHDK()) {
-        await loadResourceKeys('trip', id).catch(() => {});
-        if (currentResourceKeyVersion(id) > 0) {
-          const sealed = await sealForResource('trip', 'Trip', id, id, content);
-          if (sealed) return tripsApi.update(id, { status, ...sealed });
-        }
-      }
-      return tripsApi.update(id, await sealUpdate('Trip', id, { status }, content));
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['trips'] }),
-    onError: (e: any) => {
-      Alert.alert('Could not update status', e?.response?.data?.error || e?.message || 'Please try again.');
-    },
-  });
-
-  const changeStatus = () => {
-    const options: TripStatus[] = ['considering', 'booked', 'completed'];
-    Alert.alert('Trip status', undefined, [
-      ...options.map((s) => ({
-        text: trip?.status === s ? `${tripStatusLabel(s)} ✓` : tripStatusLabel(s),
-        onPress: () => { if (s !== trip?.status) statusMut.mutate(s); },
-      })),
-      { text: 'Cancel', style: 'cancel' as const },
-    ]);
-  };
 
   const dayList = useMemo(() => {
     if (!trip) return [];
     let start = trip.startDate;
     let end = trip.endDate || trip.startDate;
-    if (!start && trip.candidateRanges?.length) {
-      start = trip.candidateRanges[0].start;
-      end = trip.candidateRanges[0].end;
-    }
     if (!start && trip.items?.length) {
       const ds = trip.items.map((i) => new Date(i.start).getTime());
       start = new Date(Math.min(...ds)).toISOString();
@@ -109,11 +79,75 @@ export default function TripDetailScreen() {
     return eachDay(start.slice(0, 10), (end || start).slice(0, 10));
   }, [trip]);
 
+  // A month-grid tap on a trip bar carries the tapped day, so the screen lands
+  // straight on that day's itinerary. Seeded once per param value (the day list
+  // arrives with the trip query), so the back-to-overview chevron sticks; a
+  // date outside the trip's range just leaves the overview up.
+  const focusConsumedRef = useRef<string | null>(null);
+  // The day that must open at the TOP of its scroll rather than at its first
+  // booking — the entry came from a weather surface (`focus: 'weather'`), so
+  // what was tapped was that day's forecast segment and the forecast card is
+  // the first thing on the day. Held by DATE and seeded at mount, straight off
+  // the route param: an index seeded from the focus effect loses a race the
+  // moment the trip query answers from cache (both effects then run in the
+  // mount commit, and the clearing one below still sees `dayIndex === null`
+  // and wipes the hold before the day is even on screen).
+  const topDateRef = useRef<string | null>(focus === 'weather' && focusDate ? focusDate : null);
+  useEffect(() => {
+    if (!focusDate || focusDate === focusConsumedRef.current || !dayList.length) return;
+    focusConsumedRef.current = focusDate;
+    const i = dayList.indexOf(focusDate);
+    if (i >= 0) {
+      setDayIndex(i);
+      // Re-entry with fresh params (a second weather tap on this same screen).
+      if (focus === 'weather') topDateRef.current = focusDate;
+    }
+  }, [focusDate, focus, dayList]);
+  // Once the reader pages off that day, the hold is spent — every day after it
+  // (including coming back) anchors on its itinerary like any other. Comparing
+  // dates, not indexes, so the null day (the overview, before the seed lands)
+  // can never read as "paged away".
+  useEffect(() => {
+    const cur = dayIndex != null ? dayList[dayIndex] : null;
+    if (topDateRef.current && cur && cur !== topDateRef.current) topDateRef.current = null;
+  }, [dayIndex, dayList]);
+
   // Destination weather, fetched client-direct from open-meteo (keyless) like
   // home weather in §9.1 P5b — the destination never touches our server.
   const destination = trip?.destination;
   const tripFrom = dayList[0];
   const tripTo = dayList[dayList.length - 1];
+
+  // The day itinerary's grid is a full 24 hours tall, so a day would otherwise
+  // open at midnight. The timeline reports where the day should sit (its first
+  // booking, the now-line on today, else 8 AM) and the wrapper reports where the
+  // grid starts in this scroll view; whichever lands second does the jump.
+  const dayScrollRef = useRef<KeyboardAwareScrollViewRef>(null);
+  const timelineYRef = useRef<number | null>(null);
+  const pendingOffset = useRef<number | null>(null);
+  const dayScrolledByHand = useRef(false);
+  // Re-applied while the anchor still holds — not consumed on the first try.
+  // The cards above the grid settle late (the forecast card arrives with its
+  // query, the hourly strip with its image), and each of those moves the grid
+  // down: an anchor computed against the earlier measurement lands too far and
+  // clips the top of the first booking. So the wrapper re-reports its position
+  // whenever it moves, and the day re-anchors — until the reader scrolls, at
+  // which point the position is theirs and we never touch it again.
+  const applyDayScroll = () => {
+    if (dayScrolledByHand.current) return;
+    // A weather entry owns this day's position, and holds it ACTIVELY: the
+    // forecast card arrives with its query and pushes everything under it, so
+    // "leave the scroll alone" isn't enough — each re-report re-asserts the top
+    // until the reader takes the position for themselves.
+    const cur = dayIndex != null ? dayList[dayIndex] : null;
+    if (topDateRef.current && cur && topDateRef.current === cur) {
+      requestAnimationFrame(() => dayScrollRef.current?.scrollTo({ y: 0, animated: false }));
+      return;
+    }
+    if (timelineYRef.current == null || pendingOffset.current == null) return;
+    const y = Math.max(0, timelineYRef.current + pendingOffset.current);
+    requestAnimationFrame(() => dayScrollRef.current?.scrollTo({ y, animated: false }));
+  };
 
   // Swipe left → next day, right → previous day, clamped to the trip's range.
   // Called unconditionally (hooks rule); only wired into the day-itinerary view.
@@ -121,23 +155,44 @@ export default function TripDetailScreen() {
     onSwipeLeft: () => setDayIndex((i) => Math.min((i ?? 0) + 1, dayList.length - 1)),
     onSwipeRight: () => setDayIndex((i) => Math.max((i ?? 0) - 1, 0)),
   });
-  // 7-day forecast for the destination — feeds the day itinerary view when the
-  // day is close enough to have a forecast.
+  // 7-day forecast for the destination — feeds the day itinerary view and the
+  // overview weather card. Only fetched when the trip's dates can actually
+  // intersect the forecast window (today..today+6): a far-future or finished
+  // trip can't use a forecast, so it doesn't ask for one.
   const forecastQ = useQuery({
     queryKey: ['tripWeather', destination],
     queryFn: () => loadWeatherForAddress(destination!, { geocoder: geocodePlace }),
-    enabled: !!destination,
+    enabled: !!destination && !!tripFrom && tripFrom <= forecastHorizon && tripTo >= todayStr,
     staleTime: 30 * 60 * 1000,
     retry: 1,
   });
-  // Historic per-day averages for the trip dates (past 3 years).
+  // Historic per-day averages for the trip dates (past 3 years) — the fallback
+  // for days the forecast can't reach. Skipped when the whole trip fits inside
+  // the forecast window: every day gets a real forecast, no averages needed.
   const climateQ = useQuery({
     queryKey: ['tripClimate', destination, tripFrom, tripTo],
     queryFn: () => loadDailyClimate(destination!, tripFrom, tripTo, { geocoder: geocodePlace }),
-    enabled: !!destination && !!tripFrom,
+    enabled: !!destination && !!tripFrom && !(tripFrom >= todayStr && tripTo <= forecastHorizon),
     staleTime: 24 * 60 * 60 * 1000,
     retry: 1,
   });
+  // Overview weather rows: one per trip day, the real forecast winning any date
+  // it covers, the 3-year average standing in elsewhere — each row tagged with
+  // its source so an average is never dressed as a forecast. Renders
+  // progressively: whichever query lands first paints, the other upgrades rows
+  // in place.
+  const tripWeather = useMemo(
+    () => buildTripWeather({ forecast: forecastQ.data?.forecast, climateDays: climateQ.data?.days, dates: dayList }),
+    [forecastQ.data, climateQ.data, dayList],
+  );
+  const hasForecastRows = tripWeather.some((r) => r.source === 'forecast');
+  const hasTypicalRows = tripWeather.some((r) => r.source === 'typical');
+  // A forecast for an imminent trip is packing-actionable, so the card opens
+  // itself once when one arrives; far-future averages stay folded. Closing it
+  // by hand sticks — the effect only fires when `hasForecastRows` flips on.
+  useEffect(() => {
+    if (hasForecastRows) setWeatherOpen(true);
+  }, [hasForecastRows]);
 
   // Bookings whose dates all fall outside the trip's day window.
   const outOfRangeItems = useMemo(() => {
@@ -193,12 +248,7 @@ export default function TripDetailScreen() {
 
   // A hotel covers every night from check-in through check-out date.
   const hasLodgingForDate = (dateStr: string): boolean =>
-    (trip?.items ?? []).some((it) => {
-      if (it.type !== 'hotel') return false;
-      const ci = zonedParts(it.start, tz).dateStr;
-      const co = zonedParts(it.end || it.start, tz).dateStr;
-      return dateStr >= ci && dateStr <= co;
-    });
+    lodgingCoveringDate(trip?.items ?? [], dateStr, tz).length > 0;
 
   useLayoutEffect(() => {
     const targetDate = dayIndex != null ? dayList[dayIndex] : (dayList[0] ?? undefined);
@@ -207,29 +257,6 @@ export default function TripDetailScreen() {
       headerShadowVisible: false,
       headerTintColor: '#fff',
       title: trip?.name || 'Trip',
-      headerTitle: dayIndex == null
-        ? () => (
-            <View style={styles.headerTitleRow}>
-              <View style={styles.titleSide}>
-                {trip ? (
-                  <TouchableOpacity onPress={changeStatus} hitSlop={8} disabled={statusMut.isPending}>
-                    <Badge label={tripStatusLabel(trip.status)} color={tripStatusColor(trip.status)} />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-              <View style={styles.titleGroup}>
-                {/* Invisible spacer mirrors the pencil's width+gap so the title
-                    text stays centered within the group (pencil doesn't shift it). */}
-                <View style={styles.pencilSpacer} />
-                <Text style={styles.headerTitleText} numberOfLines={1}>{trip?.name || 'Trip'}</Text>
-                <TouchableOpacity style={styles.pencilBtn} onPress={() => navigation.navigate('TripForm', { id })} hitSlop={8}>
-                  <Ionicons name="pencil" size={17} color="#fff" />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.titleSide} />
-            </View>
-          )
-        : undefined,
       headerLeft: dayIndex != null
         ? () => (
             <TouchableOpacity onPress={() => setDayIndex(null)} style={styles.headerBtn} hitSlop={8}>
@@ -237,6 +264,9 @@ export default function TripDetailScreen() {
             </TouchableOpacity>
           )
         : undefined,
+      // The trip view's header holds one action, the add-booking disc: editing
+      // the trip's own details is the ⓘ on its row in the trips list (the
+      // calendars-screen pattern), so this screen is purely the itinerary.
       headerRight: () => (
         <RoundIconButton
           icon="add"
@@ -244,8 +274,26 @@ export default function TripDetailScreen() {
           bg={accent}
         />
       ),
+      // Under glass the add is a prominent accent-filled "+" native bar-button
+      // item (same rule as headerAddOptions); the custom headerRight above
+      // backs Android/pre-26.
+      ...(glassHeaderItems
+        ? {
+            unstable_headerRightItems: (): NativeStackHeaderItem[] => [
+              {
+                type: 'button',
+                label: 'Add',
+                icon: { type: 'sfSymbol', name: 'plus' },
+                variant: 'prominent',
+                tintColor: vividOnDark(accent),
+                accessibilityLabel: 'Add booking',
+                onPress: () => navigation.navigate('TripItemForm', { tripId: id, date: targetDate }),
+              },
+            ],
+          }
+        : null),
     });
-  }, [navigation, id, trip?.name, trip?.status, dayIndex, dayList]);
+  }, [navigation, id, trip?.name, dayIndex, dayList]);
 
   if (tripQ.isLoading || !trip) {
     return (
@@ -261,22 +309,28 @@ export default function TripDetailScreen() {
   if (selectedDate) {
     const allItems = trip.items ?? [];
     // Hotels covering the selected night (check-in date through check-out date).
-    const lodgingForDay = allItems.filter((it) => {
-      if (it.type !== 'hotel') return false;
-      const ci = zonedParts(it.start, tz).dateStr;
-      const co = zonedParts(it.end || it.start, tz).dateStr;
-      return selectedDate >= ci && selectedDate <= co;
-    });
+    const lodgingForDay = lodgingCoveringDate(allItems, selectedDate, tz);
     const lodgingNote = (h: TripItem) => {
       const ci = zonedParts(h.start, tz).dateStr;
       const co = zonedParts(h.end || h.start, tz).dateStr;
-      if (selectedDate === ci) return `Check in ${zonedTimeLabel(h.start, tz)}`;
-      if (selectedDate === co) return `Check out ${zonedTimeLabel(h.end || h.start, tz)}`;
+      // An all-day hotel has no check-in/out clock to name — the day alone.
+      if (selectedDate === ci) return h.allDay ? 'Check in' : `Check in ${zonedTimeLabel(h.start, tz)}`;
+      if (selectedDate === co) return h.allDay ? 'Check out' : `Check out ${zonedTimeLabel(h.end || h.start, tz)}`;
       return 'Overnight';
     };
-    // Non-hotel bookings that land on this day (drives the timeline vs empty state).
+    // All-day (non-hotel) bookings covering this day: they have no hour to sit
+    // at on the grid, so they ride above it as banner rows, the way the
+    // night's lodging does. Hotels stay out — the lodging banner is theirs.
+    const allDayForDay = allItems.filter((it) => {
+      if (it.type === 'hotel' || !it.allDay) return false;
+      const from = zonedParts(it.start, tz).dateStr;
+      const to = zonedParts(it.end || it.start, tz).dateStr;
+      return selectedDate >= from && selectedDate <= to;
+    });
+    // Non-hotel TIMED bookings that land on this day (drives the timeline vs
+    // empty state) — all-day ones are the banner strip's, not the grid's.
     const timedItems = allItems.filter((it) => {
-      if (it.type === 'hotel') return false;
+      if (it.type === 'hotel' || it.allDay) return false;
       const d = it.details as any;
       if ((it.type === 'flight' || it.type === 'transit') && (d?.departureTz || d?.arrivalTz)) {
         if (zonedParts(it.start, d.departureTz).dateStr === selectedDate) return true;
@@ -285,6 +339,12 @@ export default function TripDetailScreen() {
       }
       return zonedParts(it.start, tz).dateStr === selectedDate;
     });
+    // A check-in/check-out block or an all-day banner means the day isn't empty either.
+    const dayIsEmpty =
+      timedItems.length === 0 &&
+      allDayForDay.length === 0 &&
+      lodgingCheckins(allItems, selectedDate, tz).length === 0 &&
+      lodgingCheckouts(allItems, selectedDate, tz).length === 0;
     return (
       <View style={styles.screen} {...daySwipe}>
         <View style={styles.dayNav}>
@@ -300,7 +360,14 @@ export default function TripDetailScreen() {
             <Ionicons name="chevron-forward" size={24} color={dayIndex === dayList.length - 1 ? colors.border : accent} />
           </TouchableOpacity>
         </View>
-        <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+        <KeyboardAwareScrollView
+          ref={dayScrollRef}
+          bottomOffset={24}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.content}
+          // The first drag hands the position to the reader for this day.
+          onScrollBeginDrag={() => { dayScrolledByHand.current = true; }}
+        >
           {(() => {
             // Destination forecast for this day, when it's within the 7-day window.
             const fc = forecastQ.data?.forecast ?? [];
@@ -332,31 +399,73 @@ export default function TripDetailScreen() {
               </Card>
             );
           })()}
+          {/* The night's lodging is a booking like any other on this day, so it
+              answers the grid's gestures: tap to read it, hold to edit. The
+              pencil stays as the visible edit affordance. */}
           {lodgingForDay.map((h) => (
-            <View key={`lodge-${h._id}`} style={styles.lodgeBanner}>
+            <TouchableOpacity
+              key={`lodge-${h._id}`}
+              style={styles.lodgeBanner}
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('TripItemDetail', { tripId: id, itemId: h._id, date: selectedDate })}
+              onLongPress={() => navigation.navigate('TripItemForm', { tripId: id, itemId: h._id, date: selectedDate })}
+            >
               <MaterialCommunityIcons name="bed" size={18} color="#6A1B9A" />
               <Text style={styles.lodgeTitle}>{h.title}</Text>
               <Text style={styles.lodgeNote}>{lodgingNote(h)}</Text>
               <TouchableOpacity onPress={() => navigation.navigate('TripItemForm', { tripId: id, itemId: h._id, date: selectedDate })}>
                 <Ionicons name="pencil" size={16} color={colors.textMuted} />
               </TouchableOpacity>
-            </View>
+            </TouchableOpacity>
           ))}
-          {timedItems.length === 0 ? (
-            lodgingForDay.length === 0 ? <Text style={styles.empty}>Nothing booked this day.</Text> : null
-          ) : (
+          {/* All-day bookings ride above the grid as the lodging does — same
+              banner, same gestures (tap to read, hold to edit) — because a
+              date-only booking has no hour for the grid to draw. */}
+          {allDayForDay.map((b) => (
+            <TouchableOpacity
+              key={`allday-${b._id}`}
+              style={styles.lodgeBanner}
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('TripItemDetail', { tripId: id, itemId: b._id, date: selectedDate })}
+              onLongPress={() => navigation.navigate('TripItemForm', { tripId: id, itemId: b._id, date: selectedDate })}
+            >
+              <MaterialCommunityIcons name={tripTypeMeta(b.type).icon as any} size={18} color={tripTypeMeta(b.type).color} />
+              <Text style={styles.lodgeTitle}>{b.title?.trim() || tripTypeMeta(b.type).label}</Text>
+              <Text style={styles.lodgeNote}>All day</Text>
+              <TouchableOpacity onPress={() => navigation.navigate('TripItemForm', { tripId: id, itemId: b._id, date: selectedDate })}>
+                <Ionicons name="pencil" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            </TouchableOpacity>
+          ))}
+          {/* The grid is always there, booked or not: an empty day is the one
+              you most need to press-and-hold on to add the first thing to it. */}
+          {dayIsEmpty ? (
+            <Hint>Nothing booked this day — press and hold a time to add a booking.</Hint>
+          ) : null}
+          <View onLayout={(e) => { timelineYRef.current = e.nativeEvent.layout.y; applyDayScroll(); }}>
             <TripTimeline
               items={trip.items ?? []}
               selectedDate={selectedDate}
               tz={tz}
+              accent={accent}
+              onOpenItem={(itemId) => navigation.navigate('TripItemDetail', { tripId: id, itemId, date: selectedDate })}
               onEditItem={(itemId) => navigation.navigate('TripItemForm', { tripId: id, itemId, date: selectedDate })}
+              onCreateAt={(prefill) => navigation.navigate('TripItemForm', { tripId: id, date: selectedDate, prefill })}
+              // Reported once per day — a new day is a new anchor, and gets to
+              // place itself even if the reader scrolled the previous one.
+              onInitialScroll={(y) => {
+                pendingOffset.current = y;
+                dayScrolledByHand.current = false;
+                applyDayScroll();
+              }}
             />
-          )}
+          </View>
         </KeyboardAwareScrollView>
         {aiEnabled && (
-          <Fab bg={accent} onPress={() => navigation.navigate('TripAssistant', { tripId: id, tripName: trip?.name })}>
-            <CalenChatIcon size={26} color="#fff" />
-          </Fab>
+          <AssistantButton
+            style={styles.assistantFab}
+            onPress={() => navigation.navigate('TripAssistant', { tripId: id, tripName: trip?.name })}
+          />
         )}
       </View>
     );
@@ -366,48 +475,75 @@ export default function TripDetailScreen() {
   return (
     <View style={styles.screen}>
       <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
-        {/* Typical weather: 3-year historical averages for the trip dates. */}
-        {climateQ.data?.days?.some((cd) => cd.avgTempMax != null) ? (
+        {/* Destination weather: the real forecast for trip days inside the
+            7-day window, 3-year averages for the rest (buildTripWeather's
+            forecast-wins merge). An average never wears a condition icon —
+            only a forecast asserts one. */}
+        {tripWeather.length ? (
           <Card style={styles.weatherCard}>
-            <TouchableOpacity style={styles.weatherHeader} onPress={() => setClimateOpen((v) => !v)} activeOpacity={0.7}>
+            <TouchableOpacity style={styles.weatherHeader} onPress={() => setWeatherOpen((v) => !v)} activeOpacity={0.7}>
               <Ionicons name="partly-sunny" size={16} color="rgba(255,255,255,0.8)" />
-              <Text style={styles.weatherHeaderText}>TYPICAL WEATHER · {trip.destination?.toUpperCase()}</Text>
-              <Ionicons name={climateOpen ? 'chevron-up' : 'chevron-down'} size={16} color="rgba(255,255,255,0.8)" />
+              <Text style={styles.weatherHeaderText}>
+                {hasForecastRows ? 'WEATHER' : 'TYPICAL WEATHER'} · {trip.destination?.toUpperCase()}
+              </Text>
+              <Ionicons name={weatherOpen ? 'chevron-up' : 'chevron-down'} size={16} color="rgba(255,255,255,0.8)" />
             </TouchableOpacity>
-            {climateOpen ? <Text style={styles.weatherCaption}>Averages for these dates over the past 3 years</Text> : null}
-            {climateOpen && climateQ.data.days.map((cd) => (
-              <View key={cd.date} style={styles.climateRow}>
-                <Text style={styles.climateDate}>
-                  {new Date(cd.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
-                </Text>
-                <View style={styles.climateTemp}>
-                  <MaterialCommunityIcons name="thermometer-high" size={14} color="#EF6C00" />
-                  <Text style={styles.climateHigh}>{cd.avgTempMax != null ? `${cd.avgTempMax}°` : '—'}</Text>
-                  <Text style={styles.climateLow}>/ {cd.avgTempMin != null ? `${cd.avgTempMin}°` : '—'}</Text>
+            {weatherOpen && !hasForecastRows ? (
+              <Text style={styles.weatherCaption}>Averages for these dates over the past 3 years</Text>
+            ) : null}
+            {weatherOpen && hasForecastRows && !hasTypicalRows ? (
+              <Text style={styles.weatherCaption}>Forecast for your trip dates</Text>
+            ) : null}
+            {weatherOpen && tripWeather.map((row, idx) => {
+              const prev = idx > 0 ? tripWeather[idx - 1] : null;
+              // A mixed card labels each source segment, so the line between
+              // prediction and average is never implicit.
+              const eyebrow = hasForecastRows && hasTypicalRows && (!prev || prev.source !== row.source)
+                ? (row.source === 'forecast' ? 'FORECAST' : 'TYPICAL · 3-YEAR AVERAGE')
+                : null;
+              const dateLabel = new Date(row.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+              return (
+                <View key={row.date}>
+                  {eyebrow ? <Text style={styles.weatherEyebrow}>{eyebrow}</Text> : null}
+                  {row.source === 'forecast' ? (
+                    <View style={styles.climateRow}>
+                      <Text style={styles.climateDate}>{dateLabel}</Text>
+                      <View style={styles.climateTemp}>
+                        <WeatherIcon code={row.day.weatherCode} size={18} />
+                        <Text style={styles.climateHigh}>{Math.round(row.day.tempMax)}°</Text>
+                        <Text style={styles.climateLow}>/ {Math.round(row.day.tempMin)}°</Text>
+                      </View>
+                      <View style={styles.climatePrecip}>
+                        <MaterialCommunityIcons
+                          name="water"
+                          size={14}
+                          color={row.day.precipProbability >= 50 ? '#9BD1FF' : row.day.precipProbability >= 20 ? '#CFE8FF' : 'rgba(255,255,255,0.5)'}
+                        />
+                        <Text style={styles.climatePrecipText}>{row.day.precipProbability > 0 ? `${row.day.precipProbability}%` : '—'}</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={styles.climateRow}>
+                      <Text style={styles.climateDate}>{dateLabel}</Text>
+                      <View style={styles.climateTemp}>
+                        <MaterialCommunityIcons name="thermometer-high" size={14} color="#EF6C00" />
+                        <Text style={styles.climateHigh}>{row.climate.avgTempMax != null ? `${row.climate.avgTempMax}°` : '—'}</Text>
+                        <Text style={styles.climateLow}>/ {row.climate.avgTempMin != null ? `${row.climate.avgTempMin}°` : '—'}</Text>
+                      </View>
+                      <View style={styles.climatePrecip}>
+                        <MaterialCommunityIcons
+                          name="water"
+                          size={14}
+                          color={(row.climate.avgPrecip ?? 0) > 5 ? '#9BD1FF' : (row.climate.avgPrecip ?? 0) > 1 ? '#CFE8FF' : 'rgba(255,255,255,0.5)'}
+                        />
+                        <Text style={styles.climatePrecipText}>{row.climate.avgPrecip != null ? `${row.climate.avgPrecip} mm` : '—'}</Text>
+                      </View>
+                    </View>
+                  )}
                 </View>
-                <View style={styles.climatePrecip}>
-                  <MaterialCommunityIcons
-                    name="water"
-                    size={14}
-                    color={(cd.avgPrecip ?? 0) > 5 ? '#9BD1FF' : (cd.avgPrecip ?? 0) > 1 ? '#CFE8FF' : 'rgba(255,255,255,0.5)'}
-                  />
-                  <Text style={styles.climatePrecipText}>{cd.avgPrecip != null ? `${cd.avgPrecip} mm` : '—'}</Text>
-                </View>
-              </View>
-            ))}
+              );
+            })}
           </Card>
-        ) : null}
-
-        {trip.status === 'considering' && trip.candidateRanges?.length ? (
-          <View style={styles.optionsWrap}>
-            <SectionHeader>Date options</SectionHeader>
-            {trip.candidateRanges.map((r, i) => (
-              <Card key={i} style={styles.optionCard}>
-                <Text style={styles.optionTitle}>{r.label || `Option ${i + 1}`}</Text>
-                <Text style={styles.itemSub}>{r.start.slice(0, 10)} – {r.end.slice(0, 10)}</Text>
-              </Card>
-            ))}
-          </View>
         ) : null}
 
         {dayList.length ? (
@@ -555,9 +691,10 @@ export default function TripDetailScreen() {
         ) : null}
       </KeyboardAwareScrollView>
       {aiEnabled && (
-        <Fab bg={accent} onPress={() => navigation.navigate('TripAssistant', { tripId: id, tripName: trip?.name })}>
-          <CalenChatIcon size={26} color="#fff" />
-        </Fab>
+        <AssistantButton
+          style={styles.assistantFab}
+          onPress={() => navigation.navigate('TripAssistant', { tripId: id, tripName: trip?.name })}
+        />
       )}
     </View>
   );
@@ -566,20 +703,10 @@ export default function TripDetailScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: 96 },
+  // Same corner the accent-filled Fab held (ui.tsx `fab` geometry); the disc
+  // itself is now the calendar's AssistantButton, which brings its own size.
+  assistantFab: { position: 'absolute', right: spacing.lg, bottom: spacing.lg },
   headerBtn: { paddingHorizontal: 5 },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
-  headerTitleText: { color: '#fff', fontSize: 17, fontWeight: '600', flexShrink: 1 },
-  // Status badge sits left; an equal-width empty slot on the right keeps the
-  // title group centered in the header.
-  titleSide: { minWidth: 49, alignItems: 'flex-start' },
-  // Title + pencil, tight together. The left spacer matches the pencil's
-  // width+gap so the title text itself stays centered within the group.
-  titleGroup: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
-  pencilSpacer: { width: 23 },
-  pencilBtn: { marginLeft: 6 },
-  optionsWrap: { marginBottom: spacing.md },
-  optionCard: { marginBottom: spacing.sm },
-  optionTitle: { fontSize: 15, fontWeight: '700', color: colors.text },
   daysGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
   dayCell: { width: 84, padding: spacing.sm, borderRadius: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
   dayCellToday: { borderWidth: 2 },
@@ -605,6 +732,7 @@ const styles = StyleSheet.create({
   // Weather cards: solid sky blue matching the weather screens.
   weatherCard: { marginBottom: spacing.md, backgroundColor: '#5089D2', borderColor: 'rgba(255,255,255,0.22)' },
   weatherRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  weatherEyebrow: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, color: 'rgba(255,255,255,0.65)', marginTop: spacing.sm, marginBottom: 2 },
   weatherTemp: { fontSize: 18, fontWeight: '700', color: '#fff' },
   weatherDesc: { fontSize: 13, color: 'rgba(255,255,255,0.85)' },
   weatherSub: { fontSize: 13, color: '#CFE8FF', fontWeight: '600' },

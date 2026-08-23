@@ -143,7 +143,7 @@ export type RootStackParamList = {
   // The read-only shell a locked (no app unlock) user with shared-calendar
   // access gets instead of the paywall. `ViewerEvent` carries the decrypted
   // event snapshot straight from the agenda list (the viewer's replica already
-  // holds it — no refetch), plus its calendar's display name/colour.
+  // holds it — no refetch), plus its calendar's display name/color.
   ViewerHome: undefined;
   ViewerEvent: { event: ViewerEventSnapshot; calendarName: string; accent: string };
   // The shell's print sheet, seeded with the month the grid was showing
@@ -176,9 +176,10 @@ export type RootStackParamList = {
   // the yearly ordinal switch (none of which `ruleToRecurrence` can store).
   // Calendar events never pass it and keep the full picker.
   EventRepeat: { rule: RepeatRule; date: string; singleDay?: boolean };
-  // The event's Location view. With `initial` (from the event form) the picked
-  // location flows back via locationDraft; with `eventId` (e.g. Call to Cancel
-  // needing a phone number) the checkmark saves straight onto the event.
+  // The shared Location view. With `initial` (from the event form, or a standard
+  // trip booking's form) the picked location flows back via locationDraft; with
+  // `eventId` (e.g. Call to Cancel needing a phone number) the checkmark saves
+  // straight onto the event.
   // `promptPhone` = arrived from the event view's Reschedule/Cancel card with no
   // business number yet, so the screen nudges the user to add one to enable calling.
   EventLocation: { eventId?: string; initial?: { location?: string; phone?: string; placeId?: string }; promptPhone?: boolean } | undefined;
@@ -263,8 +264,24 @@ export type RootStackParamList = {
   // ----- Trips -----
   Trips: undefined;
   TripForm: { id?: string };
-  TripDetail: { id: string };
-  TripItemForm: { tripId: string; itemId?: string; date?: string };
+  // `focus: 'weather'` marks an entry that came from a weather surface (the
+  // month grid's forecast segment for a trip day): the day it lands on stays
+  // scrolled to the top, so the destination's forecast card — the thing that
+  // was tapped — is what the user sees, instead of the usual jump down to the
+  // day's first booking.
+  TripDetail: { id: string; date?: string; focus?: 'weather' };
+  // `prefill` carries a long-press draft off the day itinerary's hour grid: the
+  // pressed 15-minute slot as a one-hour booking, in the trip's destination
+  // timezone (`endDate` only when that hour rolls past midnight).
+  TripItemForm: {
+    tripId: string;
+    itemId?: string;
+    date?: string;
+    prefill?: { startTime?: string; endTime?: string; endDate?: string };
+  };
+  // A booking's read view — what EventDetail is to an event. `date` is the day
+  // it was opened from, so Edit returns to that day's itinerary.
+  TripItemDetail: { tripId: string; itemId: string; date?: string };
   TripSettle: { id: string };
   TripAssistant: { tripId: string; tripName?: string };
 

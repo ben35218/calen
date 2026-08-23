@@ -235,7 +235,6 @@ export default function AccountScreen() {
     }
   }
 
-  useHeaderCheckButton(navigation, { onPress: save, loading: saving });
 
   // Discard guard on the identity form (the header-check saves it). The inline
   // email-change and delete-account flows are separate and don't feed this.
@@ -245,6 +244,7 @@ export default function AccountScreen() {
     if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
   }, [seeded, snapshot]);
   const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, { onPress: save, loading: saving, dirty });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   // ── "Use my current location" (opt-in, foreground one-shot) ────────────────

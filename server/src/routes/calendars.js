@@ -691,7 +691,7 @@ router.post('/', async (req, res) => {
 
 // The creator manages sharing, holiday config, and deletion. A housemate with
 // Full Access ('full' effective access, same household) may edit the calendar's
-// BASICS — name, colour, alertsEnabled — matching what Full Access already
+// BASICS — name, color, alertsEnabled — matching what Full Access already
 // means for its events. Sharing stays creator-only because sharing edits drive
 // invitations and CalendarKey wraps only the owner's device can perform, and
 // outside collaborators never edit the calendar record at all.

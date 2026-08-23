@@ -182,7 +182,7 @@ describe('ViewerCalendarScreen', () => {
     await waitFor(() => expect(view.getAllByText('Practice').length).toBeGreaterThan(0));
     expect(view.queryByText('My Private Thing')).toBeNull();
     expect(view.queryByText('A Chore')).toBeNull();
-    // No roster of shared calendars in the body — rows carry their colour.
+    // No roster of shared calendars in the body — rows carry their color.
     expect(view.queryByText('Soccer Season')).toBeNull();
     expect(view.queryByText('My Own')).toBeNull();
   });

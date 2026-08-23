@@ -6,6 +6,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { Text } from '../../components/Text';
+import { Ionicons } from '@expo/vector-icons';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
@@ -13,8 +14,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { tripsApi, Trip } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Badge, RoundIconButton, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
-import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
+import { Card, headerAddOptions, SectionHeader, SkeletonList, EmptyState } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { useOwnedAddons } from '../../lib/addons';
@@ -32,12 +32,6 @@ function endStr(t: Trip) {
 }
 
 function dateSummary(t: Trip) {
-  if (t.status === 'considering') {
-    const n = t.candidateRanges?.length ?? 0;
-    if (!n) return 'No dates chosen yet';
-    if (n === 1) return `${formatCalendarDate(t.candidateRanges![0].start)} – ${formatCalendarDate(t.candidateRanges![0].end)}`;
-    return `${n} date options`;
-  }
   if (t.startDate) {
     const end = t.endDate && t.endDate !== t.startDate ? ` – ${formatCalendarDate(t.endDate)}` : '';
     return `${formatCalendarDate(t.startDate)}${end}`;
@@ -72,22 +66,17 @@ function TripsHome() {
   });
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <RoundIconButton icon="add" onPress={() => navigation.navigate('TripForm', {})} bg={accent} />
-      ),
-    });
+    navigation.setOptions(headerAddOptions(accent, () => navigation.navigate('TripForm', {}), 'Add trip'));
   }, [navigation, accent]);
 
   const groups = useMemo(() => {
     const trips = tripsQ.data ?? [];
-    const considering = trips.filter((t) => t.status === 'considering');
-    const booked = trips.filter((t) => t.status === 'booked');
-    const upcoming = booked.filter((t) => !endStr(t) || endStr(t)! >= todayStr);
-    const past = trips.filter((t) => t.status === 'completed' || (t.status === 'booked' && endStr(t) && endStr(t)! < todayStr));
+    // Purely date-derived: a trip whose last day has passed is Past; everything
+    // else — including a trip with no dates yet — is Upcoming.
+    const upcoming = trips.filter((t) => !endStr(t) || endStr(t)! >= todayStr);
+    const past = trips.filter((t) => endStr(t) && endStr(t)! < todayStr);
     const byStart = (a: Trip, b: Trip) => new Date(a.startDate || 0).getTime() - new Date(b.startDate || 0).getTime();
     return [
-      { label: 'Considering', items: considering },
       { label: 'Upcoming', items: upcoming.sort(byStart) },
       { label: 'Past', items: past.sort((a, b) => byStart(b, a)) },
     ].filter((g) => g.items.length > 0);
@@ -118,19 +107,39 @@ function TripsHome() {
             <View key={g.label} style={styles.group}>
               <SectionHeader>{g.label}</SectionHeader>
               {g.items.map((t) => (
-                <TouchableOpacity key={t._id} activeOpacity={0.8} onPress={() => navigation.navigate('TripDetail', { id: t._id })}>
-                  <Card style={styles.tripCard}>
-                    <View style={[styles.bar, { backgroundColor: t.color || accent }]} />
+                // Row anatomy matches the Calendars screen: the body opens the
+                // thing (the trip's itinerary), and the trailing ⓘ edits the
+                // record's own details — so the trip view never has to carry an
+                // Edit action for the container the user just came from.
+                <Card key={t._id} style={styles.tripCard}>
+                  <TouchableOpacity
+                    style={styles.tripMain}
+                    activeOpacity={0.8}
+                    onPress={() => navigation.navigate('TripDetail', { id: t._id })}
+                    accessibilityRole="button"
+                    accessibilityLabel={t.name}
+                    accessibilityHint="Opens the trip's itinerary"
+                  >
+                    <View style={[styles.bar, { backgroundColor: accent }]} />
                     <View style={{ flex: 1, paddingLeft: spacing.md }}>
                       <View style={styles.titleRow}>
                         <Text style={styles.name}>{t.name}</Text>
-                        <Badge label={tripStatusLabel(t.status)} color={tripStatusColor(t.status)} />
                       </View>
                       {t.destination ? <Text style={styles.sub}>{t.destination}</Text> : null}
                       <Text style={styles.sub}>{dateSummary(t)}</Text>
                     </View>
-                  </Card>
-                </TouchableOpacity>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.infoBtn}
+                    activeOpacity={0.7}
+                    hitSlop={8}
+                    onPress={() => navigation.navigate('TripForm', { id: t._id })}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit ${t.name}`}
+                  >
+                    <Ionicons name="information-circle-outline" size={22} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </Card>
               ))}
             </View>
           ))
@@ -145,7 +154,9 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.md, paddingBottom: spacing.xl },
   group: { marginBottom: spacing.lg },
-  tripCard: { flexDirection: 'row', padding: 0, paddingVertical: spacing.md, paddingRight: spacing.md, overflow: 'hidden', marginBottom: spacing.sm },
+  tripCard: { flexDirection: 'row', alignItems: 'center', padding: 0, overflow: 'hidden', marginBottom: spacing.sm },
+  tripMain: { flex: 1, flexDirection: 'row', paddingVertical: spacing.md },
+  infoBtn: { padding: 6, paddingRight: spacing.md },
   bar: { width: 5, alignSelf: 'stretch' },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
   name: { fontSize: 17, fontWeight: '700', color: colors.text },

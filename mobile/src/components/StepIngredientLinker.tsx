@@ -30,7 +30,7 @@ export default function StepIngredientLinker({
   stepNumber: number;
   stepText: string;
   onChange: (lids: string[]) => void;
-  // Section/calendar accent colour for the add-chip outline + plus icon.
+  // Section/calendar accent color for the add-chip outline + plus icon.
   accent?: string;
 }) {
   const [showBrowse, setShowBrowse] = useState(false);

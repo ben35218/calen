@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, Alert, Linking, Share, Image, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Alert, Linking, Share, ActivityIndicator } from 'react-native';
 import { Text } from '../../components/Text';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,8 +14,9 @@ import { API_URL } from '../../config';
 import { getCachedToken } from '../../lib/secureToken';
 import { getHDK, openRecord } from '../../lib/e2ee';
 import { decryptDownloadedFile } from '../../lib/attachments';
-import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, IconAvatar, SkeletonDetail, Select } from '../../components/ui';
+import { Screen, ScreenTitle, SectionTitle, CardRow, Card, Button, CenteredLoader, FormError, HeaderTextButton, IconAvatar, SkeletonDetail, Select } from '../../components/ui';
 import CustomAlertSheet from '../../components/CustomAlertSheet';
+import LocationCard from '../../components/LocationCard';
 import {
   EVENT_CALENDAR_TYPES, eventWhenFromStored, eventStoredFromWhen, shiftEventWhen, occurrenceShiftDays,
   DEFAULT_DAY_ALERT_TIME, AlertAnchor,
@@ -300,30 +301,6 @@ const INVITEE_STATUS: Record<string, { icon: keyof typeof Ionicons.glyphMap; col
   pending: { icon: 'help-circle-outline', color: colors.textMuted },
 };
 
-// A location card: the Google Static Map (with a pin) as the backdrop and a
-// Street View thumbnail overlaid, mirroring Apple Calendar's look. Images come
-// from the server proxy (/places/staticmap, /places/streetview) which keeps the
-// API key server-side; each hides itself if the image is unavailable. Tapping
-// opens the address in the device's Maps app.
-function LocationCard({ location, onOpen, onUnavailable }: { location: string; onOpen: () => void; onUnavailable?: () => void }) {
-  const [mapOk, setMapOk] = useState(true);
-  const [svOk, setSvOk] = useState(true);
-  const token = getCachedToken();
-  const q = encodeURIComponent(location);
-  const mapUri = `${API_URL}/places/staticmap?token=${token}&q=${q}&w=640&h=320`;
-  const svUri = `${API_URL}/places/streetview?token=${token}&q=${q}&w=280&h=280`;
-
-  if (!mapOk) return null; // no map imagery → the address row above already shows it
-  return (
-    <TouchableOpacity activeOpacity={0.9} onPress={onOpen} style={styles.mapCard}>
-      <Image source={{ uri: mapUri }} style={styles.mapImage} onError={() => { setMapOk(false); onUnavailable?.(); }} />
-      {svOk ? (
-        <Image source={{ uri: svUri }} style={styles.streetView} onError={() => setSvOk(false)} />
-      ) : null}
-    </TouchableOpacity>
-  );
-}
-
 // A compact hour-grid card (Apple Calendar-style) that places the event as a
 // block on a few hours of timeline, so its start/end read at a glance. Timed
 // events only — an all-day event has no clock position. A multi-day timed event
@@ -498,9 +475,7 @@ export default function EventDetailScreen() {
   useEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity onPress={() => navigation.navigate('EventForm', { eventId, date })} hitSlop={12}>
-          <Text style={[styles.editBtn, { color: '#fff' }]}>Edit</Text>
-        </TouchableOpacity>
+        <HeaderTextButton title="Edit" accessibilityLabel="Edit event" onPress={() => navigation.navigate('EventForm', { eventId, date })} />
       ),
     });
   }, [navigation, eventId, date, accent]);
@@ -1112,7 +1087,6 @@ const styles = StyleSheet.create({
   statusSub: { fontSize: 13, color: colors.textMuted, marginTop: 2, lineHeight: 18 },
   statusSummary: { fontSize: 14, color: colors.text, lineHeight: 20 },
   statusActions: { gap: spacing.sm },
-  editBtn: { fontSize: 17, fontWeight: '500' },
   location: { fontSize: 16, marginTop: 6, lineHeight: 22 },
   // Wraps the date/time text, the repeat line, and the mini timeline so the gap
   // before the rows group is uniform whether or not a timeline card is present.
@@ -1157,17 +1131,6 @@ const styles = StyleSheet.create({
   inviteeRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm, marginTop: 2 },
   inviteeChip: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '46%' },
   inviteeName: { fontSize: 13, color: colors.textMuted },
-  // Location card: map backdrop + street-view thumbnail (Apple Calendar-style).
-  mapCard: {
-    height: 160, borderRadius: radius.lg, overflow: 'hidden',
-    marginTop: spacing.lg, backgroundColor: colors.surface,
-  },
-  mapImage: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' },
-  streetView: {
-    position: 'absolute', left: spacing.md, bottom: spacing.md,
-    width: 96, height: 96, borderRadius: radius.md,
-    borderWidth: 2, borderColor: '#fff',
-  },
   attIcon: { marginRight: spacing.sm },
   notes: { fontSize: 15, color: colors.text, lineHeight: 22, marginTop: spacing.xs },
   // Fixed floating "Delete Event" pill (Apple-style translucent overlay), pinned

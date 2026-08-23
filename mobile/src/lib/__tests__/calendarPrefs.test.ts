@@ -18,7 +18,7 @@ import {
 import { CALENDAR_COLORS } from '../calendar';
 import { getAllHolidayIds } from '../holidays';
 
-describe('built-in default colours', () => {
+describe('built-in default colors', () => {
   it('appointments defaults to blue (was purple pre-2026-07-29)', () => {
     expect(DEFAULT_CALENDAR_COLORS.appointments).toBe('#1976D2');
   });
@@ -339,9 +339,9 @@ describe('occasion + holiday alert prefs (account-backed)', () => {
 });
 
 // ── The calendar arrangement is ACCOUNT state ───────────────────────────────
-// Colours, order, visibility, deleted built-ins and muted alerts were written
+// Colors, order, visibility, deleted built-ins and muted alerts were written
 // only to AsyncStorage, and that cache is wiped at sign-out with the rest of
-// ACCOUNT_KEYS. Reported 2026-08-04: recolour the Chores calendar, sign out,
+// ACCOUNT_KEYS. Reported 2026-08-04: recolor the Chores calendar, sign out,
 // sign back in — and it was its default orange again, with nothing left to
 // restore it from. They ride on /settings (User.calendarPrefs) now.
 describe('calendar arrangement (account-backed)', () => {
@@ -357,6 +357,7 @@ describe('calendar arrangement (account-backed)', () => {
     return function Probe() {
       const { colors } = prefs.useCalendarColors();
       const { order } = prefs.useCalendarOrder();
+      const { groupOrder } = prefs.useCalendarGroupOrder();
       const { visibility } = prefs.useCalendarVisibility();
       const { deletedIds } = prefs.useDeletedDefaultCalendars();
       const { mutedIds } = prefs.useDefaultCalendarAlerts();
@@ -366,6 +367,7 @@ describe('calendar arrangement (account-backed)', () => {
         [
           `chores:${colors.chores}`,
           `order:${order.join(',')}`,
+          `groups:${groupOrder.join(',')}`,
           `weather:${visibility.weather !== false}`,
           `deleted:${deletedIds.join(',')}`,
           `muted:${mutedIds.join(',')}`,
@@ -395,6 +397,7 @@ describe('calendar arrangement (account-backed)', () => {
         calendarPrefs: {
           colors: { chores: '#8E24AA' },
           order: ['chores', 'activities'],
+          groupOrder: ['shared', 'household'],
           hidden: ['weather'],
           deletedDefaults: ['recipes'],
           alertsOff: ['trips'],
@@ -409,6 +412,7 @@ describe('calendar arrangement (account-backed)', () => {
     // top of every one of them.
     expect(view.getByText(/chores:#8E24AA/)).toBeTruthy();
     expect(view.getByText(/order:chores,activities/)).toBeTruthy();
+    expect(view.getByText(/groups:shared,household/)).toBeTruthy();
     expect(view.getByText(/weather:false/)).toBeTruthy();
     expect(view.getByText(/deleted:recipes/)).toBeTruthy();
     expect(view.getByText(/muted:trips/)).toBeTruthy();
@@ -436,7 +440,7 @@ describe('calendar arrangement (account-backed)', () => {
   it('seeds the account from this device when it has no arrangement yet', async () => {
     const AsyncStorage = require('@react-native-async-storage/async-storage');
     await signOutAndBackIn();
-    // A device that recoloured Chores BEFORE the arrangement was server-backed.
+    // A device that recolored Chores BEFORE the arrangement was server-backed.
     await AsyncStorage.setItem('hc_calendar_colors', JSON.stringify({ chores: '#8E24AA' }));
     settingsGetMock.mockResolvedValue({ data: {} }); // account: never configured
 
@@ -452,7 +456,7 @@ describe('calendar arrangement (account-backed)', () => {
     view.unmount();
   });
 
-  it('pushes a recolour to the account, not just to the device cache', async () => {
+  it('pushes a recolor to the account, not just to the device cache', async () => {
     const AsyncStorage = require('@react-native-async-storage/async-storage');
     await signOutAndBackIn();
     settingsGetMock.mockResolvedValue({ data: {} });
@@ -484,12 +488,45 @@ describe('calendar arrangement (account-backed)', () => {
     });
     view.unmount();
   });
+
+  // The section sequence (Colors & Order's group headers) is arrangement state
+  // like the rest: cache-only would revert it at the next sign-out.
+  it('pushes a section reorder to the account and caches it', async () => {
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    await signOutAndBackIn();
+    settingsGetMock.mockResolvedValue({ data: {} });
+
+    let setGroupOrder: (keys: any[]) => void = () => {};
+    const prefs = require('../calendarPrefs') as typeof import('../calendarPrefs');
+    function Probe() {
+      const g = prefs.useCalendarGroupOrder();
+      setGroupOrder = g.setGroupOrder;
+      return React.createElement(Text, null, `groups:${g.groupOrder.join(',')}`);
+    }
+    const view = await render(React.createElement(Probe));
+    await settle(view);
+    settingsUpdateMock.mockClear();
+
+    await act(async () => {
+      setGroupOrder(['shared', 'household', 'justMe']);
+      await flush();
+    });
+
+    expect(view.getByText('groups:shared,household,justMe')).toBeTruthy();
+    expect(settingsUpdateMock).toHaveBeenCalledWith({
+      calendarPrefs: expect.objectContaining({ groupOrder: ['shared', 'household', 'justMe'] }),
+    });
+    expect(JSON.parse(await AsyncStorage.getItem('hc_calendar_group_order'))).toEqual([
+      'shared', 'household', 'justMe',
+    ]);
+    view.unmount();
+  });
 });
 
-// ── First paint carries the user's colours ──────────────────────────────────
-// Every calendar surface resolves colours through this module and falls back to
+// ── First paint carries the user's colors ──────────────────────────────────
+// Every calendar surface resolves colors through this module and falls back to
 // the app defaults until the prefs load, so painting before they land showed
-// the grid/chips/icons in the DEFAULT colours and recoloured them a beat later
+// the grid/chips/icons in the DEFAULT colors and recolored them a beat later
 // (reported 2026-08-04). The RootNavigator holds its splash on
 // useCalendarPrefsReady, which is why what it waits for matters: the cache when
 // there is one, the account's first pass when there isn't.
@@ -520,7 +557,7 @@ describe('useCalendarPrefsReady (first-paint gate)', () => {
     settingsUpdateMock.mockClear();
   };
 
-  it('classifies a device as cached from either the colours or the calendar list', () => {
+  it('classifies a device as cached from either the colors or the calendar list', () => {
     const { arrangementCachedOnDevice } =
       require('../calendarPrefs') as typeof import('../calendarPrefs');
     expect(arrangementCachedOnDevice(null, null)).toBe(false); // fresh sign-in

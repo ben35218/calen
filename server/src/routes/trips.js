@@ -67,7 +67,7 @@ function unlinkAttachments(items) {
 
 const TRIP_FIELDS = [
   'name', 'destination', 'destinationPlaceId', 'destinationTz',
-  'status', 'candidateRanges', 'startDate', 'endDate', 'notes', 'color',
+  'startDate', 'endDate', 'notes',
   // budget/baseCurrency are managed per-family via /:id/my-budget, not here.
 ];
 
@@ -254,7 +254,6 @@ function shapeItem(item, familyId, names) {
 router.get('/', async (req, res) => {
   try {
     const filter = accessFilter(req);
-    if (req.query.status) filter.status = req.query.status;
     const trips = await Trip.find(filter).sort({ startDate: 1, createdAt: -1 }).lean();
     // The outside-share list is the owning household's business — strip it from
     // trips a collaborator only has guest access to.

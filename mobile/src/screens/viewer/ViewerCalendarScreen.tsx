@@ -323,7 +323,7 @@ export default function ViewerCalendarScreen() {
 
   // The list layer's header carries the waiting/locked note and nothing else —
   // no roster of shared calendars: each row already wears its calendar's
-  // colour, and the list is read as "what's coming up", not "whose". (In grid
+  // color, and the list is read as "what's coming up", not "whose". (In grid
   // mode the note floats above the Today pill instead.)
   const listHeader = hint ? (
     hintOpensUnlock ? (
@@ -530,7 +530,7 @@ const styles = StyleSheet.create({
   hintBannerText: { textAlign: 'center' },
 
   hint: { marginTop: spacing.md },
-  // The locked note is a link, not a caption — colour it so the tap reads.
+  // The locked note is a link, not a caption — color it so the tap reads.
   hintAction: { color: colors.primary, textDecorationLine: 'underline' },
   footer: { marginTop: spacing.xl },
 });

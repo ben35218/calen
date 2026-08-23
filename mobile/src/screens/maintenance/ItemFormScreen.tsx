@@ -487,7 +487,6 @@ export default function ItemFormScreen() {
     ]);
 
   // No save during the add wizard — only once the form itself is shown.
-  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, enabled: step === 'form' });
 
   // Discard guard: only meaningful once the form itself is shown (the wizard
   // steps carry no typed-in data to lose). Baseline is the form as it enters the
@@ -499,6 +498,7 @@ export default function ItemFormScreen() {
     if (step === 'form' && seeded && baselineRef.current === null) baselineRef.current = snapshot;
   }, [step, seeded, snapshot]);
   const dirty = step === 'form' && seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, dirty, enabled: step === 'form' });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (isEdit && itemQ.isLoading) {

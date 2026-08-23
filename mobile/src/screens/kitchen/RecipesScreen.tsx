@@ -19,7 +19,7 @@ import { deleteRecipeWithSchedules } from '../../lib/recipeDelete';
 import { openRecipe } from '../../lib/recipeNames';
 import { recipeImageUri } from '../../lib/recipePhoto';
 import * as replica from '../../lib/replica';
-import { Card, Input, Badge, Chip, RoundIconButton, SectionHeader, SkeletonList, EmptyState, SwipeableRow } from '../../components/ui';
+import { Card, Input, Badge, Chip, headerAddOptions, SectionHeader, SkeletonList, EmptyState, SwipeableRow } from '../../components/ui';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { colors, radius, spacing } from '../../theme';
@@ -49,9 +49,7 @@ export default function RecipesScreen() {
     ]);
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => <RoundIconButton icon="add" onPress={() => navigation.navigate('RecipeForm', {})} bg={accent} />,
-    });
+    navigation.setOptions(headerAddOptions(accent, () => navigation.navigate('RecipeForm', {}), 'Add recipe'));
   }, [navigation, accent]);
 
   const recipesQ = useQuery({

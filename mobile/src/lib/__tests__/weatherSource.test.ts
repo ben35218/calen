@@ -9,6 +9,9 @@ jest.mock('@household/weather', () => ({
   loadOutlookForCoords: jest.fn(),
 }));
 jest.mock('../weather', () => ({ loadForecast: jest.fn(), loadOutlookWeeks: jest.fn() }));
+jest.mock('../../api', () => ({ tripsApi: { list: jest.fn() } }));
+jest.mock('../e2ee', () => ({ openRecord: jest.fn(async (_type: string, row: unknown) => row) }));
+jest.mock('../addons', () => ({ getOwnedAddonIds: jest.fn() }));
 jest.mock('expo-location', () => ({
   requestForegroundPermissionsAsync: jest.fn(),
   getForegroundPermissionsAsync: jest.fn(),
@@ -22,10 +25,12 @@ import {
   geocodePlace, loadWeatherForCoords, loadWeatherForAddress, loadOutlookForCoords,
 } from '@household/weather';
 import { loadForecast } from '../weather';
+import { tripsApi } from '../../api';
+import { getOwnedAddonIds } from '../addons';
 import {
   getWeatherSource, setWeatherSource, sourceLabel,
   loadSourceForecast, loadSourceOutlook, loadPassiveForecast, LiveLocationError,
-  isMissingHomeAddressError,
+  isMissingHomeAddressError, applyTripForecast, loadCalendarForecast,
 } from '../weatherSource';
 
 const permMock = Location.requestForegroundPermissionsAsync as jest.Mock;
@@ -156,5 +161,96 @@ describe('loadPassiveForecast (day view / assistant)', () => {
     queryMock.mockResolvedValue({ status: 'denied' });
     (loadForecast as jest.Mock).mockRejectedValue(new Error('No home address configured'));
     await expect(loadPassiveForecast()).rejects.toThrow('No home address');
+  });
+});
+
+// ── Trip-aware calendar forecast ────────────────────────────────────────────
+
+const day = (date: string, tempMax: number) => ({
+  date, weatherCode: 0, tempMax, tempMin: 10, precipProbability: 0, precipSum: 0,
+});
+const wx = (days: ReturnType<typeof day>[]) =>
+  ({ current: {}, units: {}, forecast: days }) as any;
+
+describe('applyTripForecast', () => {
+  const base = wx([day('2026-09-01', 20), day('2026-09-02', 21), day('2026-09-03', 22)]);
+  const span = { tripId: 't1', destination: 'Tokyo, Japan', from: '2026-09-02', to: '2026-09-10' };
+
+  it('swaps days inside the trip span for the destination day, tagged with place + tripId', () => {
+    const dest = wx([day('2026-09-02', 30), day('2026-09-03', 31)]);
+    const out = applyTripForecast(base, [span], { 'Tokyo, Japan': dest });
+    expect(out.forecast.map((d) => [d.date, d.tempMax, d.place, d.tripId])).toEqual([
+      ['2026-09-01', 20, undefined, undefined],   // before the trip: home day untouched
+      ['2026-09-02', 30, 'Tokyo', 't1'],          // trip days: destination weather
+      ['2026-09-03', 31, 'Tokyo', 't1'],
+    ]);
+  });
+
+  it('keeps the home day when the destination has no forecast for that date', () => {
+    const dest = wx([day('2026-09-02', 30)]); // nothing for 09-03
+    const out = applyTripForecast(base, [span], { 'Tokyo, Japan': dest });
+    expect(out.forecast[2]).toEqual(day('2026-09-03', 22));
+  });
+
+  it('keeps every home day when the destination fetch failed (null)', () => {
+    expect(applyTripForecast(base, [span], { 'Tokyo, Japan': null })).toEqual(base);
+  });
+
+  it('no spans: returns the base untouched', () => {
+    expect(applyTripForecast(base, [], {})).toBe(base);
+  });
+});
+
+describe('loadCalendarForecast', () => {
+  const listMock = tripsApi.list as jest.Mock;
+  const ownedMock = getOwnedAddonIds as jest.Mock;
+  const base = wx([day('2026-09-01', 20), day('2026-09-02', 21)]);
+
+  beforeEach(async () => {
+    await (AsyncStorage as any).clear();
+    await setWeatherSource({ kind: 'home' }); // keep the passive path off GPS
+    (loadForecast as jest.Mock).mockReset().mockResolvedValue(base);
+    (loadWeatherForAddress as jest.Mock).mockReset();
+    listMock.mockReset();
+    ownedMock.mockReset().mockResolvedValue(new Set(['trips']));
+  });
+
+  it('overlays a dated trip that overlaps the forecast window', async () => {
+    listMock.mockResolvedValue({ data: [
+      { _id: 'trip-1', destination: 'Tokyo, Japan', startDate: '2026-09-02T00:00:00Z', endDate: '2026-09-08T00:00:00Z' },
+    ] });
+    (loadWeatherForAddress as jest.Mock).mockResolvedValue(wx([day('2026-09-02', 30)]));
+
+    const out = await loadCalendarForecast();
+    expect(loadWeatherForAddress).toHaveBeenCalledWith('Tokyo, Japan', { geocoder: geocodePlace });
+    expect(out.forecast[0].place).toBeUndefined();
+    expect(out.forecast[1]).toMatchObject({ tempMax: 30, place: 'Tokyo', tripId: 'trip-1' });
+  });
+
+  it('ignores destination-less, undated, and non-overlapping trips — no destination fetch', async () => {
+    listMock.mockResolvedValue({ data: [
+      { startDate: '2026-09-02', endDate: '2026-09-08' }, // no destination
+      { destination: 'Oslo, Norway' }, // no dates
+      { destination: 'Lima, Peru', startDate: '2026-10-01', endDate: '2026-10-05' },
+    ] });
+    expect(await loadCalendarForecast()).toEqual(base);
+    expect(loadWeatherForAddress).not.toHaveBeenCalled();
+  });
+
+  it('locked trips add-on: home forecast, and the trips list is never fetched', async () => {
+    ownedMock.mockResolvedValue(new Set());
+    expect(await loadCalendarForecast()).toEqual(base);
+    expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it('fails open to the home forecast when the trip lookup or destination fetch throws', async () => {
+    listMock.mockRejectedValue(new Error('offline'));
+    expect(await loadCalendarForecast()).toEqual(base);
+
+    listMock.mockResolvedValue({ data: [
+      { destination: 'Tokyo, Japan', startDate: '2026-09-01', endDate: '2026-09-08' },
+    ] });
+    (loadWeatherForAddress as jest.Mock).mockRejectedValue(new Error('geocode down'));
+    expect(await loadCalendarForecast()).toEqual(base);
   });
 });

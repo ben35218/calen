@@ -607,16 +607,11 @@ function assembleCalendarData({
   // Trip overlays: date ranges only (no itinerary).
   const overlaps = (s, e) => s && e && new Date(s) <= to && new Date(e) >= from;
   const tripOverlays = trips.flatMap(t => {
-    let ranges = [];
-    if (t.status === 'considering') {
-      ranges = (t.candidateRanges ?? [])
-        .filter(r => overlaps(r.start, r.end))
-        .map(r => ({ start: r.start, end: r.end, label: r.label }));
-    } else if (overlaps(t.startDate, t.endDate || t.startDate)) {
-      ranges = [{ start: t.startDate, end: t.endDate || t.startDate }];
-    }
-    if (!ranges.length) return [];
-    return [{ id: String(t._id), name: t.name, destination: t.destination, color: t.color, status: t.status, ranges }];
+    if (!overlaps(t.startDate, t.endDate || t.startDate)) return [];
+    const ranges = [{ start: t.startDate, end: t.endDate || t.startDate }];
+    // No color rides along: a trip is painted in the Trips calendar's color
+    // by whoever renders it (the client's colorOf('trips')).
+    return [{ id: String(t._id), name: t.name, destination: t.destination, ranges }];
   });
 
   return {

@@ -23,11 +23,16 @@ export function tripTypeMeta(t?: string): TripTypeMeta {
   return TRIP_TYPES.find((x) => x.value === t) || TRIP_TYPES[TRIP_TYPES.length - 1];
 }
 
-export const TRIP_PURPLE = '#5E35B1';
+// How a booking's cost is shared across the participating households. Shared by
+// the booking form (which sets it) and the booking view (which names it), so the
+// two surfaces can't disagree about what a mode is called.
+export const TRIP_SHARING_OPTIONS = [
+  { value: 'private', label: 'Just my family' },
+  { value: 'shared_separate', label: 'Shared — separate bookings' },
+  { value: 'shared_one_separate', label: 'Shared — one booking, separate bills' },
+  { value: 'shared_shared', label: 'Shared — one booking, one shared bill' },
+];
 
-export function tripStatusLabel(s: string): string {
-  return { considering: 'Considering', booked: 'Booked', completed: 'Past' }[s] ?? s;
-}
-export function tripStatusColor(s: string): string {
-  return { considering: '#FB8C00', booked: '#5E35B1', completed: '#757575' }[s] ?? '#757575';
+export function tripSharingLabel(v?: string): string {
+  return TRIP_SHARING_OPTIONS.find((o) => o.value === (v || 'private'))?.label ?? 'Just my family';
 }

@@ -15,7 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 import { WeatherData } from '../../../api';
 import { loadCalendarData } from '../../../lib/calendarData';
-import { loadPassiveForecast } from '../../../lib/weatherSource';
+import { loadCalendarForecast } from '../../../lib/weatherSource';
 import { itemsForDate, visibleDayItems, ymd } from '../../../lib/calendar';
 import { getHolidays } from '../../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../../lib/calendarPrefs';
@@ -46,7 +46,7 @@ type DaySection = {
 };
 
 // List mode: a continuous agenda grouped by day (only days with items),
-// sticky day headers with today's in the primary colour, timed events with
+// sticky day headers with today's in the primary color, timed events with
 // stacked start/end times, and muted circle rows for date-only tasks/chores.
 // The window STARTS at the anchor day — the anchor (and so Today, which
 // re-anchors) is always the top of the list, never a scroll target into
@@ -108,11 +108,12 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
     placeholderData: (prev) => prev,
   });
   // The header weather glance follows the Weather calendar's visibility
-  // toggle, like every other calendar weather surface.
+  // toggle, like every other calendar weather surface. Trip-aware: a day
+  // inside a booked trip's dates glances the destination's weather.
   const weatherOn = visibility.weather !== false;
   const weatherQ = useQuery({
     queryKey: ['weather', 'current'],
-    queryFn: () => loadPassiveForecast(),
+    queryFn: () => loadCalendarForecast(),
     enabled: weatherOn,
   });
 
@@ -241,6 +242,14 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
   const renderHeader = useCallback(({ section }: { section: DaySection }) => {
     const wx = section.wx ? (
       <View style={styles.headerWx}>
+        {/* A trip day glances the destination's weather; the airplane + place
+            name what these numbers belong to. */}
+        {section.wx.place ? (
+          <>
+            <MaterialCommunityIcons name="airplane" size={12} color={colors.textMuted} />
+            <Text style={styles.headerWxText}>{section.wx.place}</Text>
+          </>
+        ) : null}
         <WeatherIcon code={section.wx.weatherCode} size={16} />
         <Text style={styles.headerWxText}>
           {Math.round(section.wx.tempMax)}°/{Math.round(section.wx.tempMin)}°

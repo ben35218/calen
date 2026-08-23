@@ -30,8 +30,8 @@ export default function HolidaysScreen() {
 
   useEffect(() => {
     if (!cal) return;
-    // No header pencil — the Calendars view's per-row edit button is the
-    // single path to a calendar's name/colour/sharing form. The one header
+    // No header edit action — the Calendars view's per-row edit button is the
+    // single path to a calendar's name/color/sharing form. The one header
     // action is the alarm bell (same as the Occasions view): holiday alerts,
     // which are device-local, so a housemate reading a shared calendar sets
     // their own.

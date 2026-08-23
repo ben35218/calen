@@ -68,7 +68,7 @@ export default function CalendarSearchScreen() {
     }
     for (const t of data.trips ?? []) {
       const start = t.ranges?.[0]?.start;
-      out.push({ key: `trip-${t.id}`, title: t.name, subtitle: 'Trip', color: t.color || calColors.trips, icon: 'bag-suitcase', date: start ? ld(start) : '', nav: () => nav.navigate('TripDetail', { id: t.id }) });
+      out.push({ key: `trip-${t.id}`, title: t.name, subtitle: 'Trip', color: calColors.trips, icon: 'bag-suitcase', date: start ? ld(start) : '', nav: () => nav.navigate('TripDetail', { id: t.id }) });
     }
     for (const o of data.occasions ?? []) {
       out.push({ key: `occ-${o.id}`, title: occasionTitle(o), subtitle: occasionNoun(o), color: calColors.birthdays, icon: occasionIcon(o.kind), date: ld(o.date), nav: () => nav.navigate('CalendarDay', { date: ld(o.date) }) });

@@ -23,7 +23,7 @@ export interface AssistantTab {
   label: string;
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
   // Key into useCalendarColors().colors for the selected tint; 'primary' falls
-  // back to the app accent (the calendar area has no per-calendar colour).
+  // back to the app accent (the calendar area has no per-calendar color).
   accentKey: 'primary' | 'chores' | 'maintenance' | 'trips' | 'recipes';
   // Add-on that must be owned before this tab's body is usable. The tab always
   // renders in the switcher — a locked tab's body is AddonLockedView, matching

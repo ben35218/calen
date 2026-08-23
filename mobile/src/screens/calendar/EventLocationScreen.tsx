@@ -205,10 +205,6 @@ export default function EventLocationScreen() {
     }
   };
 
-  useHeaderCheckButton(navigation, {
-    onPress: commit,
-    loading: save.isPending || (!!eventId && !event),
-  });
 
   // Discard guard: prompt before leaving with unsaved edits to the place details
   // (name / address / phone / picked place). Baseline is taken once seeded.
@@ -218,6 +214,11 @@ export default function EventLocationScreen() {
     if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
   }, [seeded, snapshot]);
   const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, {
+    onPress: commit,
+    loading: save.isPending || (!!eventId && !event),
+    dirty,
+  });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (eventId && eventQ.isLoading) return <CenteredLoader />;
@@ -228,7 +229,7 @@ export default function EventLocationScreen() {
     ? `${API_URL}/places/staticmap?token=${token}&q=${encodeURIComponent(previewAddress)}&w=640&h=320`
     : null;
 
-  // The callout is tinted with the event's own calendar colour (the calendar
+  // The callout is tinted with the event's own calendar color (the calendar
   // whose Reschedule/Cancel card sent the user here), not the app primary —
   // falling back to primary until the event decrypts / for a non-event draft.
   const calType = String((event?.calendarType as string | undefined) ?? 'activities');

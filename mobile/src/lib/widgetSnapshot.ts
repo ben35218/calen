@@ -3,7 +3,7 @@
 // any calendar change (and on foreground / background sync), the app expands
 // the next WINDOW_DAYS of the calendar through the SAME pipeline the day view
 // renders with (itemsForDate → visibility filter → normalizeDay, holidays
-// included) and writes the result — titles, times, colours, nothing else — to
+// included) and writes the result — titles, times, colors, nothing else — to
 // the App Group container via modules/calen-widget.
 //
 // WINDOW_DAYS is the widget's freshness contract: the widget walks the
@@ -45,7 +45,7 @@ export const SNAPSHOT_VERSION = 1;
 // midnight — the same clipped values the day view positions blocks with — so
 // the widget formats times with zero date math of its own.
 // Data minimization: the snapshot carries ONLY what the widget draws — titles,
-// clipped times, colours, a struck flag. No ids, descriptions, locations, or
+// clipped times, colors, a struck flag. No ids, descriptions, locations, or
 // invitees ever reach the App Group file.
 export interface WidgetTimedRow {
   title: string;
@@ -166,7 +166,7 @@ export async function computeWidgetSnapshot(): Promise<WidgetSnapshot | null> {
   ]);
 
   // Holidays per date, mirroring the agenda view: visible holiday calendars
-  // only, user colour overrides winning over the calendar's own colour.
+  // only, user color overrides winning over the calendar's own color.
   const holidaysByDate: Record<string, { id: string; name: string; color: string }[]> = {};
   for (const cal of holidayCals) {
     if (visibility[cal.id] === false) continue;

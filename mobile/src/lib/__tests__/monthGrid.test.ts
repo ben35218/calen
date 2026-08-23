@@ -1,7 +1,7 @@
 // Month-block geometry: each month is its own grid, a boundary week appears in
 // both months showing only its own days, and spanning bars clip at the edge.
 
-import { clipBars, inMonth, monthBlockWeeks, weekLayout } from '../monthGrid';
+import { cellItemSpace, clipBars, fitCellChips, fitIconRow, inMonth, monthBlockWeeks, weekLayout } from '../monthGrid';
 import type { MonthWindow } from '../calendarWindow';
 import type { WeekCoreMetrics } from '../monthGrid';
 
@@ -107,7 +107,7 @@ describe('clipBars', () => {
 describe('weekLayout', () => {
   // The grid's real constants (CalendarScreen's WEEK_LAYOUT).
   const CFG = {
-    dayNumH: 26, monthLabelH: 16, barH: 17, vpad: 8,
+    dayNumH: 26, monthLabelH: 16, barH: 20, weatherH: 17, vpad: 8,
     compactWeek: 48, stackBarH: 9, minStackWeek: 60, minWeek: 96, maxWeek: 210,
   };
   const core = (over: Partial<WeekCoreMetrics> = {}): WeekCoreMetrics => ({
@@ -124,19 +124,19 @@ describe('weekLayout', () => {
     const c = core({ lanes: [0, 0, 0, 1, 0, 0, 0], itemsH: [0, 0, 0, 140, 0, 0, 0], stackN: [0, 0, 0, 4, 0, 0, 0] });
     // Compact ignores the cell entirely — uniform short rows.
     expect(weekLayout('compact', c, CFG)).toEqual({ headerH: 26, height: 48, weather: false });
-    // Stacked: header + 1 lane (17) + 4 bars (36) + vpad.
-    expect(weekLayout('stacked', c, CFG)).toEqual({ headerH: 26, height: 26 + 17 + 36 + 8, weather: false });
+    // Stacked: header + 1 lane (20) + 4 bars (36) + vpad.
+    expect(weekLayout('stacked', c, CFG)).toEqual({ headerH: 26, height: 26 + 20 + 36 + 8, weather: false });
     // Details: header + 1 lane + the 140pt stack + vpad, clamped to maxWeek.
-    expect(weekLayout('details', c, CFG)).toEqual({ headerH: 26, height: 191, weather: false });
+    expect(weekLayout('details', c, CFG)).toEqual({ headerH: 26, height: 26 + 20 + 140 + 8, weather: false });
   });
 
   it('sizes a week by its single tallest cell, not per-column maxima summed', () => {
     // The deepest bar and the tallest stack are in DIFFERENT cells: taking the
-    // week-wide max of each separately would over-allocate (17 + 40 + …).
+    // week-wide max of each separately would over-allocate (40 + 40 + …).
     const c = core({ lanes: [2, 0, 0, 0, 0, 0, 0], itemsH: [0, 40, 0, 0, 0, 0, 0] });
     expect(weekLayout('details', c, CFG).height).toBe(96); // max cell is 40 → floor wins
     const tall = core({ lanes: [2, 0, 0, 0, 0, 0, 0], itemsH: [0, 120, 0, 0, 0, 0, 0] });
-    expect(weekLayout('details', tall, CFG).height).toBe(26 + 120 + 8); // the 120 cell, not 34+120
+    expect(weekLayout('details', tall, CFG).height).toBe(26 + 120 + 8); // the 120 cell, not 40+120
   });
 
   it('reserves the month-label line on a month-start row, in every density', () => {
@@ -162,9 +162,72 @@ describe('weekLayout', () => {
     expect(weekLayout('compact', c, CFG).weather).toBe(false);
     expect(weekLayout('stacked', c, CFG).weather).toBe(true);
     expect(weekLayout('details', c, CFG).weather).toBe(true);
-    // …and the lane costs one bar of height where it shows.
+    // …and it costs its OWN height where it shows — the forecast lane carries a
+    // glyph and a 9pt temp, so it stays shorter than an event bar lane (20).
     expect(weekLayout('details', c, CFG).height - weekLayout('details', core(), CFG).height).toBe(0); // both at the floor
     const busy = (hasWeather: boolean) => core({ hasWeather, itemsH: [0, 0, 0, 120, 0, 0, 0] });
     expect(weekLayout('details', busy(true), CFG).height - weekLayout('details', busy(false), CFG).height).toBe(17);
+  });
+});
+
+// A week is sized by its busiest day but CLAMPED at maxWeek, so the busiest day
+// asks for more than it gets. The cell fits itself to the row rather than let
+// overflow:'hidden' saw the last thing in flow (the icon row) in half.
+describe('fitCellChips', () => {
+  const FIT = { moreH: 16, iconRowH: 22 };
+  const CFG = { barH: 20, vpad: 8 };
+
+  it('shows every chip when the cell has room', () => {
+    expect(fitCellChips([48, 48, 34], 3, true, 200, FIT)).toEqual({ shown: 3, more: 0 });
+  });
+
+  it('drops whole chips into "+N more" rather than clipping the icon row', () => {
+    // Three 3-line chips (144) + the overflow line + the icon row = 182, but the
+    // clamped row left 139: two chips (96) + "+N more" (16) + icons (22) = 134.
+    expect(fitCellChips([48, 48, 48], 4, true, 139, FIT)).toEqual({ shown: 2, more: 2 });
+  });
+
+  it('reserves the icon row first — a day with glyphs gives up a chip, not the glyphs', () => {
+    expect(fitCellChips([48, 48, 48], 3, false, 150, FIT)).toEqual({ shown: 3, more: 0 });
+    expect(fitCellChips([48, 48, 48], 3, true, 150, FIT)).toEqual({ shown: 2, more: 1 });
+  });
+
+  it('reserves the overflow line before the last chip it keeps', () => {
+    // 100pt fits two 48pt chips exactly — but a third chip exists, so the
+    // "+N more" line has to fit too, and only one chip can stay.
+    expect(fitCellChips([48, 48, 48], 3, false, 100, FIT)).toEqual({ shown: 1, more: 2 });
+    // …with nothing left over, both chips stay (no overflow line needed).
+    expect(fitCellChips([48, 48], 2, false, 100, FIT)).toEqual({ shown: 2, more: 0 });
+  });
+
+  it('still shows the count when not even one chip fits', () => {
+    expect(fitCellChips([48], 3, false, 20, FIT)).toEqual({ shown: 0, more: 3 });
+  });
+
+  // The icon row is reserved as ONE line, so wrapping it puts glyphs below the
+  // reserved height where the cell's overflow: 'hidden' shears them in half —
+  // the reported artifact was a row of half-drawn icons under "+1 more".
+  it('keeps the icon row to one line, dropping the glyphs that do not fit', () => {
+    const glyphs = (n: number) => Array.from({ length: n }, () => 16);
+    // A ~54pt cell (an SE) less its 2pt padding: two 16pt glyphs + a 3pt gap.
+    expect(fitIconRow(glyphs(5), 50, 3)).toBe(2);
+    expect(fitIconRow(glyphs(5), 90, 3)).toBe(4);
+    // Everything fits → nothing is dropped.
+    expect(fitIconRow(glyphs(2), 200, 3)).toBe(2);
+    // A counted chip (glyph + digits) is wider, so fewer fit beside it: two
+    // plain glyphs clear 40pt, a counted one plus a plain glyph doesn't.
+    expect(fitIconRow(glyphs(3), 40, 3)).toBe(2);
+    expect(fitIconRow([24, 16, 16], 40, 3)).toBe(1);
+    // Never negative, and never a partial glyph.
+    expect(fitIconRow(glyphs(3), 10, 3)).toBe(0);
+    expect(fitIconRow([], 50, 3)).toBe(0);
+  });
+
+  it('gives a cell only its OWN bar lanes back as item space', () => {
+    // Same row, two cells: one under two spanning bars, one under none.
+    expect(cellItemSpace(210, 26, 17, 2, CFG)).toBe(119);
+    expect(cellItemSpace(210, 26, 17, 0, CFG)).toBe(159);
+    // Never negative, however deep the lanes run.
+    expect(cellItemSpace(96, 26, 17, 4, CFG)).toBe(0);
   });
 });

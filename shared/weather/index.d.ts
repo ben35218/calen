@@ -91,5 +91,11 @@ export function loadWeatherRange(address: string, from: string, to: string): Pro
 export function buildOutlook(archiveResults: any[], opts?: { today?: Date; days?: number }): { weeks: OutlookWeek[] };
 export function loadOutlook(address: string, opts?: { today?: Date; days?: number; geocoder?: (address: string) => Promise<{ lat: number; lon: number }> }): Promise<{ weeks: OutlookWeek[] }>;
 export function loadOutlookForCoords(lat: number, lon: number, opts?: { today?: Date; days?: number }): Promise<{ weeks: OutlookWeek[] }>;
+// Trip overview weather row: real forecast where one exists, typical average elsewhere.
+export type TripWeatherRow =
+  | { date: string; source: 'forecast'; day: WeatherDay }
+  | { date: string; source: 'typical'; climate: ClimateDay };
+
+export function buildTripWeather(args: { forecast?: WeatherDay[]; climateDays?: ClimateDay[]; dates: string[] }): TripWeatherRow[];
 export function buildDailyClimate(archiveResults: any[], opts: { dates: string[] }): ClimateDay[];
 export function loadDailyClimate(address: string, from: string, to: string, opts?: { years?: number; geocoder?: (address: string) => Promise<{ lat: number; lon: number }> }): Promise<{ days: ClimateDay[] }>;

@@ -29,15 +29,15 @@ const GHOST_TINT = tintedChip(colors.primary, FILL_ALPHA);
 const GHOST_HOLD_MS = 250;
 
 // One date's absolutely-positioned event blocks inside the hour grid. Apple's
-// block look: translucent calendar-colour fill, a solid colour bar on the left
-// edge, and title / location / time range set in the calendar colour, each meta
+// block look: translucent calendar-color fill, a solid color bar on the left
+// edge, and title / location / time range set in the calendar color, each meta
 // line led by its own glyph. How many of those lines render is decided by the
 // block's height (see `blockDetail`) — a half-hour event gets its title alone
 // rather than three clipped rows.
 //
 // An event with a drive time extends UPWARD from its start: the travel band is
 // the top slice of the same container, drawn in a fainter wash with a dashed
-// left edge (the solid colour bar starts where the event does), so the time
+// left edge (the solid color bar starts where the event does), so the time
 // spent getting there is visible on the grid as time — not merely flagged.
 const DayColumn = React.memo(function DayColumn({
   date,
@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
   },
   faded: { opacity: 0.5 },
   // The lead-in: a fainter wash and a faded left bar where the event's is the
-  // full-strength calendar colour — the same colour, not yet the event.
+  // full-strength calendar color — the same color, not yet the event.
   travelBand: {
     justifyContent: 'center',
     paddingHorizontal: 5,

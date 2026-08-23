@@ -97,6 +97,9 @@ export interface WeekLayoutConfig {
   dayNumH: number;
   monthLabelH: number;
   barH: number;
+  // The forecast lane is NOT an event lane: it carries a glyph and a 9pt temp,
+  // so it keeps its own (shorter) height rather than growing with the bars.
+  weatherH: number;
   vpad: number;
   compactWeek: number;
   stackBarH: number;
@@ -129,8 +132,72 @@ export function weekLayout(
   );
   const maxCell = Math.max(0, ...perCol);
   const floor = density === 'stacked' ? cfg.minStackWeek : cfg.minWeek;
-  const height = Math.min(cfg.maxWeek, Math.max(floor, headerH + (weather ? cfg.barH : 0) + maxCell + cfg.vpad));
+  const height = Math.min(cfg.maxWeek, Math.max(floor, headerH + (weather ? cfg.weatherH : 0) + maxCell + cfg.vpad));
   return { headerH, height, weather };
+}
+
+// ── Fitting a cell's items to the row it got ──
+// A week is sized by its tallest cell but CLAMPED at maxWeek, so a very busy day
+// asks for more room than the row has. The grid does not grow to swallow it (a
+// month row that towers over its neighbours is worse than a shorter list) — the
+// cell fits itself to the space instead, and the items it drops roll into the
+// "+N more" count that was already telling the user to tap the day.
+
+export interface CellFitConfig {
+  moreH: number;     // the reserved "+N more" line
+  iconRowH: number;  // the maintenance/chore/meal/grocery/occasion glyph row
+}
+
+// The item space a cell actually has: the row's height less its header, the
+// weather lane, the cell's OWN bar lanes (a day under no span inherits none)
+// and the row's bottom padding.
+export function cellItemSpace(
+  height: number,
+  headerH: number,
+  weatherH: number,
+  lanes: number,
+  cfg: { barH: number; vpad: number },
+): number {
+  return Math.max(0, height - headerH - weatherH - lanes * cfg.barH - cfg.vpad);
+}
+
+// How many of a cell's chips fit in `avail`, and how many roll into "+N more".
+// The icon row is reserved FIRST: it is the day's summary of everything that
+// isn't an event, it is last in flow, and a half-drawn glyph row is the artifact
+// this whole pass exists to prevent. Then the tallest prefix of chips that still
+// leaves room for the overflow line wins.
+export function fitCellChips(
+  chipHeights: number[],  // slot height per chip, already capped at the chip max
+  total: number,          // the cell's FULL chip count (including the capped-off ones)
+  hasIcons: boolean,
+  avail: number,
+  cfg: CellFitConfig,
+): { shown: number; more: number } {
+  const budget = avail - (hasIcons ? cfg.iconRowH : 0);
+  for (let k = chipHeights.length; k >= 0; k--) {
+    let h = 0;
+    for (let i = 0; i < k; i++) h += chipHeights[i];
+    if (k < total) h += cfg.moreH;
+    if (h <= budget) return { shown: k, more: total - k };
+  }
+  // Not even the overflow line fits (a cell buried under bar lanes): show the
+  // count anyway — one clipped short line beats a day that looks empty.
+  return { shown: 0, more: total };
+}
+
+// How many glyphs of the icon row fit on ONE line. The row's height is reserved
+// as a single line, so a wrapped second line falls outside it and clips — the
+// row drops its tail instead (the day's tap still opens everything).
+export function fitIconRow(widths: number[], available: number, gap: number): number {
+  let used = 0;
+  let n = 0;
+  for (const w of widths) {
+    const next = used + (n ? gap : 0) + w;
+    if (next > available) break;
+    used = next;
+    n++;
+  }
+  return n;
 }
 
 // Clip spanning bars (multi-day events, trips) and the weather lane to the

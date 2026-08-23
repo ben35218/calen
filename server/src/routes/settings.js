@@ -26,7 +26,7 @@ const SHARED   = ['homeAddress', 'homeCity', 'groceryShoppingDay', 'groceryFrequ
 // two calendars whose items are computed on-device (Occasions, holidays); they
 // live here because the device cache is cleared at sign-out (see
 // User.occasionAlerts). Validated + normalized below.
-// calendarPrefs is how the user arranged their calendars (colours, order,
+// calendarPrefs is how the user arranged their calendars (colors, order,
 // hidden, deleted built-ins, muted alerts) — account state for the same reason
 // as the alert configs (see User.calendarPrefs). Validated + normalized below.
 const PERSONAL = [
@@ -63,7 +63,10 @@ function alertPrefsOut(p) {
 const CAL_ID_MAX = 128;
 const CAL_LIST_MAX = 500;
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
-const CAL_ID_LISTS = ['order', 'hidden', 'deletedDefaults', 'alertsOff'];
+// `groupOrder` holds section keys rather than calendar ids, but the same
+// shape (a short deduped list of short strings) and the same normalization
+// apply, so it rides the same lane.
+const CAL_ID_LISTS = ['order', 'groupOrder', 'hidden', 'deletedDefaults', 'alertsOff'];
 
 // Normalize one list of calendar ids: strings only, deduped, order preserved
 // (`order` is itself a sequence, so sorting would destroy it). Returns
@@ -88,7 +91,7 @@ function normalizeCalIdList(value) {
 // Only the fields PRESENT in the payload are returned, and the caller merges
 // them over what's stored — so a client that knows about fewer fields (an older
 // build, or a future one sending a single changed list) can't blank the rest.
-// An empty list or map IS a value ("nothing hidden", "no colour overrides") and
+// An empty list or map IS a value ("nothing hidden", "no color overrides") and
 // is preserved as one.
 function normalizeCalendarPrefs(value) {
   if (value === null || value === '') return null;
@@ -191,7 +194,7 @@ router.put('/', async (req, res) => {
       if (prefs === undefined) return res.status(400).json({ error: 'Invalid alert settings' });
       userUpdate[key] = prefs;
     }
-    // Calendar arrangement (colours, order, hidden, deleted built-ins, muted
+    // Calendar arrangement (colors, order, hidden, deleted built-ins, muted
     // alerts). Merged field-by-field over what's stored rather than replacing
     // the document: the payload carries only the fields the client is changing,
     // and a wholesale replace would blank the ones it left out.

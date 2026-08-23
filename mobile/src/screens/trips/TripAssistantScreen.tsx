@@ -8,8 +8,9 @@ import { useChat } from '../../hooks/useChat';
 import ChatScreen from '../chat/ChatScreen';
 import ChatHeaderButtons from '../chat/ChatHeaderButtons';
 import CreditsBanner from '../../components/CreditsBanner';
-import { tripsApi, householdApi } from '../../api';
-import { getHDK, openRecord } from '../../lib/e2ee';
+import { householdApi } from '../../api';
+import { getHDK } from '../../lib/e2ee';
+import { fetchTripDetail } from '../../lib/tripData';
 import { createAliasContext } from '../../lib/aiPayload';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import type { AssistantId } from '../chat/assistantTabs';
@@ -73,9 +74,9 @@ export default function TripAssistantScreen({
         let e2eeActive = false;
         try { e2eeActive = !!(await householdApi.get()).data.e2eeActive; } catch { /* solo/offline */ }
         if (!e2eeActive || !getHDK()) return;
-        const { data } = await tripsApi.get(tripId);
-        const trip = await openRecord('Trip', (data as any).trip);
-        const items = await Promise.all(((data as any).items || []).map((i: any) => openRecord('TripItem', i)));
+        // Shared decrypting fetcher — it also loads a shared trip's TripKey, so
+        // a collaborator's assistant sees the itinerary instead of empty rows.
+        const { trip, items } = await fetchTripDetail(tripId);
         ephemeralRef.current = { trip: aliasCtx.sanitize(trip), items: aliasCtx.sanitize(items) };
         chat.loadContext(); // refresh the summary with the decrypted records
       } catch { /* non-fatal */ }

@@ -9,7 +9,7 @@ export interface ECardDeco {
   type: 'confetti' | 'float' | 'twinkle' | 'drift';
   /** Emoji pieces for float/twinkle/drift rows. */
   pieces?: string[];
-  /** Confetti piece colours. */
+  /** Confetti piece colors. */
   colors?: string[];
 }
 
@@ -24,7 +24,7 @@ export interface ECardTemplateMeta {
   /** Cover gradient start/end. */
   g1: string;
   g2: string;
-  /** Heading colour on the cover. */
+  /** Heading color on the cover. */
   heroText: string;
   /** Display-serif heading (Georgia) instead of the system sans. */
   serif: boolean;

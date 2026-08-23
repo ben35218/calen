@@ -38,7 +38,7 @@ Type definitions:
 - equipment: chainsaw, pump, welder, pressure washer, power tools, hand tools
 - other: anything else
 
-For vehicles include relevant customFields: Year, Vehicle Type, Colour, Fuel Type, Transmission, Drive Type.
+For vehicles include relevant customFields: Year, Vehicle Type, Color, Fuel Type, Transmission, Drive Type.
 For appliances/equipment include any specs visible on labels (capacity, voltage, wattage, etc.).
 Only include fields that are clearly visible or identifiable from the photo. Always provide a name.`;
 

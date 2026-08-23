@@ -19,8 +19,8 @@ import SwiftUI
 //   • no snapshot at all (fresh install / signed out) → "Open Calen" placeholder
 //
 // Styling follows Apple's own Calendar widget: a bold weekday/day header,
-// timed events as calendar-colour-tinted chips (colour bar + title + compact
-// time range, all in the calendar colour), all-day items as ONE-LINE chips in
+// timed events as calendar-color-tinted chips (color bar + title + compact
+// time range, all in the calendar color), all-day items as ONE-LINE chips in
 // the same dress with their kind trailing ("All day", "Chore", …), and — on
 // medium/large — upcoming days under "TOMORROW" / "MONDAY, AUG 17" eyebrows.
 //
@@ -344,8 +344,8 @@ struct DateHeader: View {
     }
 }
 
-// Apple-style timed-event chip: colour-tinted rounded rect, colour bar at the
-// left, title + compact range in the calendar colour. Two lines.
+// Apple-style timed-event chip: color-tinted rounded rect, color bar at the
+// left, title + compact range in the calendar color. Two lines.
 struct TimedChip: View {
     let row: SnapshotTimedRow
     let day: Date // the day this chip belongs to (times are minutes into it)

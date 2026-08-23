@@ -5,18 +5,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp, StackActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { tripsApi, placesApi, invitationsApi, TripStatus, Trip, TripItem, FormAssistField } from '../../api';
+import { tripsApi, placesApi, invitationsApi, Trip, TripItem, FormAssistField } from '../../api';
 import { sealNew, sealUpdate, openRecord, getHDK, loadResourceKeys, currentResourceKeyVersion, sealForResource } from '../../lib/e2ee';
+import { fetchTripDetail } from '../../lib/tripData';
 
-// Encrypted trip content (dates/color stay plaintext).
+// Encrypted trip content (dates stay plaintext).
 const TRIP_ENC = (p: Record<string, unknown>) => ({ name: p.name, destination: p.destination, notes: p.notes });
-import { Button, Input, Select, Screen, SectionTitle, DateField, useHeaderCheckButton, FormError, ColorPicker, CenteredLoader } from '../../components/ui';
+import { Button, Input, Screen, SectionTitle, DateField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import FormAssist from '../../components/FormAssist';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
-import { TRIP_PURPLE } from '../../lib/tripTypes';
 import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
@@ -32,19 +32,10 @@ type ShareRecipient = { email?: string; phone?: string };
 const shareKey = (r: ShareRecipient) => r.email || r.phone || '';
 const shareLabel = (r: ShareRecipient) => r.email || r.phone || '';
 
-const STATUS_OPTIONS = [
-  { label: 'Considering', value: 'considering' },
-  { label: 'Booked', value: 'booked' },
-  { label: 'Past', value: 'completed' },
-];
-
-const COLORS = ['#5E35B1', '#1565C0', '#2E7D32', '#C62828', '#EF6C00', '#00838F', '#6A1B9A'];
-
 // Schema the AI form assistant fills. Names match the form-state keys.
 const ASSIST_FIELDS: FormAssistField[] = [
   { name: 'name', type: 'text', label: 'Trip name' },
   { name: 'destination', type: 'text', label: 'Destination (city)' },
-  { name: 'status', type: 'select', label: 'Status', options: STATUS_OPTIONS },
   { name: 'startDate', type: 'date', label: 'Start date' },
   { name: 'endDate', type: 'date', label: 'End date' },
   { name: 'notes', type: 'text', label: 'Notes' },
@@ -61,10 +52,8 @@ export default function TripFormScreen() {
     name: '',
     destination: '',
     destinationTz: '',
-    status: 'considering' as TripStatus,
     startDate: '',
     endDate: '',
-    color: TRIP_PURPLE,
     notes: '',
   });
   const [error, setError] = useState('');
@@ -101,9 +90,11 @@ export default function TripFormScreen() {
     navigation.setOptions({ title: isEdit ? 'Edit Trip' : 'New Trip' });
   }, [navigation, isEdit]);
 
+  // Shared decrypting fetcher on the shared key (lib/tripData) — a per-screen
+  // plaintext fetch here would blank the detail screen this form returns to.
   const tripQ = useQuery({
     queryKey: ['trips', id],
-    queryFn: async () => (await tripsApi.get(id!)).data,
+    queryFn: () => fetchTripDetail(id!),
     enabled: isEdit,
   });
   // Populate the form once from the first successful load. Sharing edits below
@@ -113,19 +104,17 @@ export default function TripFormScreen() {
     if (!tripQ.data || populatedRef.current) return;
     let cancelled = false;
     (async () => {
-    // GET /trips/:id returns { trip, items, isOwner }; older callers expect a flat trip.
-    const data = tripQ.data as unknown as { trip?: Trip };
-    const t = await openRecord('Trip', data.trip ?? (tripQ.data as Trip)); // decrypt content over plaintext
+    // GET /trips/:id returns { trip, items, isOwner }, already decrypted by the
+    // shared fetcher.
+    const t = tripQ.data.trip;
     if (cancelled || !t || !t.name) return;
     populatedRef.current = true;
     setForm({
       name: t.name ?? '',
       destination: t.destination ?? '',
       destinationTz: t.destinationTz ?? '',
-      status: t.status,
       startDate: t.startDate ? t.startDate.slice(0, 10) : '',
       endDate: t.endDate ? t.endDate.slice(0, 10) : '',
-      color: t.color || TRIP_PURPLE,
       notes: t.notes ?? '',
     });
     setSeeded(true);
@@ -155,8 +144,6 @@ export default function TripFormScreen() {
         name: form.name.trim(),
         destination: form.destination || undefined,
         destinationTz: form.destinationTz || undefined,
-        status: form.status,
-        color: form.color,
         notes: form.notes,
         startDate: form.startDate || undefined,
         endDate: form.endDate || undefined,
@@ -365,7 +352,6 @@ export default function TripFormScreen() {
     save.mutate();
   };
 
-  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
 
   // Discard guard: prompt before leaving with unsaved edits to the trip fields
   // (or, on a new trip, pending share invites — edits to an existing trip's
@@ -377,6 +363,7 @@ export default function TripFormScreen() {
     if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
   }, [seeded, snapshot]);
   const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, dirty });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   if (isEdit && tripQ.isLoading) {
@@ -390,7 +377,7 @@ export default function TripFormScreen() {
       <FormAssist
         accent={accent}
         formType="trip"
-        placeholder={'Describe the trip, e.g. "10-day trip to Rome in May, booked"'}
+        placeholder={'Describe the trip, e.g. "10-day trip to Rome in May"'}
         fields={ASSIST_FIELDS}
         current={{ ...form }}
         onApply={applyPatch}
@@ -476,20 +463,6 @@ export default function TripFormScreen() {
         </View>
       </GroupCard>
 
-      <GroupCard>
-        <Select
-          inlineLabel="Status"
-          value={form.status}
-          options={STATUS_OPTIONS}
-          onChange={(v) => set({ status: (v as TripStatus) ?? 'considering' })}
-          highlight={assist.changed.has('status')}
-          containerStyle={fs.dtFieldWrap}
-          fieldStyle={fs.rowField}
-          valueStyle={fs.dtValue}
-          chevronIcon="chevron-expand"
-        />
-      </GroupCard>
-
       {isOwner ? (
         <>
           <SectionTitle>Share this trip</SectionTitle>
@@ -561,11 +534,6 @@ export default function TripFormScreen() {
         </>
       ) : null}
 
-      <SectionTitle>Color</SectionTitle>
-      <GroupCard style={styles.swatchCard}>
-        <ColorPicker value={form.color} onChange={(c) => set({ color: c })} options={COLORS} />
-      </GroupCard>
-
       <SectionTitle>Notes</SectionTitle>
       <Input
         value={form.notes}
@@ -593,7 +561,6 @@ export default function TripFormScreen() {
 }
 
 const styles = StyleSheet.create({
-  swatchCard: { padding: 14 },
   shareCard: { padding: 14, gap: spacing.sm },
   emailAddRow: { position: 'relative', justifyContent: 'center' },
   emailInput: { marginBottom: 0 },

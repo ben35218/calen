@@ -5,10 +5,11 @@ import CalenGlyph from './CalenGlyph';
 import { colors } from '../theme';
 import { useCalenFabIntro } from '../lib/calenFabIntro';
 
-// The standalone Calen FAB — the calendar's one primary floating action, alone
-// in the bottom-right corner. Deliberately larger (56pt vs the 44pt pills) so
-// the AI entry point reads as the screen's primary action rather than one
-// utility icon among peers.
+// The standalone Calen FAB — the one primary floating action of the screens
+// that lead with Calen (the calendar month/day canvases and the trip view),
+// alone in the bottom-right corner. Deliberately larger (56pt vs the 44pt
+// pills) so the AI entry point reads as the screen's primary action rather than
+// one utility icon among peers.
 // The calendar canvas is pure black, where a black drop shadow can't separate
 // anything — so the disc holds its edge with the elevated fill + light rim
 // (colors.surfaceElevated/outline) and keeps the shadow only for the screens
@@ -109,7 +110,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 6,
   },
   // The discovery ripple: the disc's own footprint, scaled up + faded out
-  // behind it. Primary blue to match the glyph — this is Calen's colour, and a
+  // behind it. Primary blue to match the glyph — this is Calen's color, and a
   // tint this soft (peaks at 0.4 opacity) reads as a glow, not a second button.
   halo: {
     position: 'absolute', top: 0, left: 0, width: 56, height: 56, borderRadius: 28,

@@ -39,7 +39,7 @@ type OutsideEntry = { email?: string; phone?: string; access: CalendarAccess };
 const outsideKey = (o: { email?: string; phone?: string }) => o.email || o.phone || '';
 
 // Tappable "View Only / Full Access" pill next to a shared contact. Tapping
-// toggles the level; tinted with the calendar colour when Full Access.
+// toggles the level; tinted with the calendar color when Full Access.
 function AccessPill({
   access,
   color,
@@ -69,10 +69,10 @@ function AccessPill({
 const flip = (a: CalendarAccess): CalendarAccess => (a === 'full' ? 'view' : 'full');
 
 // Create (or edit, when `calendarId` is passed) a user-defined calendar:
-// name, who it's shared with (each contact View Only or Full Access), colour,
+// name, who it's shared with (each contact View Only or Full Access), color,
 // and whether its events may display alerts. Also edits the built-in default
 // calendars (`calendarId` = a DELETABLE_DEFAULT_IDS entry): fixed name,
-// household-only sharing, with colour/alerts/delete backed by device prefs.
+// household-only sharing, with color/alerts/delete backed by device prefs.
 export default function AddCalendarScreen() {
   const nav = useNavigation<NativeStackNavigationProp<CalendarStackParamList>>();
   const route = useRoute<RouteProp<CalendarStackParamList, 'AddCalendar'>>();
@@ -92,7 +92,7 @@ export default function AddCalendarScreen() {
   const existing = calendarId && !isDefault ? calendars.find((c) => c.id === calendarId) : undefined;
 
   // A holiday calendar: creating one (holidayCountry) or editing an existing
-  // one. Read-only events, so it shares custom calendars' sharing/colour but
+  // one. Read-only events, so it shares custom calendars' sharing/color but
   // skips the Outside section (like subscriptions).
   const isHoliday = !!holidayCountry || !!existing?.holiday;
 
@@ -152,7 +152,7 @@ export default function AddCalendarScreen() {
   const others = (household?.members ?? []).filter((m) => m._id !== user?._id);
 
   // A calendar shared TO this user: sharing and deletion stay the creator's,
-  // but a housemate holding Full Access edits the BASICS — name, colour,
+  // but a housemate holding Full Access edits the BASICS — name, color,
   // alerts — matching what Full Access already means for the events (the
   // server enforces the same split). Outside collaborators (owner not in this
   // household) are always read-only here.
@@ -204,7 +204,7 @@ export default function AddCalendarScreen() {
   const save = async () => {
     const trimmed = name.trim();
     if (!trimmed || saving) return;
-    // Default calendars save to device prefs (colour override + alerts mute).
+    // Default calendars save to device prefs (color override + alerts mute).
     if (isDefault && defaultDef) {
       if (color.toLowerCase() !== (calColors[defaultDef.id] ?? defaultDef.color).toLowerCase()) {
         setDefaultColor(defaultDef.id, color);
@@ -255,7 +255,6 @@ export default function AddCalendarScreen() {
       setSaving(false);
     }
   };
-  useHeaderCheckButton(nav, { onPress: save, disabled: !name.trim(), loading: saving, enabled: canEditBasics });
 
   // Discard guard. Create + default calendars are ready on first render (their
   // fields seed synchronously); a custom-calendar edit loads async, gated by the
@@ -267,6 +266,7 @@ export default function AddCalendarScreen() {
     if (formReady && baselineRef.current === null) baselineRef.current = snapshot;
   }, [formReady, snapshot]);
   const dirty = canEditBasics && formReady && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(nav, { onPress: save, disabled: !name.trim(), loading: saving, dirty, enabled: canEditBasics });
   const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   const toggleMember = (id: string) =>
@@ -409,7 +409,7 @@ export default function AddCalendarScreen() {
     return `Last refreshed ${when}`;
   };
 
-  // The feature view each default calendar's header pencil lives on. After
+  // The feature home view behind each default calendar's edit form. After
   // deleting that calendar, going back would land on the view of the calendar
   // that no longer exists — pop past it instead.
   const FEATURE_HOME: Record<string, string> = {
@@ -499,7 +499,7 @@ export default function AddCalendarScreen() {
       {readOnly ? (
         <Text style={styles.readOnlyNote}>
           {canEditBasics
-            ? 'Shared with you by a housemate — you can change its name, colour, and alerts. Sharing is managed by its owner.'
+            ? 'Shared with you by a housemate — you can change its name, color, and alerts. Sharing is managed by its owner.'
             : ownerIsHousemate
             ? "Shared with you by a housemate — only the calendar's owner can make changes."
             : "Shared with you — only the calendar's owner can make changes."}
@@ -516,7 +516,7 @@ export default function AddCalendarScreen() {
           // The name is the only thing typed here (everything below is tapped),
           // so Done means "finished typing" — dismiss explicitly rather than
           // leaning on the platform's blur-on-submit default, which leaves the
-          // keyboard up over the sharing/colour rows.
+          // keyboard up over the sharing/color rows.
           onSubmitEditing={() => Keyboard.dismiss()}
           editable={canEditBasics && !isDefault}
           containerStyle={fs.headField}
@@ -742,7 +742,7 @@ export default function AddCalendarScreen() {
         </>
       )}
 
-      <SectionTitle>Colour</SectionTitle>
+      <SectionTitle>Color</SectionTitle>
       <GroupCard style={styles.paletteCard}>
         <ColorPicker value={color} onChange={setColor} options={COLOR_PRESETS} disabled={!canEditBasics} />
       </GroupCard>

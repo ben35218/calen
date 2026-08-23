@@ -4,9 +4,13 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 // computeReminders is pure; stub the data loader so importing it doesn't pull in
 // the native crypto adapter (react-native-libsodium) via lib/calendarData.
 jest.mock('../calendarData', () => ({ loadCalendarData: jest.fn() }));
+// Same reason for the booking-alert loader (it reaches e2ee via lib/tripData);
+// computeReminders takes its output as a plain argument below.
+jest.mock('../tripAlerts', () => ({ loadBookingAlerts: jest.fn(async () => []) }));
 
 import type { CalendarData, CalendarOccasion } from '../../api';
-import { computeReminders, durationPhrase, timedEventBody, dayLeadPhrase } from '../notifications';
+import { computeReminders, durationPhrase, timedEventBody, dayLeadPhrase, bookingAlertBody } from '../notifications';
+import type { BookingAlert } from '../tripAlerts';
 
 // yyyy-mm-dd for `days` from local midnight today.
 function dayStr(days: number): string {
@@ -369,5 +373,78 @@ describe('reminder lead-time wording', () => {
       prefs: { offsets: [0, 7], time: '09:00' }, items: [{ calendarId: 'hol-ca', date: dayStr(10), name: 'Canada Day' }],
     });
     expect(holidays.map((r) => r.body).sort()).toEqual(['1 week', 'Today']);
+  });
+});
+
+describe('computeReminders — trip bookings', () => {
+  const booking = (over: Partial<BookingAlert> = {}): BookingAlert => ({
+    _id: 'b1', tripId: 't1', type: 'flight', title: 'AC123 to Paris',
+    start: new Date(Date.now() + 3 * 3600_000).toISOString(),
+    reminderMinutes: 120, alert2Minutes: null, ...over,
+  });
+  const compute = (bookings: BookingAlert[], muted = new Set<string>()) =>
+    computeReminders(baseData([]), muted, { offsets: [], time: '12:00' }, null, undefined, bookings);
+
+  it('counts back from the booking start and words the body by type', () => {
+    const reminders = compute([booking()]);
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].title).toBe('AC123 to Paris');
+    expect(reminders[0].body).toBe('Departs in 2 hours');
+    // 120 minutes before a start 3 hours out → fires an hour from now.
+    const lead = reminders[0].at.getTime() - Date.now();
+    expect(Math.round(lead / 60000)).toBe(60);
+  });
+
+  it('schedules both slots, each with its own lead', () => {
+    const bodies = compute([booking({ alert2Minutes: 30 })]).map((r) => r.body).sort();
+    expect(bodies).toEqual(['Departs in 2 hours', 'Departs in 30 minutes']);
+  });
+
+  it('is suppressed when the Trips calendar is muted', () => {
+    expect(compute([booking()], new Set(['trips']))).toHaveLength(0);
+  });
+
+  it('drops alerts already in the past, keeps the future slot', () => {
+    const soon = booking({ start: new Date(Date.now() + 3600_000).toISOString(), reminderMinutes: 120, alert2Minutes: 15 });
+    const bodies = compute([soon]).map((r) => r.body);
+    expect(bodies).toEqual(['Departs in 15 minutes']);
+  });
+
+  it('names an undecrypted booking by its type instead of firing blank', () => {
+    const reminders = compute([booking({ title: undefined, type: 'hotel', reminderMinutes: 60 })]);
+    expect(reminders[0].title).toBe('Hotel');
+    expect(reminders[0].body).toBe('Check-in in 1 hour');
+  });
+
+  // An all-day booking's alerts anchor at the day-alert hour on its own
+  // destination-local date (the loader-resolved `startDate`), not at the
+  // stored midnight instant — and their lead phrase is day-based.
+  it('anchors an all-day booking at the day-alert hour on its startDate', () => {
+    const day = new Date(Date.now() + 3 * 86400_000);
+    const dateStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    const allDay = booking({
+      type: 'activity', allDay: true, startDate: dateStr,
+      // A midnight instant in a zone the reader isn't in — must not decide the day.
+      start: `${dateStr}T04:00:00.000Z`,
+      reminderMinutes: 1440, alert2Minutes: 0,
+    });
+    const reminders = computeReminders(baseData([]), undefined, { offsets: [], time: '12:00' }, '08:30', undefined, [allDay]);
+    expect(reminders.map((r) => r.body).sort()).toEqual(['Today', 'Tomorrow']);
+    const onDay = reminders.find((r) => r.body === 'Today')!;
+    // Fires at the day-alert hour, local, on the booking's own date.
+    expect(onDay.at.getHours()).toBe(8);
+    expect(onDay.at.getMinutes()).toBe(30);
+    expect(onDay.at.getDate()).toBe(day.getDate());
+  });
+});
+
+describe('bookingAlertBody', () => {
+  it('words each booking type at and before its anchor', () => {
+    expect(bookingAlertBody('flight', 0)).toBe('Departing now');
+    expect(bookingAlertBody('transit', 45)).toBe('Departs in 45 minutes');
+    expect(bookingAlertBody('hotel', 0)).toBe('Check-in time');
+    expect(bookingAlertBody('hotel', 1440)).toBe('Check-in in 1 day');
+    expect(bookingAlertBody('restaurant', 15)).toBe('Starts in 15 minutes');
+    expect(bookingAlertBody(undefined, 0)).toBe('Starting now');
   });
 });

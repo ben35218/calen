@@ -160,7 +160,7 @@ export default function EventFormScreen() {
   const { eventId, date, prefill } = useRoute<Rt>().params || {};
   const isEdit = !!eventId;
   const qc = useQueryClient();
-  // The save check is tinted with the selected calendar's colour (respects
+  // The save check is tinted with the selected calendar's color (respects
   // user overrides).
   const cal = useCalendarColors().colors;
   // Built-in event calendars plus the user's own (Calendars → Add Calendar).
@@ -1378,17 +1378,10 @@ export default function EventFormScreen() {
     promptEventDelete(decryptedRef.current, date, (perform) => del.mutate(perform));
   };
 
-  // The active calendar's colour, tinting this area's accents (save check, the
+  // The active calendar's color, tinting this area's accents (save check, the
   // Add-attachment row, spinners) per the app's section-accent convention.
   const accent = cal[form.calendarType] || customCalendars.find((c) => c.id === form.calendarType)?.color || colors.primary;
 
-  useHeaderCheckButton(navigation, {
-    onPress: onSave,
-    loading: save.isPending,
-    color: accent,
-    // Guests and calendar collaborators have nothing to save — read-only view below.
-    enabled: !readOnlyView,
-  });
 
   // Snapshot the clean baseline once the form is initialized (immediately for a
   // new event; after the edit seed sets `seeded`). Captured before the prefill
@@ -1416,6 +1409,14 @@ export default function EventFormScreen() {
     ((baselineRef.current !== null && JSON.stringify(form) !== baselineRef.current) ||
       stagedInviteeWork ||
       (!isEdit && queuedAttachments.length > 0));
+  useHeaderCheckButton(navigation, {
+    onPress: onSave,
+    loading: save.isPending,
+    color: accent,
+    dirty,
+    // Guests and calendar collaborators have nothing to save — read-only view below.
+    enabled: !readOnlyView,
+  });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
   // `onSave` is declared above this line but only ever runs from a tap, by which
   // point the ref holds the current render's value. It reads dirtiness to decide

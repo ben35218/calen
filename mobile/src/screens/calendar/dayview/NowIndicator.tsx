@@ -4,9 +4,9 @@ import { Text } from '../../../components/Text';
 import { colors } from '../../../theme';
 import { GUTTER, PX_PER_MIN, nowBadgeLabel, nowMinutes } from './dayViewLayout';
 
-// The current-time line (app primary colour), rendered inside the hour grid's
+// The current-time line (app primary color), rendered inside the hour grid's
 // scroll content when today is visible. Isolated so its minute tick
-// re-renders only this leaf, never the grid. Apple's treatment, recoloured to
+// re-renders only this leaf, never the grid. Apple's treatment, recolored to
 // the app accent: a time badge in the gutter, a dot + solid line across
 // today's column, and a dimmer line across the rest of the row (visible in
 // multi-day).

@@ -25,7 +25,7 @@ import { colors, spacing, radius } from '../../theme';
 
 const BLUE = '#0288D1';
 
-// Temperature → bar colour (Apple's cold-cyan → green → yellow → orange → red ramp).
+// Temperature → bar color (Apple's cold-cyan → green → yellow → orange → red ramp).
 function tempColor(t: number): string {
   if (t <= 0) return '#7FB8E8';
   if (t <= 8) return '#5FC3D8';
@@ -84,11 +84,11 @@ export default function WeatherScreen() {
     queryFn: () => loadSourceOutlook(source!),
   });
 
-  // Travel-aware: a booked trip whose dates span today puts a destination
-  // forecast card under the home forecast. Fetched client-direct from
-  // open-meteo like the trip detail screen — the destination never touches
-  // our server. Silent (no card) when there is no active trip, the trips
-  // add-on is locked, or the lookup fails.
+  // Travel-aware: a trip whose dates span today puts a destination forecast
+  // card under the home forecast. Fetched client-direct from open-meteo like
+  // the trip detail screen — the destination never touches our server. Silent
+  // (no card) when there is no active trip, the trips add-on is locked, or
+  // the lookup fails.
   const activeTripQ = useQuery({
     queryKey: ['weather', 'activeTrip'],
     queryFn: async (): Promise<Trip | null> => {
@@ -96,7 +96,7 @@ export default function WeatherScreen() {
       const now = new Date().toISOString().slice(0, 10);
       const rows = await Promise.all((await tripsApi.list()).data.map((t) => openRecord('Trip', t)));
       return rows.find((t) =>
-        t.status === 'booked' && t.destination && t.startDate && t.endDate &&
+        t.destination && t.startDate && t.endDate &&
         String(t.startDate).slice(0, 10) <= now && now <= String(t.endDate).slice(0, 10),
       ) ?? null;
     },

@@ -903,10 +903,13 @@ export interface AlertPrefs {
 // user never touched (or one added later, on any device) picks up the defaults.
 // Mirrors lib/calendarPrefs' local state.
 export interface CalendarPrefsPayload {
-  // calendar id → hex colour, for calendars the user recoloured.
+  // calendar id → hex color, for calendars the user recolored.
   colors?: Record<string, string>;
   // Display order as calendar ids; ids not listed sort after these.
   order?: string[];
+  // Display order of the audience sections the calendar lists group by
+  // ('household' | 'justMe' | 'shared'); keys not listed sort after these.
+  groupOrder?: string[];
   // Calendars toggled off in the Calendars view (visible is the default).
   hidden?: string[];
   // Built-in calendars the user deleted (restorable via Add Calendar).
@@ -938,7 +941,7 @@ export interface Settings {
   holidayAlerts?: AlertPrefs | null;
   // How the user arranged their calendars. An ACCOUNT setting for the same
   // reason as the alert configs above — the device cache is wiped at sign-out,
-  // so without this every colour, reorder, hide and delete was lost on the next
+  // so without this every color, reorder, hide and delete was lost on the next
   // sign-in. null = never configured (this device's arrangement stands and
   // seeds the account); a field ABSENT within it means the same for that field,
   // while an empty value means the user cleared it.
@@ -1415,7 +1418,6 @@ export const placesApi = {
 
 // ----- Trips ------------------------------------------------------------------
 
-export type TripStatus = 'considering' | 'booked' | 'completed';
 export type TripItemType =
   | 'flight' | 'hotel' | 'car-rental' | 'restaurant' | 'activity' | 'transit' | 'other';
 
@@ -1425,6 +1427,10 @@ export interface TripItem {
   title: string;
   start: string;
   end?: string;
+  // Date-only booking (the event form's All day). Sealed content beside the
+  // title — the stored start/end stay real instants (midnight, destination tz)
+  // so the plaintext routing columns never change shape.
+  allDay?: boolean;
   location?: string;
   details?: Record<string, unknown>;
   cost?: number | null;
@@ -1435,6 +1441,10 @@ export interface TripItem {
   notes?: string;
   url?: string;
   phone?: string;
+  // Sealed alert pair (minutes before `start`) — inside `enc` beside the title,
+  // present only after openRecord. Scheduling is on-device (lib/notifications).
+  reminderMinutes?: number | null;
+  alert2Minutes?: number | null;
   placeId?: string;
   address?: string;
   householdId?: string;
@@ -1460,24 +1470,14 @@ export interface TripItemAttachment {
   keyVersion?: number;
 }
 
-export interface CandidateRange {
-  start: string;
-  end: string;
-  label?: string;
-  note?: string;
-}
-
 export interface Trip {
   _id: string;
   name: string;
   destination?: string;
   destinationTz?: string;
-  status: TripStatus;
   startDate?: string;
   endDate?: string;
-  color?: string;
   notes?: string;
-  candidateRanges?: CandidateRange[];
   items?: TripItem[];
   collaborators?: { _id: string; firstName?: string; lastName?: string; email?: string }[];
   // Outside-household addresses (email or phone) the owner shared this trip with
@@ -1713,11 +1713,12 @@ export interface CalendarRecipeSchedule {
   recipeId?: { _id: string; title?: string } | string;
 }
 
+// Trips carry no color of their own — every trip surface paints with the Trips
+// calendar's color (`colorOf('trips')`), like an event paints with its own
+// calendar's.
 export interface CalendarTripOverlay {
   id: string;
   name: string;
-  color?: string;
-  status?: string;
   ranges: { start: string; end: string; label?: string }[];
 }
 
@@ -2201,7 +2202,10 @@ export interface WeatherHour {
 export interface WeatherData {
   current: { temperature: number; weatherCode: number; description: string; humidity: number; windSpeed: number; precipitation: number };
   units: { temperature: string; wind: string; precipitation: string };
-  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean; sunrise?: string; sunset?: string; hours?: WeatherHour[] }[];
+  // `place`/`tripId` mark a day whose weather is a booked trip's destination,
+  // not the chosen home/live source (set by
+  // lib/weatherSource.loadCalendarForecast); tripId opens that trip.
+  forecast: { date: string; weatherCode: number; tempMax: number; tempMin: number; precipProbability: number; precipSum: number; goodWeather?: boolean; sunrise?: string; sunset?: string; hours?: WeatherHour[]; place?: string; tripId?: string }[];
 }
 
 export interface OutlookWeek {

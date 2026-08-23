@@ -6,7 +6,7 @@ for the same shared primitive instead of re-rolling one. All primitives live in
 [src/theme.ts](src/theme.ts); the grouped-form styles in
 [src/components/formStyles.tsx](src/components/formStyles.tsx).
 
-Never hard-code colours, spacing, or radii — use `colors`, `spacing`, `radius`
+Never hard-code colors, spacing, or radii — use `colors`, `spacing`, `radius`
 from the theme.
 
 ## Text — never import it from react-native
@@ -46,7 +46,7 @@ its rule, is drift.
 | **Headerless + floating chrome** | Full-bleed canvases only (`CalendarHome`, `CalendarDay`, `ViewerHome`), where a header bar would cover content. | The screen's own back pill |
 
 - **The push/modal test:** can the user go *further* from here? Calendars drills
-  into Add Calendar / Colours & Order / Print, so it pushes. Print produces a
+  into Add Calendar / Colors & Order / Print, so it pushes. Print produces a
   PDF and is done, so it's a modal. When genuinely torn, push — a wrong push
   costs one extra tap; a wrong modal strands the user at a dead end.
 - **Every modal's ✕ is `<HeaderCloseButton>`** in `headerLeft` — the same button
@@ -70,7 +70,17 @@ its rule, is drift.
   input + dropdown pair in `<RevealWrap open count>` (components/ui); `<Screen>`
   scrolls the pair clear when the dropdown opens, when the field takes focus,
   and again on `keyboardDidShow` (a keyboard that arrives *after* the dropdown
-  covers whatever was under it). Do NOT call `useRevealOnOpen`
+  covers whatever was under it). A reveal made while the dropdown is showing
+  **jumps instead of animating** — an iOS tap that lands during an in-flight
+  scroll animation is consumed as "catch the scroll" and never reaches the row,
+  so an animated reveal makes the first tap on a suggestion dead. Don't
+  re-animate it — and that covers **every** reveal that can run while rows are
+  showing, not just the one the dropdown itself fires. The `keyboardDidShow`
+  one is the trap: iOS re-fires it on every keyboard *height* change (the
+  QuickType bar coming and going as the user types), so a listener registered
+  back when the field took focus is still firing with the dropdown wide open,
+  and its closure's "is anything showing?" value is stale. Read that through a
+  ref, and jump whenever there is something tappable. Do NOT call `useRevealOnOpen`
   from the screen component itself — it renders `<Screen>`, so the hook reads a
   null scroll context and silently no-ops; the hook is only for components
   already rendered inside a Screen (e.g. `PlacesAutocomplete`).
@@ -122,10 +132,17 @@ drift. The mapping:
 
 ## The section accent
 
-Each feature area has an accent colour from `useCalendarColors().colors.<area>`
+Each feature area has an accent color from `useCalendarColors().colors.<area>`
 (`chores`, `maintenance`, `vacations`, `recipes`, …). Tint the area's add button,
 FAB, save check, spinners, empty-state CTA, and primary buttons with it — don't
 default those to `colors.primary` inside an accented area.
+
+Always pass the **stored** hue. The stored palette is Material 600/700 weights —
+mid-dark tones that read muted as solid fills on the dark chrome — so the solid
+discs (`RoundIconButton`, `HeaderCheckButton`, `Fab`) lift their fill through
+`vividOnDark()` (lib/color) themselves, the way Apple brightens its tints in
+dark mode (systemRed #FF3B30 → #FF453A). Never pre-brighten an accent at a call
+site, and never bypass the shared discs to hand-roll a "more vivid" one.
 
 ## Loading & empty & error states
 
@@ -176,20 +193,44 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
   the chrome should disappear around the content: `AttachmentPreview` and
   `PlacePreview` use pure black. A screen that re-declares its header in a
   layout effect (`TripDetail`) must still be registered with the matching
-  background in the navigator, or the push transition flashes the old colour.
+  background in the navigator, or the push transition flashes the old color.
 - **Filled accent disc vs. transparent white — the header-action rule.** A
   header button gets a solid-fill circular disc **only when it carries a feature
   accent** (`useCalendarColors().colors.<area>`). A header action in a
   non-accented area (the app-primary blue — e.g. Calendars, Contacts, Account,
   New/Subscribe Calendar, generic forms) is instead a **transparent white, thick
-  icon** matching the header close **✕** — never a primary-coloured disc. A
+  icon** matching the header close **✕** — never a primary-colored disc. A
   primary-blue disc in the header is drift; either it belongs to an accented
   area (use the accent) or it doesn't (make it transparent white).
-- **Add action on a list** → in an **accented** area, `RoundIconButton icon="add"`
-  in `headerRight`, `bg={accent}` (solid disc). In a **non-accented** area,
+- **iOS 26 wraps every header item in its own Liquid Glass circle**, so a custom
+  disc view in `headerRight` renders as a small disc floating inside the
+  system's larger glass one — the accent never fills the button. Accent header
+  actions therefore go through the shared helpers (`headerAddOptions`,
+  `useHeaderCheckButton`), which emit *native* bar-button items
+  (`unstable_headerRightItems`, variant `"prominent"` — Apple's full-color
+  tinted glass button) under glass and keep the custom discs on Android and
+  pre-26 iOS. Never hand-roll an accent disc directly into `headerRight`.
+  Transparent-white glyph/text actions (`HeaderIconButton`, `HeaderTextButton`,
+  the close ✕) are fine as custom views — a plain glyph inside the system
+  glass circle is exactly the native look.
+- **Add action on a list** → in an **accented** area, spread
+  `headerAddOptions(accent, onPress, 'Add <thing>')` into
+  `navigation.setOptions` (prominent "+" under glass, `RoundIconButton` disc
+  elsewhere). In a **non-accented** area,
   `<HeaderIconButton icon="add" size={30} accessibilityLabel />` (transparent white).
-- **Header action on a detail screen** (edit pencil / share / print) → `<HeaderIconButton icon onPress accessibilityLabel />` in `headerRight`.
-- **Floating action button** (detail screen adds a sub-item, or the AI assistant) → `<Fab icon onPress bg={accent} />` (or `<Fab>` with a custom glyph child).
+- **Edit action on a detail screen** → `<HeaderTextButton title="Edit" onPress accessibilityLabel />`
+  in `headerRight` — the iOS convention (Apple Contacts/Calendar/Health all use
+  the word). Never a pencil glyph in the header; a pencil in the header is
+  drift. When `headerRight` already holds the screen's primary action (the trip
+  view's add-booking disc), "Edit" sits before it in the same row.
+- **Other header action on a detail screen** (share / print / history) → `<HeaderIconButton icon onPress accessibilityLabel />` in `headerRight`.
+- **Floating action button** (detail screen adds a sub-item) → `<Fab icon onPress bg={accent} />` (or `<Fab>` with a custom glyph child).
+- **The Calen assistant FAB** → `<AssistantButton style={<corner placement>} onPress />`,
+  never a `<Fab>` wearing an assistant glyph. One disc everywhere Calen floats
+  (the calendar month/day canvases, the trip view): elevated fill + light rim,
+  the untinted `CalenGlyph`, the press spring + haptic, and the first-run halo
+  pulse. It is deliberately **not** accent-filled — Calen is the app's, not the
+  section's, and the gradient mark can't sit on a colored disc.
 - **AI assistant on an add/edit form** → `<FormAssist>` at the top of the form;
   never hand-roll the card. Its header is fixed chrome — CalenChatIcon +
   "Ask Calen" + a trailing chevron — and it **defaults collapsed** (the form is
@@ -201,21 +242,28 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
   screen-specific AI action (the recipe form's `/edit-with-ai`), with
   `actionLabel` naming what it does ("Apply changes" vs "Fill in the form").
   Icon vocabulary — three marks, don't cross them:
-  - **`<CalenGlyph>`, the gradient "C", means "this is Calen"** — the calendar's
-    assistant FAB and the "Ask Calen" card header both wear it. Its blue
+  - **`<CalenGlyph>`, the gradient "C", means "this is Calen"** — every
+    `AssistantButton` FAB and the "Ask Calen" card header wear it. Its blue
     gradient is baked in and is **never tinted**, so it needs a dark/neutral
     surface behind it.
-  - **`<CalenChatIcon>`** is the white-on-colour fallback for the same idea,
+  - **`<CalenChatIcon>`** is the white-on-color fallback for the same idea,
     used only where Calen sits on an accent-FILLED disc (the chores /
-    maintenance / trips assistant FABs) and the mark must go flat white to hold
+    maintenance assistant FABs) and the mark must go flat white to hold
     contrast.
   - **sparkles** means a *generic* AI action, not Calen (grocery Organize,
     feature marketing rows).
 - **Grouped info rows on a detail screen** → `<InfoCard>` wrapping `ListRow`s (InfoCard = a Card that hands its padding to the rows).
-- **Form save/close chrome** → `useHeaderCheckButton(navigation, { onPress, loading, color: accent })`.
-  Pass `color={accent}` in an accented feature area for the tinted save disc;
-  **omit `color`** in a non-accented area to get the neutral transparent white
-  check (matches the close ✕). Never pass `color: colors.primary`.
+- **Form save/close chrome** → `useHeaderCheckButton(navigation, { onPress, loading, color: accent, dirty })`.
+  Pass `color={accent}` in an accented feature area; **omit `color`** in a
+  non-accented area. Never pass `color: colors.primary`.
+  **Always pass `dirty`** — the same unsaved-changes flag the discard guard
+  uses (call the hook after `dirty` is computed, next to
+  `useUnsavedChangesGuard`). This is Apple Calendar's save-check state model:
+  pristine → a neutral grey, **disabled** check (nothing to save); dirty → the
+  check fills with the accent, or **solid white** on a non-accented form, and
+  arms. The only checks without `dirty` are ones with no dirty concept — a
+  Done that writes live (EventTravelTime) or the contact import queue's
+  "accept" ✓, which must stay lit before any edit.
 - **Titles/labels** — three distinct roles, don't mix them:
   - `<ScreenTitle>` = the bold 24px in-body header title on a detail screen (the
     item/recipe/event name at the top of its page).
@@ -254,7 +302,7 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
 - **Leading disc on a row** → `<IconAvatar icon/mdiIcon bg size={44} />`
   (`radius` for a rounded-square instead of a circle).
 - **Settings-style tappable row** (inside an InfoCard/GroupCard) → `<ListRow icon title subtitle onPress right />`.
-- **Standalone list card** (its own tappable Card: avatar + title + subtitle + trailing) → `<CardRow leading title subtitle right onPress titleRight />`. `subtitle` may be a node (icon-studded meta row); `right` falls back to a chevron when `onPress` is set. Keep a raw Card for bespoke cards (expandable, flush colour-bar).
+- **Standalone list card** (its own tappable Card: avatar + title + subtitle + trailing) → `<CardRow leading title subtitle right onPress titleRight />`. `subtitle` may be a node (icon-studded meta row); `right` falls back to a chevron when `onPress` is set. Keep a raw Card for bespoke cards (expandable, flush color-bar).
 - **Deleting a row from a list** → wrap it in `<SwipeableRow onDelete label? actionStyle? accessibilityLabel? />`
   and let the swipe be the only affordance. Never park a persistent ✕ / trash
   glyph on the row: it's a permanent target for a mistap on something the user
@@ -299,7 +347,7 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
   with `clearButtonMode="never"` so iOS doesn't double it.
 - **Buttons** → `<Button variant="primary|ghost|danger" color={accent} />`.
 - **Filter pills** → `<Chip label selected onPress color={accent} />`.
-- **Colour picker** → `<ColorPicker value onChange options={COLOR_PRESETS} />`.
+- **Color picker** → `<ColorPicker value onChange options={COLOR_PRESETS} />`.
 
 ## Destructive actions
 
@@ -348,4 +396,4 @@ the gesture and hardware back.
 
 - Removable **tag tokens** (RecipeForm) are a chip with an ✕ — not the filter `Chip`.
 - Calendar-grid event chips are their own tiny component, not the filter `Chip`.
-- `CalendarColorsScreen`'s recolour+reset modal is a superset of `ColorPicker`.
+- `CalendarColorsScreen`'s recolor+reset modal is a superset of `ColorPicker`.

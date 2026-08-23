@@ -63,8 +63,8 @@ export type AllDayItem = {
   // an empty-circle glyph (Apple's reminder look).
   muted?: boolean;
   // Optional leading MaterialCommunityIcons glyph (an `mdi-…` string or a bare
-  // glyph name), rendered tinted in the item's colour instead of a muted dot /
-  // plain colour bar: chores carry their per-chore icon, occasions their kind
+  // glyph name), rendered tinted in the item's color instead of a muted dot /
+  // plain color bar: chores carry their per-chore icon, occasions their kind
   // icon, and events a generic calendar glyph.
   icon?: string;
   faded?: boolean;
@@ -122,7 +122,8 @@ export function normalizeDay(
   const timed: TimedBlock[] = [];
 
   for (const t of day.trips) {
-    allDay.push({ key: `trip-${t.id}`, title: t.name, color: t.color, kind: 'trip', id: t.id });
+    // A trip has no color of its own — it wears the Trips calendar's.
+    allDay.push({ key: `trip-${t.id}`, title: t.name, color: calColors.trips ?? t.color, kind: 'trip', id: t.id });
   }
   for (const h of holidays) {
     allDay.push({ key: `hol-${h.id}`, title: h.name, color: h.color, kind: 'holiday' });
@@ -165,7 +166,7 @@ export function normalizeDay(
   for (const t of day.tasks) {
     allDay.push({ key: `task-${t._id}`, title: t.title, color: calColors.maintenance, kind: 'task', id: t._id, muted: true });
   }
-  // Chores are Chores-calendar items: tinted in the calendar colour and badged
+  // Chores are Chores-calendar items: tinted in the calendar color and badged
   // with their own icon (not a muted reminder dot).
   for (const c of day.chores) {
     allDay.push({ key: `chore-${c._id}`, title: c.title, color: calColors.chores, kind: 'chore', id: c._id, icon: c.icon });
@@ -177,9 +178,9 @@ export function normalizeDay(
     allDay.push({ key: `recipe-${i}-${r.recipeId ?? r.title}`, title: r.title, color: calColors.recipes, kind: 'recipe', id: r.recipeId, icon: RECIPE_ICON });
   }
   if (day.grocery) {
-    // The Meals calendar's own colour (user overrides included), like the month
+    // The Meals calendar's own color (user overrides included), like the month
     // grid's cart and the List view's row — the shopping day belongs to that
-    // calendar, so a colour of its own would read as a separate one.
+    // calendar, so a color of its own would read as a separate one.
     allDay.push({ key: 'grocery', title: 'Grocery shopping', color: calColors.recipes, kind: 'grocery', icon: GROCERY_ICON });
   }
 

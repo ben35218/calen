@@ -16,7 +16,7 @@ import { tasksApi, historyApi } from '../../api';
 import { openRecord, sealUpdate } from '../../lib/e2ee';
 import { TASK_ENC } from '../../lib/encSubsets';
 import { loadOdometerData } from '../../lib/odometer';
-import { Button, Card, Screen, Input, ListRow, DateField, CenteredLoader, BottomSheet, HeaderIconButton, IconAvatar } from '../../components/ui';
+import { Button, Card, Screen, Input, ListRow, DateField, CenteredLoader, BottomSheet, HeaderTextButton, IconAvatar } from '../../components/ui';
 import { categoryMeta, resolveTaskIcon } from '../../lib/maintenanceCategories';
 import {
   recurrenceLabel,
@@ -201,7 +201,7 @@ export default function TaskDetailScreen() {
     navigation.setOptions({
       title: 'Task',
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit task" onPress={() => navigation.navigate('TaskForm', { id, date })} />
+        <HeaderTextButton title="Edit" accessibilityLabel="Edit task" onPress={() => navigation.navigate('TaskForm', { id, date })} />
       ),
     });
   }, [navigation, id]);

@@ -15,7 +15,7 @@ import { tasksApi, itemsApi, propertiesApi, settingsApi, Task, Item, LinkedRef }
 import { openRecord } from '../../lib/e2ee';
 import { ensureDefaultCategories } from '../../lib/categories';
 import * as replica from '../../lib/replica';
-import { Card, CenteredLoader, RoundIconButton, SectionHeader, SkeletonList, EmptyState, IconAvatar, Select, Hint } from '../../components/ui';
+import { Card, CenteredLoader, headerAddOptions, SectionHeader, SkeletonList, EmptyState, IconAvatar, Select, Hint } from '../../components/ui';
 import { parseCalendarDate } from '../../lib/recurrence';
 import { hasUpcomingOccurrence } from '../../lib/repeatingItemScope';
 import { itemTypeConfig } from '../../lib/itemTypes';
@@ -77,7 +77,7 @@ function refId(ref?: LinkedRef | string | null): string | null {
   return typeof ref === 'object' ? ref._id : ref;
 }
 
-// Client-side status bucket for a task, used to colour its due chip when we
+// Client-side status bucket for a task, used to color its due chip when we
 // list every task under an expanded item (the server-side buckets are only
 // fetched for the flat overdue/due-soon list above).
 function taskStatus(task: Task): StatusKey {
@@ -130,11 +130,7 @@ function MaintenanceHome() {
   const qc = useQueryClient();
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <RoundIconButton icon="add" onPress={() => navigation.navigate('ItemForm', {})} bg={accent} />
-      ),
-    });
+    navigation.setOptions(headerAddOptions(accent, () => navigation.navigate('ItemForm', {}), 'Add item'));
   }, [navigation, accent]);
 
   // Every task, decrypted over the replica (offline-first). Due/overdue

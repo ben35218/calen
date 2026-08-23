@@ -126,7 +126,7 @@ test('invite → accept makes a collaborator; the shared trip shows in their tri
   const owner = await registerUser({ firstName: 'Hana' });
   const guest = await registerUser({ firstName: 'Gil' });
   const trip = await Trip.create({
-    userId: owner.user._id, name: 'Japan', destination: 'Tokyo', status: 'booked',
+    userId: owner.user._id, name: 'Japan', destination: 'Tokyo',
     startDate: new Date('2027-01-31'), endDate: new Date('2027-02-25'),
   });
 

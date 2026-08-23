@@ -13,7 +13,7 @@ import {
   MonthWindow, YearMonth, initialWindow, extendPast, extendFuture, ensureCovers,
   monthsIn, monthRange, ymKey, mergeCalendarChunks,
 } from '../../lib/calendarWindow';
-import { monthBlockWeeks, clipBars } from '../../lib/monthGrid';
+import { monthBlockWeeks, cellItemSpace, clipBars, fitCellChips } from '../../lib/monthGrid';
 import { weekBars, WeekBar } from '../../lib/calendar';
 import { tintedChip } from '../../lib/color';
 import type { CustomCalendar } from '../../lib/calendarPrefs';
@@ -45,11 +45,13 @@ const TOP_BAR_ROW = 52;   // host button-row height below the status bar
 const WEEKDAY_ROW_H = 26;
 const DAY_NUM_H = 26;
 const MONTH_LABEL_H = 16; // the "Aug" marker above the 1st (month-start rows only)
-const BAR_H = 17;         // one multi-day spanning-bar lane
 const CHIP_H1 = 20;       // one-line chip slot (incl. margin)
 const CHIP_H2 = 34;       // two-line chip slot
 const CHIP_H3 = 48;       // title + start time
-const MORE_H = 14;        // "+N more"
+// A spanning bar is a one-line event: its lane IS the one-line chip slot, so a
+// multi-day event sits in the same rhythm as the chips beside it.
+const BAR_H = CHIP_H1;    // one multi-day spanning-bar lane
+const MORE_H = 16;        // "+N more" — one line of chip-sized type
 const VPAD = 8;
 const MIN_WEEK = 96;
 const MAX_WEEK = 210;
@@ -68,6 +70,12 @@ const chipTimeLabel = (iso: string) =>
 const titleLines = (charsPerLine: number, label: string) => (label.trim().length > charsPerLine ? 2 : 1);
 const chipRows = (charsPerLine: number, chip: Chip) => Math.min(3, titleLines(charsPerLine, chip.label) + (chip.time ? 1 : 0));
 const chipHeight = (rows: number) => (rows >= 3 ? CHIP_H3 : rows === 2 ? CHIP_H2 : CHIP_H1);
+// The overflow label wears the CHIP's type (muted, never shrunk), so a cell too
+// narrow for the word drops "more" instead of the point size.
+const moreLabel = (charsPerLine: number, n: number) =>
+  `+${n} more`.length <= charsPerLine ? `+${n} more` : `+${n}`;
+// The cell must keep room for the overflow line before it takes its last chip.
+const CELL_FIT = { moreH: MORE_H, iconRowH: 0 };
 
 // The grid answers "Today" like every calendar layer, and additionally takes a
 // month teleport — the host hands one over when a month is picked from the
@@ -452,6 +460,17 @@ const WeekRow = React.memo(function WeekRow({
           0,
         );
         const hasItems = cell.chips.length > 0 || cellLanes > 0;
+        // Fit the chips to the row the week actually got: it is sized by its
+        // busiest day but clamped at MAX_WEEK, so on a busy day the ask exceeds
+        // the row and overflow:'hidden' would saw the last chip in half. Drop
+        // whole chips into the "+N more" count instead.
+        const fit = fitCellChips(
+          cell.chips.map((chip) => chipHeight(chipRows(charsPerLine, chip))),
+          cell.chips.length + cell.extra,
+          false,
+          cellItemSpace(week.height, week.headerH, 0, cellLanes, { barH: BAR_H, vpad: VPAD }),
+          CELL_FIT,
+        );
         return (
           <TouchableOpacity
             key={cell.date}
@@ -478,7 +497,7 @@ const WeekRow = React.memo(function WeekRow({
             <View style={{ height: cellLanes * BAR_H }} />
 
             <View style={styles.cellItems}>
-              {cell.chips.map((chip) => {
+              {cell.chips.slice(0, fit.shown).map((chip) => {
                 // Same tinted chip as the owner's Details grid (see lib/color).
                 const tint = tintedChip(chip.color);
                 return (
@@ -505,9 +524,9 @@ const WeekRow = React.memo(function WeekRow({
                 </TouchableOpacity>
                 );
               })}
-              {/* The week-height math reserves exactly one line (MORE_H), so the
-                  label must never wrap — on narrow cells it shrinks to fit instead. */}
-              {cell.extra ? <FixedText style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{cell.extra} more</FixedText> : null}
+              {/* One reserved line (MORE_H), never wrapped: a narrow cell drops
+                  the word ("+2") rather than shrinking below the chips' type. */}
+              {fit.more > 0 ? <FixedText style={styles.moreText} numberOfLines={1} ellipsizeMode="clip">{moreLabel(charsPerLine, fit.more)}</FixedText> : null}
               {showSkeleton && !cell.chips.length ? <CellSkeleton date={cell.date} /> : null}
             </View>
           </TouchableOpacity>
@@ -591,12 +610,13 @@ const styles = StyleSheet.create({
   cellItems: { flex: 1 },
   chip: { borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, marginBottom: 2, justifyContent: 'center', overflow: 'hidden' },
   chipCancelled: { opacity: 0.45 },
-  // Title/time colours come per-chip from the calendar's tint (lib/color);
-  // these carry only the metrics, with a safe default colour.
+  // Title/time colors come per-chip from the calendar's tint (lib/color);
+  // these carry only the metrics, with a safe default color.
   chipText: { fontSize: 12, lineHeight: 13, color: colors.text, fontWeight: '600' },
   chipTextCancelled: { textDecorationLine: 'line-through' },
   chipTime: { fontSize: 10, lineHeight: 12, color: colors.textMuted, fontWeight: '600', marginTop: 1 },
-  moreText: { fontSize: 11, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
+  // Same type as a chip title, muted — an event line that didn't fit, not a footnote.
+  moreText: { fontSize: 12, lineHeight: 14, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
   skeletonChip: { marginBottom: 4, marginHorizontal: 1 },
   spanBar: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, borderLeftWidth: 3, overflow: 'hidden', justifyContent: 'center', paddingHorizontal: 4 },
   spanBarText: { fontSize: 12, lineHeight: 13, fontWeight: '600' },

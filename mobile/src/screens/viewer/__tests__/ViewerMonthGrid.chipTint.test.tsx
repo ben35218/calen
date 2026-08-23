@@ -4,8 +4,8 @@ import { StyleSheet } from 'react-native';
 
 // The Details-grid chip styling (calendar.md → Views; billing-plans.md carries
 // the viewer's copy): a chip is Apple's TINTED card — a translucent wash of the
-// calendar's colour under title and time drawn in that same colour — never a
-// solid block of the colour with white text.
+// calendar's color under title and time drawn in that same color — never a
+// solid block of the color with white text.
 
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -91,14 +91,14 @@ describe('ViewerMonthGrid — tinted event chips', () => {
     return render(mockList.props.renderItem({ item: week }) as React.ReactElement);
   }
 
-  it('fills the chip with the calendar colour at low opacity, not the solid colour', async () => {
+  it('fills the chip with the calendar color at low opacity, not the solid color', async () => {
     const view = await renderEventRow();
     const fills = allStyles(view.toJSON()).map((s) => s.backgroundColor);
     expect(fills).toContain(tintedChip(CAL_COLOR).fill);
     expect(fills).not.toContain(CAL_COLOR);
   });
 
-  it('draws the title and time in the calendar colour, lightened to stay legible', async () => {
+  it('draws the title and time in the calendar color, lightened to stay legible', async () => {
     const view = await renderEventRow();
     const title = StyleSheet.flatten(view.getByText('Aqua Tots').props.style) as Record<string, any>;
     const time = StyleSheet.flatten(view.getByText('12:30PM').props.style) as Record<string, any>;

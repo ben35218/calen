@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildForecast, isMowingDay, WMO_DESCRIPTIONS, buildRangeRecords, buildOutlook, buildDailyClimate, placeCandidates } = require('./index');
+const { buildForecast, isMowingDay, WMO_DESCRIPTIONS, buildRangeRecords, buildOutlook, buildDailyClimate, buildTripWeather, placeCandidates } = require('./index');
 
 test('isMowingDay: dry day is good, wet day is not', () => {
   assert.equal(isMowingDay(0, 10, 0), true);
@@ -123,6 +123,45 @@ test('buildDailyClimate averages per day across years, index-aligned', () => {
   const short = buildDailyClimate([mk(20, 10, 0, 1), mk(30, 14, 3)], { dates });
   assert.equal(short[2].avgTempMax, 30);
   assert.equal(short[2].yearsInSample, 1);
+});
+
+test('buildTripWeather: forecast wins its dates, typical stands in elsewhere, empty dates drop', () => {
+  const fc = (date) => ({ date, weatherCode: 1, description: 'Mainly clear', tempMax: 26, tempMin: 15, precipSum: 0, precipProbability: 5, windMax: 11, goodWeather: true, hours: [] });
+  const cl = (date, max = 20) => ({ date, avgTempMax: max, avgTempMin: 10, avgPrecip: 1, rainYears: 1, yearsInSample: 3 });
+  const dates = ['2026-08-24', '2026-08-25', '2026-08-26', '2026-08-27'];
+
+  const rows = buildTripWeather({
+    forecast: [fc('2026-08-24'), fc('2026-08-25'), fc('2026-08-30')], // 08-30 outside the trip
+    climateDays: [cl('2026-08-24'), cl('2026-08-25'), cl('2026-08-26')], // no data for 08-27
+    dates,
+  });
+  assert.deepEqual(rows.map((r) => [r.date, r.source]), [
+    ['2026-08-24', 'forecast'],
+    ['2026-08-25', 'forecast'],
+    ['2026-08-26', 'typical'],
+  ]);
+  assert.equal(rows[0].day.tempMax, 26);       // forecast row carries the WeatherDay
+  assert.equal(rows[2].climate.avgTempMax, 20); // typical row carries the ClimateDay
+
+  // In-progress trip: past days fall back to typical around the forecast window.
+  const mid = buildTripWeather({
+    forecast: [fc('2026-08-25'), fc('2026-08-26')],
+    climateDays: dates.map((d) => cl(d)),
+    dates,
+  });
+  assert.deepEqual(mid.map((r) => r.source), ['typical', 'forecast', 'forecast', 'typical']);
+
+  // No forecast at all (far-future trip) → all typical, unchanged behavior.
+  const far = buildTripWeather({ climateDays: dates.map((d) => cl(d)), dates });
+  assert.equal(far.length, 4);
+  assert.ok(far.every((r) => r.source === 'typical'));
+
+  // A climate day whose every average is null is not a row.
+  const empty = buildTripWeather({
+    climateDays: [{ date: '2026-08-24', avgTempMax: null, avgTempMin: null, avgPrecip: null, rainYears: 0, yearsInSample: 0 }],
+    dates: ['2026-08-24'],
+  });
+  assert.equal(empty.length, 0);
 });
 
 test('placeCandidates simplifies Google Places strings for Nominatim', () => {

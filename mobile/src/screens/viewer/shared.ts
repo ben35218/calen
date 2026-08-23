@@ -23,9 +23,9 @@ export function snapshotOf(e: CalendarEvent): ViewerEventSnapshot {
   };
 }
 
-// A shared calendar's colour, resolved from the shell's OWN calendar list
+// A shared calendar's color, resolved from the shell's OWN calendar list
 // rather than lib/calendar's colorOf — the viewer only ever draws these
-// calendars, and reading their colour directly keeps the grid independent of
+// calendars, and reading their color directly keeps the grid independent of
 // the prefs module's override seeding.
 export function calendarColor(calendars: CustomCalendar[], id?: string): string {
   return calendars.find((c) => c.id === id)?.color || colors.primary;

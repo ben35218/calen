@@ -70,7 +70,7 @@ const TOOLS = [
 - activities / appointments: calendar events
 - meals: planned recipes (meal calendar)
 - groceryDays: grocery shopping days
-- trips: trips with their date range(s) and status (DATES ONLY — for the itinerary/details inside a trip, the user should use the Trip Assistant on the Trips page)`,
+- trips: trips with their date range (DATES ONLY — for the itinerary/details inside a trip, the user should use the Trip Assistant on the Trips page)`,
     input_schema: {
       type: 'object',
       properties: {
@@ -310,11 +310,10 @@ async function executeTool(name, input, ctx) {
         })),
         groceryDays: data.groceryShopping.map(g => g.date),
         trips: data.trips.map(t => ({
-          name: t.name, destination: t.destination, status: t.status,
+          name: t.name, destination: t.destination,
           ranges: t.ranges.map(r => ({
             start: new Date(r.start).toISOString().slice(0, 10),
             end: new Date(r.end).toISOString().slice(0, 10),
-            label: r.label,
           })),
           note: 'Dates only — use the Trip Assistant for this trip\'s itinerary and details.',
         })),
@@ -671,7 +670,7 @@ Use list_events to see what's scheduled. It returns EVERY calendar shown on the 
 - Appointments: Doctor visits, meetings, service appointments (editable events)
 - Meals: Planned recipes from the meal calendar (read-only here)
 - Grocery days: Scheduled grocery shopping days (read-only)
-- Trips: Trips with their date range(s) and status — DATES ONLY. You can see WHEN trips are, but not the bookings/itinerary inside them. If the user asks about what's planned within a trip (flights, hotels, activities, costs), tell them to open the Trip Assistant from the Trips page, which has the full itinerary.
+- Trips: Trips with their date range — DATES ONLY. You can see WHEN trips are, but not the bookings/itinerary inside them. If the user asks about what's planned within a trip (flights, hotels, activities, costs), tell them to open the Trip Assistant from the Trips page, which has the full itinerary.
 (Birthdays are not shared with this chat.)
 
 For PLANNING questions — when the user asks when they're free, wants you to suggest a day or time for something, or find an open slot ("when am I free this weekend?", "find a good afternoon for a picnic", "when can we fit in a dentist visit?") — call get_availability instead of eyeballing list_events yourself. It returns per-day free/busy already worked out: timed events as busy blocks, trips as "away" days, all-day events as a soft note that does NOT block the day (mention them, but treat the hours as open), and chores/meals/maintenance/grocery excluded because they don't occupy time. Reach for list_events (not get_availability) when the user wants to know WHAT is scheduled, or you need an event's id/title to edit, delete, or call about.

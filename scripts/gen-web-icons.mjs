@@ -36,7 +36,7 @@ function decodePng(file) {
   }
   if (bitDepth !== 8) throw new Error(`unsupported bit depth ${bitDepth} in ${file}`);
   const ch = { 0: 1, 2: 3, 4: 2, 6: 4 }[colorType];
-  if (!ch) throw new Error(`unsupported colour type ${colorType} in ${file}`);
+  if (!ch) throw new Error(`unsupported color type ${colorType} in ${file}`);
   const raw = zlib.inflateSync(Buffer.concat(idat));
   const stride = w * ch;
   const px = Buffer.alloc(h * stride);

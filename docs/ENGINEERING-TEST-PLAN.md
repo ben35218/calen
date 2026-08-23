@@ -94,7 +94,7 @@ Spec: [onboarding.md](../specs/features/onboarding.md)
 - [ ] **ONB-03** — **Get started** dismisses it; relaunch goes straight to the paywall/app, no flash of onboarding.
 - [ ] **ONB-04** — Delete + reinstall → onboarding shows again (the flag is per-install, not synced).
 - [ ] **ONB-05** — Signed out, the auth stack is never gated by onboarding.
-- [ ] **ONB-06** — The splash holds until the onboarding flag, unlock cache, viewer cache, **and** calendar-prefs cache resolve — the first calendar frame carries the user's colours, never the app defaults recoloured a beat later.
+- [ ] **ONB-06** — The splash holds until the onboarding flag, unlock cache, viewer cache, **and** calendar-prefs cache resolve — the first calendar frame carries the user's colors, never the app defaults recolored a beat later.
 - [ ] **ONB-07** — With a dead network on a device that has **nothing cached**, the splash releases within ~2s (the cap) rather than hanging.
 - [ ] **ONB-08** — The mandatory recovery-code modal renders **over** onboarding after registration (§2.2).
 
@@ -178,10 +178,10 @@ Spec: [auth-identity.md](../specs/features/auth-identity.md)
 ### 2.8 Sign-out teardown (data-leak class)
 
 - [ ] **AUTH-51** — Sign out from **ProfileHome** (the danger button below the section menu, above the legal links).
-- [ ] **AUTH-52** — Sign out then sign in as a **different account on the same device**. Verify every store was wiped: no previous account's calendar list, colours, order, hidden set, outside-share addresses; no previous replica rows; no owned-add-on carry-over; the record-sync cursor was reset (the new account's records actually arrive). **⛔ BLOCKER (privacy + the "No shared calendars yet" class of bug).**
+- [ ] **AUTH-52** — Sign out then sign in as a **different account on the same device**. Verify every store was wiped: no previous account's calendar list, colors, order, hidden set, outside-share addresses; no previous replica rows; no owned-add-on carry-over; the record-sync cursor was reset (the new account's records actually arrive). **⛔ BLOCKER (privacy + the "No shared calendars yet" class of bug).**
 - [ ] **AUTH-53** — Sign-out best-effort **unregisters the push token**: the signed-out device stops receiving the account's pushes (verify by sending an invite to that account).
 - [ ] **AUTH-54** — Sign out → sign back in as the **same** account **without relaunching**: the app must not deadlock on the splash (the unlock/viewer caches reset to a known `false`, not `null`).
-- [ ] **AUTH-55** — After sign-in, the previously-signed-out account's calendar arrangement (colours/order/hidden/deleted/muted) is restored from the **account**, not lost.
+- [ ] **AUTH-55** — After sign-in, the previously-signed-out account's calendar arrangement (colors/order/hidden/deleted/muted) is restored from the **account**, not lost.
 
 ---
 
@@ -321,9 +321,9 @@ Spec: [billing-plans.md](../specs/features/billing-plans.md). Use **sandbox** Ap
 - [ ] **BILL-40** — The **bundle** CTA is hidden once any single **paid** add-on is owned; claimed free add-ons don't count.
 - [ ] **BILL-41** — An owned add-on whose calendar this device **locally deleted** shows an accent-tinted `+` restore affordance (not the green check); restoring is device-local and returns the card to the check state.
 - [ ] **BILL-42** — Buying/claiming an add-on **repaints the month grid immediately** — the previously-zeroed lanes fill without waiting for an unrelated invalidation. **⛔ BLOCKER (embedded-snapshot class).**
-- [ ] **BILL-43** — Locking never deletes data: revoke the add-on (admin override), confirm the lane empties; re-grant it, confirm the data **and** the prior visibility/colour/order prefs reappear.
+- [ ] **BILL-43** — Locking never deletes data: revoke the add-on (admin override), confirm the lane empties; re-grant it, confirm the data **and** the prior visibility/color/order prefs reappear.
 - [ ] **BILL-44** — Every locked feature home (Kitchen, Maintenance, Trips, Chores, Occasions) shows `AddonLockedView`, including via deep link and restored nav state; free ones say "Add for free".
-- [ ] **BILL-45** — Locked features are excluded at the data chokepoint everywhere at once: month grid, day/agenda/list, **search**, **print checklist**, **Colours & Order list**, the Add-Calendar **restore-deleted list**, **reminder scheduling**, and **assistant reads**.
+- [ ] **BILL-45** — Locked features are excluded at the data chokepoint everywhere at once: month grid, day/agenda/list, **search**, **print checklist**, **Colors & Order list**, the Add-Calendar **restore-deleted list**, **reminder scheduling**, and **assistant reads**.
 - [ ] **BILL-46** — A member who purchased add-ons **leaves** the household → they keep their add-ons in the new solo household (per-user ownership). **⛔ BLOCKER (this previously stripped paid entitlements silently).**
 - [ ] **BILL-47** — `scripts/backfillUserAddons.js` has been run **before** the deploy (dry-run first; decide `--paid-to-owner` vs default). Deploying first strips every customer's add-ons. **⛔ BLOCKER — ops sequencing.**
 
@@ -450,7 +450,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 
 ### 7.6 Detail view
 
-- [ ] **CAL-64** — Everything the form can set is visible: title, location, calendar, invitees, both alerts (one hairline-divided card), URL, attachments, notes, recurrence summary ("Repeats every 2 weeks on Monday … until ⟨date⟩", accent-coloured), travel time row with "Leave by".
+- [ ] **CAL-64** — Everything the form can set is visible: title, location, calendar, invitees, both alerts (one hairline-divided card), URL, attachments, notes, recurrence summary ("Repeats every 2 weeks on Monday … until ⟨date⟩", accent-colored), travel time row with "Leave by".
 - [ ] **CAL-65** — The view **re-pulls on focus** — turning off recurrence in the form is reflected on return without a manual refresh.
 - [ ] **CAL-66** — The **Reschedule/Cancel** card is the first row of the details group, directly above the Calendar card, on both one-off and recurring events.
 - [ ] **CAL-67** — The mini **timeline card** (timed events only): compact ~3h window opening ~1h before; block content adapts (>1h shows title+location+time, exactly 1h drops location, <1h title only); a longer event's block is **clipped** at the card's bottom while the text still names the true end time; a multi-day event clamps to its first day. All-day events omit the card.
@@ -492,15 +492,15 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **CAL-94** — A **recurring** occurrence's call dims **only that occurrence** (`occurrenceDate`); an unscoped/legacy call dims the event on every day it renders.
 - [ ] **CAL-95** — A hand-set `cancelled` (couldn't-confirm path) persists until deletion and is written by a **client re-seal**, never a plaintext field update (no "update to the latest app version" error).
 - [ ] **CAL-96** — The series-wide "Mark appointment as cancelled" fallback is **hidden** on recurring occurrences.
-- [ ] **CAL-97** — With no business number, the Reschedule/Cancel card routes to the **Location view** with a prominent callout banner tinted in the **event's own calendar colour** and the phone field highlighted; both clear once a number is typed.
+- [ ] **CAL-97** — With no business number, the Reschedule/Cancel card routes to the **Location view** with a prominent callout banner tinted in the **event's own calendar color** and the phone field highlighted; both clear once a number is typed.
 
 ---
 
 ## 8. Calendar — views & navigation
 
 - [ ] **VW-01** — Density switcher (anchored **dropdown popover**, not a bottom sheet) shows the active mode's glyph, a checkmark on the active row, and a divider isolating **List**. Choice persists device-local; default **Details**.
-- [ ] **VW-02** — **Compact**: uniform short rows, ≤4 coloured dots per day, no text, no bars, no weather lane.
-- [ ] **VW-03** — **Stacked**: thin coloured bars per single-day item + overlaid spanning bars; row height grows with the busiest day.
+- [ ] **VW-02** — **Compact**: uniform short rows, ≤4 colored dots per day, no text, no bars, no weather lane.
+- [ ] **VW-03** — **Stacked**: thin colored bars per single-day item + overlaid spanning bars; row height grows with the busiest day.
 - [ ] **VW-04** — **Details**: chips (title + start time), labelled spanning bars, the maintenance/chore/meal/grocery icon row.
 - [ ] **VW-05** — **Switching density is instant** — no rebuild, no re-scan, no flash; the popover's dismissal paints before the layer re-renders; returning to a seen density is a straight cache hit. Time it on a heavy month. **⚠️ RISK — perf-sensitive.**
 - [ ] **VW-06** — **Month blocks**: each month its own Sunday-first grid, neighbouring days blank in a boundary week, real whitespace between months, the 1st carrying the abbreviated month name in the app primary on its own reserved line.
@@ -512,7 +512,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **VW-12** — **Month/year jump sheet**: ‹ year › stepper + 3×4 grid, visible month filled primary, today's month tinted, unbounded years; a pick grows the window and **teleports** (no animation) to that month's first row, updating the label immediately. The sheet opens and dismisses instantly.
 - [ ] **VW-13** — The same jump button heads the **List layer**; a pick there re-cursors the carousel and the tapped-day selection stays put.
 - [ ] **VW-14** — **List layer**: single-month dot grid + the tapped day's events below; adjacent-month days blanked; the grid is a vertical carousel that snaps to a full month past a distance/velocity threshold and springs back otherwise.
-- [ ] **VW-15** — **List day selection styling**: while today is the selection it carries the filled primary disc; tapping another day demotes today to a bare primary-coloured number and gives the tapped day a **white disc with the number knocked out in the canvas black**.
+- [ ] **VW-15** — **List day selection styling**: while today is the selection it carries the filled primary disc; tapping another day demotes today to a bare primary-colored number and gives the tapped day a **white disc with the number knocked out in the canvas black**.
 - [ ] **VW-16** — **Add is selection-aware in List mode**: tap a day, then **+** → the new-event form opens with Starts/Ends on **that** day. In the grid family, **+** defaults to today.
 - [ ] **VW-17** — Switching layers **preserves the viewed month in both directions** (grid→List re-cursors, today selected when the adopted month is today's else the 1st; List→grid teleports, no-op when already there).
 - [ ] **VW-18** — Floating chrome: top-left **avatar** (badge: "!" beats the invitations count, 9+ cap, never both); top-right utility pill (switcher / search / add); bottom-left labelled **Today | Calendars** pill; bottom-right the **56pt Calen FAB** (shown only while AI is enabled). No Invitations button anywhere on the calendar.
@@ -526,7 +526,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **DAY-03** — Week strip: today marked in the **app primary** (never red) — tinted number, filled primary circle when it's the anchor; a non-today anchor gets a white circle; Multi Day shows a grey pill spanning the pair, clipped at Saturday. Tapping a number re-anchors in place; a day swipe crossing a week edge pages the strip.
 - [ ] **DAY-04** — Hour grid: fixed 24h canvas, gutter `12 AM … Noon … 11 PM`, timed events as translucent blocks with a solid left bar, **clipped per day column** (a midnight-spanning event yields one segment per column), overlapping blocks lane-packed at equal widths.
 - [ ] **DAY-05** — A **timed** event covering the whole day demotes to the all-day lane.
-- [ ] **DAY-06** — All-day lane: all-day events, trips, holidays, occasions, meals, the grocery marker, **and date-only tasks/chores**. Chips lead with a colour-tinted glyph — events a calendar glyph, occasions their kind icon, **chores their own icon**; date-only **tasks** stay muted empty-circle chips. Capped at three rows with "+N more".
+- [ ] **DAY-06** — All-day lane: all-day events, trips, holidays, occasions, meals, the grocery marker, **and date-only tasks/chores**. Chips lead with a color-tinted glyph — events a calendar glyph, occasions their kind icon, **chores their own icon**; date-only **tasks** stay muted empty-circle chips. Capped at three rows with "+N more".
 - [ ] **DAY-07** — Now indicator renders only when today is visible, in the app primary, ticking on the minute, with a gutter time badge.
 - [ ] **DAY-08** — Hourly **weather rail** appears only while the Weather calendar is visible, is non-interactive, and renders **under** the event blocks; days outside the forecast simply have no rail.
 - [ ] **DAY-09** — Swiping pages by the visible day count; the vertical scroll offset survives day swipes **and** the single↔multi switch. Initial position: the now-line for today, just above the first event otherwise, 8 AM when empty.
@@ -551,19 +551,23 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **CMG-01** — The manager **pushes** (back chevron), not a modal.
 - [ ] **CMG-02** — Groups order **HOUSEHOLD → JUST ME → SHARED**; empty groups hidden; every SHARED row states its direction ("Shared by you · N people" / "Shared with you"), joined after the kind when both apply.
 - [ ] **CMG-03** — **Single-member household**: unshared customs display under HOUSEHOLD and JUST ME is absent; the underlying state stays unshared, so they move to JUST ME once a second member joins. While the member count is unknown, the split is kept.
-- [ ] **CMG-04** — Tapping a row **toggles visibility only** — it never navigates. The row is `accessibilityRole:"switch"` with checked state; a hidden calendar dims its name; the leading control is a filled check-circle (shown) / empty dimmed circle (hidden) carrying the calendar's colour.
+- [ ] **CMG-04** — Tapping a row **toggles visibility only** — it never navigates. The row is `accessibilityRole:"switch"` with checked state; a hidden calendar dims its name; the leading control is a filled check-circle (shown) / empty dimmed circle (hidden) carrying the calendar's color.
 - [ ] **CMG-05** — The toggle's flip is immediate; the month grid beneath re-renders without delaying the tap feedback.
-- [ ] **CMG-06** — Every row carries an **edit (info)** button opening Edit Calendar (name/colour/alerts/sharing/delete). Feature-backed and holiday rows additionally show an accent-tinted **"Open" pill**. Feature homes and the holidays editor carry **no header pencil**; their one header action is the alarm bell where calendar-level alerts exist.
-- [ ] **CMG-07** — The header **+** opens the Add Calendar chooser (new / subscribe / holiday / restore deleted). Colours & Order and Print are one grouped "manage" card at the end. No long-press delete.
-- [ ] **CMG-08** — Built-in default colours match the spec (Activities `#388E3C`, **Appointments `#1976D2`**, Occasions `#E91E63`, Weather `#0288D1`, Chores `#F57C00`, Meals `#00897B`, Maintenance `#1976D2`, Trips `#5E35B1`); reset returns Appointments to blue.
-- [ ] **CMG-09** — **The arrangement is account state.** Recolour a calendar, reorder, hide one, delete a built-in, mute another's alerts → sign out → sign in → **every choice survives**. **⛔ BLOCKER (they previously all reverted).**
+- [ ] **CMG-06** — Every row carries an **edit (info)** button opening Edit Calendar (name/color/alerts/sharing/delete). Feature-backed and holiday rows additionally show an accent-tinted **"Open" pill**. Feature homes and the holidays editor carry **no header pencil**; their one header action is the alarm bell where calendar-level alerts exist.
+- [ ] **CMG-07** — The header **+** opens the Add Calendar chooser (new / subscribe / holiday / restore deleted). Colors & Order and Print are one grouped "manage" card at the end. No long-press delete.
+- [ ] **CMG-08** — Built-in default colors match the spec (Activities `#388E3C`, **Appointments `#1976D2`**, Occasions `#E91E63`, Weather `#0288D1`, Chores `#F57C00`, Meals `#00897B`, Maintenance `#1976D2`, Trips `#5E35B1`); reset returns Appointments to blue.
+- [ ] **CMG-09** — **The arrangement is account state.** Recolor a calendar, reorder, hide one, delete a built-in, mute another's alerts → sign out → sign in → **every choice survives**. **⛔ BLOCKER (they previously all reverted).**
 - [ ] **CMG-10** — An account field stored as **empty** (nothing hidden, no overrides) beats the device cache rather than being re-seeded from it.
 - [ ] **CMG-11** — A device whose account has **never stored** the arrangement seeds the account from that device.
 - [ ] **CMG-12** — A local edit made **while the settings fetch is in flight** wins.
 - [ ] **CMG-13** — The two **view modes** (month density, day-view mode) stay device-local — they do **not** sync between devices.
 - [ ] **CMG-14** — Locked add-on calendars collapse into **one storefront row** as the HOUSEHOLD group's **closing row** (never a top-of-screen banner), icon at full saturation, subtitle naming the full catalog in store order **with no price**.
 - [ ] **CMG-15** — With **everything owned**, the storefront row **persists** with the subtitle "All add-ons added"; the HOUSEHOLD group always renders because it hosts that row.
-- [ ] **CAL-C1** — **New Calendar**: name field's keyboard **Done** dismisses the keyboard (it must not leave the keyboard over the sharing/colour rows). Same on Subscribe.
+- [ ] **CMG-16** — **Colors & Order lists what the manager lists.** Create a calendar, subscribe to one, add a holiday calendar → all three appear in Colors & Order under the same HOUSEHOLD / JUST ME / SHARED sections (same solo merge), and a locked add-on / deleted built-in appears in neither. **⛔ (created and subscribed calendars were previously missing here entirely.)** No hint line above the list.
+- [ ] **CMG-17** — A row's up/down chevrons move a calendar **within its section only** (it can't be nudged into another audience); the new position holds on the Calendars manager and everywhere else the order reads.
+- [ ] **CMG-17b** — **A section is one sequence.** A newly-added custom calendar starts at the bottom of HOUSEHOLD and can be walked all the way to the top, past every built-in; a built-in can be walked below it. Both lists render the interleaved result. **⛔ (the new calendar was previously stuck at the bottom, with both directions dead.)**
+- [ ] **CMG-18** — A **section header's** up/down chevrons re-sequence the sections, and the **Calendars manager lists its groups in that sequence**; it survives sign-out → sign-in (account state, `calendarPrefs.groupOrder`).
+- [ ] **CAL-C1** — **New Calendar**: name field's keyboard **Done** dismisses the keyboard (it must not leave the keyboard over the sharing/color rows). Same on Subscribe.
 - [ ] **CAL-C2** — Sharing a calendar outside the household: `useRosterSuggestions` autocomplete (placeholder "Add name, email, or phone…"), suggestions exclude staged outside entries, household member emails, and yourself; the typed path keeps its pointed errors ("That's you", "…is in your household — select them above").
 - [ ] **CAL-C3** — Tapping a suggestion **stages** at View Only (nothing sends until the calendar saves); the keyboard stays open across adds; a spinner replaces the add button during the lookup; the "They're on Calen" note clears on typing.
 - [ ] **CAL-C4** — The suggestion dropdown is **not occluded by the keyboard** (RevealWrap) — verify on the small device.
@@ -678,10 +682,10 @@ Spec: [calendar.md](../specs/features/calendar.md)
 ## 13. Trips
 
 - [ ] **TRP-01** — Locked → `AddonLockedView`; purchased → content restored.
-- [ ] **TRP-02** — Trip fields: name, destination (+ placeId/timezone), status, date range or `candidateRanges` while planning, notes, colour, budget, base currency.
+- [ ] **TRP-02** — Trip fields: name, destination (+ placeId/timezone), date range, notes, color, budget, base currency (no status — the trips list sections into Upcoming/Past purely by date).
 - [ ] **TRP-03** — Starts/Ends on the trip, on a booking, and on a journey's Departs/Arrives follow the shared duration rule (§7.2), including the itinerary special case: a start **time** edit only moves the end when the pair had both clocks set.
 - [ ] **TRP-04** — Trip items: title, start/end, location, address, confirmation, cost/currency, url, phone (E.164), notes, free-form details, encrypted attachments; `from-confirmation` parses a booking.
-- [ ] **TRP-05** — A trip contributes only its **date range** (or candidate ranges) as a spanning overlay on the calendar; itinerary items never reach the calendar; nothing in trips repeats (no occurrence scoping).
+- [ ] **TRP-05** — A trip contributes only its **date range** as a spanning overlay on the calendar; itinerary items never reach the calendar; nothing in trips repeats (no occurrence scoping).
 - [ ] **TRP-06** — Trip timeline renders legs/items in order with travel legs.
 - [ ] **TRP-07** — **Expenses & settlement**: household budgets, per-item shares/paid-by, the settlement view, recording settle payments and deleting one. Verify the who-owes-whom math by hand across three households. **⚠️ RISK — no automated coverage at all.**
 - [ ] **TRP-08** — Multi-currency: items in a non-base currency roll into the settlement correctly.
@@ -692,7 +696,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **TRP-13** — Encrypted trip attachments upload/download/delete; an unwrapped upload is rejected. **Known gap:** attachments on a shared trip across households are plaintext — confirm the behavior matches the documented gap and that no user-facing claim contradicts it.
 - [ ] **TRP-14** — Unsaved-changes guard on the trip and trip-item forms; an **existing** trip's outside-sharing changes persist immediately and do **not** count as unsaved, while a new trip's pending invites do.
 - [ ] **TRP-15** — The first-run empty state names the feature's purpose (bookings + splitting expenses with fellow travelers).
-- [ ] **TRP-16** — A **booked trip spanning today** surfaces the destination-forecast card on the Weather screen; absent when there's no active trip, the add-on is locked, or the lookup fails.
+- [ ] **TRP-16** — A **trip spanning today** (destination + both dates set) surfaces the destination-forecast card on the Weather screen; absent when there's no active trip, the add-on is locked, or the lookup fails.
 
 ---
 
@@ -927,7 +931,7 @@ Spec: [notifications.md](../specs/features/notifications.md)
 - [ ] **WX-06** — The chip renders **above** the loading/error branches so a broken source can always be switched away from.
 - [ ] **WX-07** — **No home address** (home source) → the "Set home address" card navigating to Account with the field highlighted; while it shows, the **90-day outlook is hidden**. Other failures show a plain retry message instead.
 - [ ] **WX-08** — Saving the address from there refreshes the Weather screen behind Account **without** re-showing its cached error.
-- [ ] **WX-09** — **Forecast strip** in the month grid (lane 0, tinted with the Weather calendar's colour) shows in Details and Stacked, hides in Compact, splits across week rows, clips at month boundaries, and opens the Weather screen on tap.
+- [ ] **WX-09** — **Forecast strip** in the month grid (lane 0, tinted with the Weather calendar's color) shows in Details and Stacked, hides in Compact, splits across week rows, clips at month boundaries, and opens the Weather screen on tap.
 - [ ] **WX-10** — **Passive weather never prompts** — the day-view rail, List glance, and assistant context use live location only when already granted, else home, else nothing.
 - [ ] **WX-11** — Rain icons: the cloud is **identical** across light/moderate/heavy; only the streak count changes; no blue cloud peeks past the white one.
 - [ ] **WX-12** — Thunderstorm: white cloud + blue drops + gold bolt; no gold/blue edge above or beside the cloud, and the bolt actually renders (the clipped-glyph width bug).
@@ -971,9 +975,9 @@ For each: **not-yet-asked → prompt → granted**, and **denied → the app's r
 - [ ] **A11Y-03** — Calendars rows expose `accessibilityRole:"switch"` with the correct checked state.
 - [ ] **A11Y-04** — **Dynamic Type at the largest accessibility size**: no clipped labels, no unreachable buttons; specifically check the paywall CTA, the viewer restore screen, the Invitees zones, the event form rows, and the bottom sheets' last rows.
 - [ ] **A11Y-05** — Tap targets are ≥44pt — including the ⓘ label rows, the link rows on the paywall (13px text needs its `paddingVertical`), and the Location card's ✕.
-- [ ] **A11Y-06** — Colour contrast in **both** light and dark, especially the accent-tinted text on chips, bars, and calendar cells.
+- [ ] **A11Y-06** — Color contrast in **both** light and dark, especially the accent-tinted text on chips, bars, and calendar cells.
 - [ ] **A11Y-07** — **Reduce Motion**: the bottom-sheet slide, the crossfade between calendar layers, and the e-card preview's bobbing art respect it.
-- [ ] **A11Y-08** — State is never conveyed by colour alone (dimmed/struck cancelled events also carry the strike; the visibility circle also changes shape).
+- [ ] **A11Y-08** — State is never conveyed by color alone (dimmed/struck cancelled events also carry the strike; the visibility circle also changes shape).
 - [ ] **A11Y-09** — Keyboard/hardware-keyboard navigation on iPad if iPad ships.
 
 ---
@@ -982,7 +986,7 @@ For each: **not-yet-asked → prompt → granted**, and **denied → the app's r
 
 Seed a **heavy** household first: ≥1000 events (200 recurring), 500 contacts, 200 tasks/chores, 50 recipes, 20 trips, ≥50 attachments.
 
-- [ ] **PERF-01** — **Cold start to first painted calendar** with a warm cache — target under ~2s, and the first frame carries the user's colours.
+- [ ] **PERF-01** — **Cold start to first painted calendar** with a warm cache — target under ~2s, and the first frame carries the user's colors.
 - [ ] **PERF-02** — Month grid scrolling stays at 60fps through 24+ months of window growth; extending an edge expands only the added months.
 - [ ] **PERF-03** — Density switching is instant on a heavy month (§VW-05).
 - [ ] **PERF-04** — The month/year jump sheet opens and dismisses instantly on a heavy calendar.
@@ -1043,7 +1047,7 @@ Seed a **heavy** household first: ≥1000 events (200 recurring), 500 contacts, 
 
 ## 26. Upgrade, migration & first-launch-after-update
 
-- [ ] **UPG-01** — Install the **currently shipped TestFlight build**, use it (create data, set colours, schedule reminders, sign in), then install the release candidate **over** it. Everything survives: session, replica, prefs, chat history, scheduled reminders.
+- [ ] **UPG-01** — Install the **currently shipped TestFlight build**, use it (create data, set colors, schedule reminders, sign in), then install the release candidate **over** it. Everything survives: session, replica, prefs, chat history, scheduled reminders.
 - [ ] **UPG-02** — A user whose calendar arrangement was **device-only** (pre-account-backed) has it seeded onto the account on the first launch of the new build, not lost.
 - [ ] **UPG-03** — An account whose add-ons were **household-owned** has them after the backfill (§BILL-47) — verify a real customer-shaped account, not just a fresh one.
 - [ ] **UPG-04** — Events damaged by the historical re-seal truncation are repaired by `repairCalendarLaneEvents` on the owner's first unlock (routing restored; the unrecoverable fields are documented as lost).
@@ -1139,8 +1143,8 @@ are the cheapest, highest-yield cases in this document.
 - [ ] **REG-17** — An outside-shared calendar came up **empty for the collaborator** (re-seal dropped 14 sealed fields incl. `calendarType`) → §CAL-C9.
 - [ ] **REG-18** — The owner's own shared-calendar events vanished after sign-out/sign-in → §CAL-C7.
 - [ ] **REG-19** — A newly accepted collaborator waited forever because the owner had signed out and back in → §VIEW-04 / §CAL-C8.
-- [ ] **REG-20** — Calendar colours/order/hidden/deleted/muted reverted on every sign-in → §CMG-09.
-- [ ] **REG-21** — The calendar painted in default colours for a second before recolouring → §ONB-06.
+- [ ] **REG-20** — Calendar colors/order/hidden/deleted/muted reverted on every sign-in → §CMG-09.
+- [ ] **REG-21** — The calendar painted in default colors for a second before recoloring → §ONB-06.
 - [ ] **REG-22** — A free viewer signing in was told "No shared calendars yet" (stale prefs cache from the previous account) → §AUTH-52 / §VIEW-01.
 - [ ] **REG-23** — An owner signing in after a viewer session had Occasions/Chores/Meals zeroed (stale add-on cache) → §AUTH-52 / §BILL-42.
 - [ ] **REG-24** — A brand-new invitee's first registration stranded them on the restore-access screen → §VIEW-02.

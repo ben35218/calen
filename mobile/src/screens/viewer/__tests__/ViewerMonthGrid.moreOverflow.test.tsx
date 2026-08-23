@@ -3,9 +3,11 @@ import { render, cleanup } from '@testing-library/react-native';
 
 // The "+N more" overflow label (calendar.md → Views; billing-plans.md carries
 // the viewer's copy): the week-height math reserves exactly ONE line for it
-// (MORE_H), so the label must never wrap — on narrow cells it shrinks to fit.
-// A wrapped second line falls below the reserved height and is cut off by the
-// cell's overflow: 'hidden' (reported from a 320pt-wide device).
+// (MORE_H), so the label must never wrap — a wrapped second line falls below the
+// reserved height and is cut off by the cell's overflow: 'hidden' (reported from
+// a 320pt-wide device). It is drawn in the CHIP's type, never shrunk: a narrow
+// cell drops the word ("+2") instead of the point size, so the label never reads
+// as smaller, lesser text beside the chips it summarizes.
 
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -68,7 +70,7 @@ const grid = () => (
 afterEach(cleanup);
 
 describe('ViewerMonthGrid — "+N more" overflow label', () => {
-  it('caps a day at three chips and pins the overflow label to one shrink-to-fit line', async () => {
+  it('caps a day at three chips and pins the overflow label to one un-shrunk line', async () => {
     await render(grid());
     const weeks: any[] = mockList.props.data;
     const week = weeks.find((w) => w.cells.some((c: any) => c.extra > 0));
@@ -80,6 +82,10 @@ describe('ViewerMonthGrid — "+N more" overflow label', () => {
     const view = await render(mockList.props.renderItem({ item: week }) as React.ReactElement);
     const more = view.getByText('+2 more');
     expect(more.props.numberOfLines).toBe(1);
-    expect(more.props.adjustsFontSizeToFit).toBe(true);
+    // Never auto-shrunk — the label carries the chips' own 12pt type.
+    expect(more.props.adjustsFontSizeToFit).toBeFalsy();
+    expect(view.getByText('+2 more').props.style).toEqual(
+      expect.objectContaining({ fontSize: 12 }),
+    );
   });
 });

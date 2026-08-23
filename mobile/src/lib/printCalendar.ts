@@ -29,7 +29,7 @@ const BRAND_HTML =
 export type PrintLayout = 'month' | 'agenda';
 
 // A holiday to print, tagged with the holiday calendar it came from so the
-// legend colours it like that calendar (per-country holiday calendars).
+// legend colors it like that calendar (per-country holiday calendars).
 export interface PrintHoliday {
   calendarId: string;
   name: string;
@@ -217,7 +217,7 @@ function itemMarker(calendarId: string, o: PrintOptions, codes: Record<string, s
 const BASE_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   /* Force the print engine to honour our fills — WebKit/expo-print otherwise
-     drops background colours (weekend wash, today pill, coloured dots) and the
+     drops background colors (weekend wash, today pill, colored dots) and the
      sheet prints washed-out. */
   html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body {

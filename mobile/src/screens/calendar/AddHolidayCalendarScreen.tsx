@@ -22,7 +22,7 @@ export default function AddHolidayCalendarScreen() {
   const onPick = (code: (typeof COUNTRIES)[number]['code']) => {
     const existingId = added.get(code);
     // Already added → open its settings; new → the calendar form seeded as a
-    // holiday calendar (name/colour/sharing), which creates it on save.
+    // holiday calendar (name/color/sharing), which creates it on save.
     if (existingId) nav.replace('Holidays', { calendarId: existingId });
     else nav.replace('AddCalendar', { holidayCountry: code });
   };
@@ -54,7 +54,7 @@ export default function AddHolidayCalendarScreen() {
           );
         })}
       </GroupCard>
-      <Text style={styles.hint}>Adds a calendar like "Canadian Holidays" you can colour, hide, or remove.</Text>
+      <Text style={styles.hint}>Adds a calendar like "Canadian Holidays" you can color, hide, or remove.</Text>
     </Screen>
   );
 }

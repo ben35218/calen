@@ -1,7 +1,7 @@
-// Colour maths for the Apple-style *tinted* item styling: a calendar's stored
-// hex becomes a translucent fill plus label colours that stay legible on it.
+// Color maths for the Apple-style *tinted* item styling: a calendar's stored
+// hex becomes a translucent fill plus label colors that stay legible on it.
 //
-// The stored calendar colours are Material 700-weight hues (#1976D2, #388E3C,
+// The stored calendar colors are Material 700-weight hues (#1976D2, #388E3C,
 // #455A64 …). Painted straight onto the app's black canvas as text they land
 // around 3.5:1 — under the WCAG AA floor for body text — so the label is
 // lightened (hue and saturation held) until it clears the target contrast
@@ -64,7 +64,7 @@ export function luminance(c: Rgb): number {
   return 0.2126 * toLinear(c.r) + 0.7152 * toLinear(c.g) + 0.0722 * toLinear(c.b);
 }
 
-/** WCAG contrast ratio between two opaque colours (1–21). */
+/** WCAG contrast ratio between two opaque colors (1–21). */
 export function contrastRatio(a: Rgb, b: Rgb): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
@@ -99,7 +99,7 @@ function hslToRgb({ h, s, l }: { h: number; s: number; l: number }): Rgb {
 
 /**
  * Lighten `c` (hue + saturation held) just far enough to clear `target`
- * contrast against `bg`. Already-bright colours come back untouched; a colour
+ * contrast against `bg`. Already-bright colors come back untouched; a color
  * that can't reach the target even at full lightness comes back as white.
  */
 function lightenToContrast(c: Rgb, bg: Rgb, target: number): Rgb {
@@ -112,10 +112,27 @@ function lightenToContrast(c: Rgb, bg: Rgb, target: number): Rgb {
   return { r: 255, g: 255, b: 255 };
 }
 
+/**
+ * A stored calendar hue lifted to its dark-surface accent, for solid disc
+ * fills (header add/save discs, FABs). The stored hues are Material 600/700
+ * weights — mid-dark tones meant to hold white text on *light* surfaces — so a
+ * solid disc of one on the app's dark chrome reads muted rather than "full".
+ * Apple's dark-mode tints are the same hues, brighter (systemRed #FF3B30 →
+ * #FF453A); this does the equivalent: hue held, saturation nudged, lightness
+ * floored at 0.6. Already-bright colors and non-hex input pass through.
+ */
+export function vividOnDark(hex: string): string {
+  const c = parseHex(hex);
+  if (!c) return hex;
+  const { h, s, l } = rgbToHsl(c);
+  if (l >= 0.6) return hex;
+  return toHex(hslToRgb({ h, s: Math.min(1, s + 0.15), l: 0.6 }));
+}
+
 export type TintedChip = {
-  /** Translucent calendar-colour fill. */
+  /** Translucent calendar-color fill. */
   fill: string;
-  /** Title colour — the calendar hue, lightened to stay legible on `fill`. */
+  /** Title color — the calendar hue, lightened to stay legible on `fill`. */
   label: string;
   /** Secondary line (start time) — the same hue, one step quieter. */
   time: string;
@@ -124,9 +141,9 @@ export type TintedChip = {
 const cache = new Map<string, TintedChip>();
 
 /**
- * The three colours an Apple-style tinted event chip needs, derived from a
- * calendar's colour. Memoized: a busy month asks for the same handful of
- * calendar colours on every row.
+ * The three colors an Apple-style tinted event chip needs, derived from a
+ * calendar's color. Memoized: a busy month asks for the same handful of
+ * calendar colors on every row.
  */
 export function tintedChip(hex: string, alpha = 0.22, canvas: Rgb = CANVAS): TintedChip {
   const key = `${hex}|${alpha}`;
@@ -134,7 +151,7 @@ export function tintedChip(hex: string, alpha = 0.22, canvas: Rgb = CANVAS): Tin
   if (hit) return hit;
 
   const base = parseHex(hex);
-  // Non-hex (a theme token, say): fall back to the flat colour with plain white
+  // Non-hex (a theme token, say): fall back to the flat color with plain white
   // text — the pre-tint styling, which is safe on any fill.
   const value: TintedChip = base
     ? (() => {
@@ -145,7 +162,7 @@ export function tintedChip(hex: string, alpha = 0.22, canvas: Rgb = CANVAS): Tin
           label: toHex(label),
           // Dimmed a step for hierarchy, then pulled back up if that dip took
           // it under the floor (the darkest hues need it). Composited to an
-          // opaque hex rather than left translucent, so the rendered colour is
+          // opaque hex rather than left translucent, so the rendered color is
           // exactly the one the contrast check measured.
           time: toHex(lightenToContrast(blend(label, fillSolid, TIME_ALPHA), fillSolid, TIME_CONTRAST)),
         };

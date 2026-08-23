@@ -361,12 +361,6 @@ export default function ContactFormScreen() {
   // (mobile/CLAUDE.md). Exception: in the import review queue the light header
   // makes that check hard to see and easy to miss while stepping through many
   // contacts, so we tint it the app primary here (review-import flow only).
-  useHeaderCheckButton(nav, {
-    onPress: save,
-    loading: saving,
-    disabled: !composedName,
-    color: inQueue ? colors.primary : undefined,
-  });
 
   // Discard guard. Every field is seeded synchronously from `src`, so the form
   // is ready on first render — snapshot it once as the clean baseline. Dirty =
@@ -378,6 +372,16 @@ export default function ContactFormScreen() {
     if (baselineRef.current === null) baselineRef.current = snapshot;
   }, [snapshot]);
   const dirty = !isSelf && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(nav, {
+    onPress: save,
+    loading: saving,
+    disabled: !composedName,
+    color: inQueue ? colors.primary : undefined,
+    // The import queue's ✓ means "accept this contact", not "save edits" — it
+    // must stay lit even before any change, so only the plain form drives it
+    // by dirtiness.
+    dirty: inQueue ? undefined : dirty,
+  });
   const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   useLayoutEffect(() => {

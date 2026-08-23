@@ -77,7 +77,7 @@ export default function RecipeFormScreen() {
   const { id, initial, scheduleDate } = useRoute<Rt>().params || {};
   const isEdit = !!id;
   const qc = useQueryClient();
-  // Meals/recipes calendar colour (respects user overrides) — the section accent.
+  // Meals/recipes calendar color (respects user overrides) — the section accent.
   const accent = useCalendarColors().colors.recipes;
 
   const lidCounter = useRef(0);
@@ -350,7 +350,7 @@ export default function RecipeFormScreen() {
       qc.invalidateQueries({ queryKey: ['grocery-list'] });
       allowLeave();
       // Pop past the deleted recipe's own detail screen when it's underneath
-      // (the pencil's push), not back onto it — see popCountAfterDelete.
+      // (the Edit button's push), not back onto it — see popCountAfterDelete.
       const { routes, index } = navigation.getState();
       navigation.dispatch(StackActions.pop(popCountAfterDelete(routes, index, id!)));
     },
@@ -431,7 +431,6 @@ export default function RecipeFormScreen() {
     save.mutate();
   };
 
-  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
 
   // Discard guard: prompt before leaving with unsaved edits to any recipe field
   // (title, ingredients, steps, tags, timers, links). Baseline is taken once the
@@ -442,6 +441,7 @@ export default function RecipeFormScreen() {
     if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
   }, [seeded, snapshot]);
   const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, dirty });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const onPhoto = () =>

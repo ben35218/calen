@@ -68,7 +68,7 @@ const PROVIDER_GUIDES: Record<ProviderKey, { name: string; url?: string; steps: 
 
 // Subscribe to an external calendar by ICS/webcal URL (an iCloud public link,
 // Google's "secret address", a school or sports feed…). Two phases: paste +
-// verify the link, then confirm name/colour/sharing. The subscription saves as
+// verify the link, then confirm name/color/sharing. The subscription saves as
 // a CustomCalendar with a feedUrl — always read-only; each member's device
 // fetches the feed itself (lib/calendarFeeds), so events never touch the
 // server. Sharing is the household model minus per-contact access levels and
@@ -153,22 +153,23 @@ export default function SubscribeCalendarScreen() {
       setSaving(false);
     }
   };
-  useHeaderCheckButton(nav, {
-    onPress: save,
-    disabled: !preview || !name.trim(),
-    loading: saving,
-    enabled: !!preview,
-  });
 
   // Discard guard: this create-only screen is ready on first render, so its
   // baseline is the empty form. Dirty = a pasted link or any confirmed-phase
-  // edit (name / colour / sharing) that would be lost on leaving.
+  // edit (name / color / sharing) that would be lost on leaving.
   const baselineRef = useRef<string | null>(null);
   const snapshot = JSON.stringify({ url, name, color, sharedWithHousehold, memberIds: [...memberIds] });
   useEffect(() => {
     if (baselineRef.current === null) baselineRef.current = snapshot;
   }, [snapshot]);
   const dirty = baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(nav, {
+    onPress: save,
+    disabled: !preview || !name.trim(),
+    loading: saving,
+    dirty,
+    enabled: !!preview,
+  });
   const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   const toggleMember = (id: string) =>
@@ -345,7 +346,7 @@ export default function SubscribeCalendarScreen() {
           </GroupCard>
           <Text style={styles.hint}>Everyone sees these events; no one can edit them.</Text>
 
-          <SectionTitle>Colour</SectionTitle>
+          <SectionTitle>Color</SectionTitle>
           <GroupCard style={styles.paletteCard}>
             <ColorPicker value={color} onChange={setColor} options={COLOR_PRESETS} />
           </GroupCard>

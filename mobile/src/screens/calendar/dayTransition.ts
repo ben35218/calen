@@ -28,7 +28,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 //      is invisible and they read as one pill that simply stayed put.
 //   2. **The screens swap while both are empty.** The month animates out FIRST
 //      and only navigates once it has faded (ZOOM_OUT_MS); at that instant both
-//      screens are just the background colour plus that identical bottom
+//      screens are just the background color plus that identical bottom
 //      chrome, so the hard cut has nothing to show.
 //
 // The top pills are the part that genuinely differs (avatar vs. back pill), so

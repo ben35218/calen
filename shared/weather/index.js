@@ -446,6 +446,30 @@ async function loadDailyClimate(address, from, to, { years = 3, geocoder = geoco
   return { days: buildDailyClimate(archiveResults, { dates }) };
 }
 
+// Pure: one row per trip date, the real forecast winning any date it covers
+// and the historical average standing in elsewhere (mirrors buildRangeRecords'
+// forecast-wins rule). Each row is tagged with its `source` so the view never
+// dresses an average as a forecast; dates with no data at all drop out.
+function buildTripWeather({ forecast, climateDays, dates }) {
+  const forecastByDate = {};
+  for (const d of forecast || []) forecastByDate[d.date] = d;
+  const climateByDate = {};
+  for (const c of climateDays || []) climateByDate[c.date] = c;
+  const rows = [];
+  for (const date of dates) {
+    const f = forecastByDate[date];
+    if (f) {
+      rows.push({ date, source: 'forecast', day: f });
+      continue;
+    }
+    const c = climateByDate[date];
+    if (c && (c.avgTempMax != null || c.avgTempMin != null || c.avgPrecip != null)) {
+      rows.push({ date, source: 'typical', climate: c });
+    }
+  }
+  return rows;
+}
+
 // Orchestration: coords -> 90-day seasonal outlook (averages the same window
 // across the past 3 years).
 async function loadOutlookForCoords(lat, lon, { today = new Date(), days = 90 } = {}) {
@@ -472,5 +496,5 @@ module.exports = {
   WMO_DESCRIPTIONS, isMowingDay, buildForecast, geocode, geocodePlace, placeCandidates, fetchWeather, loadWeatherForAddress,
   timezoneForCoords, locationTimezone, regionForAddress, cityForAddress, loadWeatherForCoords,
   fetchWeatherArchive, buildRangeRecords, loadWeatherRange, buildOutlook, loadOutlook, loadOutlookForCoords,
-  buildDailyClimate, loadDailyClimate,
+  buildDailyClimate, loadDailyClimate, buildTripWeather,
 };

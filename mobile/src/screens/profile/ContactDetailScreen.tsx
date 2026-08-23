@@ -9,7 +9,7 @@ import * as Sharing from 'expo-sharing';
 import { cacheDirectory, writeAsStringAsync } from 'expo-file-system/legacy';
 import { contactsApi, Contact } from '../../api';
 import { openRecord } from '../../lib/e2ee';
-import { Card, Screen, ListRow, EmptyState, HeaderIconButton, Button, CenteredLoader } from '../../components/ui';
+import { Card, Screen, ListRow, EmptyState, HeaderTextButton, Button, CenteredLoader } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { formatDisplay } from '../../lib/phone';
 import { normalizeContact } from '../../lib/contactFields';
@@ -73,7 +73,7 @@ export default function ContactDetailScreen() {
     nav.setOptions({
       title: 'Contact',
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit contact" onPress={() => nav.navigate('ContactForm', { id })} />
+        <HeaderTextButton title="Edit" accessibilityLabel="Edit contact" onPress={() => nav.navigate('ContactForm', { id })} />
       ),
     });
   }, [nav, id]);

@@ -20,8 +20,8 @@ export const CALENDAR_COLORS: Record<string, string> = {
 export const RECIPE_ICON = 'silverware-fork-knife';
 export const GROCERY_ICON = 'cart';
 
-// User colour overrides (loaded/persisted by calendarPrefs). `colorOf` resolves
-// the effective colour for a calendar id so chips/bars/icons reflect overrides.
+// User color overrides (loaded/persisted by calendarPrefs). `colorOf` resolves
+// the effective color for a calendar id so chips/bars/icons reflect overrides.
 let colorOverrides: Record<string, string> = {};
 export function applyCalendarColorOverrides(o: Record<string, string>) {
   colorOverrides = o || {};
@@ -417,7 +417,7 @@ export interface DayItems {
   tasks: Task[];
   chores: Chore[];
   recipes: { title: string; recipeId?: string }[];
-  trips: { id: string; name: string; color: string; status?: string }[];
+  trips: { id: string; name: string; color: string }[];
   occasions: CalendarOccasion[];
   grocery: boolean;
 }
@@ -446,7 +446,9 @@ export function itemsForDate(data: CalendarData | undefined, dateStr: string): D
 
   const trips = (data.trips ?? [])
     .filter((t) => (t.ranges ?? []).some((r) => dateStr >= localDate(r.start) && dateStr <= localDate(r.end)))
-    .map((t) => ({ id: t.id, name: t.name, color: t.color || colorOf('trips'), status: t.status }));
+    // A trip wears the Trips calendar's color, like an event wears its
+    // calendar's — trips have no color of their own.
+    .map((t) => ({ id: t.id, name: t.name, color: colorOf('trips') }));
 
   const occasions = (data.occasions ?? []).filter((o) => localDate(o.date) === dateStr);
 
@@ -530,7 +532,7 @@ export function weekBars(data: CalendarData | undefined, weekDates: string[], ma
     for (const r of t.ranges ?? []) {
       const s = localDate(r.start);
       const e = localDate(r.end);
-      if (e >= weekStart && s <= weekEnd) spans.push({ color: t.color || colorOf('trips'), label: t.name, start: s, end: e, tripId: t.id });
+      if (e >= weekStart && s <= weekEnd) spans.push({ color: colorOf('trips'), label: t.name, start: s, end: e, tripId: t.id });
     }
   }
   for (const ev of data.events ?? []) {

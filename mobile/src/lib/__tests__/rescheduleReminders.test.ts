@@ -24,6 +24,12 @@ jest.mock('expo-notifications', () => mockNotifications);
 const mockLoadCalendarData = jest.fn();
 jest.mock('../calendarData', () => ({ loadCalendarData: mockLoadCalendarData }));
 
+// Booking alerts load beside the calendar data (they live outside it — trips
+// never reach the calendar). The loader is self-contained and never throws; the
+// pass just merges what it returns.
+const mockLoadBookingAlerts = jest.fn(async () => [] as any[]);
+jest.mock('../tripAlerts', () => ({ loadBookingAlerts: (...a: unknown[]) => mockLoadBookingAlerts(...(a as [])) }));
+
 const mockSetLocalReminders = jest.fn(async () => {});
 jest.mock('../../api', () => ({
   notificationsApi: { setLocalReminders: mockSetLocalReminders },
@@ -76,6 +82,7 @@ beforeEach(async () => {
   mockNotifications.getPermissionsAsync.mockResolvedValue({ status: 'granted' });
   mockNotifications.getAllScheduledNotificationsAsync.mockResolvedValue([]);
   mockLoadCalendarData.mockResolvedValue(emptyData);
+  mockLoadBookingAlerts.mockResolvedValue([]);
   await storage().clear();
 });
 
@@ -135,6 +142,21 @@ describe('rescheduleReminders', () => {
     await rescheduleReminders();
     await rescheduleReminders();
     expect(mockNotifications.cancelAllScheduledNotificationsAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('merges booking alerts into the scheduled batch', async () => {
+    // A flight 3 hours out with a 2-hour alert, alongside the event alert.
+    mockLoadCalendarData.mockResolvedValue(dataWithOneAlert());
+    mockLoadBookingAlerts.mockResolvedValue([{
+      _id: 'b1', tripId: 't1', type: 'flight', title: 'AC123 to Paris',
+      start: new Date(Date.now() + 3 * 3600_000).toISOString(),
+      reminderMinutes: 120, alert2Minutes: null,
+    }]);
+    const { rescheduleReminders } = freshModule();
+
+    await expect(rescheduleReminders()).resolves.toBe(2);
+    const contents = mockNotifications.scheduleNotificationAsync.mock.calls.map((c: any[]) => c[0].content);
+    expect(contents).toContainEqual({ title: 'AC123 to Paris', body: 'Departs in 2 hours' });
   });
 });
 

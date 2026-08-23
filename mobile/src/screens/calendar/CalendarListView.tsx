@@ -123,7 +123,7 @@ const CalendarListView = forwardRef<TodayHandle, {
   const prevH = monthWeeks(grids.prev).length * WEEK_ROW_H;
   const curH = monthWeeks(grids.cur).length * WEEK_ROW_H;
 
-  // Holidays across the whole window, tagged with their calendar colour.
+  // Holidays across the whole window, tagged with their calendar color.
   const holidaysByDate = useMemo(() => {
     const map: Record<string, string[]> = {};
     for (const cal of holidayCals) {
@@ -265,9 +265,9 @@ const CalendarListView = forwardRef<TodayHandle, {
               >
                 {/* Apple's dark-mode selection: today keeps its primary disc only
                     while it IS the selection; once another day is picked, today
-                    demotes to a bare primary-coloured number and the picked day
+                    demotes to a bare primary-colored number and the picked day
                     carries a white disc with the number knocked out (background
-                    colour through the disc). */}
+                    color through the disc). */}
                 <View
                   style={[
                     styles.dayNumWrap,
@@ -339,8 +339,9 @@ const CalendarListView = forwardRef<TodayHandle, {
         {calQ.isLoading && listEmpty ? <SkeletonList count={3} /> : null}
         {!calQ.isLoading && listEmpty ? <Text style={styles.empty}>Nothing scheduled.</Text> : null}
 
+        {/* A trip row lives under a chosen day, so it opens the trip ON that day. */}
         {day.trips.map((t) => (
-          <ListItem key={`trip-${t.id}`} icon="bag-suitcase" color={t.color} title={t.name} subtitle="Trip" onPress={() => nav.navigate('TripDetail', { id: t.id })} />
+          <ListItem key={`trip-${t.id}`} icon="bag-suitcase" color={t.color} title={t.name} subtitle="Trip" onPress={() => nav.navigate('TripDetail', { id: t.id, date: selected })} />
         ))}
         {holidaysForSelected.map((h) => (
           <ListItem key={`hol-${h.id}`} icon="flag-variant" color={h.color} title={h.name} subtitle="Holiday" />
@@ -397,7 +398,7 @@ const CalendarListView = forwardRef<TodayHandle, {
 export default React.memo(CalendarListView);
 
 // A compact card row for the selected-day list — tighter vertical padding and
-// spacing than the default CardRow, with a leading calendar-colour accent bar.
+// spacing than the default CardRow, with a leading calendar-color accent bar.
 function ListItem({ icon, color, title, subtitle, onPress, faded, strike }: { icon: string; color: string; title: string; subtitle?: string; onPress?: () => void; faded?: boolean; strike?: boolean }) {
   return (
     <CardRow

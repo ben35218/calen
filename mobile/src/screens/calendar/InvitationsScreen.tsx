@@ -185,7 +185,7 @@ function GuestList({ invitation }: { invitation: EventInvitation }) {
 // The shared shell every inbox card renders through: the app-standard Card
 // chrome (radius.lg + hairline border, via components/ui) headed by the
 // list-row leading disc (IconAvatar, tinted per kind — a shared calendar's
-// disc carries that calendar's colour) beside the "«who» «did what»" eyebrow
+// disc carries that calendar's color) beside the "«who» «did what»" eyebrow
 // and the bold title. Kind-specific meta rows, security codes, and the
 // Accept/Decline (shared Button) or Badge status row render as children below.
 // A tappable card (household event → its event, a call → the Interaction)
@@ -239,7 +239,7 @@ export default function InvitationsScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [tab, setTab] = useState<Tab>('new');
   const [error, setError] = useState('');
-  // Feature accents for the kind discs (a trip invite wears the Trips colour).
+  // Feature accents for the kind discs (a trip invite wears the Trips color).
   const { colors: accents } = useCalendarColors();
 
   const invQ = useQuery({

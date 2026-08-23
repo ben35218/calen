@@ -441,7 +441,6 @@ export default function TaskFormScreen() {
     promptItemDelete('task', decryptedTask.current, date, (perform) => del.mutate(perform));
   };
 
-  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent });
 
   // Discard guard: prompt before leaving with unsaved edits to the task fields
   // or its repeat rule. Baseline snapshot is taken once the form has seeded.
@@ -451,6 +450,7 @@ export default function TaskFormScreen() {
     if (seeded && baselineRef.current === null) baselineRef.current = snapshot;
   }, [seeded, snapshot]);
   const dirty = seeded && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, { onPress: onSave, loading: save.isPending, color: accent, dirty });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
   // `onSave` is declared above but only runs from a tap, by which point this
   // holds the current render's value.

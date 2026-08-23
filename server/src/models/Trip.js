@@ -1,25 +1,15 @@
 const mongoose = require('mongoose');
 const { encFields, requiredUntilSealed } = require('./encFields');
 
-const candidateRangeSchema = new mongoose.Schema({
-  start: { type: Date, required: true },
-  end:   { type: Date, required: true },
-  label: String,
-  note:  String,
-}, { _id: true });
-
 const tripSchema = new mongoose.Schema({
   userId:             { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   name:               { type: String, required: requiredUntilSealed },
   destination:        String,
   destinationPlaceId: String,
   destinationTz:      String,   // display label only, e.g. "Europe/Rome"
-  status:             { type: String, enum: ['considering', 'booked', 'completed'], default: 'considering' },
-  candidateRanges:    [candidateRangeSchema],
-  startDate:          Date,     // confirmed window (booked stage)
+  startDate:          Date,
   endDate:            Date,
   notes:              String,
-  color:              { type: String, default: '#5E35B1' },
   budget:             Number,                                  // planned spend, in baseCurrency
   baseCurrency:       { type: String, default: 'CAD' },        // currency the roll-up totals into
   collaborators:      [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // outside-household users who accepted a share

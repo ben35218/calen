@@ -81,7 +81,7 @@ describe('viewer shell helpers', () => {
   describe('calendarColor', () => {
     const cals = [{ id: 'custom-shared', name: 'Soccer', color: '#123456' }] as CustomCalendar[];
 
-    it('resolves a shared calendar’s own colour', () => {
+    it('resolves a shared calendar’s own color', () => {
       expect(calendarColor(cals, 'custom-shared')).toBe('#123456');
     });
 

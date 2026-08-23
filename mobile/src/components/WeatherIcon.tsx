@@ -12,7 +12,7 @@ const WHITE = '#FFFFFF';
 const MOON = '#EDEFF5';
 const RAIN = '#4FA3E3';
 
-// Partly cloudy is two-tone (icon fonts are single-colour): gold sun / pale
+// Partly cloudy is two-tone (icon fonts are single-color): gold sun / pale
 // moon peeking out top-right behind a solid white cloud.
 function PartlyCloudy({ night, size, style }: { night: boolean; size: number; style?: StyleProp<TextStyle> }) {
   return (
@@ -86,7 +86,7 @@ function Thunderstorm({ size, style }: { size: number; style?: StyleProp<TextSty
   const boltWidth = size * 0.33; // x 0.34–0.67 window: the bolt, clear of both drop pairs
   return (
     <View style={[{ width: size, height: size }, style as StyleProp<ViewStyle>]}>
-      {/* Lower band, blue: the rain drops (and the bolt, re-coloured below). */}
+      {/* Lower band, blue: the rain drops (and the bolt, re-colored below). */}
       <View style={{ position: 'absolute', top: bandTop, left: 0, width: size, height: size - bandTop, overflow: 'hidden' }}>
         <Ionicons name="thunderstorm" size={size} color={RAIN} style={{ position: 'absolute', top: -bandTop, left: 0, width: size }} />
       </View>

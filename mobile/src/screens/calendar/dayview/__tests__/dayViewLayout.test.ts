@@ -97,7 +97,7 @@ describe('normalizeDay routing', () => {
     expect(timed[1].travelMinutes).toBeUndefined();
   });
 
-  it('badges occasions with their kind icon in the birthdays colour', () => {
+  it('badges occasions with their kind icon in the birthdays color', () => {
     const day = emptyDay();
     day.occasions = [
       { id: 'o1', kind: 'birthday', name: 'Ada', label: 'Birthday', date: '2026-07-27', contactId: 'p1' },
@@ -121,8 +121,8 @@ describe('normalizeDay routing', () => {
     expect(allDay.find((a) => a.kind === 'recipe')).toMatchObject({
       title: 'Tacos', icon: RECIPE_ICON, color: CAL_COLORS.recipes, id: 'r1',
     });
-    // Both take the Meals calendar's colour — the shopping day is part of that
-    // calendar, not a colour of its own (it used to be a hard-coded yellow).
+    // Both take the Meals calendar's color — the shopping day is part of that
+    // calendar, not a color of its own (it used to be a hard-coded yellow).
     expect(allDay.find((a) => a.kind === 'grocery')).toMatchObject({
       title: 'Grocery shopping', icon: GROCERY_ICON, color: CAL_COLORS.recipes,
     });
@@ -163,7 +163,7 @@ describe('normalizeDay routing', () => {
     expect(task).toMatchObject({ kind: 'task', muted: true });
   });
 
-  it('renders chores tinted in the Chores colour, badged with their own icon (not muted)', () => {
+  it('renders chores tinted in the Chores color, badged with their own icon (not muted)', () => {
     const day = emptyDay();
     day.chores = [{ _id: 'c1', title: 'Garbage + Blue Bin', icon: 'mdi-trash-can' }] as any;
     const { allDay, timed } = normalizeDay(day, [], '2026-07-28', CAL_COLORS, NO_STATUS);

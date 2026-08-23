@@ -15,9 +15,9 @@ import {
   MonthWindow, YearMonth, initialWindow, extendPast, extendFuture, ensureCovers,
   monthsIn, monthRange, ymKey, mergeCalendarChunks,
 } from '../../lib/calendarWindow';
-import { monthBlockWeeks, clipBars, weekLayout, type WeekCoreMetrics } from '../../lib/monthGrid';
+import { monthBlockWeeks, cellItemSpace, clipBars, fitCellChips, fitIconRow, weekLayout, type WeekCoreMetrics } from '../../lib/monthGrid';
 import { MonthJumpHeaderButton } from './MonthJumpSheet';
-import { loadPassiveForecast } from '../../lib/weatherSource';
+import { loadCalendarForecast } from '../../lib/weatherSource';
 import WeatherIcon from '../../components/WeatherIcon';
 import { useAuth } from '../../store/auth';
 import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell, GROCERY_ICON, RECIPE_ICON } from '../../lib/calendar';
@@ -61,12 +61,19 @@ const HEADER_MONTH_H = 40; // sticky "Month Year" row in the fixed header
 const WEEKDAY_ROW_H = 26;
 const DAY_NUM_H = 26;     // centered date number
 const MONTH_LABEL_H = 16; // the "Aug" marker above the 1st (month-start rows only)
-const BAR_H = 17;         // one spanning-bar lane
 const CHIP_H1 = 20;       // one-line chip slot (incl. margin)
 const CHIP_H2 = 34;       // two-line chip slot (incl. margin)
 const CHIP_H3 = 48;       // three-line chip slot (title + start time; incl. margin)
-const MORE_H = 14;        // "+N more"
-const ICON_ROW_H = 22;    // task/chore/recipe/grocery icon row
+// A spanning bar is a one-line event, so its lane IS the one-line chip slot —
+// same 18pt body, same 2pt gap. Sizing it shorter made multi-day events read as
+// a squeezed second-class row against the chips right below them.
+const BAR_H = CHIP_H1;    // one spanning-bar lane
+const WEATHER_H = 17;     // the forecast lane (a glyph + a 9pt temp, not an event)
+const MORE_H = 16;        // "+N more" — one line of chip-sized type
+const ICON_ROW_H = 22;    // task/chore/recipe/grocery icon row (one line, never wrapped)
+const ICON_SIZE = 16;     // one glyph in that row
+const ICON_GAP = 3;       // …and the space between two of them
+const ICON_DIGIT_W = 7;   // one digit of an IconChip's count (11pt bold)
 const VPAD = 8;
 const MIN_WEEK = 96;
 const MAX_WEEK = 210;
@@ -108,6 +115,11 @@ const chipTimeLabel = (iso: string) =>
 const titleLines = (charsPerLine: number, label: string) => (label.trim().length > charsPerLine ? 2 : 1);
 const chipRows = (charsPerLine: number, chip: Chip) => Math.min(3, titleLines(charsPerLine, chip.label) + (chip.time ? 1 : 0));
 const chipHeight = (rows: number) => (rows >= 3 ? CHIP_H3 : rows === 2 ? CHIP_H2 : CHIP_H1);
+// The overflow label is drawn in the CHIP's type (muted, not shrunk), so on a
+// cell too narrow for the word we drop "more" rather than the point size — a
+// smaller-than-the-chips label reads as a different, lesser kind of text.
+const moreLabel = (charsPerLine: number, n: number) =>
+  `+${n} more`.length <= charsPerLine ? `+${n} more` : `+${n}`;
 
 // Whether this app launch already auto-opened an in-progress trip (module-level
 // so returning to the calendar later in the session doesn't re-hijack it).
@@ -115,12 +127,19 @@ let autoOpenedTrip = false;
 
 type Chip = { key: string; label: string; color: string; time?: string; eventId?: string; cancelled?: boolean; reschedulePending?: boolean };
 type CellContent = { chips: Chip[]; tasks: Task[]; chores: Chore[]; recipes: RecipeCell[]; grocery: boolean; occasions: CalendarOccasion[] };
+// Everything that isn't an event chip collapses into the one glyph row.
+const hasIconRow = (c: CellContent) =>
+  c.tasks.length > 0 || c.chores.length > 0 || c.recipes.length > 0 || c.grocery || c.occasions.length > 0;
+// The chips a cell would draw, at their slot heights — the unit both the
+// height math and the fit-to-row pass measure in.
+const chipSlots = (charsPerLine: number, c: CellContent) =>
+  c.chips.slice(0, CHIP_MAX).map((chip) => chipHeight(chipRows(charsPerLine, chip)));
 // `outside` = a day of the neighbouring month inside a boundary week. It renders
 // as a blank spacer (no number, nothing tappable) — that blankness is what
 // separates one month block from the next. See lib/monthGrid.
 type RenderCell = { date: string; day: number; isToday: boolean; outside: boolean; content: CellContent };
 // The 7-day forecast strip's slice through one week (see the weather lane below).
-type WeekWeather = { startCol: number; endCol: number; days: { col: number; code: number; tempMax: number }[] };
+type WeekWeather = { startCol: number; endCol: number; days: { col: number; code: number; tempMax: number; place?: string; tripId?: string }[] };
 type RenderWeek = {
   key: string; ym: YearMonth; cells: RenderCell[]; bars: WeekBar[]; weather: WeekWeather | null;
   height: number; headerH: number; monthLabel: string;
@@ -134,7 +153,7 @@ type RenderWeek = {
 type WeekCore = {
   cells: RenderCell[];
   bars: WeekBar[];
-  wxDays: { col: number; code: number; tempMax: number }[];
+  wxDays: { col: number; code: number; tempMax: number; place?: string; tripId?: string }[];
   metrics: WeekCoreMetrics;
 };
 
@@ -145,6 +164,7 @@ const WEEK_LAYOUT = {
   dayNumH: DAY_NUM_H,
   monthLabelH: MONTH_LABEL_H,
   barH: BAR_H,
+  weatherH: WEATHER_H,
   vpad: VPAD,
   compactWeek: COMPACT_WEEK,
   stackBarH: STACK_BAR_H,
@@ -152,6 +172,8 @@ const WEEK_LAYOUT = {
   minWeek: MIN_WEEK,
   maxWeek: MAX_WEEK,
 };
+// What a Details cell must keep room for before it takes any chips.
+const CELL_FIT = { moreH: MORE_H, iconRowH: ICON_ROW_H };
 
 // The scrolling month grid plus its fixed header rows (sticky Month Year +
 // weekday labels). A content layer inside CalendarScreen's view toggle: the
@@ -246,14 +268,14 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
   const weatherOn = visibility.weather !== false;
   const weatherQ = useQuery({
     queryKey: ['weather', 'current'],
-    queryFn: () => loadPassiveForecast(),
+    queryFn: () => loadCalendarForecast(),
     enabled: weatherOn,
   });
   const forecastByDate = useMemo(() => {
-    const map: Record<string, { code: number; tempMax: number }> = {};
+    const map: Record<string, { code: number; tempMax: number; place?: string; tripId?: string }> = {};
     if (weatherOn) {
       for (const d of weatherQ.data?.forecast ?? []) {
-        map[d.date] = { code: d.weatherCode, tempMax: d.tempMax };
+        map[d.date] = { code: d.weatherCode, tempMax: d.tempMax, place: d.place, tripId: d.tripId };
       }
     }
     return map;
@@ -268,13 +290,13 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
     if (!navigation.isFocused()) return;
     const today = ymd(new Date());
     const current = (data.trips ?? []).find(
-      (t) => t.status !== 'considering' && (t.ranges ?? []).some((r) => ld(r.start) <= today && today <= ld(r.end)),
+      (t) => (t.ranges ?? []).some((r) => ld(r.start) <= today && today <= ld(r.end)),
     );
     if (current) navigation.navigate('TripDetail', { id: current.id });
   }, [data, navigation]);
 
   // Holidays from every visible per-country calendar, each tagged with its own
-  // colour so a day can carry (say) Canadian and US holidays side by side.
+  // color so a day can carry (say) Canadian and US holidays side by side.
   const holidaysByDate = useMemo(() => {
     const map: Record<string, { id: string; name: string; color: string }[]> = {};
     for (const cal of holidayCals) {
@@ -387,12 +409,12 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
       };
     };
 
+    // What the cell would LIKE — the row is sized from this, then clamped to
+    // maxWeek; what actually renders is refit to the row it got (see fitCellChips
+    // in WeekRow, which measures the same chips against the same constants).
     const cellItemsHeight = (c: CellContent): number => {
-      const chipsH = c.chips
-        .slice(0, CHIP_MAX)
-        .reduce((s, chip) => s + chipHeight(chipRows(charsPerLine, chip)), 0);
-      const hasIcons = c.tasks.length > 0 || c.chores.length > 0 || c.recipes.length > 0 || c.grocery || c.occasions.length > 0;
-      return chipsH + (c.chips.length > CHIP_MAX ? MORE_H : 0) + (hasIcons ? ICON_ROW_H : 0);
+      const chipsH = chipSlots(charsPerLine, c).reduce((s, h) => s + h, 0);
+      return chipsH + (c.chips.length > CHIP_MAX ? MORE_H : 0) + (hasIconRow(c) ? ICON_ROW_H : 0);
     };
 
     // Stacked: every single-day item is one thin bar (chips + a bar per icon
@@ -438,7 +460,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
         // construction — the forecast is a run of consecutive days).
         const wxDays = cells.flatMap((c, col) => {
           const wx = c.outside ? undefined : forecastByDate[c.date];
-          return wx ? [{ col, code: wx.code, tempMax: wx.tempMax }] : [];
+          return wx ? [{ col, code: wx.code, tempMax: wx.tempMax, place: wx.place, tripId: wx.tripId }] : [];
         });
         // Per-column measurements the layout pass needs: how many bar lanes
         // actually cover the column, and how tall its items stack in each of
@@ -520,7 +542,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
   // they had tapped Today the moment it appeared. initialScrollIndex only
   // positions the first frame, using pre-data week heights (all MIN_WEEK), and
   // a cold launch resolves its inputs in stages *after* that frame: the prefs
-  // read (visibility, colours, the fresh-install holiday-calendar seed), the
+  // read (visibility, colors, the fresh-install holiday-calendar seed), the
   // replica/inline sync, refreshCustomCalendars' ['calendar'] invalidation, the
   // owned-add-on cache, the weather strip. Every one of those re-measures the
   // week rows, so today's week slides down offsets that a single snap on the
@@ -704,7 +726,7 @@ const WeekRow = React.memo(function WeekRow({
   // The weather lane (when this week holds forecast days) sits above the
   // event-bar lanes: every cell's content shifts down by one lane so the
   // rows stay aligned across the week.
-  const weatherPad = week.weather ? BAR_H : 0;
+  const weatherPad = week.weather ? WEATHER_H : 0;
   return (
     <View style={[styles.weekRow, week.isMonthStart && styles.monthStartRow, { height: week.height }]}>
       {week.cells.map((cell, col) => {
@@ -720,6 +742,22 @@ const WeekRow = React.memo(function WeekRow({
           (max, b) => (col >= b.startCol && col <= b.endCol ? Math.max(max, b.lane + 1) : max),
           0,
         );
+
+        // Details: fit the cell's items to the row it actually got. A week is
+        // sized by its busiest day but clamped at MAX_WEEK, so on the busiest
+        // days the ask exceeds the row — rather than let overflow:'hidden' saw
+        // the last thing in flow (the icon row) in half, drop whole chips into
+        // the "+N more" count the day is already showing.
+        const fit =
+          density === 'details'
+            ? fitCellChips(
+                chipSlots(charsPerLine, c),
+                c.chips.length,
+                hasIconRow(c),
+                cellItemSpace(week.height, week.headerH, weatherPad, cellLanes, WEEK_LAYOUT),
+                CELL_FIT,
+              )
+            : { shown: 0, more: 0 };
 
         // Compact: one colored dot per source — spans covering this day plus
         // each single-day item — capped so a busy day stays tidy.
@@ -813,9 +851,9 @@ const WeekRow = React.memo(function WeekRow({
             <View style={styles.cellItems}>
               {/* Event chips open that event; holiday/birthday chips fall back to
                   the day view (they have no detail screen). */}
-              {c.chips.slice(0, CHIP_MAX).map((chip) => {
+              {c.chips.slice(0, fit.shown).map((chip) => {
                 // Apple's tinted styling: a translucent wash of the calendar's
-                // colour behind the calendar's colour as text (lightened to
+                // color behind the calendar's color as text (lightened to
                 // clear the contrast floor — see lib/color).
                 const tint = tintedChip(chip.color);
                 return (
@@ -850,94 +888,12 @@ const WeekRow = React.memo(function WeekRow({
                 </TouchableOpacity>
                 );
               })}
-              {/* The week-height math reserves exactly one line (MORE_H), so the
-                  label must never wrap — on narrow cells it shrinks to fit instead. */}
-              {c.chips.length > CHIP_MAX ? <FixedText style={styles.moreText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>+{c.chips.length - CHIP_MAX} more</FixedText> : null}
+              {/* One reserved line (MORE_H), never wrapped: a narrow cell drops
+                  the word ("+2") rather than shrinking below the chips' type. */}
+              {fit.more > 0 ? <FixedText style={styles.moreText} numberOfLines={1} ellipsizeMode="clip">{moreLabel(charsPerLine, fit.more)}</FixedText> : null}
               {showSkeleton && !c.chips.length ? <CellSkeleton date={cell.date} density={density} /> : null}
 
-              {/* Each icon opens its own item view; a task/recipe icon aggregates
-                  multiple items, so it opens the item when it's the only one and
-                  falls back to the day/kitchen view when there are several. */}
-              <View style={styles.iconRow}>
-                {c.occasions.slice(0, 3).map((o) => (
-                  <TouchableOpacity
-                    key={`occ-${o.id}`}
-                    hitSlop={6}
-                    onPress={() => navigation.navigate('Birthdays', { focus: occasionFocusFrom(o) })}
-                    accessibilityLabel={`${o.name} — ${o.kind}`}
-                  >
-                    <MaterialCommunityIcons name={occasionIcon(o.kind) as any} size={16} color={calColors.birthdays} />
-                  </TouchableOpacity>
-                ))}
-                {c.tasks.length > 0 ? (
-                  <TouchableOpacity
-                    hitSlop={6}
-                    onPress={() =>
-                      c.tasks.length === 1
-                        ? navigation.navigate('TaskDetail', { id: c.tasks[0]._id, date: cell.date })
-                        : openDayView(navigation, cell.date)
-                    }
-                    // Long-press edits the single task; several stacked → day view to pick one.
-                    onLongPress={() =>
-                      c.tasks.length === 1
-                        ? navigation.navigate('TaskForm', { id: c.tasks[0]._id, date: cell.date })
-                        : openDayView(navigation, cell.date)
-                    }
-                    delayLongPress={LONG_PRESS_MS}
-                  >
-                    <IconChip
-                      count={c.tasks.length}
-                      icon={
-                        c.tasks.length === 1
-                          ? resolveTaskIcon(c.tasks[0].icon, typeof c.tasks[0].categoryId === 'object' ? c.tasks[0].categoryId?.name : null)
-                          : 'wrench'
-                      }
-                      color={calColors.maintenance}
-                    />
-                  </TouchableOpacity>
-                ) : null}
-                {c.chores.slice(0, 3).map((ch) => (
-                  <TouchableOpacity
-                    key={`ch-${ch._id}`}
-                    hitSlop={6}
-                    onPress={() => navigation.navigate('ChoreDetail', { id: ch._id, date: cell.date })}
-                    onLongPress={() => navigation.navigate('ChoreForm', { id: ch._id, date: cell.date })}
-                    delayLongPress={LONG_PRESS_MS}
-                  >
-                    <MaterialCommunityIcons name={mdiName(ch.icon) as any} size={16} color={calColors.chores} />
-                  </TouchableOpacity>
-                ))}
-                {c.recipes.length > 0 ? (
-                  <TouchableOpacity
-                    hitSlop={6}
-                    onPress={() => {
-                      const t = recipeIconTarget(c.recipes, cell.date);
-                      if (t.screen === 'RecipeDetail') navigation.navigate('RecipeDetail', t.params);
-                      else openDayView(navigation, t.params.date);
-                    }}
-                    // Long-press edits the single scheduled recipe; several → day view to pick one.
-                    onLongPress={() => {
-                      const id = c.recipes.length === 1 ? c.recipes[0].recipeId : undefined;
-                      if (id) navigation.navigate('RecipeForm', { id });
-                      else openDayView(navigation, cell.date);
-                    }}
-                    delayLongPress={LONG_PRESS_MS}
-                  >
-                    <IconChip count={c.recipes.length} icon={RECIPE_ICON} color={calColors.recipes} />
-                  </TouchableOpacity>
-                ) : null}
-                {c.grocery ? (
-                  <TouchableOpacity
-                    hitSlop={6}
-                    // Opens the shopping list for that day's period, and leaves
-                    // the day itself queued for the Planner pane — flipping over
-                    // to it lands on the shopping day, highlighted.
-                    onPress={() => navigation.navigate('KitchenHome', { pane: 'grocery', weekStart: cell.date, scrollToDate: cell.date })}
-                  >
-                    <MaterialCommunityIcons name={GROCERY_ICON as any} size={16} color={calColors.recipes} />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
+              <CellIconRow c={c} date={cell.date} width={cellSize - 4} calColors={calColors} />
             </View>
             </>
             )}
@@ -947,11 +903,22 @@ const WeekRow = React.memo(function WeekRow({
 
       {/* 7-day forecast strip (the Weather calendar's toggle): one translucent
           lane above the event bars, a per-day segment of condition icon + high
-          temp. Tapping it opens the Weather screen. */}
+          temp. Tapping it is day-aware: a trip day's segment shows the
+          destination's weather, so it opens THAT TRIP (whose view holds the
+          full trip forecast); any other day opens the Weather screen. */}
       {week.weather ? (
         <TouchableOpacity
           activeOpacity={0.7}
-          onPress={() => navigation.navigate('Weather')}
+          onPress={(e) => {
+            // Same locationX → column arithmetic as the spanning bars below.
+            const col = (week.weather?.startCol ?? 0) + Math.floor(e.nativeEvent.locationX / cellSize);
+            const tripId = week.weather?.days.find((d) => d.col === col)?.tripId;
+            // Like the trip bar below: the tapped day rides along, so the trip
+            // opens on THAT day's itinerary — whose top card is the
+            // destination forecast for exactly the segment that was tapped.
+            if (tripId) navigation.navigate('TripDetail', { id: tripId, date: week.cells[col]?.date, focus: 'weather' });
+            else navigation.navigate('Weather');
+          }}
           style={[
             styles.weatherStrip,
             {
@@ -964,6 +931,9 @@ const WeekRow = React.memo(function WeekRow({
         >
           {week.weather.days.map((d) => (
             <View key={d.col} style={styles.weatherSeg}>
+              {/* A day spent on a trip shows the destination's weather — the
+                  airplane is what says "not home". */}
+              {d.place ? <MaterialCommunityIcons name="airplane" size={9} color={colors.textMuted} /> : null}
               <WeatherIcon code={d.code} size={11} />
               <FixedText style={styles.weatherSegTemp} numberOfLines={1}>{Math.round(d.tempMax)}°</FixedText>
             </View>
@@ -984,17 +954,17 @@ const WeekRow = React.memo(function WeekRow({
           key={bar.key}
           activeOpacity={0.7}
           onPress={(e) => {
-            if (bar.tripId) { navigation.navigate('TripDetail', { id: bar.tripId }); return; }
+            const offset = Math.floor(e.nativeEvent.locationX / cellSize);
+            const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
+            // A trip bar opens the trip ON the tapped day — the day itinerary,
+            // not the overview grid; the trip's back chevron surfaces the grid.
+            if (bar.tripId) { navigation.navigate('TripDetail', { id: bar.tripId, date: week.cells[col].date }); return; }
             // A multi-day event bar opens the event itself; the tapped column
             // seeds the day the Edit form returns to.
             if (bar.eventId) {
-              const offset = Math.floor(e.nativeEvent.locationX / cellSize);
-              const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
               navigation.navigate('EventDetail', { eventId: bar.eventId, date: week.cells[col].date });
               return;
             }
-            const offset = Math.floor(e.nativeEvent.locationX / cellSize);
-            const col = Math.min(bar.endCol, bar.startCol + Math.max(0, offset));
             openDayView(navigation, week.cells[col].date);
           }}
           // Long-press a spanning bar to edit the event/trip it represents.
@@ -1337,6 +1307,146 @@ function IconChip({ count, icon, color }: { count: number; icon: string; color: 
   );
 }
 
+// Everything on a day that ISN'T an event chip, as one line of glyphs at the
+// foot of the cell: occasions, maintenance, chores, meals, grocery — in that
+// order, which is also the order they're dropped in when the cell is narrow.
+//
+// The row is ONE line, always. The week-height math reserves a single
+// ICON_ROW_H for it, so a `flexWrap` second line falls outside the reserved
+// height and is sheared off by the cell's overflow: 'hidden' — the row measures
+// its glyphs against the cell's width and simply renders fewer instead. Nothing
+// is lost: the cell's own tap opens the day, which lists all of them.
+function CellIconRow({
+  c, date, width, calColors,
+}: {
+  c: CellContent;
+  date: string;
+  width: number;
+  calColors: Record<string, string>;
+}) {
+  const navigation = useNavigation<Nav>();
+  // Slot widths are measured, not guessed at render: a bare glyph is ICON_SIZE,
+  // an IconChip adds its count digits.
+  const chipW = (n: number) => ICON_SIZE + (n > 1 ? 1 + ICON_DIGIT_W * String(n).length : 0);
+  const slots: { key: string; w: number; el: React.ReactNode }[] = [];
+
+  for (const o of c.occasions.slice(0, 3)) {
+    slots.push({
+      key: `occ-${o.id}`,
+      w: ICON_SIZE,
+      el: (
+        <TouchableOpacity
+          key={`occ-${o.id}`}
+          hitSlop={6}
+          onPress={() => navigation.navigate('Birthdays', { focus: occasionFocusFrom(o) })}
+          accessibilityLabel={`${o.name} — ${o.kind}`}
+        >
+          <MaterialCommunityIcons name={occasionIcon(o.kind) as any} size={ICON_SIZE} color={calColors.birthdays} />
+        </TouchableOpacity>
+      ),
+    });
+  }
+  if (c.tasks.length > 0) {
+    slots.push({
+      key: 'tasks',
+      w: chipW(c.tasks.length),
+      el: (
+        <TouchableOpacity
+          key="tasks"
+          hitSlop={6}
+          onPress={() =>
+            c.tasks.length === 1
+              ? navigation.navigate('TaskDetail', { id: c.tasks[0]._id, date })
+              : openDayView(navigation, date)
+          }
+          // Long-press edits the single task; several stacked → day view to pick one.
+          onLongPress={() =>
+            c.tasks.length === 1
+              ? navigation.navigate('TaskForm', { id: c.tasks[0]._id, date })
+              : openDayView(navigation, date)
+          }
+          delayLongPress={LONG_PRESS_MS}
+        >
+          <IconChip
+            count={c.tasks.length}
+            icon={
+              c.tasks.length === 1
+                ? resolveTaskIcon(c.tasks[0].icon, typeof c.tasks[0].categoryId === 'object' ? c.tasks[0].categoryId?.name : null)
+                : 'wrench'
+            }
+            color={calColors.maintenance}
+          />
+        </TouchableOpacity>
+      ),
+    });
+  }
+  for (const ch of c.chores.slice(0, 3)) {
+    slots.push({
+      key: `ch-${ch._id}`,
+      w: ICON_SIZE,
+      el: (
+        <TouchableOpacity
+          key={`ch-${ch._id}`}
+          hitSlop={6}
+          onPress={() => navigation.navigate('ChoreDetail', { id: ch._id, date })}
+          onLongPress={() => navigation.navigate('ChoreForm', { id: ch._id, date })}
+          delayLongPress={LONG_PRESS_MS}
+        >
+          <MaterialCommunityIcons name={mdiName(ch.icon) as any} size={ICON_SIZE} color={calColors.chores} />
+        </TouchableOpacity>
+      ),
+    });
+  }
+  if (c.recipes.length > 0) {
+    slots.push({
+      key: 'recipes',
+      w: chipW(c.recipes.length),
+      el: (
+        <TouchableOpacity
+          key="recipes"
+          hitSlop={6}
+          onPress={() => {
+            const t = recipeIconTarget(c.recipes, date);
+            if (t.screen === 'RecipeDetail') navigation.navigate('RecipeDetail', t.params);
+            else openDayView(navigation, t.params.date);
+          }}
+          // Long-press edits the single scheduled recipe; several → day view to pick one.
+          onLongPress={() => {
+            const id = c.recipes.length === 1 ? c.recipes[0].recipeId : undefined;
+            if (id) navigation.navigate('RecipeForm', { id });
+            else openDayView(navigation, date);
+          }}
+          delayLongPress={LONG_PRESS_MS}
+        >
+          <IconChip count={c.recipes.length} icon={RECIPE_ICON} color={calColors.recipes} />
+        </TouchableOpacity>
+      ),
+    });
+  }
+  if (c.grocery) {
+    slots.push({
+      key: 'grocery',
+      w: ICON_SIZE,
+      el: (
+        <TouchableOpacity
+          key="grocery"
+          hitSlop={6}
+          // Opens the shopping list for that day's period, and leaves the day
+          // itself queued for the Planner pane — flipping over to it lands on
+          // the shopping day, highlighted.
+          onPress={() => navigation.navigate('KitchenHome', { pane: 'grocery', weekStart: date, scrollToDate: date })}
+        >
+          <MaterialCommunityIcons name={GROCERY_ICON as any} size={ICON_SIZE} color={calColors.recipes} />
+        </TouchableOpacity>
+      ),
+    });
+  }
+
+  if (!slots.length) return null;
+  const n = fitIconRow(slots.map((s) => s.w), width, ICON_GAP);
+  return <View style={styles.iconRow}>{slots.slice(0, n).map((s) => s.el)}</View>;
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   content: { paddingHorizontal: spacing.md, paddingBottom: 96 },
@@ -1362,7 +1472,7 @@ const styles = StyleSheet.create({
   spanBarTinted: { borderLeftWidth: 3, overflow: 'hidden' },
   spanBarText: { fontSize: 12, lineHeight: 13, fontWeight: '600' },
   // The 7-day forecast lane: translucent weather tint, one segment per day.
-  weatherStrip: { position: 'absolute', height: BAR_H - 2, borderRadius: 3, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
+  weatherStrip: { position: 'absolute', height: WEATHER_H - 2, borderRadius: 3, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
   weatherSeg: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2 },
   weatherSegTemp: { fontSize: 9, fontWeight: '600', color: colors.text },
   cellItems: { flex: 1 },
@@ -1373,13 +1483,17 @@ const styles = StyleSheet.create({
   stackBar: { height: STACK_BAR_H - 3, borderRadius: 2, marginBottom: 2, marginHorizontal: 1 },
   chipCancelled: { opacity: 0.45 },
   chipRescheduled: { opacity: 0.6 },
-  // Chip title/time colours are per-chip (the calendar's tint, see lib/color);
-  // these carry only the metrics, with a safe default colour.
+  // Chip title/time colors are per-chip (the calendar's tint, see lib/color);
+  // these carry only the metrics, with a safe default color.
   chipText: { fontSize: 12, lineHeight: 13, color: colors.text, fontWeight: '600' },
   chipTextCancelled: { textDecorationLine: 'line-through' },
   chipTime: { fontSize: 10, lineHeight: 12, color: colors.textMuted, fontWeight: '600', marginTop: 1 },
-  moreText: { fontSize: 11, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
-  iconRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 3, marginBottom: 2 },
+  // Same type as a chip title, muted — the overflow affordance is an event line
+  // that didn't fit, not a footnote (Apple/Google both draw it this way).
+  moreText: { fontSize: 12, lineHeight: 14, fontWeight: '600', color: colors.textMuted, paddingLeft: 2 },
+  // No flexWrap: the row is one reserved line, and CellIconRow drops the glyphs
+  // that don't fit rather than wrapping them below the cell's reserved height.
+  iconRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: ICON_GAP, marginBottom: 2 },
   iconChip: { flexDirection: 'row', alignItems: 'center', gap: 1 },
   iconCount: { fontSize: 11, fontWeight: '700' },
 

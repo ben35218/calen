@@ -1,7 +1,7 @@
 ---
 title: First-run onboarding
 status: current
-last-verified: c2d18c0+ (2026-08-04); the splash gate now also holds for the calendar arrangement (`useCalendarPrefsReady`), so the calendar's first frame carries the user's colours instead of the app defaults (2026-08-04); the assistant feature bullet now says "scans photos" (was "scans receipts" — receipts are never AI-scanned; copy-only, matches billing-plans.md action-label truthfulness) (2026-07-30); first-run orientation screen added between sign-in and the app (before the unlock paywall), gated by a per-install AsyncStorage flag; names the feature calendars + Calen assistant, points at the Calendars entry point, and states the E2EE guarantee
+last-verified: c2d18c0+ (2026-08-04); the splash gate now also holds for the calendar arrangement (`useCalendarPrefsReady`), so the calendar's first frame carries the user's colors instead of the app defaults (2026-08-04); the assistant feature bullet now says "scans photos" (was "scans receipts" — receipts are never AI-scanned; copy-only, matches billing-plans.md action-label truthfulness) (2026-07-30); first-run orientation screen added between sign-in and the app (before the unlock paywall), gated by a per-install AsyncStorage flag; names the feature calendars + Calen assistant, points at the Calendars entry point, and states the E2EE guarantee
 code:
   - mobile/src/screens/onboarding/OnboardingScreen.tsx
   - mobile/src/lib/onboarding.ts
@@ -35,7 +35,7 @@ month view.
   the other device caches whose absence would paint something WRONG rather than
   merely empty: the unlock/viewer caches (billing-plans.md) and the calendar
   arrangement (`useCalendarPrefsReady` — calendar.md; without it the calendar's
-  first frame is the default colours, recoloured a beat later). Each of those
+  first frame is the default colors, recolored a beat later). Each of those
   waits is capped or cache-satisfied on its own terms, and every one of them is
   scoped to `isLoggedIn`, so nothing can hold the splash on a signed-out or
   switched account.

@@ -106,7 +106,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // pull happens by chance. Reset → the next syncRecords() does a full pull.
     await resetRecordCursor().catch(() => {});
     // The calendar prefs cache is ACCOUNT state (which calendars exist, their
-    // sharing, colours, order, visibility) held in unscoped AsyncStorage keys,
+    // sharing, colors, order, visibility) held in unscoped AsyncStorage keys,
     // so it has to go the same way as the replica: without this the next
     // sign-in paints the previous account's calendar list until the server
     // refresh lands — which is why a viewer saw "No shared calendars yet"
@@ -223,7 +223,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // just JOINED never lands (its records are all older than the cursor).
       await resetRecordCursor().catch(() => {});
       // Calendar prefs are household state (which calendars exist, their
-      // sharing, colours, order) and add-on locks are the household-wide union —
+      // sharing, colors, order) and add-on locks are the household-wide union —
       // both change the instant membership does, and leaving must re-lock lanes
       // the old household had paid for.
       await resetCalendarPrefs().catch(() => {});

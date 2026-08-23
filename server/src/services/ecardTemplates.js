@@ -9,7 +9,7 @@
 // Email-client constraints shape the markup:
 // - Table-based layout, inline styles, 520px card, bgcolor= solid fallbacks
 //   under every CSS gradient (Outlook for Windows renders neither gradients
-//   nor border-radius — it gets a square, solid-colour card that still works).
+//   nor border-radius — it gets a square, solid-color card that still works).
 // - Motion is PROGRESSIVE ENHANCEMENT: pure CSS @keyframes in a <style> block
 //   animate the cover art (floating balloons/hearts, falling confetti,
 //   twinkling sparkles, a slowly drifting dove). Apple Mail, iOS Mail,
@@ -40,7 +40,7 @@ const stripObj = (s) => String(s ?? '').replace(OBJ_CHARS, '');
 
 // ── The gallery ──────────────────────────────────────────────────────────────
 // Per variant: `key` (stable API string), `name` (picker label), heading/emoji,
-// palette (wash = page canvas, g1→g2 = cover gradient, heroText = type colour
+// palette (wash = page canvas, g1→g2 = cover gradient, heroText = type color
 // on the cover), `serif` switches the heading to display-serif, `signoff` is
 // the card's closing phrase, and `deco` drives the animated cover art:
 //   { type: 'confetti', colors: [...] }         — falling confetti pieces
@@ -161,7 +161,7 @@ const STYLE_BLOCK = `
 
 // The animated cover-art row above the heading. Every piece is a plain
 // inline-block span, so a client that strips animation still shows a tidy
-// decorative row (emoji, or coloured confetti dots).
+// decorative row (emoji, or colored confetti dots).
 function decoRow(deco) {
   if (!deco) return '';
   if (deco.type === 'confetti') {

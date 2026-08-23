@@ -76,7 +76,7 @@ const GROUPS: { header: string; items: Section[] }[] = [
 ];
 
 // The Home-screen-widget ad. A miniature of the small widget — today's weekday
-// eyebrow, day number, two colour-tinted chips — drawn locally in the widget's
+// eyebrow, day number, two color-tinted chips — drawn locally in the widget's
 // visual language, beside the pitch. It deliberately does NOT compute a real
 // snapshot: this is the teaser, and the WidgetPromo screen it opens is where
 // the user's own day gets rendered through the real pipeline. Fixed geometry

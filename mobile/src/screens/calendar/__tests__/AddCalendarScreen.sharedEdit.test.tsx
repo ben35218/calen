@@ -3,7 +3,7 @@ import { render, fireEvent, cleanup } from '@testing-library/react-native';
 
 // The shared-calendar edit split (calendar.md → custom calendars): a housemate
 // holding Full Access on a calendar shared with them edits its BASICS — name,
-// colour, alerts — and their save sends ONLY those fields (the server 403s a
+// color, alerts — and their save sends ONLY those fields (the server 403s a
 // non-owner payload touching sharing). Sharing and Delete stay the owner's.
 // View-only housemates and outside collaborators (owner not in this household)
 // read everything.
@@ -115,7 +115,7 @@ jest.mock('../../../store/auth', () => ({ useAuth: () => ({ user: { _id: 'me', e
 import AddCalendarScreen from '../AddCalendarScreen';
 
 const HOUSEMATE_EDIT_NOTE =
-  'Shared with you by a housemate — you can change its name, colour, and alerts. Sharing is managed by its owner.';
+  'Shared with you by a housemate — you can change its name, color, and alerts. Sharing is managed by its owner.';
 const OWNER_ONLY_NOTE = "Shared with you by a housemate — only the calendar's owner can make changes.";
 const OUTSIDE_NOTE = "Shared with you — only the calendar's owner can make changes.";
 

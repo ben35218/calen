@@ -11,8 +11,10 @@ import {
   geocodePlace, loadWeatherForCoords, loadWeatherForAddress,
   loadOutlook, loadOutlookForCoords,
 } from '@household/weather';
-import { WeatherData, OutlookWeek } from '../api';
+import { WeatherData, OutlookWeek, tripsApi } from '../api';
 import { loadForecast, loadOutlookWeeks } from './weather';
+import { openRecord } from './e2ee';
+import { getOwnedAddonIds } from './addons';
 
 export type WeatherSource =
   | { kind: 'live' }
@@ -123,6 +125,78 @@ export async function loadPassiveForecast(): Promise<WeatherData> {
     } catch { /* module unavailable or fix failed — fall back to home */ }
   }
   return loadForecast();
+}
+
+// ── Trip-aware calendar forecast ────────────────────────────────────────────
+// On the calendar, a day inside a booked trip's dates shows the WEATHER AT THE
+// TRIP'S DESTINATION — you won't be home that day — while every other day
+// keeps the chosen source. The Weather screen's source pref is untouched: the
+// override is per-day and derived, never written.
+
+export type TripWeatherSpan = { tripId: string; destination: string; from: string; to: string };
+
+// Pure: overlay destination days onto the base forecast. A date inside a
+// span takes the destination forecast's day for that same date, tagged with
+// the place's leading segment ("Tokyo" out of "Tokyo, Japan"); the first
+// matching span wins a date, and a destination day that doesn't exist (fetch
+// failed, date past its window) leaves the base day in place.
+export function applyTripForecast(
+  base: WeatherData,
+  spans: TripWeatherSpan[],
+  destForecasts: Record<string, WeatherData | null>,
+): WeatherData {
+  if (!spans.length) return base;
+  const forecast = base.forecast.map((day) => {
+    const span = spans.find((s) => s.from <= day.date && day.date <= s.to);
+    const destDay = span
+      ? destForecasts[span.destination]?.forecast.find((d) => d.date === day.date)
+      : undefined;
+    if (!span || !destDay) return day;
+    // tripId rides along so a surface can open the trip the day belongs to.
+    return { ...destDay, place: span.destination.split(',')[0].trim() || span.destination, tripId: span.tripId };
+  });
+  return { ...base, forecast };
+}
+
+// Trips with a destination and a full date range — the only trips that can
+// claim calendar days. Silent [] when the trips add-on is locked or the
+// list/decrypt fails: trip weather is an overlay, never a blocker.
+async function datedTripSpans(): Promise<TripWeatherSpan[]> {
+  try {
+    if (!(await getOwnedAddonIds()).has('trips')) return [];
+    const rows = await Promise.all((await tripsApi.list()).data.map((t) => openRecord('Trip', t)));
+    return rows
+      .filter((t) => t.destination && t.startDate && t.endDate)
+      .map((t) => ({
+        tripId: String(t._id),
+        destination: String(t.destination),
+        from: String(t.startDate).slice(0, 10),
+        to: String(t.endDate).slice(0, 10),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+// The calendar surfaces' forecast (month-grid strip, day-view rail, agenda
+// glance): loadPassiveForecast, with trip days swapped for the destination's
+// weather. Destinations resolve client-direct against keyless open-meteo like
+// the trip detail screen — never through our server.
+export async function loadCalendarForecast(): Promise<WeatherData> {
+  const base = await loadPassiveForecast();
+  const dates = base.forecast.map((d) => d.date);
+  if (!dates.length) return base;
+  const spans = (await datedTripSpans()).filter(
+    (s) => s.from <= dates[dates.length - 1] && s.to >= dates[0],
+  );
+  if (!spans.length) return base;
+  const destinations = [...new Set(spans.map((s) => s.destination))];
+  const fetched = await Promise.all(destinations.map((d) =>
+    loadWeatherForAddress(d, { geocoder: geocodePlace })
+      .then((w) => [d, w as unknown as WeatherData] as const)
+      .catch(() => [d, null] as const),
+  ));
+  return applyTripForecast(base, spans, Object.fromEntries(fetched));
 }
 
 // The hero eyebrow label ("MY LOCATION" / "HOME" / the custom place's leading

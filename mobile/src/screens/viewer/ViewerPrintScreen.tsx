@@ -259,7 +259,7 @@ export default function ViewerPrintScreen() {
       {/* ── Options ── */}
       <Text style={styles.groupLabel}>OPTIONS</Text>
       <View style={styles.row}>
-        <Text style={styles.name}>Print calendar colours</Text>
+        <Text style={styles.name}>Print calendar colors</Text>
         <Switch value={useColor} onValueChange={setUseColor} trackColor={{ true: colors.primary }} />
       </View>
       <View style={styles.row}>
@@ -269,7 +269,7 @@ export default function ViewerPrintScreen() {
       <Text style={styles.hint}>
         {useColor
           ? selected.length > 1
-            ? 'A colour legend prints at the bottom of the page.'
+            ? 'A color legend prints at the bottom of the page.'
             : ''
           : 'Black & white: events are tagged with a short calendar code instead.'}
       </Text>

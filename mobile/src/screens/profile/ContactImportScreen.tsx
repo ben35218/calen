@@ -140,7 +140,7 @@ export default function ContactImportScreen() {
     IN_APP_ACCESS_PICKER && typeof (Contacts as any).presentAccessPickerAsync === 'function';
 
   // Non-accented area, so the header action is a transparent white icon rather
-  // than a primary-coloured disc (mobile/CLAUDE.md's header-action rule).
+  // than a primary-colored disc (mobile/CLAUDE.md's header-action rule).
   useLayoutEffect(() => {
     nav.setOptions({
       headerRight: () => (

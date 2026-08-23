@@ -21,7 +21,7 @@ import {
 } from '../../api';
 import { loadOdometerData, logOdometerReading } from '../../lib/odometer';
 import { createTaskFromManualExtract } from '../../lib/taskTemplates';
-import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton, SkeletonDetail, SkeletonRows, IconAvatar, ScreenTitle, HeaderIconButton, Fab } from '../../components/ui';
+import { Button, Card, Screen, Divider, ListRow, Input, RoundIconButton, SkeletonDetail, SkeletonRows, IconAvatar, ScreenTitle, HeaderTextButton, Fab } from '../../components/ui';
 import CalenChatIcon from '../../components/CalenChatIcon';
 import QuotaBlockedNotice from '../../components/QuotaBlockedNotice';
 import { useAiEnabled } from '../../lib/privacyPrefs';
@@ -373,7 +373,7 @@ export default function ItemDetailScreen() {
     navigation.setOptions({
       title: 'Item',
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit item" onPress={() => navigation.navigate('ItemForm', { id })} />
+        <HeaderTextButton title="Edit" accessibilityLabel="Edit item" onPress={() => navigation.navigate('ItemForm', { id })} />
       ),
     });
   }, [navigation, id]);

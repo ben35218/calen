@@ -50,7 +50,11 @@ export function useReminderScheduler(enabled: boolean) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unsubscribeCache = queryClient.getQueryCache().subscribe((event) => {
       if (event.type !== 'updated' || event.action?.type !== 'invalidate') return;
-      if (event.query.queryKey?.[0] !== 'calendar') return;
+      // ['trips'] too: booking alerts (lib/tripAlerts) live outside the
+      // calendar data, and every booking save — the form's or the booking
+      // view's live pickers — invalidates its ['trips', id] key.
+      const root = event.query.queryKey?.[0];
+      if (root !== 'calendar' && root !== 'trips') return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;

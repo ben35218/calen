@@ -466,7 +466,6 @@ export default function ECardFormScreen() {
     save.mutate();
   };
 
-  useHeaderCheckButton(nav, { onPress: onSave, loading: save.isPending, color: accent });
   useEffect(() => { nav.setOptions({ title: existing ? 'Edit E-Card' : 'Schedule E-Card' }); }, [nav, existing]);
 
   // Discard guard: prompt before leaving with unsaved edits to the card (style,
@@ -482,6 +481,7 @@ export default function ECardFormScreen() {
     if (seededReady && baselineRef.current === null) baselineRef.current = snapshot;
   }, [seededReady, snapshot]);
   const dirty = seededReady && baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(nav, { onPress: onSave, loading: save.isPending, color: accent, dirty });
   const allowLeave = useUnsavedChangesGuard(nav, dirty);
 
   if (isLoading) return <CenteredLoader color={accent} />;
@@ -829,7 +829,7 @@ const styles = StyleSheet.create({
   thumbLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 6 },
   thumbName: { fontSize: 12, color: colors.textMuted },
 
-  // Card-face preview. Face colours are the *email's* palette (deliberately
+  // Card-face preview. Face colors are the *email's* palette (deliberately
   // not the app theme) — see CARD_WHITE above.
   preview: {
     borderRadius: radius.lg, marginBottom: spacing.sm, padding: spacing.md,

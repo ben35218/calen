@@ -59,20 +59,24 @@ const alertPrefsSchema = new mongoose.Schema({
   time:    { type: String, default: '09:00' },
 }, { _id: false });
 
-// How the user has arranged their calendars: which colour each one wears, what
+// How the user has arranged their calendars: which color each one wears, what
 // order they list in, which are hidden, which built-ins they deleted, and which
 // have event alerts muted. See `calendarPrefs` below for why this is account
 // state. Every field is SPARSE — it records only deviations from the app's
 // defaults, so a calendar the user never touched simply isn't mentioned, and
 // calendars added later (or on another device) pick up the defaults.
 const calendarPrefsSchema = new mongoose.Schema({
-  // calendar id → hex colour, for calendars whose colour the user overrode.
-  // Custom calendars carry their own colour on their CustomCalendar record; an
-  // entry here still wins, which is what the colour editor writes.
+  // calendar id → hex color, for calendars whose color the user overrode.
+  // Custom calendars carry their own color on their CustomCalendar record; an
+  // entry here still wins, which is what the color editor writes.
   colors:          { type: Map, of: String, default: undefined },
   // The user's display order, as calendar ids. Sparse: ids not listed sort
   // after the listed ones in natural order.
   order:           { type: [String], default: undefined },
+  // The user's display order for the audience SECTIONS the calendar lists
+  // group by ('household' | 'justMe' | 'shared'). Sparse the same way: a key
+  // not listed sections after the listed ones, in the app's default order.
+  groupOrder:      { type: [String], default: undefined },
   // Calendars toggled OFF in the Calendars view. Visible is the default, so
   // only the hidden ones are stored.
   hidden:          { type: [String], default: undefined },
@@ -231,11 +235,11 @@ const userSchema = new mongoose.Schema({
   // the user turned that calendar's alerts OFF, and must not be read as unset.
   occasionAlerts:    { type: alertPrefsSchema, default: null },
   holidayAlerts:     { type: alertPrefsSchema, default: null },
-  // How the user arranged their calendars (colours, order, hidden, deleted
+  // How the user arranged their calendars (colors, order, hidden, deleted
   // built-ins, muted alerts). Account state for the same reason as the alert
   // configs above: the device holds it in AsyncStorage for an instant read, but
   // that cache is wiped at sign-out (it's one account's calendar names and
-  // colours, which must not survive into the next account on a shared device),
+  // colors, which must not survive into the next account on a shared device),
   // so with no server copy every one of these choices silently reverted to the
   // defaults on the next sign-in. null = never configured; each field within is
   // independently optional, and an EMPTY list/map is a real value ("nothing

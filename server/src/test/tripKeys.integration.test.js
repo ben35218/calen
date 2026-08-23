@@ -29,7 +29,7 @@ async function setup() {
 // Create a trip and share it with an outside email (seats a pending invitation).
 async function createShared(auth, outsiderEmail) {
   const trip = await request().post('/api/trips').set('Authorization', auth)
-    .send({ name: 'Alps', destination: 'Chamonix', status: 'considering' });
+    .send({ name: 'Alps', destination: 'Chamonix' });
   assert.equal(trip.status, 201);
   const share = await request().put(`/api/trips/${trip.body._id}/share`).set('Authorization', auth)
     .send({ recipients: [{ email: outsiderEmail }], tripName: 'Alps', destination: 'Chamonix' });

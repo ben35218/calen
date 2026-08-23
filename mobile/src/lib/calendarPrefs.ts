@@ -36,13 +36,17 @@ const HOL_CALS_KEY = 'hc_holiday_calendars';
 const HOL_MIGRATED_KEY = 'hc_holiday_cals_migrated';
 // The built-in id the single Holidays calendar used before per-country calendars.
 const LEGACY_HOLIDAY_ID = 'canadian-holidays';
-// User-chosen colour overrides (calendar id → hex). A CACHE of an account
+// User-chosen color overrides (calendar id → hex). A CACHE of an account
 // setting, not a device setting — see hydrateAccountPrefsFromServer.
 const COLORS_KEY = 'hc_calendar_colors';
 // User-chosen display order for calendars (a list of calendar ids). Sparse:
 // ids not listed fall back to their natural order after the listed ones, so a
 // newly added calendar simply appends. Device-local, like the other prefs.
 const ORDER_KEY = 'hc_calendar_order';
+// User-chosen display order for the audience GROUPS the calendar lists are
+// sectioned by (household / just me / shared). Same sparse rule as ORDER_KEY:
+// a key not listed trails in its natural order.
+const GROUP_ORDER_KEY = 'hc_calendar_group_order';
 const CUSTOM_KEY = 'hc_custom_calendars';
 // Set once the device's pre-server (local-only) custom calendars have been
 // uploaded; guards against re-creating calendars deleted on another device.
@@ -112,6 +116,13 @@ export const CALENDARS: CalendarDef[] = [
   { id: 'trips', name: 'Trips', color: '#5E35B1', group: 'advanced' },
 ];
 
+// The audience groups every calendar list sections by, in their default order:
+// HOUSEHOLD (built-ins + household-wide customs) → JUST ME → SHARED. The user
+// can re-sequence them in Colors & Order (see useCalendarGroupOrder), and both
+// the Calendars manager and Colors & Order render whatever they arrive at.
+export type CalendarGroupKey = 'household' | 'justMe' | 'shared';
+export const CALENDAR_GROUP_KEYS: CalendarGroupKey[] = ['household', 'justMe', 'shared'];
+
 // A user-created calendar (Calendars → Add Calendar), server-backed via
 // customCalendarsApi with AsyncStorage as the offline warm-start cache. `id`
 // is the server record's `key` (`custom-<slug>`) — what events reference via
@@ -119,7 +130,7 @@ export const CALENDARS: CalendarDef[] = [
 // specific household members (user ids), or contacts outside the household
 // (emails; stored intent — no invitation flow yet). `mine` = created by this
 // user; the creator manages sharing and deletion, while a housemate with Full
-// Access may also edit the calendar's basics (name / colour / alerts).
+// Access may also edit the calendar's basics (name / color / alerts).
 export interface CustomCalendar {
   id: string;
   // The creator's userId. Screens compare it against the household member list
@@ -179,7 +190,19 @@ function fromRecord(r: CustomCalendarRecord): CustomCalendar {
   };
 }
 
-// Palette offered wherever the user picks a calendar colour (colour editor,
+// Which audience group a custom calendar belongs to: Household (shared with
+// everyone), Shared (specific members / outside contacts, incl. calendars
+// shared TO us), or Just me (no sharing at all). One definition, because the
+// Calendars manager and Colors & Order MUST section identically — a calendar
+// that sits under SHARED in one and JUST ME in the other makes the order the
+// user set in Colors & Order look like it did nothing.
+export function calendarGroupOf(cal: CustomCalendar): CalendarGroupKey {
+  if (cal.sharedWithHousehold) return 'household';
+  if (!cal.mine || cal.sharedWith.length > 0 || cal.sharedWithOutside.length > 0) return 'shared';
+  return 'justMe';
+}
+
+// Palette offered wherever the user picks a calendar color (color editor,
 // Add Calendar).
 export const COLOR_PRESETS = [
   '#1976D2', '#0288D1', '#00ACC1', '#00897B', '#43A047', '#388E3C',
@@ -212,7 +235,7 @@ export function holidayCalendarId(country: CountryCode): string {
   return `holiday-${country}`;
 }
 
-// Default accent colour per country's holiday calendar (CA keeps the legacy red).
+// Default accent color per country's holiday calendar (CA keeps the legacy red).
 const HOLIDAY_CALENDAR_COLORS: Record<CountryCode, string> = {
   CA: '#D32F2F',
   US: '#1565C0',
@@ -220,7 +243,7 @@ const HOLIDAY_CALENDAR_COLORS: Record<CountryCode, string> = {
   AU: '#00838F',
 };
 
-// Default name + colour for a new holiday calendar (seeds the create form).
+// Default name + color for a new holiday calendar (seeds the create form).
 export function holidayCalendarSeed(country: CountryCode): { name: string; color: string } {
   return { name: holidayCalendarName(country), color: HOLIDAY_CALENDAR_COLORS[country] };
 }
@@ -256,7 +279,7 @@ export function holidayEnabledIds(cal: HolidayCalendar): string[] {
   return out;
 }
 
-// Default colour per calendar id (the source of truth for the picker's reset).
+// Default color per calendar id (the source of truth for the picker's reset).
 export const DEFAULT_CALENDAR_COLORS: Record<string, string> = Object.fromEntries(
   CALENDARS.map((c) => [c.id, c.color])
 );
@@ -301,6 +324,8 @@ let pendingLocalHolidayCals: HolidayCalendar[] = [];
 let freshHolidaySeed = false;
 let colorOverrideState: ColorMap = {}; // sparse — only user overrides
 let orderState: string[] | null = null; // sparse — ids the user reordered
+// sparse — group keys the user re-sequenced; unlisted keys trail in natural order
+let groupOrderState: CalendarGroupKey[] | null = null;
 let customState: CustomCalendar[] | null = null;
 // Whether refreshCustomCalendars() has completed once since sign-in — the only
 // point at which an empty list means "none" rather than "not loaded yet".
@@ -311,7 +336,7 @@ let densityState: MonthDensity | null = null;
 let dayViewState: DayViewMode | null = null;
 let occasionAlertState: OccasionAlertPrefs | null = null;
 let holidayAlertState: HolidayAlertPrefs | null = null;
-// Whether the effective colour map is final enough to PAINT with — see
+// Whether the effective color map is final enough to PAINT with — see
 // markPrefsReady / useCalendarPrefsReady. Distinct from `loaded` (the cache
 // read finished): on a device with no cached arrangement it also waits for the
 // account's first server pass, because there the cache holds nothing to paint.
@@ -319,6 +344,7 @@ let prefsReady = false;
 const visSubs = new Set<() => void>();
 const colorSubs = new Set<() => void>();
 const orderSubs = new Set<() => void>();
+const groupOrderSubs = new Set<() => void>();
 const customSubs = new Set<() => void>();
 const deletedSubs = new Set<() => void>();
 const defaultAlertsSubs = new Set<() => void>();
@@ -342,7 +368,7 @@ function detectCountry(): CountryCode {
 
 // Holiday calendars are server-backed CustomCalendars carrying a `holiday`
 // config; each device computes their dates locally (see getHolidays). Derived
-// from customState so sharing, colour, and visibility come for free.
+// from customState so sharing, color, and visibility come for free.
 function holidayCalFromCustom(c: CustomCalendar): HolidayCalendar | null {
   if (!c.holiday) return null;
   return {
@@ -377,20 +403,20 @@ export function migrateLegacyEnabledList(legacyEnabled: unknown): string[] | nul
   return LEGACY_CA_IDS.filter((id) => !enabled.has(id));
 }
 
-// Merge overrides over defaults into a full id→colour map.
+// Merge overrides over defaults into a full id→color map.
 function mergedColors(): ColorMap {
   const out: ColorMap = { ...DEFAULT_CALENDAR_COLORS };
   for (const id of Object.keys(colorOverrideState)) out[id] = colorOverrideState[id];
   return out;
 }
 
-// Push the effective override map (custom calendar colours + user overrides)
+// Push the effective override map (custom calendar colors + user overrides)
 // into lib/calendar's colorOf, so event chips/bars/dots resolve custom
 // calendars everywhere the built-ins already do.
 function syncColorOverrides() {
   const seeded: ColorMap = {};
   // Custom calendars — subscriptions and holiday calendars included — carry
-  // their own colour, so colorOf resolves them everywhere; user overrides
+  // their own color, so colorOf resolves them everywhere; user overrides
   // (colorOverrideState) still win.
   for (const c of customState ?? []) seeded[c.id] = c.color;
   applyCalendarColorOverrides({ ...seeded, ...colorOverrideState });
@@ -402,12 +428,12 @@ function defaultVis(): VisMap {
 
 // One-time: the built-in trips calendar was renamed from the id `vacations` to
 // `trips`. Remap that id anywhere it's stored so a user's existing visibility,
-// colour, order, deletion, and alert prefs carry over instead of resetting to
+// color, order, deletion, and alert prefs carry over instead of resetting to
 // the default. Runs before the reads below so they see the migrated data.
 async function migrateVacationsToTrips() {
   try {
     if (await AsyncStorage.getItem(TRIPS_RENAME_KEY)) return;
-    // Object maps keyed by calendar id (visibility, colour overrides).
+    // Object maps keyed by calendar id (visibility, color overrides).
     for (const key of [VIS_KEY, COLORS_KEY]) {
       const raw = await AsyncStorage.getItem(key);
       if (!raw) continue;
@@ -435,7 +461,7 @@ async function migrateVacationsToTrips() {
 }
 
 // Everything here is ACCOUNT state cached on the device, not device state:
-// which calendars exist, who they're shared with, their colours/order/
+// which calendars exist, who they're shared with, their colors/order/
 // visibility. None of it is scoped by user, so signing out must drop it — two
 // bugs otherwise, both seen in the wild:
 //   - the next account paints the PREVIOUS one's calendars from cache until the
@@ -443,7 +469,7 @@ async function migrateVacationsToTrips() {
 //     because the stale rows were the other account's own `mine: true`
 //     calendars and the shell only shows `mine: false`; an owner signing back
 //     in saw their built-ins missing for the same reason, inverted);
-//   - it leaks calendar names, colours and the outside-share addresses of one
+//   - it leaks calendar names, colors and the outside-share addresses of one
 //     account to the next on a shared device.
 // Mirrors the replica/cursor wipe in the auth store's logout, and is called
 // from it. Marking `loaded = false` re-arms ensureLoaded for the next session.
@@ -451,7 +477,7 @@ async function migrateVacationsToTrips() {
 // Because the wipe is permanent, anything the USER chose here needs a durable
 // home on the account or the wipe is the end of it: the calendars themselves
 // have one (their server records), the alert configs have one (User.
-// occasionAlerts / .holidayAlerts), and the arrangement — colours, order,
+// occasionAlerts / .holidayAlerts), and the arrangement — colors, order,
 // visibility, deleted built-ins, muted alerts — now has one too
 // (User.calendarPrefs; see hydrateAccountPrefsFromServer). Adding a new
 // user-facing pref to this list without a server counterpart re-creates the
@@ -460,7 +486,7 @@ async function migrateVacationsToTrips() {
 // this device last displayed is device state, like a scroll position.
 const ACCOUNT_KEYS = [
   VIS_KEY, HOL_KEY, HOL_DISABLED_KEY, HOL_COUNTRY_KEY, HOL_CALS_KEY, HOL_MIGRATED_KEY,
-  COLORS_KEY, ORDER_KEY, CUSTOM_KEY, CUSTOM_SYNCED_KEY, DELETED_DEFAULTS_KEY,
+  COLORS_KEY, ORDER_KEY, GROUP_ORDER_KEY, CUSTOM_KEY, CUSTOM_SYNCED_KEY, DELETED_DEFAULTS_KEY,
   DEFAULT_ALERTS_OFF_KEY, DENSITY_KEY, DAY_VIEW_KEY, OCCASION_ALERTS_KEY,
   HOLIDAY_ALERTS_KEY,
 ];
@@ -473,6 +499,7 @@ export async function resetCalendarPrefs(): Promise<void> {
   visState = null;
   colorOverrideState = {};
   orderState = null;
+  groupOrderState = null;
   deletedDefaultsState = null;
   defaultAlertsOffState = null;
   densityState = null;
@@ -490,6 +517,7 @@ export async function resetCalendarPrefs(): Promise<void> {
   visSubs.forEach((fn) => fn());
   colorSubs.forEach((fn) => fn());
   orderSubs.forEach((fn) => fn());
+  groupOrderSubs.forEach((fn) => fn());
   customSubs.forEach((fn) => fn());
   deletedSubs.forEach((fn) => fn());
   defaultAlertsSubs.forEach((fn) => fn());
@@ -502,10 +530,10 @@ export async function resetCalendarPrefs(): Promise<void> {
 }
 
 // ── First-paint readiness ───────────────────────────────────────────────────
-// Every calendar surface resolves its colours through this module, and until
+// Every calendar surface resolves its colors through this module, and until
 // the load below lands `colorOf`/`useCalendarColors` answer with the app
-// DEFAULTS. Painting first and recolouring after is what the user sees as
-// "the calendar comes up in the wrong colours for a second" — so the app holds
+// DEFAULTS. Painting first and recoloring after is what the user sees as
+// "the calendar comes up in the wrong colors for a second" — so the app holds
 // its splash until this flips (RootNavigator), and the first frame of the grid
 // is already the user's arrangement.
 //
@@ -516,13 +544,13 @@ export async function resetCalendarPrefs(): Promise<void> {
 //     device has no cached arrangement at all. That is exactly the first launch
 //     after a sign-in, where sign-out wiped ACCOUNT_KEYS: the cache holds
 //     nothing, so waiting on the cache alone would still paint defaults and
-//     recolour when the fetch lands. Capped (FIRST_PAINT_SERVER_MS) so a slow
+//     recolor when the fetch lands. Capped (FIRST_PAINT_SERVER_MS) so a slow
 //     or dead network costs a bounded wait, never a stuck splash.
 const FIRST_PAINT_SERVER_MS = 2000;
 
 // Whether the device already holds the account's arrangement, i.e. whether the
-// colour map the cache read produced can be painted as-is. `custom` counts on
-// its own: custom/subscribed/holiday calendars carry their own colour, and its
+// color map the cache read produced can be painted as-is. `custom` counts on
+// its own: custom/subscribed/holiday calendars carry their own color, and its
 // cache is written on every refresh (even for an empty list), so its presence
 // means this account has loaded here before. Exported for tests.
 export function arrangementCachedOnDevice(rawColors: string | null, rawCustom: string | null): boolean {
@@ -537,11 +565,11 @@ function markPrefsReady() {
 
 // The keys ensureLoaded reads, fetched in ONE AsyncStorage round trip. Reading
 // them one `await getItem` at a time (as this did) is ~15 sequential bridge
-// hops before anything can paint — the other half of the wrong-colour flash,
+// hops before anything can paint — the other half of the wrong-color flash,
 // and the reason the load didn't finish inside the splash it now gates.
 const LOAD_KEYS = [
   VIS_KEY, HOL_MIGRATED_KEY, HOL_CALS_KEY, HOL_COUNTRY_KEY, HOL_DISABLED_KEY, HOL_KEY,
-  COLORS_KEY, ORDER_KEY, DELETED_DEFAULTS_KEY, DEFAULT_ALERTS_OFF_KEY,
+  COLORS_KEY, ORDER_KEY, GROUP_ORDER_KEY, DELETED_DEFAULTS_KEY, DEFAULT_ALERTS_OFF_KEY,
   OCCASION_ALERTS_KEY, HOLIDAY_ALERTS_KEY, CUSTOM_KEY, DENSITY_KEY, DAY_VIEW_KEY,
 ];
 
@@ -644,6 +672,12 @@ async function ensureLoaded() {
     orderState = [];
   }
   try {
+    const rawGroups = raw[GROUP_ORDER_KEY];
+    groupOrderState = cleanGroupOrder(rawGroups ? JSON.parse(rawGroups) : []) ?? [];
+  } catch {
+    groupOrderState = [];
+  }
+  try {
     const rawDeleted = raw[DELETED_DEFAULTS_KEY];
     const parsedDeleted = rawDeleted ? JSON.parse(rawDeleted) : [];
     deletedDefaultsState = Array.isArray(parsedDeleted)
@@ -717,6 +751,7 @@ async function ensureLoaded() {
   visSubs.forEach((fn) => fn());
   colorSubs.forEach((fn) => fn());
   orderSubs.forEach((fn) => fn());
+  groupOrderSubs.forEach((fn) => fn());
   customSubs.forEach((fn) => fn());
   deletedSubs.forEach((fn) => fn());
   defaultAlertsSubs.forEach((fn) => fn());
@@ -738,8 +773,8 @@ async function ensureLoaded() {
     markPrefsReady();
   } else {
     // Nothing cached (the first launch after a sign-in): the account is the only
-    // source of the colours, so give the pass a bounded moment to land before
-    // painting rather than showing defaults and recolouring a second later.
+    // source of the colors, so give the pass a bounded moment to land before
+    // painting rather than showing defaults and recoloring a second later.
     let cap: ReturnType<typeof setTimeout>;
     void Promise.race([
       firstServerPass,
@@ -775,7 +810,7 @@ function saveVis() {
   pushCalendarPrefs();
 }
 
-// Persist + broadcast a new custom-calendar list (cache and colour plumbing).
+// Persist + broadcast a new custom-calendar list (cache and color plumbing).
 function commitCustom(next: CustomCalendar[]) {
   const changed = JSON.stringify(customState) !== JSON.stringify(next);
   customState = next;
@@ -828,7 +863,7 @@ export async function refreshCustomCalendars(): Promise<void> {
       AsyncStorage.setItem(CUSTOM_SYNCED_KEY, '1').catch(() => {});
     }
     // One-time: upload device-local holiday calendars as server-backed records
-    // so they gain sharing/colour and reach housemates. Dedupe by country.
+    // so they gain sharing/color and reach housemates. Dedupe by country.
     // The key of a holiday calendar the FRESH-INSTALL seed just uploaded (vs a
     // real legacy migration) — the one calendar it's safe to auto-region below.
     let seededKey: string | null = null;
@@ -905,7 +940,7 @@ export async function refreshCustomCalendars(): Promise<void> {
 // them from. The server copy also carries the settings to a second device.
 //
 // The calendar ARRANGEMENT (User.calendarPrefs) is the same story and was fixed
-// the same way: recolouring the Chores calendar, reordering the list, hiding a
+// the same way: recoloring the Chores calendar, reordering the list, hiding a
 // calendar or deleting a built-in wrote only to AsyncStorage, so the sign-out
 // wipe reverted every one of them to the app defaults on the next sign-in.
 //
@@ -932,7 +967,7 @@ const samePrefs = (a: AlertPrefsShape | null, b: AlertPrefsShape | null) =>
 // Bumped by every local edit to either config, so an in-flight hydration can
 // tell that what it fetched is already stale (see hydrateAccountPrefsFromServer).
 let alertPrefsEditSeq = 0;
-// The same guard for the calendar arrangement, counted separately: recolouring
+// The same guard for the calendar arrangement, counted separately: recoloring
 // a calendar while the fetch is in flight must not also stop the account's
 // alert configs from landing (and vice versa).
 let calPrefsEditSeq = 0;
@@ -945,6 +980,7 @@ function calendarPrefsPayload(): CalendarPrefsPayload {
   return {
     colors: { ...colorOverrideState },
     order: [...(orderState ?? [])],
+    groupOrder: [...(groupOrderState ?? [])],
     // Visible is the default, so only the calendars turned OFF are carried.
     hidden: Object.keys(vis).filter((id) => vis[id] === false),
     deletedDefaults: [...(deletedDefaultsState ?? [])],
@@ -952,7 +988,7 @@ function calendarPrefsPayload(): CalendarPrefsPayload {
   };
 }
 
-// Persist the arrangement to the account. Every setter that changes colours,
+// Persist the arrangement to the account. Every setter that changes colors,
 // order, visibility, deleted built-ins or muted alerts calls this — the
 // AsyncStorage write beside it is only the warm cache. Best-effort: offline,
 // the cache still reflects the change and the next edit re-uploads the whole
@@ -969,10 +1005,24 @@ function cleanIdList(value: unknown): string[] | null {
   return value.filter((id): id is string => typeof id === 'string' && !!id);
 }
 
+// Sanitize a group sequence (off the wire or out of the cache): known keys
+// only, deduped. An unknown key from a future build is dropped rather than
+// carried, since nothing here can render it.
+function cleanGroupOrder(value: unknown): CalendarGroupKey[] | null {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set<string>();
+  return value.filter((k): k is CalendarGroupKey => {
+    if (typeof k !== 'string' || !CALENDAR_GROUP_KEYS.includes(k as CalendarGroupKey)) return false;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 // Adopt the account's stored arrangement over this device's, and seed the
 // account from the device for anything it has never stored. Field by field: an
 // ABSENT field means the account has no opinion yet (so this device's choice
-// becomes it — the upgrade path for a user whose colours predate this being
+// becomes it — the upgrade path for a user whose colors predate this being
 // server-backed), while a PRESENT-but-empty one is a real value the user
 // arrived at ("nothing hidden", "no overrides") and must win over the cache.
 function adoptCalendarPrefs(remote: unknown) {
@@ -982,6 +1032,7 @@ function adoptCalendarPrefs(remote: unknown) {
   const seed: CalendarPrefsPayload = {};
   let colorsChanged = false;
   let orderChanged = false;
+  let groupOrderChanged = false;
   let visChanged = false;
   let deletedChanged = false;
   let alertsOffChanged = false;
@@ -1010,6 +1061,17 @@ function adoptCalendarPrefs(remote: unknown) {
     }
   } else if ((orderState ?? []).length) {
     seed.order = [...orderState!];
+  }
+
+  const groupOrder = cleanGroupOrder(r?.groupOrder);
+  if (groupOrder) {
+    if (JSON.stringify(groupOrder) !== JSON.stringify(groupOrderState ?? [])) {
+      groupOrderState = groupOrder;
+      AsyncStorage.setItem(GROUP_ORDER_KEY, JSON.stringify(groupOrder)).catch(() => {});
+      groupOrderChanged = true;
+    }
+  } else if ((groupOrderState ?? []).length) {
+    seed.groupOrder = [...groupOrderState!];
   }
 
   const hidden = cleanIdList(r?.hidden);
@@ -1059,6 +1121,7 @@ function adoptCalendarPrefs(remote: unknown) {
     colorSubs.forEach((fn) => fn());
   }
   if (orderChanged) orderSubs.forEach((fn) => fn());
+  if (groupOrderChanged) groupOrderSubs.forEach((fn) => fn());
   if (visChanged) visSubs.forEach((fn) => fn());
   if (deletedChanged) deletedSubs.forEach((fn) => fn());
   if (alertsOffChanged) defaultAlertsSubs.forEach((fn) => fn());
@@ -1089,7 +1152,7 @@ async function hydrateAccountPrefsFromServer(): Promise<void> {
     return; // offline / signed out — the cache stands; the next load retries.
   }
   // The arrangement is guarded on its own counter, so an alert edit in flight
-  // doesn't hold back the colours (or the reverse).
+  // doesn't hold back the colors (or the reverse).
   let changed = calPrefsEditSeq === calSeq && adoptCalendarPrefs(data?.calendarPrefs);
   if (alertPrefsEditSeq !== seq) {
     if (changed) rebuildReminderWindow();
@@ -1337,7 +1400,7 @@ export async function getHolidayCalendars(): Promise<HolidayCalendar[]> {
   return deriveHolidayCals();
 }
 
-// Non-hook reads of the effective colour map and visibility toggles, for
+// Non-hook reads of the effective color map and visibility toggles, for
 // consumers outside React (the widget snapshot writer). Same values the
 // useCalendarColors()/useCalendarVisibility() hooks expose, minus reactivity —
 // callers run per-pass (after a data change), so they re-read every time.
@@ -1433,7 +1496,7 @@ export function useHolidayCalendars() {
 
 // Whether the calendar arrangement is ready to PAINT (see markPrefsReady). The
 // RootNavigator holds its splash on this while signed in, so the calendar's
-// first frame already carries the user's colours instead of the app defaults.
+// first frame already carries the user's colors instead of the app defaults.
 //
 // `enabled` is the signed-in gate, and it is what re-arms the load: sign-out
 // wipes the prefs (resetCalendarPrefs), and this hook lives in an
@@ -1458,7 +1521,7 @@ export function useCalendarPrefsReady(enabled: boolean): boolean {
   return !enabled || ready;
 }
 
-// ── Calendar colour hook ────────────────────────────────────────────────────
+// ── Calendar color hook ────────────────────────────────────────────────────
 export function useCalendarColors() {
   const [colors, setColors] = useState<ColorMap>(mergedColors());
 
@@ -1528,6 +1591,46 @@ export function useCalendarOrder() {
   }
 
   return { order, setOrder };
+}
+
+// ── Calendar GROUP order hook ───────────────────────────────────────────────
+// The sequence the audience sections (HOUSEHOLD / JUST ME / SHARED) list in.
+// Same sparse contract as the per-calendar order: a key the user never moved
+// trails the ones they did, in CALENDAR_GROUP_KEYS order.
+export function sortByGroupOrder<T extends { key: CalendarGroupKey }>(
+  groups: T[],
+  order: CalendarGroupKey[]
+): T[] {
+  const rank = new Map(order.map((key, i) => [key, i]));
+  const at = (key: CalendarGroupKey) => (rank.has(key) ? rank.get(key)! : order.length);
+  return groups
+    .map((group, i) => ({ group, i }))
+    .sort((a, b) => at(a.group.key) - at(b.group.key) || a.i - b.i)
+    .map((x) => x.group);
+}
+
+export function useCalendarGroupOrder() {
+  const [groupOrder, setState] = useState<CalendarGroupKey[]>(groupOrderState ?? []);
+
+  useEffect(() => {
+    const sub = () => setState([...(groupOrderState ?? [])]);
+    groupOrderSubs.add(sub);
+    ensureLoaded().then(sub);
+    return () => {
+      groupOrderSubs.delete(sub);
+    };
+  }, []);
+
+  // Persist the full group sequence, then broadcast so both calendar lists
+  // re-section live.
+  function setGroupOrder(keys: CalendarGroupKey[]) {
+    groupOrderState = keys;
+    AsyncStorage.setItem(GROUP_ORDER_KEY, JSON.stringify(keys)).catch(() => {});
+    pushCalendarPrefs();
+    groupOrderSubs.forEach((fn) => fn());
+  }
+
+  return { groupOrder, setGroupOrder };
 }
 
 // ── Custom calendars hook ───────────────────────────────────────────────────

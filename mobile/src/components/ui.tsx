@@ -37,6 +37,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 // throws there while the context just reads back undefined.
 import { NavigationContext } from '@react-navigation/native';
 import { colors, radius, spacing } from '../theme';
+import { vividOnDark, parseHex, luminance } from '../lib/color';
+import type { NativeStackHeaderItem } from '@react-navigation/native-stack';
+
+// iOS 26 wraps every nav-bar item in its own Liquid Glass circle, so a custom
+// disc view (the accent save check, a Round add button) renders as a small disc
+// floating inside the system's larger glass one — the accent never fills the
+// button. Where this is true, accent header actions are emitted as *native*
+// bar-button items instead (`unstable_headerRightItems`): variant "prominent"
+// IS Apple's full-color tinted glass button (the Calendar app's checkmark),
+// so the accent fills the whole control and picks up the system's press
+// effects and Reduce Transparency handling. Android and pre-26 iOS have no
+// glass and keep the custom discs.
+export const glassHeaderItems = Platform.OS === 'ios' && parseInt(String(Platform.Version), 10) >= 26;
 import {
   COUNTRIES,
   deviceCountry,
@@ -81,9 +94,9 @@ export function Button({
         compact && styles.btnCompact,
         isGhost && styles.btnGhost,
         isDanger && styles.btnDanger,
-        // Solid-variant colour override (e.g. section/calendar accent).
+        // Solid-variant color override (e.g. section/calendar accent).
         color && !isGhost && !isDanger ? { backgroundColor: color } : null,
-        // Ghost-variant colour override tints the outline instead of the fill.
+        // Ghost-variant color override tints the outline instead of the fill.
         color && isGhost ? { borderColor: color } : null,
         (disabled || loading) && styles.btnDisabled,
         // Caller layout override (e.g. margin to space it from card copy).
@@ -102,7 +115,9 @@ export function Button({
 // A uniform solid-fill circular icon button. The circle is derived entirely
 // from `size` (borderRadius = size/2 guarantees a true circle) and the icon is
 // sized proportionally (~55%) so the fill always reads as a filled disc rather
-// than a thin ring. Use size 36 for header buttons, 56 for FABs.
+// than a thin ring. Use size 36 for header buttons, 56 for FABs. The fill is
+// the caller's accent lifted via vividOnDark — pass the stored calendar hue,
+// never a pre-brightened one.
 export function RoundIconButton({
   icon,
   onPress,
@@ -130,7 +145,7 @@ export function RoundIconButton({
           width: size,
           height: size,
           borderRadius: size / 2,
-          backgroundColor: bg,
+          backgroundColor: vividOnDark(bg),
           alignItems: 'center',
           justifyContent: 'center',
         },
@@ -142,50 +157,95 @@ export function RoundIconButton({
   );
 }
 
+// A list screen's header add action in an accented area: the solid accent
+// disc — or, under glass (see glassHeaderItems), a native prominent "+" item
+// so the accent fills the whole glass button, same rule as the save check.
+// Spread the result into navigation.setOptions in place of a bare headerRight.
+export function headerAddOptions(bg: string, onPress: () => void, accessibilityLabel = 'Add') {
+  return {
+    headerRight: () => <RoundIconButton icon="add" onPress={onPress} bg={bg} />,
+    ...(glassHeaderItems
+      ? {
+          unstable_headerRightItems: (): NativeStackHeaderItem[] => [
+            {
+              type: 'button',
+              label: 'Add',
+              icon: { type: 'sfSymbol', name: 'plus' },
+              variant: 'prominent',
+              tintColor: vividOnDark(bg),
+              accessibilityLabel,
+              onPress,
+            },
+          ],
+        }
+      : null),
+  };
+}
+
 // The checkmark that replaces a form's Save/Create button, living in the
 // header's top-right (`headerRight`). While the save mutation runs it shows a
-// spinner; `disabled` dims it. Two looks, driven by `color`: pass the view's
-// feature accent to get a solid-fill accent disc (accented feature areas); omit
-// it and the check is a plain transparent white glyph — matching the header
-// close X and the app's other non-accented header actions.
+// spinner; `disabled` dims it. The fill is state-driven, Apple Calendar's
+// pattern: pass `dirty` and a pristine form (`dirty: false`) shows a neutral
+// grey disc, disabled — there is nothing to save — which fills with the
+// feature accent (or solid white where the view has no accent) the moment
+// there are unsaved changes. Omitting `dirty` keeps the always-on look:
+// accent disc when `color` is passed, plain transparent white glyph when not
+// (matching the header close X). Accent fills are lifted via vividOnDark
+// (pass the stored hue, not a brightened one); the glyph flips dark on a
+// bright fill so a white disc keeps a visible check.
 export function HeaderCheckButton({
   onPress,
   loading,
   color,
   disabled,
+  dirty,
 }: {
   onPress: () => void;
   loading?: boolean;
   color?: string;
   disabled?: boolean;
+  dirty?: boolean;
 }) {
-  const tinted = !!color;
+  const pristine = dirty === false;
+  const fill = pristine
+    ? colors.surfaceElevated
+    : color
+      ? vividOnDark(color)
+      : dirty
+        ? '#FFFFFF'
+        : undefined; // legacy neutral: bare white glyph, no disc
+  const fillRgb = fill ? parseHex(fill) : null;
+  const glyph = fillRgb && luminance(fillRgb) > 0.55 ? colors.background : '#fff';
+  const inactive = pristine || disabled || loading;
   return (
     <TouchableOpacity
       onPress={onPress}
-      disabled={disabled || loading}
+      disabled={inactive}
       activeOpacity={0.8}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       accessibilityRole="button"
       accessibilityLabel="Save"
+      accessibilityState={{ disabled: inactive }}
       style={[
-        tinted ? [styles.headerCheck, { backgroundColor: color }] : styles.headerClose,
-        (disabled || loading) && styles.btnDisabled,
+        fill ? [styles.headerCheck, { backgroundColor: fill }] : styles.headerClose,
+        // The pristine grey IS the disabled look — no extra dim on top of it.
+        !pristine && (disabled || loading) && styles.btnDisabled,
       ]}
     >
       {loading ? (
-        <ActivityIndicator size="small" color="#fff" />
+        <ActivityIndicator size="small" color={glyph} />
       ) : (
-        <Ionicons name="checkmark-sharp" size={tinted ? 22 : 28} color="#fff" />
+        <Ionicons name="checkmark-sharp" size={fill ? 22 : 28} color={glyph} />
       )}
     </TouchableOpacity>
   );
 }
 
-// A header-bar icon action (edit pencil, share, print…). Lives in `headerRight`
+// A header-bar icon action (share, print, history…). Lives in `headerRight`
 // on detail screens — the general-purpose counterpart to the form-only
 // HeaderCheckButton/HeaderCloseButton. White by default to sit on the tinted
 // nav bar. Takes an Ionicons `icon` or a MaterialCommunity `mdiIcon`.
+// A detail screen's *edit* action is HeaderTextButton ("Edit"), not a pencil.
 export function HeaderIconButton({
   icon,
   mdiIcon,
@@ -212,6 +272,28 @@ export function HeaderIconButton({
   );
 }
 
+// A header-bar text action, iOS-style: nav-bar verbs are words, not glyphs
+// ("Edit" on every detail screen — Apple Contacts/Calendar/Health do the same).
+// 17pt regular, white to sit on the tinted bar. The visible word doubles as the
+// accessibility label unless a more specific one is passed ("Edit contact").
+export function HeaderTextButton({
+  title,
+  onPress,
+  color = '#fff',
+  accessibilityLabel,
+}: {
+  title: string;
+  onPress: () => void;
+  color?: string;
+  accessibilityLabel?: string;
+}) {
+  return (
+    <TouchableOpacity onPress={onPress} style={styles.headerIconBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title}>
+      <Text style={[styles.headerTextBtn, { color }]}>{title}</Text>
+    </TouchableOpacity>
+  );
+}
+
 // The floating action button: a 56px accent disc pinned to the bottom-right with
 // a shadow. Use on detail screens to add a sub-item (a list screen's add lives in
 // the header via RoundIconButton instead).
@@ -232,7 +314,7 @@ export function Fab({
   children?: React.ReactNode;
 }) {
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[styles.fab, { backgroundColor: bg }, style]}>
+    <TouchableOpacity onPress={onPress} activeOpacity={0.85} style={[styles.fab, { backgroundColor: vividOnDark(bg) }, style]}>
       {children ?? (icon ? <Ionicons name={icon} size={28} color={color} /> : null)}
     </TouchableOpacity>
   );
@@ -261,7 +343,11 @@ export function HeaderCloseButton({ onPress }: { onPress: () => void }) {
 // (no stale closure), while the header only re-renders when its visuals change.
 export function useHeaderCheckButton(
   navigation: {
-    setOptions: (o: { headerLeft: () => React.ReactNode; headerRight: () => React.ReactNode }) => void;
+    setOptions: (o: {
+      headerLeft: () => React.ReactNode;
+      headerRight: () => React.ReactNode;
+      unstable_headerRightItems?: () => NativeStackHeaderItem[];
+    }) => void;
     goBack: () => void;
   },
   {
@@ -269,21 +355,54 @@ export function useHeaderCheckButton(
     loading,
     color,
     disabled,
+    // Pass the form's unsaved-changes flag (the same one the discard guard
+    // uses): while false the check is the neutral grey and DISABLED — Apple
+    // Calendar's pristine state — and it fills with the accent (or solid
+    // white on a non-accented form) once there is something to save. Omit for
+    // the always-on accent look (screens without a dirty concept).
+    dirty,
     // Set false to hide the checkmark entirely (e.g. a multi-step form's first
     // step where there is nothing to save yet). The X close button always shows.
     enabled = true,
-  }: { onPress: () => void; loading?: boolean; color?: string; disabled?: boolean; enabled?: boolean }
+  }: { onPress: () => void; loading?: boolean; color?: string; disabled?: boolean; dirty?: boolean; enabled?: boolean }
 ) {
   const onPressRef = useRef(onPress);
   onPressRef.current = onPress;
+  const pristine = dirty === false;
   useEffect(() => {
     navigation.setOptions({
       headerLeft: () => <HeaderCloseButton onPress={() => navigation.goBack()} />,
       headerRight: enabled
-        ? () => <HeaderCheckButton onPress={() => onPressRef.current()} loading={loading} color={color} disabled={disabled} />
+        ? () => <HeaderCheckButton onPress={() => onPressRef.current()} loading={loading} color={color} disabled={disabled} dirty={dirty} />
         : () => null,
+      // Under glass (see glassHeaderItems) the check is a native bar-button
+      // item so the accent fills the whole glass control; the custom
+      // headerRight above still backs Android and pre-26 iOS. Pristine is a
+      // disabled plain item — the system's own dimmed glyph in the neutral
+      // glass circle, exactly Apple Calendar's grey check.
+      ...(glassHeaderItems
+        ? {
+            unstable_headerRightItems: (): NativeStackHeaderItem[] =>
+              !enabled
+                ? []
+                : loading
+                  ? [{ type: 'custom', element: <ActivityIndicator size="small" color="#fff" /> }]
+                  : [
+                      {
+                        type: 'button',
+                        label: 'Save',
+                        icon: { type: 'sfSymbol', name: 'checkmark' },
+                        variant: pristine ? 'plain' : color ? 'prominent' : dirty ? 'prominent' : 'plain',
+                        tintColor: pristine ? '#fff' : color ? vividOnDark(color) : dirty ? '#FFFFFF' : '#fff',
+                        disabled: pristine || disabled,
+                        accessibilityLabel: 'Save',
+                        onPress: () => onPressRef.current(),
+                      },
+                    ],
+          }
+        : null),
     });
-  }, [navigation, loading, color, disabled, enabled]);
+  }, [navigation, loading, color, disabled, dirty, pristine, enabled]);
 }
 
 export function Input(
@@ -367,7 +486,7 @@ export function InfoCard({ children, style }: { children: React.ReactNode; style
 // the keyboard. Screen exposes `reveal`: scroll a view (input + its dropdown)
 // fully into the visible area above the keyboard, capped so the input's top
 // never leaves the viewport.
-const ScreenScrollContext = React.createContext<{ reveal: (view: View) => void; scrollToY: (y: number, animated?: boolean) => void } | null>(null);
+const ScreenScrollContext = React.createContext<{ reveal: (view: View, animated?: boolean) => void; scrollToY: (y: number, animated?: boolean) => void } | null>(null);
 
 // Access the enclosing <Screen>'s scroll helpers (null outside a scrolling
 // Screen). `scrollToY(layoutY)` jumps a section to the top — e.g. opening a form
@@ -380,18 +499,28 @@ export function useScreenScroll() {
 // `reveal()` to call at any moment worth re-checking — the dropdown opened, the
 // field took focus, the keyboard finished coming up. No-op outside a scrolling
 // <Screen>.
+//
+// `{ animated: false }` when a tappable dropdown is (about to be) showing: an
+// iOS tap landing during an in-flight scroll animation is consumed as
+// "catch the scroll" and never reaches the row, so the first tap on a
+// suggestion dies. An instant jump finishes before the user can aim, leaving
+// nothing to swallow the tap. Keep the default (animated) for reveals with no
+// dropdown on screen, e.g. a bare field taking focus.
 export function useReveal() {
   const screenScroll = React.useContext(ScreenScrollContext);
   const ref = useRef<View>(null);
   const frame = useRef<number | null>(null);
-  const reveal = useCallback(() => {
+  const reveal = useCallback((opts?: { animated?: boolean }) => {
     if (!screenScroll) return;
+    // Tolerate being passed straight to an event listener (a Keyboard event
+    // object has no `animated` key → default animated).
+    const animated = opts?.animated !== false;
     if (frame.current !== null) cancelAnimationFrame(frame.current);
     // Wait a frame so the just-rendered dropdown — or the viewport the keyboard
     // just shrank — is in the measured layout.
     frame.current = requestAnimationFrame(() => {
       frame.current = null;
-      if (ref.current) screenScroll.reveal(ref.current);
+      if (ref.current) screenScroll.reveal(ref.current, animated);
     });
   }, [screenScroll]);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
@@ -405,10 +534,13 @@ export function useRevealOnOpen(open: boolean, itemCount: number) {
   const { ref, reveal } = useReveal();
   useEffect(() => {
     if (!open || itemCount === 0) return;
-    reveal();
+    // Instant, not animated: the rows are tappable the moment they render, and
+    // a tap during a scroll animation is eaten as "catch the scroll" (see
+    // useReveal) — the first tap on a suggestion would do nothing.
+    reveal({ animated: false });
     // A keyboard that comes up *after* the dropdown is already open shrinks the
     // viewport out from under it, so re-reveal once it has settled.
-    const sub = Keyboard.addListener('keyboardDidShow', reveal);
+    const sub = Keyboard.addListener('keyboardDidShow', () => reveal({ animated: false }));
     return () => sub.remove();
   }, [open, itemCount, reveal]);
   return ref;
@@ -480,7 +612,7 @@ export function Screen({
   const scrollRef = useRef<KeyboardAwareScrollViewRef>(null);
   const offsetY = useRef(0);
   const revealApi = React.useMemo(() => ({
-    reveal: (view: View) => {
+    reveal: (view: View, animated: boolean = true) => {
       const scrollView = scrollRef.current;
       const native: any = scrollView?.getNativeScrollRef?.() ?? scrollView;
       if (!scrollView || typeof native?.measureInWindow !== 'function') return;
@@ -492,7 +624,7 @@ export function Screen({
           // Cap the scroll so the input's top stays inside the viewport even
           // when the dropdown is taller than the space above the keyboard.
           const delta = Math.min(overflow, Math.max(0, vy - sy - spacing.sm));
-          if (delta > 0) scrollView.scrollTo({ y: offsetY.current + delta, animated: true });
+          if (delta > 0) scrollView.scrollTo({ y: offsetY.current + delta, animated });
         });
       });
     },
@@ -957,8 +1089,8 @@ export function HintDisclosure({
 // of a settings screen when the user arrived from a Calen "setup" deep-link — it
 // states why they're here and what to fill in. Mirrors the app's tinted-banner
 // convention (CreditsBanner, EventLocation's phone callout). Defaults to the
-// app-primary tint; pass `accent` for a feature-area colour (e.g. a calendar
-// colour). Pair it with `highlight` on the target field to draw the eye there.
+// app-primary tint; pass `accent` for a feature-area color (e.g. a calendar
+// color). Pair it with `highlight` on the target field to draw the eye there.
 export function SetupCallout({
   children,
   icon = 'information-circle',
@@ -1023,7 +1155,7 @@ export function IconAvatar({
 // a subtitle (a string, or a node for icon-studded meta rows), and trailing
 // content (`right` — a Switch/Badge…; falls back to a chevron when `onPress` is
 // set). The richer sibling of ListRow (which is a bare row inside a card). For
-// bespoke cards (expandable, flush colour-bar) keep a raw Card; for swipe-to-
+// bespoke cards (expandable, flush color-bar) keep a raw Card; for swipe-to-
 // delete wrap whatever the row is in SwipeableRow.
 export function CardRow({
   leading,
@@ -1213,9 +1345,9 @@ export function SwipeableRow({
   );
 }
 
-// A palette grid for picking an accent colour. Each option is a solid disc; the
+// A palette grid for picking an accent color. Each option is a solid disc; the
 // selected one shows a white checkmark (no layout shift). Replaces the four
-// near-identical swatch grids (calendar colour, subscribe, trip colour…).
+// near-identical swatch grids (calendar color, subscribe, trip color…).
 export function ColorPicker({
   value,
   onChange,
@@ -1328,7 +1460,7 @@ export function SwitchRow({
   highlight?: boolean;
   // Render like the other form fields: a small label above a bordered box.
   boxed?: boolean;
-  // On-state track tint (e.g. a calendar's colour); defaults to the app primary.
+  // On-state track tint (e.g. a calendar's color); defaults to the app primary.
   color?: string;
 }) {
   const trackColor = { true: color ?? colors.primary };
@@ -2074,6 +2206,7 @@ const styles = StyleSheet.create({
   headerCheck: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   headerClose: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   headerIconBtn: { paddingHorizontal: 6 },
+  headerTextBtn: { fontSize: 17, fontWeight: '400' },
   fab: {
     position: 'absolute',
     right: spacing.lg,
@@ -2227,7 +2360,7 @@ const styles = StyleSheet.create({
   hintDisclosureLabel: { fontSize: 15, color: colors.text, fontWeight: '600' },
   hintDisclosureHint: { marginTop: 4, marginBottom: 0 },
   // SetupCallout — a tinted fill + border, filled icon disc, bold text (tint
-  // colours applied inline from the `accent` prop). Deliberately louder than Hint.
+  // colors applied inline from the `accent` prop). Deliberately louder than Hint.
   setupCallout: {
     flexDirection: 'row',
     alignItems: 'center',

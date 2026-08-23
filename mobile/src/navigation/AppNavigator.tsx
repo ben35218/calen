@@ -72,6 +72,7 @@ import TripsScreen from '../screens/trips/TripsScreen';
 import TripFormScreen from '../screens/trips/TripFormScreen';
 import TripDetailScreen from '../screens/trips/TripDetailScreen';
 import TripItemFormScreen from '../screens/trips/TripItemFormScreen';
+import TripItemDetailScreen from '../screens/trips/TripItemDetailScreen';
 import TripSettleScreen from '../screens/trips/TripSettleScreen';
 import TripAssistantScreen from '../screens/trips/TripAssistantScreen';
 
@@ -107,8 +108,8 @@ const BLACK = '#000';
 const hdr = (bg: string) => ({ headerStyle: { backgroundColor: bg }, headerTintColor: '#fff' as const });
 
 // Screen options for a feature-calendar home: the standard header. (The old
-// header pencil into Edit Calendar was removed — the Calendars view's per-row
-// edit button is now the single path to a calendar's colour/alerts/delete.)
+// header edit action into Edit Calendar was removed — the Calendars view's
+// per-row edit button is now the single path to a calendar's color/alerts/delete.)
 const featureCalendarHome = (title: string) => ({
   ...hdr(colors.background),
   headerShadowVisible: false,
@@ -205,7 +206,7 @@ export default function AppNavigator() {
       <Stack.Screen name="Assistant" component={AssistantScreen} options={assistantScreen(ASSISTANT_NAME)} />
       <Stack.Screen name="CalendarSearch" component={CalendarSearchScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Search' }} />
       {/* A push, not a modal: Calendars is browsable hierarchy — it drills into
-          Add Calendar, Colours & Order, Print — rather than a task you finish
+          Add Calendar, Colors & Order, Print — rather than a task you finish
           and dismiss. */}
       <Stack.Screen
         name="Calendars"
@@ -238,7 +239,7 @@ export default function AppNavigator() {
       <Stack.Screen name="AddCalendar" component={AddCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'New Calendar' }} />
       <Stack.Screen name="SubscribeCalendar" component={SubscribeCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Subscribe' }} />
       <Stack.Screen name="AddHolidayCalendar" component={AddHolidayCalendarScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Add Holidays' }} />
-      <Stack.Screen name="CalendarColors" component={CalendarColorsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Colours & Order' }} />
+      <Stack.Screen name="CalendarColors" component={CalendarColorsScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Colors & Order' }} />
       {/* A modal: pick a range, produce a PDF, dismiss — a finish-and-dismiss
           task, not a place in the calendar hierarchy. */}
       <Stack.Screen name="PrintCalendar" component={PrintCalendarScreen} options={modalTask('Print')} />
@@ -301,9 +302,10 @@ export default function AppNavigator() {
       <Stack.Screen name="TripForm" component={TripFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Trip' }} />
       {/* TripDetail re-declares its header in a layout effect (the status badge
           + pencil title); the background must already match there, or the push
-          transition flashes a differently-coloured bar first. */}
+          transition flashes a differently-colored bar first. */}
       <Stack.Screen name="TripDetail" component={TripDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Trip' }} />
       <Stack.Screen name="TripItemForm" component={TripItemFormScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Booking' }} />
+      <Stack.Screen name="TripItemDetail" component={TripItemDetailScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Booking' }} />
       <Stack.Screen name="TripSettle" component={TripSettleScreen} options={{ ...hdr(colors.background), headerShadowVisible: false, title: 'Settle Up' }} />
       <Stack.Screen name="TripAssistant" component={TripAssistantScreen} options={assistantScreen(`${ASSISTANT_NAME} · Trips`)} />
 

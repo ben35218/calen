@@ -3,7 +3,7 @@ import { View, StyleSheet, Animated, Dimensions } from 'react-native';
 import { Text } from '../../../components/Text';
 import { useQuery } from '@tanstack/react-query';
 import { loadCalendarData } from '../../../lib/calendarData';
-import { loadPassiveForecast } from '../../../lib/weatherSource';
+import { loadCalendarForecast } from '../../../lib/weatherSource';
 import { itemsForDate, visibleDayItems, ymd } from '../../../lib/calendar';
 import { getHolidays } from '../../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../../lib/calendarPrefs';
@@ -71,11 +71,12 @@ const TimelineView = forwardRef<
 
   // The hourly weather rail follows the Weather calendar's visibility toggle
   // (same gate as the month grid's forecast strip) and the passive forecast
-  // source — never prompts for location from here.
+  // source — never prompts for location from here. Trip-aware: a day inside a
+  // booked trip's dates rails the destination's hours instead of home's.
   const weatherOn = visibility.weather !== false;
   const weatherQ = useQuery({
     queryKey: ['weather', 'current'],
-    queryFn: () => loadPassiveForecast(),
+    queryFn: () => loadCalendarForecast(),
     enabled: weatherOn,
   });
   const wxByDate: RailMark[][] = useMemo(

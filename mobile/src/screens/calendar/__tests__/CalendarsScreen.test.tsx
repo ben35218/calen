@@ -26,16 +26,23 @@ jest.mock('@tanstack/react-query', () => ({
 const mockSetVisible = jest.fn();
 // Parameterized custom-calendar list per test.
 const mockCustom = { list: [] as unknown[] };
+// What the user arranged in Colors & Order (empty = the app's natural order).
+const mockOrder = { ids: [] as string[] };
+const mockGroupOrder = { keys: [] as string[] };
 jest.mock('../../../lib/calendarPrefs', () => {
   const actual = jest.requireActual('../../../lib/calendarPrefs');
   return {
     CALENDARS: actual.CALENDARS,
+    CALENDAR_GROUP_KEYS: actual.CALENDAR_GROUP_KEYS,
+    calendarGroupOf: actual.calendarGroupOf,
     sortByCalendarOrder: actual.sortByCalendarOrder,
+    sortByGroupOrder: actual.sortByGroupOrder,
     useCalendarVisibility: () => ({ visibility: { chores: false }, setVisible: mockSetVisible }),
     useCalendarColors: () => ({ colors: {} }),
     useCustomCalendars: () => ({ calendars: mockCustom.list }),
     useDeletedDefaultCalendars: () => ({ deletedIds: [] }),
-    useCalendarOrder: () => ({ order: [] }),
+    useCalendarOrder: () => ({ order: mockOrder.ids, setOrder: jest.fn() }),
+    useCalendarGroupOrder: () => ({ groupOrder: mockGroupOrder.keys, setGroupOrder: jest.fn() }),
     refreshCustomCalendars: jest.fn().mockResolvedValue(undefined),
   };
 });
@@ -142,8 +149,23 @@ describe('CalendarsScreen grouping', () => {
     mockOwned.ids = new Set(['recipes', 'maintenance', 'trips', 'birthdays', 'chores']);
     mockCustom.list = [];
     mockHousehold.memberCount = 2;
+    mockOrder.ids = [];
+    mockGroupOrder.keys = [];
   });
   afterEach(cleanup);
+
+  // Regression (2026-08-23): built-ins and customs rendered as two blocks, so a
+  // custom calendar could never appear anywhere but below every built-in — the
+  // position the user set in Colors & Order was ignored.
+  it('a custom calendar renders where the user put it, interleaved with the built-ins', async () => {
+    mockCustom.list = [customCal({ id: 'custom-hh', name: 'Family Events', sharedWithHousehold: true })];
+    mockOrder.ids = ['activities', 'custom-hh', 'appointments'];
+    const view = await render(<CalendarsScreen />);
+    const names = view
+      .getAllByText(/^(Activities|Family Events|Appointments)$/)
+      .map((n) => n.props.children);
+    expect(names).toEqual(['Activities', 'Family Events', 'Appointments']);
+  });
 
   it('orders groups HOUSEHOLD → JUST ME → SHARED', async () => {
     mockCustom.list = [
@@ -155,6 +177,20 @@ describe('CalendarsScreen grouping', () => {
       .getAllByText(/^(HOUSEHOLD|JUST ME|SHARED)$/)
       .map((n) => n.props.children);
     expect(labels).toEqual(['HOUSEHOLD', 'JUST ME', 'SHARED']);
+  });
+
+  it('honours the section sequence the user set in Colors & Order', async () => {
+    mockGroupOrder.keys = ['shared', 'justMe'];
+    mockCustom.list = [
+      customCal({ id: 'custom-mine', name: 'Workouts' }), // just me
+      customCal({ id: 'custom-out', name: 'Soccer', sharedWith: [{ userId: 'u1', access: 'full' }] }), // shared
+    ];
+    const view = await render(<CalendarsScreen />);
+    const labels = view
+      .getAllByText(/^(HOUSEHOLD|JUST ME|SHARED)$/)
+      .map((n) => n.props.children);
+    // Unlisted keys trail the arranged ones, so HOUSEHOLD drops to last.
+    expect(labels).toEqual(['SHARED', 'JUST ME', 'HOUSEHOLD']);
   });
 
   it('every SHARED row states its direction: shared by you (with count) vs shared with you', async () => {

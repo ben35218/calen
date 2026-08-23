@@ -39,6 +39,7 @@ jest.mock('../../../components/ui', () => {
     Chip: ({ label, onPress }: { label: string; onPress: () => void }) =>
       RealReact.createElement(TouchableOpacity, { onPress }, RealReact.createElement(Text, null, label)),
     RoundIconButton: () => null,
+    headerAddOptions: () => ({ headerRight: () => null }),
     SectionHeader: ({ children }: { children: React.ReactNode }) =>
       RealReact.createElement(Text, { testID: 'section-header' }, children),
     SkeletonList: () => null,

@@ -67,7 +67,7 @@ function normalizeOutsideEntry(o) {
 // `keyChangedAt` / `reapprovalRequestedAt` are SERVER state (the re-key
 // suppression — see the model), not part of the client's sharing payload, so
 // they ride through untouched. Dropping them here would clear the suppression
-// on any ordinary calendar edit (rename, recolour, add a collaborator), and the
+// on any ordinary calendar edit (rename, recolor, add a collaborator), and the
 // owner's next background pass would then silently re-wrap the CalendarKey to a
 // re-keyed collaborator that nobody ever approved.
 function normalizeCollaboratorEntry(c) {

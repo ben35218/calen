@@ -21,7 +21,7 @@ export function skyKind(code: number | undefined): SkyKind {
   return 'clouds';
 }
 
-// top → horizon gradient colours, kept dark enough at the horizon that the
+// top → horizon gradient colors, kept dark enough at the horizon that the
 // app's light text stays readable on the translucent cards above it.
 export function skyPalette(code: number | undefined, night: boolean = isNight()): [string, string] {
   if (night) {

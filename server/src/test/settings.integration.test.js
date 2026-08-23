@@ -159,10 +159,10 @@ test('PUT /settings: rejects a malformed alert config without storing it', async
   assert.deepEqual(got.body.holidayAlerts, { offsets: [1], time: '09:00' }, 'the good value stands');
 });
 
-// ── The calendar arrangement (colours, order, hidden, deleted, muted) ────────
+// ── The calendar arrangement (colors, order, hidden, deleted, muted) ────────
 // Account state for the same reason as the alert configs above: the mobile
 // client caches it in AsyncStorage and that cache is wiped at sign-out, so
-// every recolour, reorder, hide and delete silently reverted to the app
+// every recolor, reorder, hide and delete silently reverted to the app
 // defaults on the next sign-in. See User.calendarPrefs.
 test('PUT /settings calendarPrefs: stores the arrangement and echoes it back', async () => {
   const u = await registerUser();
@@ -175,6 +175,7 @@ test('PUT /settings calendarPrefs: stores the arrangement and echoes it back', a
     .send({ calendarPrefs: {
       colors: { chores: '#8E24AA' },
       order: ['chores', 'activities'],
+      groupOrder: ['shared', 'household'],
       hidden: ['weather'],
       deletedDefaults: ['recipes'],
       alertsOff: ['trips'],
@@ -185,6 +186,9 @@ test('PUT /settings calendarPrefs: stores the arrangement and echoes it back', a
   assert.deepEqual(got.body.calendarPrefs, {
     colors: { chores: '#8E24AA' },
     order: ['chores', 'activities'],
+    // The audience sections the calendar lists group by, in the sequence the
+    // user arranged in Colors & Order.
+    groupOrder: ['shared', 'household'],
     hidden: ['weather'],
     deletedDefaults: ['recipes'],
     alertsOff: ['trips'],
@@ -241,10 +245,11 @@ test('PUT /settings calendarPrefs: rejects a malformed arrangement without stori
     .send({ calendarPrefs: { colors: { chores: '#8E24AA' } } });
 
   for (const bad of [
-    { colors: { chores: 'purple' } },        // not a hex colour
+    { colors: { chores: 'purple' } },        // not a hex color
     { colors: { chores: '#8E24AAFF' } },     // not a 6-digit hex
-    { colors: ['#8E24AA'] },                 // not an id → colour map
+    { colors: ['#8E24AA'] },                 // not an id → color map
     { order: 'chores' },                     // not a list
+    { groupOrder: { household: 0 } },        // not a list
     { hidden: [{ id: 'weather' }] },         // not a list of ids
     { alertsOff: Array.from({ length: 501 }, (_, i) => `c${i}`) }, // unbounded
     'purple',                                // not an arrangement

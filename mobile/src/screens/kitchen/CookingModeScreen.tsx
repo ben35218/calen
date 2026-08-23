@@ -181,7 +181,7 @@ function usePagedScroll() {
 export default function CookingModeScreen() {
   const { id, variation } = useRoute<Rt>().params;
   const navigation = useNavigation();
-  // Meals/recipes calendar colour (respects user overrides) — the section accent.
+  // Meals/recipes calendar color (respects user overrides) — the section accent.
   const accent = useCalendarColors().colors.recipes;
   const [step, setStep] = useState(0);
   const [showAll, setShowAll] = useState(false);

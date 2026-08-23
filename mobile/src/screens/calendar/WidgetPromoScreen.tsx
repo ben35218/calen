@@ -64,7 +64,7 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 // A mock of the small widget, drawn with the app's primitives in the widget's
-// visual language (accent weekday eyebrow, big day number, colour-tinted
+// visual language (accent weekday eyebrow, big day number, color-tinted
 // chips). Fixed geometry throughout — FixedText, per the Dynamic Type rules.
 function WidgetMock({ day, sample }: { day: WidgetDay; sample: boolean }) {
   const date = sample || !day.date ? new Date() : new Date(day.date + 'T12:00:00');

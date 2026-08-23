@@ -14,7 +14,7 @@ const NAV_DESTINATIONS = {
   calendar: [
     { id: 'view_calendar', label: 'View your calendar', when: 'the user just wants to look at their calendar / what is coming up' },
     { id: 'calendar_search', label: 'Search your calendar', when: 'the user is looking for a specific event or wants to find something on their calendar' },
-    { id: 'manage_calendars', label: 'Manage calendars', when: 'the user wants to add, hide, subscribe to, or recolour a calendar' },
+    { id: 'manage_calendars', label: 'Manage calendars', when: 'the user wants to add, hide, subscribe to, or recolor a calendar' },
     { id: 'birthdays', label: 'View birthdays', when: 'the conversation is about birthdays' },
     { id: 'weather', label: 'Check the weather', when: 'the user asks about the weather or forecast to plan around it' },
   ],

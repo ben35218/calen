@@ -83,7 +83,7 @@ test('calendar writes: a full-access housemate edits basics; sharing and delete 
   // householdAccess defaults to 'full'.
   const cal = await createCalendar(owner.auth, { sharedWithHousehold: true });
 
-  // Full Access housemate: name / colour / alerts are editable…
+  // Full Access housemate: name / color / alerts are editable…
   const memberRename = await request().put(`/api/calendars/${cal.body.key}`)
     .set('Authorization', member.auth)
     .send({ name: 'Family Stuff', color: '#43A047', alertsEnabled: false });

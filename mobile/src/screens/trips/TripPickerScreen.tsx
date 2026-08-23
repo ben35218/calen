@@ -9,8 +9,7 @@ import type { RootStackParamList } from '../../navigation/types';
 import { tripsApi, Trip } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import * as replica from '../../lib/replica';
-import { Card, Badge, SkeletonList, EmptyState, IconAvatar, Hint } from '../../components/ui';
-import { tripStatusLabel, tripStatusColor } from '../../lib/tripTypes';
+import { Card, SkeletonList, EmptyState, IconAvatar, Hint } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import AssistantSwitcher from '../../components/AssistantSwitcher';
@@ -25,12 +24,6 @@ function endStr(t: Trip) {
 }
 
 function dateSummary(t: Trip) {
-  if (t.status === 'considering') {
-    const n = t.candidateRanges?.length ?? 0;
-    if (!n) return 'No dates chosen yet';
-    if (n === 1) return `${formatCalendarDate(t.candidateRanges![0].start)} – ${formatCalendarDate(t.candidateRanges![0].end)}`;
-    return `${n} date options`;
-  }
   if (t.startDate) {
     const end = t.endDate && t.endDate !== t.startDate ? ` – ${formatCalendarDate(t.endDate)}` : '';
     return `${formatCalendarDate(t.startDate)}${end}`;
@@ -64,17 +57,14 @@ export default function TripPickerScreen({
     navigation.setOptions({ headerRight: undefined });
   }, [navigation]);
 
-  // A single flat list (no status groupings): considering first, then upcoming,
-  // then past — each ordered by start date.
+  // A single flat list: upcoming (and undated) trips first by start date, then
+  // past trips, most recent first — mirrors the trips list's date-derived split.
   const trips = useMemo(() => {
     const all = tripsQ.data ?? [];
-    const considering = all.filter((t) => t.status === 'considering');
-    const booked = all.filter((t) => t.status === 'booked');
-    const upcoming = booked.filter((t) => !endStr(t) || endStr(t)! >= todayStr);
-    const past = all.filter((t) => t.status === 'completed' || (t.status === 'booked' && endStr(t) && endStr(t)! < todayStr));
+    const upcoming = all.filter((t) => !endStr(t) || endStr(t)! >= todayStr);
+    const past = all.filter((t) => endStr(t) && endStr(t)! < todayStr);
     const byStart = (a: Trip, b: Trip) => new Date(a.startDate || 0).getTime() - new Date(b.startDate || 0).getTime();
     return [
-      ...considering,
       ...upcoming.sort(byStart),
       ...past.sort((a, b) => byStart(b, a)),
     ];
@@ -118,11 +108,10 @@ export default function TripPickerScreen({
             trips.map((t) => (
               <TouchableOpacity key={t._id} activeOpacity={0.8} onPress={() => onPickTrip(t._id, t.name)}>
                 <Card style={styles.tripCard}>
-                  <View style={[styles.bar, { backgroundColor: t.color || accent }]} />
+                  <View style={[styles.bar, { backgroundColor: accent }]} />
                   <View style={{ flex: 1, paddingLeft: spacing.md }}>
                     <View style={styles.titleRow}>
                       <Text style={styles.name}>{t.name}</Text>
-                      <Badge label={tripStatusLabel(t.status)} color={tripStatusColor(t.status)} />
                     </View>
                     {t.destination ? <Text style={styles.sub}>{t.destination}</Text> : null}
                     <Text style={styles.sub}>{dateSummary(t)}</Text>

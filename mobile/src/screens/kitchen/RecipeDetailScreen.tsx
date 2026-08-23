@@ -12,7 +12,7 @@ import { recipeImageUri, claimRecipePhoto, flushPendingPhotoClaims } from '../..
 import { featuredSchedule } from '../../lib/mealSchedule';
 import { ingredientRuns, pickVariation } from '../../lib/recipeVariations';
 import { RECIPE_SCHEDULE_ENC } from '../../lib/encSubsets';
-import { Button, Card, Chip, Screen, Divider, Badge, DateField, CenteredLoader, ScreenTitle, HeaderIconButton, Skeleton } from '../../components/ui';
+import { Button, Card, Chip, Screen, Divider, Badge, DateField, CenteredLoader, ScreenTitle, HeaderTextButton, Skeleton } from '../../components/ui';
 import { formatCalendarDate } from '../../lib/recurrence';
 import { ymd } from '../../lib/calendar';
 import { KitchenStackParamList } from '../../navigation/KitchenNavigator';
@@ -26,7 +26,7 @@ export default function RecipeDetailScreen() {
   const navigation = useNavigation<Nav>();
   const { id } = useRoute<Rt>().params;
   const qc = useQueryClient();
-  // Meals/recipes calendar colour (respects user overrides) — the section accent.
+  // Meals/recipes calendar color (respects user overrides) — the section accent.
   const accent = useCalendarColors().colors.recipes;
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -115,7 +115,7 @@ export default function RecipeDetailScreen() {
         </View>
       ),
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit recipe" onPress={() => navigation.navigate('RecipeForm', { id })} />
+        <HeaderTextButton title="Edit" accessibilityLabel="Edit recipe" onPress={() => navigation.navigate('RecipeForm', { id })} />
       ),
     });
   }, [navigation, id, recipe]);

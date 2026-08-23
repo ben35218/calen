@@ -7,7 +7,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { choresApi, contactsApi } from '../../api';
 import { openRecord } from '../../lib/e2ee';
 import { useAuth } from '../../store/auth';
-import { Button, Card, Screen, ListRow, CenteredLoader, IconAvatar, ScreenTitle, HeaderIconButton, InfoCard } from '../../components/ui';
+import { Button, Card, Screen, ListRow, CenteredLoader, IconAvatar, ScreenTitle, HeaderTextButton, InfoCard } from '../../components/ui';
 import { recurrenceLabel, dueInLabel, mdiName, formatCalendarDate } from '../../lib/recurrence';
 import {
   promptItemDelete, promptResumeSchedule, resumeState, resumeSubtitle, hasUpcomingOccurrence,
@@ -77,7 +77,7 @@ export default function ChoreDetailScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <HeaderIconButton icon="pencil" accessibilityLabel="Edit chore" onPress={() => navigation.navigate('ChoreForm', { id, date })} />
+        <HeaderTextButton title="Edit" accessibilityLabel="Edit chore" onPress={() => navigation.navigate('ChoreForm', { id, date })} />
       ),
     });
   }, [navigation, id, date, chore?.title]);

@@ -406,7 +406,7 @@ test('assemble filters, expands, and shapes the full CalendarData', () => {
       { _id: 's1', scheduledDate: new Date('2026-01-14') },
     ],
     trips: [
-      { _id: 'tr1', name: 'Ski', status: 'planned', startDate: new Date('2026-01-08'), endDate: new Date('2026-01-12') },
+      { _id: 'tr1', name: 'Ski', startDate: new Date('2026-01-08'), endDate: new Date('2026-01-12') },
     ],
   });
 

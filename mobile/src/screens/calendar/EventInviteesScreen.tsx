@@ -114,7 +114,7 @@ export default function EventInviteesScreen() {
   const initialRevoked = useRef(JSON.stringify(stageOnly ? getQueuedRevokes() : []));
   const { user } = useAuth();
 
-  // The event's calendar colour tints the inline ✓, same as the event form's
+  // The event's calendar color tints the inline ✓, same as the event form's
   // header ✓ (calendarPrefs override → custom calendar → theme fallback).
   const cal = useCalendarColors().colors;
   const { calendars: customCalendars } = useCustomCalendars();
@@ -294,8 +294,6 @@ export default function EventInviteesScreen() {
     }
   };
 
-  useHeaderCheckButton(navigation, { onPress: onConfirm, loading: busy, color: calColor });
-
   // Guard the ✕ / back / swipe-back against dropping staged invitees or
   // half-typed text; `allowLeave` above lets ✓ exit without the prompt.
   const dirty =
@@ -303,6 +301,7 @@ export default function EventInviteesScreen() {
     JSON.stringify(revoked) !== initialRevoked.current ||
     !!input.trim() ||
     (hhInitial.current !== null && JSON.stringify(hhSelected) !== JSON.stringify(hhInitial.current));
+  useHeaderCheckButton(navigation, { onPress: onConfirm, loading: busy, color: calColor, dirty });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const revoke = useMutation({

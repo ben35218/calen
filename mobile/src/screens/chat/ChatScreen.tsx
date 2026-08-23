@@ -256,8 +256,8 @@ export default function ChatScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.messages.length, chat.streamingText]);
 
-  // Tint the input-bar buttons with the selected assistant's default area colour
-  // (Calendar has no per-calendar colour, so it falls back to the app accent).
+  // Tint the input-bar buttons with the selected assistant's default area color
+  // (Calendar has no per-calendar color, so it falls back to the app accent).
   const activeTab = ASSISTANT_TABS.find((t) => t.id === activeAssistant);
   const activeAccent =
     activeTab && activeTab.accentKey !== 'primary' ? areaColors[activeTab.accentKey] : colors.primary;

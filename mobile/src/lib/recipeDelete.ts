@@ -39,7 +39,7 @@ export async function deleteRecipeWithSchedules(recipeId: string): Promise<{ rem
 }
 
 // How far the edit form pops after deleting its recipe. A single goBack lands
-// on whatever pushed the form — which, from the pencil on the recipe view, is
+// on whatever pushed the form — which, from Edit on the recipe view, is
 // the RecipeDetail of the recipe that was just deleted: a dead screen whose
 // query can only 404. When that detail is directly underneath, the pop takes
 // it too, landing wherever the user opened the recipe from (library, planner,

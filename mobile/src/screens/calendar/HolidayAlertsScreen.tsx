@@ -47,7 +47,6 @@ export default function HolidayAlertsScreen() {
     navigation.goBack();
   };
 
-  useHeaderCheckButton(navigation, { onPress: onSave, color: accent });
 
   // Discard guard: prompt before leaving with unsaved alert-offset/time changes.
   // The prefs seed synchronously, so the baseline is the form on first render.
@@ -57,6 +56,7 @@ export default function HolidayAlertsScreen() {
     if (baselineRef.current === null) baselineRef.current = snapshot;
   }, [snapshot]);
   const dirty = baselineRef.current !== null && snapshot !== baselineRef.current;
+  useHeaderCheckButton(navigation, { onPress: onSave, color: accent, dirty });
   const allowLeave = useUnsavedChangesGuard(navigation, dirty);
 
   const anyAlert = alert1 != null || alert2 != null;

@@ -40,9 +40,7 @@ export interface CalendarTripOverlay {
   id: string;
   name?: string;
   destination?: string;
-  color?: string;
-  status?: string;
-  ranges: { start: any; end: any; label?: string }[];
+  ranges: { start: any; end: any }[];
 }
 
 export interface CalendarData {

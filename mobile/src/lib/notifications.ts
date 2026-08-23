@@ -26,6 +26,8 @@ import {
 import { getHolidays } from './holidays';
 import { occasionTitle } from './occasions';
 import { restoreCookTimerAlarms } from './cookTimers';
+import { BookingAlert, loadBookingAlerts } from './tripAlerts';
+import { tripTypeMeta } from './tripTypes';
 
 // Foreground notification behavior (applies to local reminders and any push).
 Notifications.setNotificationHandler({
@@ -125,6 +127,19 @@ export function timedEventBody(
   return minutes <= 0 ? 'Starting now' : `Starts in ${durationPhrase(minutes)}`;
 }
 
+// The body of a BOOKING's alert (trips.md → Alerts). A booking's anchor is
+// always its `start`, but what that instant IS differs by type, and the body
+// names it: a journey departs, a hotel checks in, everything else starts.
+export function bookingAlertBody(type: string | undefined, minutes: number): string {
+  if (type === 'flight' || type === 'transit') {
+    return minutes <= 0 ? 'Departing now' : `Departs in ${durationPhrase(minutes)}`;
+  }
+  if (type === 'hotel') {
+    return minutes <= 0 ? 'Check-in time' : `Check-in in ${durationPhrase(minutes)}`;
+  }
+  return minutes <= 0 ? 'Starting now' : `Starts in ${durationPhrase(minutes)}`;
+}
+
 // One enabled holiday on one holiday calendar, inside the rolling window.
 // Holidays are never server records — every device computes them from
 // lib/holidays — so they reach computeReminders alongside the calendar data
@@ -204,6 +219,7 @@ export function computeReminders(
   occasionPrefs?: OccasionAlertPrefs,
   dayAlertTime?: string | null,
   holidayAlerts?: { prefs: HolidayAlertPrefs; items: HolidayReminderItem[] },
+  bookingAlerts?: BookingAlert[],
 ): Reminder[] {
   const out: Reminder[] = [];
   const now = Date.now();
@@ -239,6 +255,32 @@ export function computeReminders(
   // The Maintenance/Chores calendars' Alerts switch mutes their day alerts too.
   if (!mutedCalendarIds?.has('maintenance')) for (const t of data.tasks) pushDayAlerts(out, t, now, dayDefault);
   if (!mutedCalendarIds?.has('chores')) for (const c of data.chores) pushDayAlerts(out, c, now, dayDefault);
+
+  // Trip bookings (trips.md → Alerts). A timed booking's alerts count back
+  // from its `start` — a real UTC instant (the journey's departure, the hotel's
+  // check-in). An ALL-DAY booking has no clock of its own: its alerts count
+  // back from the day-alert hour on its destination-local date (`startDate`,
+  // resolved by the loader), exactly like an all-day event's, and their lead
+  // phrase is day-based. Muted with the Trips calendar's Alerts switch, like
+  // everything else that calendar owns. A booking sealed under a key this
+  // device doesn't hold has no title; the notification names it by its type
+  // rather than firing blank.
+  if (!mutedCalendarIds?.has('trips')) {
+    for (const b of bookingAlerts ?? []) {
+      const anchor = b.allDay && b.startDate
+        ? atLocalHour(b.startDate, dayDefault.hour, dayDefault.minute).getTime()
+        : new Date(b.start).getTime();
+      if (Number.isNaN(anchor)) continue;
+      for (const mins of [b.reminderMinutes, b.alert2Minutes]) {
+        if (mins == null) continue;
+        const at = new Date(anchor - mins * 60000);
+        if (at.getTime() > now) {
+          const body = b.allDay ? dayLeadPhrase(Math.round(mins / 1440)) : bookingAlertBody(b.type, mins);
+          out.push({ at, title: b.title || tripTypeMeta(b.type).label, body });
+        }
+      }
+    }
+  }
 
   // Occasions (birthdays + labeled contact dates) share ONE calendar-level alert
   // config: each configured offset fires at the shared time (default: noon on the
@@ -439,6 +481,11 @@ async function runReschedule(): Promise<number> {
     // rejects leaves an unhandled rejection behind, and the prefs read is a
     // handful of AsyncStorage hits — there is no latency worth that.
     const data = await stage('load', () => loadCalendarData({ from: from.toISOString(), to: to.toISOString() }));
+    // Booking alerts live outside the calendar data (bookings never reach it —
+    // trips.md), so they load here. The loader never throws: a trip that won't
+    // fetch falls back to its cached rows (lib/tripAlerts), so an offline pass
+    // keeps the booking alerts it armed last time.
+    const bookings = await stage('load', () => loadBookingAlerts());
     const { muted, occasionPrefs, dayAlertTime, holidayAlerts } = await stage('prefs', async () => {
       const [m, o, t, h] = await Promise.all([
         getAlertMutedCalendarIds(), getOccasionAlertPrefs(), resolveDayAlertTime(),
@@ -447,7 +494,7 @@ async function runReschedule(): Promise<number> {
       return { muted: m, occasionPrefs: o, dayAlertTime: t, holidayAlerts: h };
     });
 
-    const reminders = await stage('compute', () => computeReminders(data, muted, occasionPrefs, dayAlertTime, holidayAlerts));
+    const reminders = await stage('compute', () => computeReminders(data, muted, occasionPrefs, dayAlertTime, holidayAlerts, bookings));
 
     await stage('cancel', () => Notifications.cancelAllScheduledNotificationsAsync());
     // That cancel is indiscriminate — it takes any armed cook timer with it

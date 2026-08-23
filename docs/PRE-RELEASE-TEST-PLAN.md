@@ -52,7 +52,7 @@ Spec: [auth-identity.md](../specs/features/auth-identity.md)
 - [ ] **SIGNIN-06** — Reset your password from your own phone (one you've signed in on before). → The reset applies immediately, with no waiting period.
 - [ ] **SIGNIN-07** — Reset your password from a phone the account has never used (your second phone, signed out). → The reset is *held* for a waiting period, your other devices are loudly warned, and you can cancel it from one of them. **⛔**
 - [ ] **SIGNIN-08** — After any password reset, note what the app tells you about your data. → It explains your data is still locked and offers real ways back in (passkey, recovery code); it never suggests "just sign in again" as the fix. **⛔**
-- [ ] **SIGNIN-09** — Sign out of your account, then sign in as the helper account on the *same* phone. → Nothing from your account is visible — no calendar names, colours, events, or contacts leak across. **⛔**
+- [ ] **SIGNIN-09** — Sign out of your account, then sign in as the helper account on the *same* phone. → Nothing from your account is visible — no calendar names, colors, events, or contacts leak across. **⛔**
 - [ ] **SIGNIN-10** — Sign out and back in as yourself, in one sitting, without force-quitting. → The app never hangs on the splash screen.
 - [ ] **SIGNIN-11** — In Profile → Privacy & security → Devices, look at the list after signing in twice on the same phone. → Each physical device appears once (no duplicate rows for repeat sign-ins), and removing a device signs it out.
 - [ ] **SIGNIN-12** — Sign in on a phone your account has never seen. → Your other devices get a "new device" alert.
@@ -172,13 +172,13 @@ Spec: [calendar.md](../specs/features/calendar.md)
 
 Spec: [calendar.md](../specs/features/calendar.md)
 
-- [ ] **SHARE-01** — Make a custom calendar, pick a colour, add events to it. → It appears in the calendar list; its events wear its colour.
+- [ ] **SHARE-01** — Make a custom calendar, pick a color, add events to it. → It appears in the calendar list; its events wear its color.
 - [ ] **SHARE-02** — Share it with the friend account with full access. → After you next open the app, the friend can see AND add events, and their additions appear for you. **⛔**
 - [ ] **SHARE-03** — Share with the friend as view-only. → They can read it but any edit attempt is clearly refused — no mystery errors.
 - [ ] **SHARE-04** — Sign out and back in as yourself. → Your shared calendar's events are all still there. **⛔**
 - [ ] **SHARE-05** — On the friend's side, right after accepting a fresh share. → A gentle "events appear when the owner next opens Calen" note — then they do.
 - [ ] **SHARE-06** — Un-share (remove the friend). → Their access ends.
-- [ ] **SHARE-07** — Recolour a calendar, reorder the list, hide one; sign out and back in. → All those choices survive. **⛔**
+- [ ] **SHARE-07** — Recolor a calendar, reorder the list, hide one; sign out and back in. → All those choices survive. **⛔**
 - [ ] **SHARE-08** — Subscribe to a public calendar link (any webcal/ICS link). → Its events show; a bad link fails with a readable message.
 - [ ] **SHARE-09** — Check the auto-added holidays calendar. → Your country's holidays show, and your home province/state was pre-selected if it could be.
 - [ ] **SHARE-10** — Turn holiday alerts on from the holidays screen. → The setting is shared across all your holiday calendars, and it survives a sign-out.
@@ -250,7 +250,7 @@ Spec: [trips.md](../specs/features/trips.md)
 - [ ] **TRIP-04** — Share the trip with the friend account. → They can see it; a no-account invitee gets a composed email instead.
 - [ ] **TRIP-05** — Enter a few costs split across the two households, then check the settle-up screen with a calculator. → Who-owes-whom is right. **⛔**
 - [ ] **TRIP-06** — Attach a booking PDF to a trip item. → It opens back up later.
-- [ ] **TRIP-07** — While a booked trip spans today, open Weather. → A destination forecast card shows under the home weather.
+- [ ] **TRIP-07** — While a trip spans today, open Weather. → A destination forecast card shows under the home weather.
 
 ## 16. Contacts
 

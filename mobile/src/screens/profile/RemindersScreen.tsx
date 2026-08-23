@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 4 },
   infoIcon: { marginRight: spacing.sm, marginTop: 1 },
   infoText: { flex: 1, fontSize: 12, color: colors.textMuted, lineHeight: 16 },
-  // Match the placeholder colour so a chosen time reads like the 9:00 AM default.
+  // Match the placeholder color so a chosen time reads like the 9:00 AM default.
   dayAlertValue: { color: colors.textMuted },
   deniedBanner: {
     flexDirection: 'row',

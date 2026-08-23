@@ -18,8 +18,6 @@ function accessFilter(req) {
   return { $or: [{ userId: { $in: req.scopeIds } }, { collaborators: req.user._id }] };
 }
 
-const STATUS_LABEL = { considering: 'Considering', booked: 'Booked', completed: 'Past' };
-
 const TOOLS = [navTool('trips')];
 
 function fmtDate(d) {
@@ -27,13 +25,6 @@ function fmtDate(d) {
 }
 
 function tripDateSummary(t) {
-  if (t.status === 'considering') {
-    const ranges = (t.candidateRanges || []).map(r => {
-      const label = r.label ? `${r.label}: ` : '';
-      return `${label}${fmtDate(r.start)} – ${fmtDate(r.end)}`;
-    });
-    return ranges.length ? ranges.join('; ') : 'no candidate dates yet';
-  }
   return t.startDate ? `${fmtDate(t.startDate)} – ${fmtDate(t.endDate || t.startDate)}` : 'no dates set';
 }
 
@@ -79,7 +70,6 @@ You are focused on ONE specific trip (below). Answer questions about THIS trip o
 ## Trip
 - Name: ${trip.name}
 - Destination: ${trip.destination || 'not set'}${trip.destinationTz ? ` (timezone ${trip.destinationTz})` : ''}
-- Status: ${STATUS_LABEL[trip.status] || trip.status}
 - Dates: ${tripDateSummary(trip)}
 - Budget: ${budgetLine}
 ${trip.notes ? `- Notes: ${trip.notes}` : ''}
@@ -123,7 +113,6 @@ function buildSuggestedPrompts(trip, items) {
     prompts.push('What should I book for this trip?');
     prompts.push('Help me start planning');
   }
-  if (trip.status === 'considering') prompts.push('Compare my date options');
   return prompts.slice(0, 4);
 }
 
