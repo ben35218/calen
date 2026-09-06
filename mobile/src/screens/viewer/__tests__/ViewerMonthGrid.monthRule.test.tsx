@@ -4,8 +4,9 @@ import { StyleSheet } from 'react-native';
 
 // The month-boundary rule (calendar.md → month blocks; billing-plans.md carries
 // the viewer's copy). A month's first row opens with the SAME hairline as every
-// other week rule — not a tinted or heavier line — and it is drawn per day cell
-// over the days the month owns, so nothing hangs over the blank cells that lead
+// other week rule — not a tinted or heavier line — drawn as each own-month
+// cell's label-slot BOTTOM border, so the month abbreviation sits above the
+// line (Apple Calendar-style) and nothing hangs over the blank cells that lead
 // into the 1st.
 
 jest.mock('react-native-safe-area-context', () => ({
@@ -56,13 +57,19 @@ const grid = () => (
   <ViewerMonthGrid sources={undefined as any} calendars={[CAL]} onOpenEvent={() => {}} bottomPad={0} />
 );
 
-// The rendered row's own style, plus one flattened style per cell, left to right.
+// The rendered row's own style, plus per cell (left to right) its flattened
+// style and its month-label slot's — the dayHeader's first child on a
+// month-start row; null on blank lead-in cells, which render empty.
 async function rowStyles(week: unknown) {
   const view = await render(mockList.props.renderItem({ item: week }) as React.ReactElement);
   const json: any = view.toJSON();
   return {
     row: StyleSheet.flatten(json.props.style) as Record<string, unknown>,
     cells: (json.children as any[]).map((c) => StyleSheet.flatten(c.props.style) as Record<string, unknown>),
+    slots: (json.children as any[]).map((c) => {
+      const slot = c.children?.[0]?.children?.[0];
+      return slot && slot.props ? (StyleSheet.flatten(slot.props.style) as Record<string, unknown>) : null;
+    }),
   };
 }
 
@@ -78,16 +85,19 @@ describe('ViewerMonthGrid — the month-boundary rule', () => {
     const monthStart = weeks.find((w) => w.isMonthStart && w.cells.some((c: any) => c.outside));
     expect(monthStart).toBeTruthy();
 
-    const { row, cells } = await rowStyles(monthStart);
-    // The row itself draws nothing — the rule moved onto the cells.
+    const { row, cells, slots } = await rowStyles(monthStart);
+    // The row itself draws nothing — the rule moved into the cells' label slots.
     expect(row.borderTopWidth).toBe(0);
 
     monthStart.cells.forEach((cell: any, col: number) => {
+      // No cell carries a top border any more — the abbreviation sits ABOVE
+      // the rule, so the rule is the label slot's bottom border instead.
+      expect(cells[col].borderTopWidth).toBeFalsy();
       if (cell.outside) {
-        expect(cells[col].borderTopWidth).toBeFalsy();
+        expect(slots[col]).toBeNull();
       } else {
-        expect(cells[col].borderTopWidth).toBe(StyleSheet.hairlineWidth);
-        expect(cells[col].borderTopColor).toBe(colors.border);
+        expect(slots[col]!.borderBottomWidth).toBe(StyleSheet.hairlineWidth);
+        expect(slots[col]!.borderBottomColor).toBe(colors.border);
       }
     });
   });

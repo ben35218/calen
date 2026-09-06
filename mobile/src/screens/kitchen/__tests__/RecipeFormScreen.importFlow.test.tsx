@@ -40,7 +40,7 @@ jest.mock('../../../lib/e2ee', () => ({ sealNew: jest.fn(), sealUpdate: jest.fn(
 jest.mock('../../../lib/encSubsets', () => ({ RECIPE_ENC: (p: unknown) => p, RECIPE_SCHEDULE_ENC: (p: unknown) => p }));
 jest.mock('../../../lib/privacyPrefs', () => ({
   useAiEnabled: () => true,
-  // The shared FormAssist card reads the full prefs object.
+  // The shared Ask Calen pill/sheet reads the full prefs object.
   usePrivacyPrefs: () => ({ prefs: { aiEnabled: true, aiUsePersonalInfo: false } }),
 }));
 jest.mock('../../../lib/calendarPrefs', () => ({ useCalendarColors: () => ({ colors: { recipes: '#00897B' } }) }));
@@ -53,6 +53,14 @@ jest.mock('../../../hooks/useUnsavedChangesGuard', () => ({ useUnsavedChangesGua
 jest.mock('../../../components/StepIngredientLinker', () => () => null);
 jest.mock('../../../components/CalenChatIcon', () => () => null);
 jest.mock('../../../components/CreditsBanner', () => () => null);
+// These tests are about the Quick-import ↔ assistant SWAP, not the assistant
+// itself (that has its own suite). Stub it down to its pill label: the real one
+// drags in AsyncStorage and an Animated attention pulse whose native-driver loop
+// never settles under jest, hanging the run.
+jest.mock('../../../components/FormAssistChat', () => {
+  const { Text } = require('react-native');
+  return () => <Text>Ask Calen</Text>;
+});
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('../../../components/formStyles', () => {
   const { View } = require('react-native');
@@ -67,7 +75,10 @@ jest.mock('../../../components/ui', () => {
   const { View, Text, TextInput, TouchableOpacity } = require('react-native');
   const RealReact = require('react');
   return {
-    Screen: ({ children }: { children?: React.ReactNode }) => RealReact.createElement(View, null, children),
+    // `floating` is the real Screen's over-the-content slot (the Ask Calen
+    // pill); render it, or the swap this suite asserts on is invisible.
+    Screen: ({ children, floating }: { children?: React.ReactNode; floating?: React.ReactNode }) =>
+      RealReact.createElement(View, null, children, floating),
     SectionTitle: ({ children }: { children?: React.ReactNode }) => RealReact.createElement(Text, null, children),
     Button: ({ title, onPress }: { title: string; onPress: () => void }) =>
       RealReact.createElement(TouchableOpacity, { onPress }, RealReact.createElement(Text, null, title)),
@@ -187,9 +198,9 @@ describe('RecipeFormScreen quick-import flow', () => {
 
     await act(async () => { resolveImport({ data: DRAFT }); });
 
-    // Done: the form is filled and the assistant (not Quick import) sits above it.
+    // Done: the form is filled and the Ask Calen pill (not Quick import) floats over it.
     expect(await screen.findByDisplayValue('Pancakes')).toBeTruthy();
-    expect(screen.getByText('Apply changes')).toBeTruthy();
+    expect(screen.getByText('Ask Calen')).toBeTruthy();
     expect(screen.queryByText('Quick import')).toBeNull();
   });
 

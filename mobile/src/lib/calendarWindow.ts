@@ -70,12 +70,17 @@ export function monthsIn(w: MonthWindow): YearMonth[] {
   return out;
 }
 
-// One month's expansion range: first day → last day, at local midnight
-// (mirrors the whole-window range the grid used before chunking).
+// One month's expansion range: local midnight opening the first day → the last
+// instant of the last day. `to` must reach the END of the last day: the engine
+// keeps an event only while `startDate <= to`, so a last-day `to` of local
+// midnight drops every timed event on a month's final day — it starts after
+// this month's bound and ends before the next chunk's `from`, so no chunk
+// claims it and the merged grid loses it (while the day view, whose window
+// isn't month-aligned, still shows it).
 export function monthRange(m: YearMonth): { from: string; to: string } {
   return {
     from: new Date(m.year, m.month, 1).toISOString(),
-    to: new Date(m.year, m.month + 1, 0).toISOString(),
+    to: new Date(m.year, m.month + 1, 0, 23, 59, 59, 999).toISOString(),
   };
 }
 

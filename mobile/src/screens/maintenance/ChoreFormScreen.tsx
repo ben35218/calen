@@ -10,7 +10,7 @@ import { CHORE_ENC } from '../../lib/encSubsets';
 import { useAuth } from '../../store/auth';
 import { Input, Select, Screen, DateField, TimeField, NavField, useHeaderCheckButton, FormError, CenteredLoader, Button, Hint } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat from '../../components/FormAssistChat';
 import IconPicker from '../../components/IconPicker';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
@@ -552,16 +552,19 @@ export default function ChoreFormScreen() {
   }
 
   return (
-    <Screen>
-      <FormAssist
-        accent={accent}
-        formType="household chore"
-        placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
-        fields={assistFields}
-        current={{ ...form, ...recurrenceAssistCurrent(repeatRule), recurrence: repeatSummary(repeatRule) }}
-        onApply={applyPatch}
-      />
-
+    <Screen
+      style={fs.withFloatingPill}
+      floating={
+        <FormAssistChat
+          accent={accent}
+          formType="household chore"
+          placeholder={'Describe the chore, e.g. "take out the recycling every Sunday, assign to Alex"'}
+          fields={assistFields}
+          current={{ ...form, ...recurrenceAssistCurrent(repeatRule), recurrence: repeatSummary(repeatRule) }}
+          onApply={applyPatch}
+        />
+      }
+    >
       <GroupCard>
         <Input
           value={form.title}

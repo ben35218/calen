@@ -27,7 +27,12 @@ export const form = StyleSheet.create({
   headInputHighlight: { backgroundColor: colors.primary + '22' },
   // Label-left / value-right rows (date/time card style)
   dtRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 7, minHeight: 46 },
-  dtLabel: { flex: 1, fontSize: 16, color: colors.text, marginRight: spacing.sm },
+  // flexGrow 1 / flexShrink 0, never `flex: 1`: flex's basis-0 means the label
+  // only gets LEFTOVER width, so a long row value ("6 hr 16 min · Leave by
+  // 6:44 AM") crushed it to zero and "Travel Time" wrapped one letter per line
+  // down a 250pt-tall row. The label keeps its natural width; the value is the
+  // side that yields (shrink-ellipsize or wrap, per row).
+  dtLabel: { flexGrow: 1, flexShrink: 0, fontSize: 16, color: colors.text, marginRight: spacing.sm },
   dtFields: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   dtFieldWrap: { marginBottom: 0 },
   dtField: { backgroundColor: 'transparent', borderWidth: 0, paddingHorizontal: 0, paddingVertical: 7 },
@@ -50,6 +55,10 @@ export const form = StyleSheet.create({
   notes: { height: 90, textAlignVertical: 'top' },
   footer: { marginTop: spacing.md, marginBottom: spacing.xl },
   rowChevron: { marginLeft: 6 },
+  // Scroll padding for a form with floating chrome over it (the Ask Calen
+  // pill): enough that the last row — usually the Delete button in `footer` —
+  // clears it instead of hiding underneath.
+  withFloatingPill: { padding: spacing.md, paddingBottom: 96 },
 });
 
 export function GroupCard({ style, children }: { style?: StyleProp<ViewStyle>; children: React.ReactNode }) {

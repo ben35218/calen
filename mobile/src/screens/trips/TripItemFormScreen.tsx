@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, Alert, ActionSheetIOS, ActivityIndicator, Platform } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Alert, ActionSheetIOS, ActivityIndicator, Platform, Keyboard } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { Text } from '../../components/Text';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { regionForAddress } from '@household/weather';
-import { tripsApi, placesApi, settingsApi, TripItemType, TripItemAttachment, FormAssistField } from '../../api';
+import { tripsApi, placesApi, settingsApi, TripItemType, TripItemAttachment, FormAssistField, TripConfirmationDraft } from '../../api';
 import { openRecord, getHDK, newObjectId, loadResourceKeys, currentResourceKeyVersion } from '../../lib/e2ee';
 import { fetchTripDetail, sealTripItemPayload } from '../../lib/tripData';
 import { encryptFileForUpload, encryptFileForUploadResource } from '../../lib/attachments';
@@ -18,9 +19,10 @@ import {
 import { currencyForCountry, currencySymbol } from '../../lib/currency';
 import { uploadFile } from '../../lib/upload';
 
-import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, useHeaderCheckButton, CenteredLoader, FormError, Hint } from '../../components/ui';
+import { Button, Input, Screen, SwitchRow, SectionTitle, DateField, TimeField, Select, useHeaderCheckButton, CenteredLoader, FormError, Hint, Skeleton } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat, { FormAssistChatHandle } from '../../components/FormAssistChat';
+import CreditsBanner from '../../components/CreditsBanner';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { useLocationDraft, clearLocationDraft } from '../../lib/locationDraft';
@@ -35,9 +37,11 @@ import CustomAlertSheet from '../../components/CustomAlertSheet';
 import { openTripAttachment } from '../../lib/tripAttachments';
 import { startKeepingDuration, endKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors } from '../../lib/calendarPrefs';
+import { useAiEnabled } from '../../lib/privacyPrefs';
+import { confirmationDraftToPatch } from '../../lib/tripConfirmation';
 import { zonedWallclockToUtc, zonedParts } from '../../lib/tz';
 import { TripsStackParamList } from '../../navigation/TripsNavigator';
-import { colors, spacing } from '../../theme';
+import { colors, spacing, radius } from '../../theme';
 
 type Nav = NativeStackNavigationProp<TripsStackParamList, 'TripItemForm'>;
 type Rt = RouteProp<TripsStackParamList, 'TripItemForm'>;
@@ -153,6 +157,27 @@ export default function TripItemFormScreen() {
   // the discard guard snapshots its clean baseline.
   const [seeded, setSeeded] = useState(!isEdit);
   const assist = useFormAssist();
+  // Held so a confirmation import can clear the Ask Calen conversation — the
+  // import re-seeds the form, so the transcript is about a different booking.
+  const assistChatRef = useRef<FormAssistChatHandle>(null);
+  const aiEnabled = useAiEnabled();
+  // ── Import from a confirmation ────────────────────────────────────────────
+  // `importer` is which source pad is open (only the paste pad has one — the
+  // camera / library / file sources go straight to their picker). `imported`
+  // retires the card for good once a draft has landed: the card exists to fill
+  // a BLANK booking, and re-importing over a form the user has since corrected
+  // would quietly undo those corrections.
+  const [imported, setImported] = useState(false);
+  // Collapsed by default, like the assistant card above it: typing the booking
+  // is the form's primary job, and a row of source buttons on open would read
+  // as the expected way in rather than the shortcut it is.
+  const [importOpen, setImportOpen] = useState(false);
+  const [importer, setImporter] = useState<'paste' | null>(null);
+  const [pasteText, setPasteText] = useState('');
+  // The import's own error line. The form's shared `error` renders at the
+  // BOTTOM of the screen (above Delete) — a whole form below the card the user
+  // is looking at, which for a failed paste is the same as saying nothing.
+  const [importError, setImportError] = useState('');
 
   const set = (patch: Partial<typeof form>) => {
     setForm((f) => ({ ...f, ...patch }));
@@ -327,6 +352,81 @@ export default function TripItemFormScreen() {
       return { ...merged, reminderMinutes: p.reminderMinutes, alert2Minutes: p.alert2Minutes };
     });
     assist.mark(changedKeys);
+  };
+
+  // Apply a parsed confirmation. The flattening rules live in
+  // lib/tripConfirmation (pure, unit-tested); the patch then goes through the
+  // same `applyPatch` the AI assistant writes through, so an imported booking
+  // gets the all-day alert snapping and the changed-field highlight for free —
+  // the user can see at a glance which fields Calen filled and which it left.
+  const applyDraft = (draft: TripConfirmationDraft) => {
+    applyPatch(confirmationDraftToPatch(draft));
+    setImported(true);
+    setImporter(null);
+    setPasteText('');
+    // An import re-seeds the whole form in place, so anything said to Calen
+    // before it was about a different booking.
+    assistChatRef.current?.reset();
+  };
+
+  const fromConfirmation = useMutation({
+    mutationFn: async (src: 'paste' | 'camera' | 'library' | 'file'): Promise<TripConfirmationDraft | null> => {
+      if (src === 'paste') return (await tripsApi.fromConfirmationText(tripId, pasteText.trim())).data;
+      const file =
+        src === 'camera' ? await takePhoto() : src === 'library' ? await pickImage() : await pickDocument();
+      if (!file) return null; // picker cancelled — nothing spent, nothing said
+      return uploadFile<TripConfirmationDraft>(`/trips/${tripId}/items/from-confirmation`, file, 'file');
+    },
+    onSuccess: (draft) => {
+      if (draft) applyDraft(draft);
+    },
+    // The server's own 422 already reads like something a person wrote ("Could
+    // not read that confirmation. Try entering the booking manually."), and a
+    // 402/403 explains a spent credit or the AI switch — so its message wins.
+    // The pasted text is deliberately left in the pad: a failed import must
+    // never cost the user the thing they pasted.
+    onError: (e: any) =>
+      setImportError(e.response?.data?.error || 'Could not read that confirmation. Try entering the booking manually.'),
+  });
+
+  const importing = fromConfirmation.isPending;
+
+  const startImport = (src: 'paste' | 'camera' | 'library' | 'file') => {
+    Keyboard.dismiss();
+    setImportError('');
+    fromConfirmation.mutate(src);
+  };
+
+  // Camera and library are one button: they are the same act ("a picture of
+  // the confirmation") differing only in where the picture comes from, and the
+  // native source sheet is where that choice belongs — the same picker the
+  // attachment row opens, minus its file row (File is its own button here).
+  const openPhotoPicker = () => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ['Take Photo', 'Choose Photo', 'Cancel'], cancelButtonIndex: 2 },
+        (i) => { if (i === 0) startImport('camera'); else if (i === 1) startImport('library'); }
+      );
+    } else {
+      Alert.alert('Add from a confirmation', undefined, [
+        { text: 'Take Photo', onPress: () => startImport('camera') },
+        { text: 'Choose Photo', onPress: () => startImport('library') },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
+  // Tapping Paste pulls the clipboard into the pad rather than importing it
+  // blind: the whole confirmation is about to be sent off to be read, so the
+  // user gets to see (and trim) exactly what goes. An empty clipboard just
+  // opens the pad — the field's own paste gesture still works.
+  const openPastePad = async () => {
+    setImportError('');
+    if (importer === 'paste') return setImporter(null);
+    setImporter('paste');
+    if (pasteText.trim()) return;
+    const clip = await Clipboard.getStringAsync().catch(() => '');
+    if (clip.trim()) setPasteText(clip);
   };
 
   const isJourney = form.type === 'flight' || form.type === 'transit';
@@ -771,16 +871,114 @@ export default function TripItemFormScreen() {
   const currencyOptions = (!form.currency || CURRENCIES.includes(form.currency) ? CURRENCIES : [form.currency, ...CURRENCIES])
     .map((c) => ({ label: c, value: c }));
 
+  // The import card builds a booking from scratch, so it belongs only on a
+  // blank ADD form, only while the account's AI switch is on, and it steps
+  // aside while the parse runs so the skeleton has the screen to itself.
+  const showImportCard = !isEdit && !imported && aiEnabled && !importing;
+
   return (
-    <Screen>
-      <FormAssist
-        accent={accent}
-        formType="trip booking"
-        placeholder={'Describe the booking, e.g. "flight from Toronto to Paris June 5, 6pm–7:30am, $650, booked"'}
-        fields={assistFields}
-        current={{ ...form }}
-        onApply={applyPatch}
-      />
+    <Screen
+      style={fs.withFloatingPill}
+      floating={
+        <FormAssistChat
+          ref={assistChatRef}
+          accent={accent}
+          formType="trip booking"
+          placeholder={'Describe the booking, e.g. "flight from Toronto to Paris June 5, 6pm–7:30am, $650, booked"'}
+          fields={assistFields}
+          current={{ ...form }}
+          onApply={applyPatch}
+          // A just-imported booking pulses the pill once: the expected next move
+          // is a fix-up ("seat is 14C, not 12A"), so Calen should catch the eye
+          // rather than need finding — without a sheet springing up over a form
+          // the user has only just landed on.
+          attention={imported}
+        />
+      }
+    >
+      {showImportCard ? (
+        <GroupCard style={styles.importCard}>
+          <TouchableOpacity
+            style={[styles.importHeader, importOpen && styles.importHeaderOpen]}
+            onPress={() => setImportOpen((v) => !v)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Add from a confirmation"
+            accessibilityState={{ expanded: importOpen }}
+          >
+            <Text style={styles.importTitle}>Add from a confirmation</Text>
+            <Ionicons
+              name={importOpen ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={colors.textMuted}
+              style={styles.importChevron}
+            />
+          </TouchableOpacity>
+
+          {importOpen ? (
+            <>
+              <View style={styles.importBtns}>
+                <TouchableOpacity
+                  style={[styles.iconBtn, { backgroundColor: accent }, importer === 'paste' && styles.iconBtnActive]}
+                  onPress={openPastePad}
+                  accessibilityRole="button"
+                  accessibilityLabel="Paste a confirmation email"
+                  accessibilityState={{ expanded: importer === 'paste' }}
+                >
+                  <Ionicons name="clipboard-outline" size={20} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.iconBtn, { backgroundColor: accent }]}
+                  onPress={openPhotoPicker}
+                  accessibilityRole="button"
+                  accessibilityLabel="Photograph a confirmation or choose a screenshot"
+                >
+                  <Ionicons name="camera-outline" size={20} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.iconBtn, { backgroundColor: accent }]}
+                  onPress={() => startImport('file')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choose a confirmation file"
+                >
+                  <Ionicons name="document-text-outline" size={20} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              {importer === 'paste' ? (
+                <View style={styles.importPad}>
+                  <Input
+                    value={pasteText}
+                    onChangeText={setPasteText}
+                    placeholder="Paste the confirmation email here…"
+                    multiline
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.pasteInput}
+                  />
+                  <Button
+                    title="Read booking"
+                    color={accent}
+                    loading={importing}
+                    disabled={!pasteText.trim()}
+                    onPress={() => startImport('paste')}
+                  />
+                </View>
+              ) : null}
+
+              <FormError>{importError}</FormError>
+              <CreditsBanner />
+            </>
+          ) : null}
+        </GroupCard>
+      ) : null}
+
+      {importing ? (
+        // Reading a confirmation takes several seconds and produces a KNOWN
+        // shape, so the form shimmers as itself instead of sitting empty under
+        // a spinner (mobile/CLAUDE.md → the loading rule).
+        <BookingSkeleton />
+      ) : (<>
 
       <SectionTitle>Type</SectionTitle>
       <View style={styles.typeGrid}>
@@ -868,6 +1066,9 @@ export default function TripItemFormScreen() {
                 <TimeField
                   value={form.depTime}
                   onChange={(v) => setJourneyStart('time', v)}
+                  // Timetable times are minute-precise (a 7:43 departure) — no
+                  // 5-minute wheel here.
+                  minuteInterval={1}
                   highlight={assist.changed.has('depTime')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -916,6 +1117,7 @@ export default function TripItemFormScreen() {
                 <TimeField
                   value={form.arrTime}
                   onChange={(v) => setJourneyEnd('time', v)}
+                  minuteInterval={1}
                   highlight={assist.changed.has('arrTime')}
                   containerStyle={fs.dtFieldWrap}
                   fieldStyle={fs.dtField}
@@ -1332,11 +1534,64 @@ export default function TripItemFormScreen() {
           />
         </View>
       ) : null}
+
+      </>)}
     </Screen>
   );
 }
 
+// The booking form shimmering as itself while a confirmation is read: the type
+// chips, the title/location card, the date rows and the money card, in the
+// shapes they occupy once they are full.
+function BookingSkeleton() {
+  return (
+    <View testID="booking-import-skeleton">
+      <View style={styles.skelChips}>
+        {[76, 68, 62, 96].map((w, i) => (
+          <Skeleton key={i} width={w} height={34} radius={radius.md} />
+        ))}
+      </View>
+      <GroupCard style={styles.skelCard}>
+        <Skeleton width={'62%'} height={18} />
+        <Skeleton width={'80%'} height={14} style={styles.skelGap} />
+      </GroupCard>
+      <GroupCard style={styles.skelCard}>
+        {[0, 1, 2].map((i) => (
+          <View key={i} style={[styles.skelRow, i > 0 ? styles.skelGap : null]}>
+            <Skeleton width={'34%'} height={14} />
+            <Skeleton width={92} height={14} />
+          </View>
+        ))}
+      </GroupCard>
+      <GroupCard style={styles.skelCard}>
+        {[0, 1].map((i) => (
+          <View key={i} style={[styles.skelRow, i > 0 ? styles.skelGap : null]}>
+            <Skeleton width={'28%'} height={14} />
+            <Skeleton width={64} height={14} />
+          </View>
+        ))}
+      </GroupCard>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  importCard: { padding: 14 },
+  importHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  importHeaderOpen: { marginBottom: spacing.sm },
+  importChevron: { marginLeft: 'auto' },
+  importTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  importBtns: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  iconBtn: { borderRadius: radius.md, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
+  iconBtnActive: { opacity: 0.75 },
+  importPad: { marginTop: spacing.sm, gap: spacing.sm },
+  // Tall enough that a pasted email reads as a block of text to skim before
+  // sending, rather than a one-line field showing its last few words.
+  pasteInput: { minHeight: 120, textAlignVertical: 'top' },
+  skelChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
+  skelCard: { padding: spacing.md },
+  skelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  skelGap: { marginTop: spacing.md },
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.md },
   typeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   typeLabel: { fontSize: 13, fontWeight: '600', color: colors.text },

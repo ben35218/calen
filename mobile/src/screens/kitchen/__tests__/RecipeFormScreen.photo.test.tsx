@@ -4,6 +4,8 @@
 // scan; this attaches a picture OF the dish and costs nothing. It uploads on
 // pick, so the field holds a server path the sealed record can carry.
 
+jest.mock('../../../components/FormAssistChat', () => () => null);
+
 import React from 'react';
 import { Alert } from 'react-native';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react-native';

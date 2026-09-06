@@ -40,3 +40,34 @@ export function openAllDayItem(navigation: DayNav, item: AllDayItem, date: strin
       break;
   }
 }
+
+// The hold counterpart: tap opens, hold edits — the month grid's gesture
+// vocabulary (event chip → EventForm, trip bar → TripForm, task/chore/recipe
+// icon → its form), answered identically here. Kinds with no edit form from
+// this surface (occasions, holidays, grocery) fall back to the tap action, so
+// a hold on them is never a dead press.
+export function editAllDayItem(navigation: DayNav, item: AllDayItem, date: string) {
+  switch (item.kind) {
+    case 'event':
+      if (item.id) navigation.navigate('EventForm', { eventId: item.id, date });
+      break;
+    case 'trip':
+      if (item.id) navigation.navigate('TripForm', { id: item.id });
+      break;
+    // Tasks and chores carry the held day like their detail taps do — it's
+    // what scopes the edit to this occurrence.
+    case 'task':
+      if (item.id) navigation.navigate('TaskForm', { id: item.id, date });
+      break;
+    case 'chore':
+      if (item.id) navigation.navigate('ChoreForm', { id: item.id, date });
+      break;
+    case 'recipe':
+      if (item.id) { navigation.navigate('RecipeForm', { id: item.id }); break; }
+      openAllDayItem(navigation, item, date);
+      break;
+    default:
+      openAllDayItem(navigation, item, date);
+      break;
+  }
+}

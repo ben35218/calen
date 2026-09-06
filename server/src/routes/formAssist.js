@@ -8,13 +8,22 @@
 //
 // This is deliberately form-agnostic: the server knows nothing about any
 // specific form, so every add/edit screen can reuse it by describing its fields.
+//
+// TWO SHAPES, one route. The original single-shot body (`prompt`) is still
+// accepted verbatim — app builds already in the wild send it, and will for
+// months. The pill + chat sheet sends `messages` instead: the running transcript
+// for ONE form, so the user can refine a fill ("no, the 3rd") or answer a
+// question Calen asked. The differences are contained to two places — the
+// messages array, and `tool_choice` (see the route). Everything else, including
+// the tool schema and the output sanitizing, is shared.
 
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const { format } = require('date-fns');
 const { requireAuth } = require('../middleware/auth');
 const { requireAiEnabled } = require('../middleware/aiConsent');
-const { meter, getConfig } = require('../middleware/usageMeter');
+const { meter, getConfig, recordChatCredits } = require('../middleware/usageMeter');
+const { usageBreakdown } = require('../services/credits');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -47,6 +56,69 @@ function buildContactsContext(contacts) {
     'The user has these saved service providers. When their request names one of these businesses, use the matching saved details to fill address/location and phone fields. Do not invent details for anyone not listed.',
     `\nService providers (name (service) — address — phone):\n${services.join('\n')}`,
   ].join('\n');
+}
+
+// The transcript is bounded on the way in. The user pays for these tokens now
+// (recordChatCredits below), and a form conversation that needs more than a few
+// exchanges is a conversation that should have been typing in the form instead.
+const MAX_HISTORY_TURNS = 8;
+const MAX_TURN_CHARS = 2000;
+
+// Flatten a client transcript into alternating plain-TEXT turns.
+//
+// The client sends what was SAID, never tool_use/tool_result blocks, so we never
+// have to pair a tool call with its result across turns. That's deliberate: the
+// live form values ride on the newest turn (see the route), which is a truer
+// record of "what actually got filled" than a replayed tool call — the user may
+// have hand-edited a field in between, or undone the fill entirely.
+//
+// A legacy `{ prompt }` body collapses to exactly one user turn, which is what
+// keeps the old single-shot path byte-identical.
+function normalizeHistory(messages, prompt) {
+  const raw = Array.isArray(messages) && messages.length
+    ? messages
+    : (typeof prompt === 'string' && prompt.trim() ? [{ role: 'user', content: prompt }] : []);
+
+  const out = [];
+  for (const m of raw) {
+    const role = m && m.role === 'assistant' ? 'assistant' : 'user';
+    const content = typeof m?.content === 'string' ? m.content.trim().slice(0, MAX_TURN_CHARS) : '';
+    if (!content) continue;
+    // The API rejects two same-role messages in a row; merge rather than drop,
+    // so a client that batches doesn't silently lose what the user typed.
+    if (out.length && out[out.length - 1].role === role) out[out.length - 1].content += `\n\n${content}`;
+    else out.push({ role, content });
+  }
+
+  // Trim FIRST, then shift to a user turn — trimming can leave an assistant
+  // message at the head, which the API refuses.
+  const trimmed = out.slice(-MAX_HISTORY_TURNS);
+  while (trimmed.length && trimmed[0].role !== 'user') trimmed.shift();
+  return trimmed;
+}
+
+// Appended to the system prompt in chat mode only. The single-shot path forces
+// the tool, so none of this can apply there.
+//
+// The bias is deliberately lopsided toward filling. With `tool_choice: auto` the
+// model CAN answer with a question, and models enjoy that — but a wrong value
+// the user corrects in the form costs one tap, where a needless question costs a
+// round trip. Asking is the exception, not the balanced alternative.
+const CHAT_RULES = `
+You are in a short back-and-forth with the user about this ONE form. The messages above are earlier turns in it.
+
+- The "Current form values" block is the LIVE state of the form after those turns. Trust it over anything said earlier — the user may have edited fields by hand, or undone one of your fills, in between.
+- Whenever you can act on the request: call fill_form AND write exactly ONE short sentence naming what you set ("Set the title to Dentist and the date to Tuesday, March 3."). Plain text only — no markdown, no lists, no preamble, no sign-off.
+- ONLY when the request is genuinely ambiguous and you cannot fill anything useful: do NOT call fill_form, and ask ONE short clarifying question instead.
+- Prefer filling over asking. A value the user can correct in the form beats a question. Never ask about something you can read from the current values or resolve with a sensible default.`;
+
+// A tool-forced turn usually emits no text block at all. Rather than show the
+// user a blank confirmation bubble, name what changed from the patch itself.
+function fallbackReply(patch, fields) {
+  const keys = Object.keys(patch);
+  if (!keys.length) return undefined;
+  const labels = new Map(fields.map((f) => [f.name, f.label || f.name]));
+  return `Updated ${keys.map((k) => labels.get(k) || k).join(', ')}.`;
 }
 
 const FIELD_TYPES = new Set(['text', 'number', 'date', 'time', 'boolean', 'select', 'multiselect']);
@@ -86,90 +158,148 @@ function propertyForField(field) {
   }
 }
 
-router.post('/', meter('chat', 'formAssist'), async (req, res) => {
-  try {
-    const { formType, fields, current, prompt, includeContacts, contacts } = req.body || {};
+// Build the whole `messages.create` payload from one request body. Pure (given
+// `now`), so the tool_choice gate, the values-on-the-last-turn rule and the
+// generated tool schema are all testable without a network call.
+//
+// Returns `{ error, status }` for a bad body, or `{ params, fieldNames,
+// validFields }` — `fieldNames`/`validFields` are what parseResponse needs to
+// sanitize the model's output.
+function buildRequest({ formType, fields, current, prompt, messages, includeContacts, contacts, model, now }) {
+  // Chat mode is the presence of a transcript, not its length — a one-turn
+  // `messages` array is still the sheet asking, and still wants to be able to
+  // come back with a question instead of a fill.
+  const chatMode = Array.isArray(messages) && messages.length > 0;
+  const history = normalizeHistory(messages, prompt);
 
-    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-      return res.status(400).json({ error: 'prompt is required' });
-    }
-    if (!Array.isArray(fields) || fields.length === 0) {
-      return res.status(400).json({ error: 'fields array is required' });
-    }
+  if (!history.length || history[history.length - 1].role !== 'user') {
+    // Same string the shipped card surfaces, so an old build's error path is
+    // unchanged.
+    return { error: 'prompt is required', status: 400 };
+  }
+  if (!Array.isArray(fields) || fields.length === 0) {
+    return { error: 'fields array is required', status: 400 };
+  }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
+  // Build the tool input schema from the caller's field list.
+  const validFields = fields.filter((f) => f && typeof f.name === 'string' && FIELD_TYPES.has(f.type));
+  const properties = {};
+  const fieldNames = new Set();
+  for (const field of validFields) {
+    const prop = propertyForField(field);
+    if (!prop) continue;
+    properties[field.name] = prop;
+    fieldNames.add(field.name);
+  }
+  if (fieldNames.size === 0) {
+    return { error: 'no usable fields provided', status: 400 };
+  }
 
-    // Build the tool input schema from the caller's field list.
-    const validFields = fields.filter((f) => f && typeof f.name === 'string' && FIELD_TYPES.has(f.type));
-    const properties = {};
-    const fieldNames = new Set();
-    for (const field of validFields) {
-      const prop = propertyForField(field);
-      if (!prop) continue;
-      properties[field.name] = prop;
-      fieldNames.add(field.name);
-    }
-    if (fieldNames.size === 0) {
-      return res.status(400).json({ error: 'no usable fields provided' });
-    }
-
-    const fillForm = {
+  const fillForm = {
       name: 'fill_form',
       description: `Fill in the "${formType || 'form'}" based on the user's request. Only include the fields the request implies should change; omit everything else.`,
       input_schema: { type: 'object', properties },
     };
 
-    const contactsContext = includeContacts ? buildContactsContext(contacts) : '';
+  const contactsContext = includeContacts ? buildContactsContext(contacts) : '';
 
-    const now = new Date();
-    const today = format(now, 'yyyy-MM-dd (EEEE)');
-    const currentYear = now.getFullYear();
-    const system = `You help a user fill in a "${formType || 'form'}" from a plain-language description.
+  const today = format(now, 'yyyy-MM-dd (EEEE)');
+  const currentYear = now.getFullYear();
+  const system = `You help a user fill in a "${formType || 'form'}" from a plain-language description.
 
 Today's date is ${today}. The current year is ${currentYear}. Resolve every date against today's date — do NOT rely on your training data for the current date or year.
 
 Rules:
-- Call the fill_form tool exactly once.
+- Call the fill_form tool at most once per reply.
 - Only set fields the user's request clearly implies. Leave everything else unset — do NOT restate unchanged current values.
 - For select/multiselect fields, only use values from the allowed list.
 - Dates use YYYY-MM-DD; times use HH:MM 24-hour.
 - Resolve relative dates ("next Tuesday", "tomorrow", "in 3 weeks") against today's date.
 - When the user gives a date with no year (e.g. "March 15", "the 20th"), use ${currentYear}; if that date has already passed this year, use the next year instead. Never output a year earlier than ${currentYear}.
-- Keep text fields concise and natural.${contactsContext ? `\n\n${contactsContext}` : ''}`;
+- Keep text fields concise and natural.${chatMode ? `\n${CHAT_RULES}` : ''}${contactsContext ? `\n\n${contactsContext}` : ''}`;
 
-    const userContent = `Current form values (JSON):
-${JSON.stringify(current ?? {}, null, 2)}
+  // The LIVE form values ride on the newest user turn only — resending them
+  // with every historical turn would both waste tokens and let a stale
+  // snapshot argue with the current one.
+  const apiMessages = history.map((m, i) => (
+    i === history.length - 1
+      ? {
+          role: 'user',
+          content: `Current form values (JSON):\n${JSON.stringify(current ?? {}, null, 2)}\n\nUser request:\n${m.content}`,
+        }
+      : m
+  ));
 
-User request:
-${prompt.trim()}`;
+  return {
+    fieldNames,
+    validFields,
+    params: {
+      model,
+      max_tokens: 1024,
+      system,
+      tools: [fillForm],
+      // Legacy single-shot callers keep the MANDATORY fill: there is no
+      // conversation for a clarifying question to land in, so a text-only reply
+      // there would just be a dropped request. Chat mode relaxes to `auto` so a
+      // turn can come back as a question with no patch — CHAT_RULES above is
+      // what stops `auto` from turning every turn into chit-chat.
+      tool_choice: chatMode ? { type: 'auto' } : { type: 'tool', name: 'fill_form' },
+      messages: apiMessages,
+    },
+  };
+}
+
+// Turn one model response into the client's `{ patch, reply }`. Pure.
+function parseResponse(resp, fieldNames, validFields) {
+  const content = Array.isArray(resp?.content) ? resp.content : [];
+  const toolUse = content.find((b) => b.type === 'tool_use' && b.name === 'fill_form');
+  const text = content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text?.trim())
+    .filter(Boolean)
+    .join(' ') || undefined;
+
+  // Filter to known field names in case the model invents keys.
+  const patch = {};
+  if (toolUse && toolUse.input && typeof toolUse.input === 'object') {
+    for (const [key, value] of Object.entries(toolUse.input)) {
+      if (fieldNames.has(key) && value !== undefined && value !== null) patch[key] = value;
+    }
+  }
+
+  return { patch, reply: text || fallbackReply(patch, validFields) };
+}
+
+router.post('/', meter('chat', 'formAssist'), async (req, res) => {
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
 
     const config = await getConfig();
     // Sonnet on all tiers: every plan uses the paid chat model.
     const model = config.models.paidChat;
 
+    const built = buildRequest({ ...(req.body || {}), model, now: new Date() });
+    if (built.error) return res.status(built.status).json({ error: built.error });
+
     const client = new Anthropic({ apiKey });
-    const resp = await client.messages.create({
-      model,
-      max_tokens: 1024,
-      system,
-      tools: [fillForm],
-      tool_choice: { type: 'tool', name: 'fill_form' },
-      messages: [{ role: 'user', content: userContent }],
-    });
+    const resp = await client.messages.create(built.params);
 
-    const toolUse = resp.content.find((b) => b.type === 'tool_use' && b.name === 'fill_form');
-    const note = resp.content.find((b) => b.type === 'text')?.text?.trim() || undefined;
+    const { patch, reply } = parseResponse(resp, built.fieldNames, built.validFields);
 
-    // Filter to known field names in case the model invents keys.
-    const patch = {};
-    if (toolUse && toolUse.input && typeof toolUse.input === 'object') {
-      for (const [key, value] of Object.entries(toolUse.input)) {
-        if (fieldNames.has(key) && value !== undefined && value !== null) patch[key] = value;
-      }
-    }
+    // Debit this turn's TOKEN-BASED cost. Form assist meters under the
+    // token-priced `chat` action, so meter() deliberately skipped a flat debit —
+    // and until now nothing picked it back up, which made every fill free.
+    // Best-effort, mirroring chatStream: a metering bug must never break a fill.
+    let creditsUsed = 0;
+    try {
+      creditsUsed = await recordChatCredits(req, usageBreakdown(resp.usage), model);
+    } catch { /* never break the fill */ }
 
-    return res.json({ patch, note });
+    // `note` is kept as an alias of `reply` so an app build still running the
+    // old FormAssist card keeps showing its confirmation line. Drop it a release
+    // after the pill ships.
+    return res.json({ patch, note: reply, reply, creditsUsed });
   } catch (err) {
     console.error('Form assist error:', err);
     if (!res.headersSent) res.status(500).json({ error: err.message });
@@ -177,3 +307,8 @@ ${prompt.trim()}`;
 });
 
 module.exports = router;
+// Pure internals, exported for tests only — the route is the public surface.
+module.exports.normalizeHistory = normalizeHistory;
+module.exports.fallbackReply = fallbackReply;
+module.exports.buildRequest = buildRequest;
+module.exports.parseResponse = parseResponse;

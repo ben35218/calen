@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, startTransition, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, useWindowDimensions, Animated, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 // FixedText for everything sized by the month grid or by a fixed disc/pill —
 // cells, chips, span bars, the 44pt avatar and back pill, count badges. Plain
@@ -20,7 +20,7 @@ import { MonthJumpHeaderButton } from './MonthJumpSheet';
 import { loadCalendarForecast } from '../../lib/weatherSource';
 import WeatherIcon from '../../components/WeatherIcon';
 import { useAuth } from '../../store/auth';
-import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell, GROCERY_ICON, RECIPE_ICON } from '../../lib/calendar';
+import { weekBars, WeekBar, CALENDAR_COLORS, eventColor, ymd, recipeIconTarget, RecipeCell, GROCERY_ICON, LONG_PRESS_MS, RECIPE_ICON } from '../../lib/calendar';
 import { occasionIcon, occasionFocusFrom } from '../../lib/occasions';
 import { getHolidays } from '../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors, useMonthDensity, MonthDensity } from '../../lib/calendarPrefs';
@@ -60,7 +60,7 @@ const HEADER_MONTH_H = 40; // sticky "Month Year" row in the fixed header
 // Layout metrics. Week rows are sized to their content, clamped to [MIN,MAX].
 const WEEKDAY_ROW_H = 26;
 const DAY_NUM_H = 26;     // centered date number
-const MONTH_LABEL_H = 16; // the "Aug" marker above the 1st (month-start rows only)
+const MONTH_LABEL_H = 24; // the "Aug" marker above the 1st (month-start rows only)
 const CHIP_H1 = 20;       // one-line chip slot (incl. margin)
 const CHIP_H2 = 34;       // two-line chip slot (incl. margin)
 const CHIP_H3 = 48;       // three-line chip slot (title + start time; incl. margin)
@@ -90,9 +90,6 @@ const DOT_MAX = 4;
 const STACK_BAR_H = 9;      // one stacked single-day bar (incl. margin)
 const STACK_MAX = 5;
 const MIN_STACK_WEEK = 60;
-
-// A shorter-than-default (500ms) hold to trigger create/edit long-presses.
-const LONG_PRESS_MS = 200;
 
 const HOLIDAY_COLOR = CALENDAR_COLORS['canadian-holidays'];
 const BIRTHDAY_COLOR = CALENDAR_COLORS.birthdays;
@@ -338,6 +335,48 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
   const weekRowCache = useRef<{ sig: unknown[]; cores: Map<string, WeekCore>; rows: Map<string, RenderWeek> }>(
     { sig: [], cores: new Map(), rows: new Map() },
   );
+  // Bucket every dated item once, so each cell is an O(1) lookup instead of a
+  // scan over each collection — this is what keeps a rebuild linear in days
+  // (not days × items) as the window grows without bound. Its own memo, keyed
+  // on the data alone: a density switch re-enters the weeks memo below with
+  // every core a cache hit, so rebucketing there was a full rescan of every
+  // event in the window for nothing.
+  const buckets = useMemo(() => {
+    const chipEventsByDate = new Map<string, CalendarEvent[]>();
+    const occasionsByDate = new Map<string, CalendarOccasion[]>();
+    const tasksByDate = new Map<string, Task[]>();
+    const choresByDate = new Map<string, Chore[]>();
+    const recipesByDate = new Map<string, RecipeCell[]>();
+    const groceryDates = new Set<string>();
+    const bucket = <T,>(map: Map<string, T[]>, key: string, row: T) => {
+      const list = map.get(key);
+      if (list) list.push(row);
+      else map.set(key, [row]);
+    };
+    const vis = (id: string) => visibility[id] !== false;
+    if (data) {
+      for (const e of data.events ?? []) {
+        if (!vis(e.calendarType)) continue;
+        const start = eventLd(e, e.startDate);
+        const end = e.endDate ? eventLd(e, e.endDate) : start;
+        // Multi-day events render as the overlaid week bars, not cell chips.
+        if (start === end) bucket(chipEventsByDate, start, e);
+      }
+      if (vis('birthdays')) for (const o of data.occasions ?? []) bucket(occasionsByDate, ld(o.date), o);
+      if (vis('maintenance')) for (const t of data.tasks ?? []) if (t.nextDueDate) bucket(tasksByDate, ld(t.nextDueDate), t);
+      if (vis('chores')) for (const c of data.chores ?? []) if (c.nextDueDate) bucket(choresByDate, ld(c.nextDueDate), c);
+      if (vis('recipes')) {
+        for (const r of data.recipes ?? []) {
+          bucket(recipesByDate, ld(r.scheduledDate), {
+            recipeId: typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined),
+          });
+        }
+        for (const g of data.groceryShopping ?? []) groceryDates.add(g.date);
+      }
+    }
+    return { chipEventsByDate, occasionsByDate, tasksByDate, choresByDate, recipesByDate, groceryDates };
+  }, [data, visibility]);
+
   const { weeks, offsets, todayWeekOffset, todayIndex } = useMemo(() => {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -350,40 +389,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
       cache.rows.clear();
     }
 
-    // Bucket every dated item once, so each cell is an O(1) lookup instead of
-    // a scan over each collection — this is what keeps a rebuild linear in
-    // days (not days × items) as the window grows without bound.
-    const chipEventsByDate = new Map<string, CalendarEvent[]>();
-    const occasionsByDate = new Map<string, CalendarOccasion[]>();
-    const tasksByDate = new Map<string, Task[]>();
-    const choresByDate = new Map<string, Chore[]>();
-    const recipesByDate = new Map<string, RecipeCell[]>();
-    const groceryDates = new Set<string>();
-    const bucket = <T,>(map: Map<string, T[]>, key: string, row: T) => {
-      const list = map.get(key);
-      if (list) list.push(row);
-      else map.set(key, [row]);
-    };
-    if (data) {
-      for (const e of data.events ?? []) {
-        if (!visible(e.calendarType)) continue;
-        const start = eventLd(e, e.startDate);
-        const end = e.endDate ? eventLd(e, e.endDate) : start;
-        // Multi-day events render as the overlaid week bars, not cell chips.
-        if (start === end) bucket(chipEventsByDate, start, e);
-      }
-      if (visible('birthdays')) for (const o of data.occasions ?? []) bucket(occasionsByDate, ld(o.date), o);
-      if (visible('maintenance')) for (const t of data.tasks ?? []) if (t.nextDueDate) bucket(tasksByDate, ld(t.nextDueDate), t);
-      if (visible('chores')) for (const c of data.chores ?? []) if (c.nextDueDate) bucket(choresByDate, ld(c.nextDueDate), c);
-      if (visible('recipes')) {
-        for (const r of data.recipes ?? []) {
-          bucket(recipesByDate, ld(r.scheduledDate), {
-            recipeId: typeof r.recipeId === 'object' ? r.recipeId?._id : (r.recipeId as string | undefined),
-          });
-        }
-        for (const g of data.groceryShopping ?? []) groceryDates.add(g.date);
-      }
-    }
+    const { chipEventsByDate, occasionsByDate, tasksByDate, choresByDate, recipesByDate, groceryDates } = buckets;
 
     const content = (dateStr: string): CellContent => {
       // Holidays are computed on-device from prefs, so they render the moment
@@ -508,7 +514,7 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
     const twOff = tIdx >= 0 ? offs[tIdx] : 0;
 
     return { weeks: weeksR, offsets: offs, todayWeekOffset: twOff, todayIndex: Math.max(0, tIdx) };
-  }, [srcQ.data, holidayCals, data, visData, holidaysByDate, visibility, blocks, charsPerLine, calColors, callStatus, density, forecastByDate]);
+  }, [srcQ.data, holidayCals, buckets, visData, holidaysByDate, visibility, blocks, charsPerLine, calColors, callStatus, density, forecastByDate]);
 
   // The row the grid opens on (today's), captured once — the list's
   // initialScrollIndex must not change identity as the window grows.
@@ -676,6 +682,14 @@ const CalendarGrid = React.memo(forwardRef<TodayHandle, {
         onEndReached={onEndReached}
         onEndReachedThreshold={2}
         maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+        // The default render window (21 screenfuls) is what made the density
+        // switch drag: with ~48pt Compact rows it keeps hundreds of week rows
+        // mounted, and a switch re-renders every one of them (density is a prop
+        // of each row) before the new grid can paint. Three screens per side is
+        // plenty of scroll runway — getItemLayout means a teleport never has to
+        // measure — and bounds the switch to the rows actually near the viewport.
+        windowSize={7}
+        maxToRenderPerBatch={8}
       />
 
       {/* ── Fixed 3-row header: (host button row) · sticky Month Year · weekday labels ── */}
@@ -788,7 +802,7 @@ const WeekRow = React.memo(function WeekRow({
         return (
           <TouchableOpacity
             key={cell.date}
-            style={[styles.dayCell, week.isMonthStart && styles.monthStartCell, { width: cellSize, height: week.height }]}
+            style={[styles.dayCell, { width: cellSize, height: week.height }]}
             activeOpacity={0.7}
             onPress={() => openDayView(navigation, cell.date)}
             // Short-press an (empty part of a) day to start a new event on it.
@@ -797,8 +811,10 @@ const WeekRow = React.memo(function WeekRow({
           >
             <View style={[styles.dayHeader, { height: week.headerH }]}>
               {/* The month marker, on the 1st only — the abbreviated month name
-                  above the day number. The slot is reserved in every cell of
-                  the row so all the numbers stay on one line. */}
+                  sitting above the month-boundary rule (the slot's bottom
+                  border, Apple Calendar style). The slot is reserved in every
+                  cell of the row so all the numbers stay on one line, and each
+                  own-month cell's slot draws its stretch of the rule. */}
               {week.isMonthStart ? (
                 <View style={styles.monthLabelSlot}>
                   {col === week.firstCol ? <FixedText style={styles.monthAbbrev}>{week.abbrev}</FixedText> : null}
@@ -1110,12 +1126,15 @@ export default function CalendarScreen() {
         active: density === m.key,
         dividerBefore: m.dividerBefore,
         icon: <MaterialCommunityIcons name={m.icon as any} size={20} color={colors.text} />,
-        // Defer the switch a frame: batched with the menu's dismissal, the
-        // popover couldn't commit its close until the grid's re-render for the
-        // new density had finished, so the menu visibly hung. This way the
-        // close paints first and the layer catches up behind it — the same
-        // rule the month/year jump sheet follows.
-        onPress: () => requestAnimationFrame(() => setDensity(m.key)),
+        // The switch is a TRANSITION: the menu's dismissal commits urgently and
+        // paints first, while the grid's re-render for the new density runs as
+        // an interruptible background render behind it (the old density stays
+        // up and responsive until the new one is ready). A plain call batched
+        // both, so the popover visibly hung on the grid's render; the previous
+        // requestAnimationFrame deferral unblocked the close but still froze
+        // the thread for the full re-render one frame later. Same pattern as
+        // the visibility hook's broadcast.
+        onPress: () => startTransition(() => setDensity(m.key)),
       })),
     [density],
   );
@@ -1456,14 +1475,23 @@ const styles = StyleSheet.create({
   weekRow: { flexDirection: 'row', position: 'relative', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   // The month boundary reads as an ordinary week rule, but only over the days
   // the month actually owns: the row-wide border comes off, and each own-month
-  // cell draws the same hairline itself, so no line hangs over the blank cells
-  // that lead into the 1st.
+  // cell's label slot draws the same hairline as its bottom border — putting
+  // the month abbreviation *above* the rule, and hanging no line over the
+  // blank cells that lead into the 1st.
   monthStartRow: { borderTopWidth: 0 },
-  monthStartCell: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   dayCell: { paddingTop: 2, paddingHorizontal: 2, overflow: 'hidden' },
   dayHeader: { alignItems: 'center', justifyContent: 'flex-start' },
-  monthLabelSlot: { height: MONTH_LABEL_H, justifyContent: 'center' },
-  monthAbbrev: { fontSize: 12, lineHeight: 14, fontWeight: '700', color: colors.primary },
+  monthLabelSlot: {
+    height: MONTH_LABEL_H,
+    alignSelf: 'stretch',
+    marginHorizontal: -2, // cancel the cell padding so adjacent slots' rules join
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingBottom: 2,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  monthAbbrev: { fontSize: 16, fontWeight: '700', color: colors.primary },
   dayNumWrap: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
   todayWrap: { backgroundColor: colors.primary },
   dayNum: { fontSize: 15, color: colors.text, fontWeight: '600' },

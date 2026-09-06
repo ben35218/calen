@@ -245,7 +245,12 @@ Spec: [maintenance.md](../specs/features/maintenance.md)
 Spec: [trips.md](../specs/features/trips.md)
 
 - [ ] **TRIP-01** — Create a trip with dates. → It spans those days on the calendar as a bar.
-- [ ] **TRIP-02** — Add a booking by pasting a confirmation email. → The details come in; fix-ups save.
+- [ ] **TRIP-02** — On a new booking, expand the collapsed **Add from a confirmation** card, then tap **Paste** with a flight confirmation email copied. → The card starts collapsed and expands to exactly three buttons (Paste / Photo / File) and no text; the email shows in the pad before anything is sent; **Read booking** shimmers the form, then fills it — type flips to Flight, both airports resolved with their timezones, dates/times/cost in, filled fields highlighted. Fix-ups save.
+- [ ] **TRIP-02b** — Repeat with the **File** source on a PDF e-ticket, then cancel the picker on a second try. → The PDF fills the form the same way; the cancel does nothing at all (no error, no credit).
+- [ ] **TRIP-02f** — Tap the **Photo** button. → A native sheet offers Take Photo / Choose Photo / Cancel; each source fills the form the same way, and Cancel does nothing.
+- [ ] **TRIP-02c** — Paste something that isn't a confirmation. → It fails with "Could not read that confirmation…", the pasted text is still in the pad, and the form below is untouched and typeable.
+- [ ] **TRIP-02d** — Turn the AI switch off in Privacy & security, then add a booking. → The "Add from a confirmation" card is gone entirely.
+- [ ] **TRIP-02e** — Open the saved imported flight from the trip's day view. → Its confirmation #, airline, flight # and seat are all on the booking view, even though the form never showed them.
 - [ ] **TRIP-03** — Change the trip's start date. → The end moves with it, keeping the trip the same length.
 - [ ] **TRIP-04** — Share the trip with the friend account. → They can see it; a no-account invitee gets a composed email instead.
 - [ ] **TRIP-05** — Enter a few costs split across the two households, then check the settle-up screen with a calculator. → Who-owes-whom is right. **⛔**

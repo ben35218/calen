@@ -61,11 +61,47 @@ describe('window math', () => {
     expect(months.map(ymKey)).toEqual(['2026-11', '2026-12', '2027-01', '2027-02']);
   });
 
-  it('monthRange covers first through last day at local midnight', () => {
+  it('monthRange covers first day open through the END of the last day', () => {
     const r = monthRange({ year: 2026, month: 1 }); // Feb 2026
-    expect(new Date(r.from).getDate()).toBe(1);
-    expect(new Date(r.to).getDate()).toBe(28);
-    expect(new Date(r.to).getMonth()).toBe(1);
+    const from = new Date(r.from);
+    expect(from.getDate()).toBe(1);
+    expect(from.getHours()).toBe(0);
+    const to = new Date(r.to);
+    expect(to.getDate()).toBe(28);
+    expect(to.getMonth()).toBe(1);
+    // The end bound reaches the last instant of the last day. The engine keeps
+    // an event only while startDate <= to, so a midnight bound dropped every
+    // timed event on a month's final day (it also missed the next chunk, whose
+    // `from` it ends before) — the month grid lost it while the day view,
+    // month-unaligned, kept it.
+    expect(to.getHours()).toBe(23);
+    expect(to.getMinutes()).toBe(59);
+    const lastDayTimedEvent = new Date(2026, 1, 28, 10, 0); // Feb 28, 10:00 local
+    expect(lastDayTimedEvent <= to).toBe(true);
+  });
+
+  it('a timed event on a month’s last day survives per-month chunking (the real engine)', () => {
+    // Regression: with a local-midnight `to`, an Aug 31 10:00 event missed
+    // BOTH adjacent chunks (started after August's bound, ended before
+    // September's `from`) — present in the day view, absent from the grid.
+    const { assembleCalendarData } = require('@household/calendar');
+    const event = {
+      _id: 'e-last-day',
+      title: 'Dentist',
+      calendarType: 'custom-abc123',
+      startDate: new Date(2026, 7, 31, 10, 0).toISOString(),
+      endDate: new Date(2026, 7, 31, 11, 0).toISOString(),
+    };
+    const chunks = [{ year: 2026, month: 7 }, { year: 2026, month: 8 }].map((m) => {
+      const r = monthRange(m);
+      return assembleCalendarData({
+        events: [event],
+        fromDate: new Date(r.from),
+        toDate: new Date(r.to),
+      }) as unknown as CalendarData;
+    });
+    const merged = mergeCalendarChunks(chunks);
+    expect(merged.events.map((e) => e._id)).toEqual(['e-last-day']);
   });
 });
 

@@ -16,7 +16,7 @@ import { useNavigation } from '@react-navigation/native';
 import { WeatherData } from '../../../api';
 import { loadCalendarData } from '../../../lib/calendarData';
 import { loadCalendarForecast } from '../../../lib/weatherSource';
-import { itemsForDate, visibleDayItems, ymd } from '../../../lib/calendar';
+import { itemsForDate, visibleDayItems, ymd, LONG_PRESS_MS } from '../../../lib/calendar';
 import { getHolidays } from '../../../lib/holidays';
 import { useCalendarVisibility, useHolidayCalendars, holidayEnabledIds, useCalendarColors } from '../../../lib/calendarPrefs';
 import { useCallEventStatus } from '../../../lib/callStatus';
@@ -25,7 +25,7 @@ import WeatherIcon from '../../../components/WeatherIcon';
 import { EmptyState, SkeletonList } from '../../../components/ui';
 import { colors, spacing } from '../../../theme';
 import { TodayHandle } from '../todayHandle';
-import { DayNav, openAllDayItem } from './dayNav';
+import { DayNav, editAllDayItem, openAllDayItem } from './dayNav';
 import { AllDayItem, EVENT_ICON, TimedBlock, addDays, dayHeaderLabel, diffDays, normalizeDay, timeLabel } from './dayViewLayout';
 
 const EXTEND_DAYS = 28;
@@ -192,6 +192,9 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
             style={[styles.row, it.faded && styles.rowFaded]}
             activeOpacity={0.7}
             onPress={() => openAllDayItem(navigation, it, section.date)}
+            // Tap to read, hold to edit — the month grid's chip gesture.
+            onLongPress={() => editAllDayItem(navigation, it, section.date)}
+            delayLongPress={LONG_PRESS_MS}
           >
             {it.icon ? (
               <MaterialCommunityIcons name={mdiName(it.icon) as any} size={22} color={it.color} style={styles.circle} />
@@ -218,6 +221,8 @@ const AgendaView = forwardRef<TodayHandle, { anchor: string }>(function AgendaVi
           style={[styles.row, b.faded && styles.rowFaded]}
           activeOpacity={0.7}
           onPress={() => navigation.navigate('EventDetail', { eventId: b.eventId, date: section.date })}
+          onLongPress={() => navigation.navigate('EventForm', { eventId: b.eventId, date: section.date })}
+          delayLongPress={LONG_PRESS_MS}
         >
           <MaterialCommunityIcons name={EVENT_ICON as any} size={22} color={b.color} style={styles.circle} />
           <View style={styles.rowBody}>

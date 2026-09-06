@@ -14,7 +14,7 @@ import { Input, Select, Screen, DateField, TimeField, NavField, useHeaderCheckBu
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
 import { SUGGESTED_TASK_ICONS } from '../../lib/maintenanceCategories';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat from '../../components/FormAssistChat';
 import IconPicker from '../../components/IconPicker';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
@@ -490,18 +490,21 @@ export default function TaskFormScreen() {
   }
 
   return (
-    <Screen>
-      <FormAssist
-        accent={accent}
-        formType="home maintenance task"
-        placeholder={'Describe the task, e.g. "replace the furnace filter every 3 months"'}
-        fields={assistFields}
-        // Recurrence lives outside `form`; pass a readable summary so Calen
-        // sees the schedule already set (context only — not an editable field).
-        current={{ ...form, ...recurrenceAssistCurrent(repeatRule), recurrence: repeatSummary(repeatRule) }}
-        onApply={applyPatch}
-      />
-
+    <Screen
+      style={fs.withFloatingPill}
+      floating={
+        <FormAssistChat
+          accent={accent}
+          formType="home maintenance task"
+          placeholder={'Describe the task, e.g. "replace the furnace filter every 3 months"'}
+          fields={assistFields}
+          // Recurrence lives outside `form`; pass a readable summary so Calen
+          // sees the schedule already set (context only — not an editable field).
+          current={{ ...form, ...recurrenceAssistCurrent(repeatRule), recurrence: repeatSummary(repeatRule) }}
+          onApply={applyPatch}
+        />
+      }
+    >
       <GroupCard>
         <Input
           value={form.title}

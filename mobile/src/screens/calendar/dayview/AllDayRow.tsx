@@ -4,8 +4,9 @@ import { Text } from '../../../components/Text';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { colors, spacing } from '../../../theme';
+import { LONG_PRESS_MS } from '../../../lib/calendar';
 import { mdiName } from '../../../lib/recurrence';
-import { DayNav, openAllDayItem } from './dayNav';
+import { DayNav, editAllDayItem, openAllDayItem } from './dayNav';
 import { AllDayItem, GUTTER } from './dayViewLayout';
 
 const COLLAPSED_MAX = 3;
@@ -33,6 +34,9 @@ export default function AllDayRow({ days }: { days: { date: string; items: AllDa
                 key={item.key}
                 activeOpacity={0.75}
                 onPress={() => openAllDayItem(navigation, item, d.date)}
+                // Tap to read, hold to edit — the month grid's chip gesture.
+                onLongPress={() => editAllDayItem(navigation, item, d.date)}
+                delayLongPress={LONG_PRESS_MS}
                 style={[
                   styles.chip,
                   item.muted ? styles.chipMuted : { backgroundColor: item.color + '2E' },

@@ -310,7 +310,7 @@ export default function ChatScreen({
   const canSend = (!!chat.input.trim() || chat.attachments.length > 0) && !disabled && !chat.loading;
 
   // Master switch (Phase 5): with AI off in Privacy settings the assistant is
-  // unusable and nothing is ever sent to the provider — same guarantee FormAssist
+  // unusable and nothing is ever sent to the provider — same guarantee the Ask Calen pill
   // gives. Mirrors the "panel doesn't render" behavior for a full-screen surface.
   if (!aiEnabled) {
     return (

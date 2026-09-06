@@ -44,7 +44,7 @@ const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 const TOP_BAR_ROW = 52;   // host button-row height below the status bar
 const WEEKDAY_ROW_H = 26;
 const DAY_NUM_H = 26;
-const MONTH_LABEL_H = 16; // the "Aug" marker above the 1st (month-start rows only)
+const MONTH_LABEL_H = 24; // the "Aug" marker above the 1st (month-start rows only)
 const CHIP_H1 = 20;       // one-line chip slot (incl. margin)
 const CHIP_H2 = 34;       // two-line chip slot
 const CHIP_H3 = 48;       // title + start time
@@ -474,15 +474,18 @@ const WeekRow = React.memo(function WeekRow({
         return (
           <TouchableOpacity
             key={cell.date}
-            style={[styles.dayCell, week.isMonthStart && styles.monthStartCell, { width: cellSize, height: week.height }]}
+            style={[styles.dayCell, { width: cellSize, height: week.height }]}
             activeOpacity={hasItems ? 0.7 : 1}
             // Read-only: a day opens its list, never a create form. An empty
             // day has nothing to open.
             onPress={() => hasItems && onPressDay(cell.date)}
           >
             <View style={[styles.dayHeader, { height: week.headerH }]}>
-              {/* The month marker, on the 1st only. The slot is reserved in every
-                  cell of the row so all the day numbers stay on one line. */}
+              {/* The month marker, on the 1st only — the abbreviated month name
+                  above the month-boundary rule (the slot's bottom border). The
+                  slot is reserved in every cell of the row so all the day
+                  numbers stay on one line, and each own-month cell's slot
+                  draws its stretch of the rule. */}
               {week.isMonthStart ? (
                 <View style={styles.monthLabelSlot}>
                   {col === week.firstCol ? <FixedText style={styles.monthAbbrev}>{week.abbrev}</FixedText> : null}
@@ -596,13 +599,22 @@ const styles = StyleSheet.create({
   },
   // The month boundary reads as an ordinary week rule, drawn only over the days
   // the month owns (the blank cells leading into the 1st get no line) — same
-  // rule as the unlocked grid.
+  // rule as the unlocked grid: each own-month cell's label slot draws it as its
+  // bottom border, so the month abbreviation sits above the line.
   monthStartRow: { borderTopWidth: 0 },
-  monthStartCell: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   dayCell: { paddingTop: 2, paddingHorizontal: 2, overflow: 'hidden' },
   dayHeader: { alignItems: 'center', justifyContent: 'flex-start' },
-  monthLabelSlot: { height: MONTH_LABEL_H, justifyContent: 'center' },
-  monthAbbrev: { fontSize: 12, lineHeight: 14, fontWeight: '700', color: colors.primary },
+  monthLabelSlot: {
+    height: MONTH_LABEL_H,
+    alignSelf: 'stretch',
+    marginHorizontal: -2, // cancel the cell padding so adjacent slots' rules join
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingBottom: 2,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  monthAbbrev: { fontSize: 16, fontWeight: '700', color: colors.primary },
   dayNumWrap: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
   todayWrap: { backgroundColor: colors.primary },
   dayNum: { fontSize: 15, color: colors.text, fontWeight: '600' },

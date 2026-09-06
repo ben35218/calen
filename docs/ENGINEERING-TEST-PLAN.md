@@ -674,7 +674,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **MNT-26** — Task completion: the client computes the next due date / mileage rollover and sends facts + re-sealed ciphertext; a malformed envelope 400s **without** leaving an orphaned ledger row; `GET /tasks/completions` shows the history, date-range filterable and household-scoped.
 - [ ] **MNT-27** — **"Flag tasks due within"** (`reminderLeadDays`, default 7) is edited from the Maintenance home and applies to **every** member (verify on B).
 - [ ] **MNT-28** — Templates: task catalog (incl. the seasonal winter-prep set) and chore catalog browse and add; a template is **reusable** (re-adding is allowed) and shows a non-blocking "In Use" hint.
-- [ ] **MNT-29** — **Ask Calen form-assist** on task and chore forms fills title/instructions/assignee/due-date, the **icon**, both **alert timings**, and the **recurrence** — "make laundry day Saturdays" updates the repeat rule, not just the next due date. A field the form doesn't advertise can never be set.
+- [ ] **MNT-29** — **Ask Calen** on task and chore forms fills title/instructions/assignee/due-date, the **icon**, both **alert timings**, and the **recurrence** — "make laundry day Saturdays" updates the repeat rule, not just the next due date. A field the form doesn't advertise can never be set.
 - [ ] **MNT-30** — Odometer: log readings against a vehicle item, list them, delete one; mileage-based tasks recompute `nextDueKm`. **⚠️ RISK — end-to-end mileage recomputation is an open spec question.**
 
 ---
@@ -684,7 +684,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **TRP-01** — Locked → `AddonLockedView`; purchased → content restored.
 - [ ] **TRP-02** — Trip fields: name, destination (+ placeId/timezone), date range, notes, color, budget, base currency (no status — the trips list sections into Upcoming/Past purely by date).
 - [ ] **TRP-03** — Starts/Ends on the trip, on a booking, and on a journey's Departs/Arrives follow the shared duration rule (§7.2), including the itinerary special case: a start **time** edit only moves the end when the pair had both clocks set.
-- [ ] **TRP-04** — Trip items: title, start/end, location, address, confirmation, cost/currency, url, phone (E.164), notes, free-form details, encrypted attachments; `from-confirmation` parses a booking.
+- [ ] **TRP-04** — Trip items: title, start/end, location, address, confirmation, cost/currency, url, phone (E.164), notes, free-form details, encrypted attachments; `from-confirmation` parses a booking from pasted text (`{ text }`) or a multipart `file` (PDF / image / `.eml`) and returns an unsaved draft — reached from the booking form's "Add from a confirmation" card (add-only, AI-gated, one `scan` credit). Known gap: a hotel's `details.roomType` is parsed but the standard save branch stores no `details`.
 - [ ] **TRP-05** — A trip contributes only its **date range** as a spanning overlay on the calendar; itinerary items never reach the calendar; nothing in trips repeats (no occurrence scoping).
 - [ ] **TRP-06** — Trip timeline renders legs/items in order with travel legs.
 - [ ] **TRP-07** — **Expenses & settlement**: household budgets, per-item shares/paid-by, the settlement view, recording settle payments and deleting one. Verify the who-owes-whom math by hand across three households. **⚠️ RISK — no automated coverage at all.**
@@ -745,7 +745,7 @@ Spec: [calendar.md](../specs/features/calendar.md)
 - [ ] **IMP-14** — AI-assisted is **hidden** when either `aiEnabled` or `aiUsePersonalInfo` is off, with an explanation and a fall back to Direct; `/classify` also 403s server-side.
 - [ ] **IMP-15** — **Out of credits** forces Direct + Review-each, explaining why; `unlimited` admins are exempt; the gate is optimistic until billing resolves.
 - [ ] **IMP-16** — **Review-each queue**: header title `Review N of M`, header check saves-and-advances (tinted the app primary here, deliberately), a **Skip** button only for a multi-contact queue ("Skip & finish" on the last), and a single-contact import shows no skip.
-- [ ] **IMP-17** — A **Direct**-import review hides the "Ask Calen" panel; an **AI-assisted** review keeps it.
+- [ ] **IMP-17** — A **Direct**-import review hides the "Ask Calen" pill; an **AI-assisted** review keeps it.
 - [ ] **IMP-18** — vCard import (`POST /people/import`) parses FN/N names, folded lines, labeled multi-value TEL/EMAIL/URL, BDAY (dropping no-year dates), structured ADR, NOTE; each person is sealed and created through `/records`.
 - [ ] **IMP-19** — A bulk import writes one record per contact but coalesces into a **single** calendar invalidation.
 
@@ -844,6 +844,21 @@ Spec: [ai-assistant.md](../specs/features/ai-assistant.md)
 - [ ] **AI-66** — The Invitations notice card carries **no inline action** — it opens the Interaction view on tap.
 - [ ] **AI-67** — Call outcomes **never** surface on the assistant view (no recent-calls list, no unseen badge on the Calen icon).
 - [ ] **AI-68** — Placing a call with an insufficient balance is refused **before** dialing (one-minute pre-check).
+
+### 15.x "Ask Calen" on a form (pill + chat sheet)
+
+- [ ] **AI-69** — Every add/edit form shows the **"Ask Calen" pill** bottom-right (event, contact, task, chore, item, trip, booking, recipe) — glyph left, words right. The form's last row (usually Delete) clears it instead of hiding underneath.
+- [ ] **AI-70** — Focusing any form field **fades the pill out**; dismissing the keyboard brings it back. It never rides on top of the keys.
+- [ ] **AI-71** — Tapping the pill opens a **content-sized** sheet: on a fresh conversation just the title and composer (no dead space, no hint duplicating the placeholder), growing with the transcript to a ~58% cap. **On an iPhone SE with the keyboard up**, a long conversation's top is still reachable and the composer sits flush on the keys — nothing runs off the top of the screen.
+- [ ] **AI-72** — A prompt that fills something ("dentist next Tuesday at 2pm") applies the patch, **shows Calen's one-line confirmation**, then closes the sheet after a beat; the filled fields are highlighted behind it.
+- [ ] **AI-73** — A vague prompt ("sometime next week") comes back as **one short question and the sheet STAYS OPEN**; answering it in the same sheet fills the form and closes. ⚠️ **RISK** — `tool_choice: auto` is what makes this possible; watch for Calen chatting when it should just fill. Try several vague prompts on each of the 8 forms.
+- [ ] **AI-74** — Reopening the pill shows the **conversation so far**. It survives drilling into a sub-screen (Location, Repeat, Alerts, Invitees) and coming back.
+- [ ] **AI-75** — Saving the form and opening a fresh one starts with an **empty** conversation. Backing out unsaved does too.
+- [ ] **AI-76** — Importing a **trip booking from a confirmation** (or a **recipe** from URL/photo) pulses the pill once and **clears any prior conversation** — it was about a different record.
+- [ ] **AI-77** — The **recipe** form's sheet ("make it vegan") repopulates the whole form behind it and **stays open** with its confirmation — there is no field patch to close for.
+- [ ] **AI-78** — Privacy & data → AI off ⇒ **no pill on any of the eight forms**, and no way to reach the sheet.
+- [ ] **AI-79** — **Form assist now costs credits** (it was free). Note the balance, run a fill, confirm it debits and that the charge is proportionate to a short chat turn. A long back-and-forth is capped at 8 turns of history.
+- [ ] **AI-80** — A low balance shows the **CreditsBanner inside the sheet** (it no longer sits at the top of the form). Running out surfaces the buy-credits path.
 
 ---
 

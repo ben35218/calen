@@ -13,7 +13,7 @@ import { fetchTripDetail } from '../../lib/tripData';
 const TRIP_ENC = (p: Record<string, unknown>) => ({ name: p.name, destination: p.destination, notes: p.notes });
 import { Button, Input, Screen, SectionTitle, DateField, useHeaderCheckButton, FormError, CenteredLoader } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat from '../../components/FormAssistChat';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
@@ -373,16 +373,19 @@ export default function TripFormScreen() {
   }
 
   return (
-    <Screen>
-      <FormAssist
-        accent={accent}
-        formType="trip"
-        placeholder={'Describe the trip, e.g. "10-day trip to Rome in May"'}
-        fields={ASSIST_FIELDS}
-        current={{ ...form }}
-        onApply={applyPatch}
-      />
-
+    <Screen
+      style={fs.withFloatingPill}
+      floating={
+        <FormAssistChat
+          accent={accent}
+          formType="trip"
+          placeholder={'Describe the trip, e.g. "10-day trip to Rome in May"'}
+          fields={ASSIST_FIELDS}
+          current={{ ...form }}
+          onApply={applyPatch}
+        />
+      }
+    >
       <GroupCard>
         <Input
           value={form.name}

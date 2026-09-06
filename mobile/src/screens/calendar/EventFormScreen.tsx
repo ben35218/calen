@@ -20,7 +20,7 @@ import {
   clearQueuedAttachments, useQueuedAttachments,
 } from '../../lib/attachmentDraft';
 import { Button, Input, Select, Screen, SwitchRow, SectionTitle, DateField, TimeField, useHeaderCheckButton, FormError, CenteredLoader, Hint, ScreenTitle, Card, ListRow, InfoCard } from '../../components/ui';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat from '../../components/FormAssistChat';
 import { form as formStyles } from '../../components/formStyles';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
@@ -503,7 +503,7 @@ export default function EventFormScreen() {
   }, [navigation, isEdit]);
 
   // Pre-fill a new event from the calendar assistant's draft ("Edit in form").
-  // Uses the same patch path as FormAssist so the filled fields get highlighted —
+  // Uses the same patch path as Ask Calen so the filled fields get highlighted —
   // except the date/time/all-day fields, which every event always carries: the
   // form seeds them with defaults, so outlining them as "AI changed this" is just
   // noise. Highlight only the fields the assistant genuinely populated (title,
@@ -1511,16 +1511,19 @@ export default function EventFormScreen() {
   }
 
   return (
-    <Screen>
-      <FormAssist
-        formType="calendar event"
-        placeholder={'Describe the event, e.g. "dentist next Tuesday at 2pm, remind me when it\'s time to leave"'}
-        fields={assistFields}
-        current={form}
-        onApply={applyPatch}
-        includeContacts
-      />
-
+    <Screen
+      style={formStyles.withFloatingPill}
+      floating={
+        <FormAssistChat
+          formType="calendar event"
+          placeholder={'Describe the event, e.g. "dentist next Tuesday at 2pm, remind me when it\'s time to leave"'}
+          fields={assistFields}
+          current={form}
+          onApply={applyPatch}
+          includeContacts
+        />
+      }
+    >
       {/* Title + Location grouped in one card (Apple Calendar-style): no labels,
           placeholder text only, rows separated by a hairline. */}
       <View style={formStyles.groupCard}>
@@ -1663,7 +1666,11 @@ export default function EventFormScreen() {
           {travelLoading ? (
             <ActivityIndicator size="small" color={colors.textMuted} />
           ) : (
-            <Text style={[formStyles.groupValue, !form.travelMinutes && formStyles.groupValueMuted]} numberOfLines={1}>
+            // No numberOfLines: the leave-by time is the most useful part of
+            // this value, so on a narrow screen it wraps to a second line
+            // rather than ellipsizing away (form values stay readable without
+            // opening the field).
+            <Text style={[formStyles.groupValue, styles.travelValue, !form.travelMinutes && formStyles.groupValueMuted]}>
               {!form.travelEnabled
                 ? 'None'
                 : form.travelMinutes
@@ -1931,6 +1938,8 @@ export default function EventFormScreen() {
 // Grouped-card form styles live in components/formStyles (shared by all
 // add/edit forms); only screen-specific styles remain here.
 const styles = StyleSheet.create({
+  // A wrapped second line stays ragged-right against the chevron.
+  travelValue: { textAlign: 'right' },
   // Guest (read-only invitee) view
   guestInviter: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
   // Detail info card: the Card supplies chrome, ListRows supply the rows (matches

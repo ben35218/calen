@@ -18,7 +18,7 @@ import { uploadFile } from '../../lib/upload';
 import { Input, Select, Screen, SectionTitle, SwitchRow, DateField, useHeaderCheckButton, FormError, CenteredLoader, Button, Skeleton } from '../../components/ui';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
 import { useCalendarColors } from '../../lib/calendarPrefs';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat from '../../components/FormAssistChat';
 import HouseholdItemIcon from '../../components/HouseholdItemIcon';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
@@ -699,7 +699,26 @@ export default function ItemFormScreen() {
 
   // Final step: type-specific form
   return (
-    <Screen>
+    <Screen
+      style={fs.withFloatingPill}
+      floating={
+        <FormAssistChat
+          accent={accent}
+          formType={`${cfg.label.toLowerCase()} (home item)`}
+          placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
+          fields={assistFields}
+          // Custom/preset fields and user-added fields live outside `form`; fold
+          // their filled values in so Calen sees them (context only — applyPatch
+          // ignores keys not in the core form, so these can't be overwritten).
+          current={{
+            ...form,
+            ...Object.fromEntries(Object.entries(customMap).filter(([, v]) => v)),
+            ...Object.fromEntries(userFields.filter((f) => f.key.trim() && f.value).map((f) => [f.key, f.value])),
+          }}
+          onApply={applyPatch}
+        />
+      }
+    >
       {!isEdit ? (
         <View style={styles.typeChipRow}>
           <View style={[styles.typeChip, { backgroundColor: cfg.color }]}>
@@ -714,22 +733,6 @@ export default function ItemFormScreen() {
           ) : null}
         </View>
       ) : null}
-
-      <FormAssist
-        accent={accent}
-        formType={`${cfg.label.toLowerCase()} (home item)`}
-        placeholder={'Describe the item, e.g. "Samsung fridge, model RF28R, bought last March, 2-year warranty"'}
-        fields={assistFields}
-        // Custom/preset fields and user-added fields live outside `form`; fold
-        // their filled values in so Calen sees them (context only — applyPatch
-        // ignores keys not in the core form, so these can't be overwritten).
-        current={{
-          ...form,
-          ...Object.fromEntries(Object.entries(customMap).filter(([, v]) => v)),
-          ...Object.fromEntries(userFields.filter((f) => f.key.trim() && f.value).map((f) => [f.key, f.value])),
-        }}
-        onApply={applyPatch}
-      />
 
       <SectionTitle>Basic Info</SectionTitle>
       <GroupCard>

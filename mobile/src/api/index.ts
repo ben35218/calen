@@ -1536,6 +1536,50 @@ export interface Settlement {
   myHouseholdId?: string | null;
 }
 
+// ── Confirmation import ─────────────────────────────────────────────────────
+// The draft `POST /trips/:id/items/from-confirmation` answers with: a booking
+// read out of a pasted confirmation email, an .eml, a PDF e-ticket or a photo
+// of one. It is a DRAFT for the booking form to review — the server saves
+// nothing, and the parse costs one AI `scan` credit. A journey (flight /
+// transit) comes back with departure/arrival blocks whose airport has already
+// been resolved to a placeId + IANA timezone; every other type comes back with
+// start/end. Every field is optional: the parser is instructed to answer null
+// rather than invent a value. See lib/tripConfirmation for the mapping onto
+// the form's own keys.
+export interface TripConfirmationWhen {
+  date?: string;
+  time?: string;
+}
+
+export interface TripConfirmationPlace extends TripConfirmationWhen {
+  name?: string;
+  placeId?: string;
+  tz?: string;
+}
+
+export interface TripConfirmationDraft {
+  type?: string;
+  title?: string;
+  confirmation?: string;
+  cost?: number | null;
+  currency?: string;
+  url?: string;
+  phone?: string;
+  notes?: string;
+  location?: string;
+  details?: {
+    airline?: string;
+    flightNumber?: string;
+    seat?: string;
+    mode?: string;
+    roomType?: string;
+  };
+  departure?: TripConfirmationPlace;
+  arrival?: TripConfirmationPlace;
+  start?: TripConfirmationWhen;
+  end?: TripConfirmationWhen;
+}
+
 export const tripsApi = {
   list: (params?: Record<string, unknown>) => api.get<Trip[]>('/trips', { params }),
   get: (id: string) => api.get<Trip>(`/trips/${id}`),
@@ -1548,6 +1592,12 @@ export const tripsApi = {
   addPayment: (id: string, data: Record<string, unknown>) => api.post(`/trips/${id}/settle-payments`, data),
   removePayment: (id: string, payId: string) => api.delete(`/trips/${id}/settle-payments/${payId}`),
   addItem: (id: string, data: Record<string, unknown>) => api.post<TripItem>(`/trips/${id}/items`, data),
+  // Parse a booking out of a PASTED confirmation (the email body copied out of
+  // Mail). The file variant of the same endpoint — a PDF e-ticket, a photo or
+  // an .eml — is multipart and goes through lib/upload's uploadFile under the
+  // field name 'file', the way the other from-photo scans do.
+  fromConfirmationText: (id: string, text: string) =>
+    api.post<TripConfirmationDraft>(`/trips/${id}/items/from-confirmation`, { text }),
   updateItem: (id: string, itemId: string, data: Record<string, unknown>) =>
     api.put<TripItem>(`/trips/${id}/items/${itemId}`, data),
   removeItem: (id: string, itemId: string) => api.delete(`/trips/${id}/items/${itemId}`),
@@ -2335,9 +2385,27 @@ export interface FormAssistField {
   options?: { label: string; value: string | number }[];
 }
 
+// One exchange in a form's Ask Calen conversation.
+//
+// `patch`/`applied` are for RENDERING ONLY and are never sent back to the
+// server — see lib/formAssistTranscript. The live form values ride on the
+// request instead, which is truer than a replayed patch: the user may have
+// hand-edited a field, or undone the fill, since.
+export interface FormAssistTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  patch?: Record<string, unknown>;
+  applied?: boolean;
+}
+
 export interface FormAssistResponse {
   patch: Record<string, unknown>;
+  // `reply` is what the sheet shows. `note` is the same string under the name
+  // the shipped card reads — kept so an older build keeps working; drop it a
+  // release after the pill ships.
+  reply?: string;
   note?: string;
+  creditsUsed?: number;
 }
 
 export const formAssistApi = {
@@ -2345,7 +2413,12 @@ export const formAssistApi = {
     formType: string;
     fields: FormAssistField[];
     current: Record<string, unknown>;
-    prompt: string;
+    // The running transcript for THIS form. Sending it puts the server in chat
+    // mode, where a turn may come back as a clarifying question with no patch.
+    messages?: { role: 'user' | 'assistant'; content: string }[];
+    // The single-shot form the shipped card sends. Kept for back-compat only —
+    // new callers send `messages`.
+    prompt?: string;
     // When true, saved PROFESSIONAL contacts (name/service/address/phone) may
     // be attached so the assistant can resolve businesses the user names.
     // Friends/family are never included (spec: name-only in AI payloads).

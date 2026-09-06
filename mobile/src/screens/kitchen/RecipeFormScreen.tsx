@@ -15,7 +15,7 @@ import { form as fs, GroupCard, CardDivider } from '../../components/formStyles'
 import StepIngredientLinker from '../../components/StepIngredientLinker';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import CalenChatIcon from '../../components/CalenChatIcon';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat, { FormAssistChatHandle } from '../../components/FormAssistChat';
 import { ASSISTANT_NAME } from '../../config';
 import { useAiEnabled } from '../../lib/privacyPrefs';
 import { takePhoto, pickImages, PickedFile } from '../../lib/media';
@@ -196,6 +196,10 @@ export default function RecipeFormScreen() {
     setSeeded(true);
   }, [isEdit, initial]);
 
+  // Held so an import can clear the Ask Calen conversation — an import replaces
+  // the whole recipe, so the transcript is about a different dish.
+  const assistChatRef = useRef<FormAssistChatHandle>(null);
+
   const fromUrl = useMutation({
     mutationFn: () => recipesApi.fromUrl(urlInput.trim()),
     onSuccess: (res) => {
@@ -203,6 +207,9 @@ export default function RecipeFormScreen() {
       setImported(true);
       setImporter(null);
       setUrlInput('');
+      // An import replaces the whole recipe, so anything said to Calen before
+      // it was about a different dish.
+      assistChatRef.current?.reset();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Could not import from that URL.'),
   });
@@ -249,6 +256,7 @@ export default function RecipeFormScreen() {
       if (!data) return;
       populate(data);
       setImported(true);
+      assistChatRef.current?.reset();
     },
     onError: (e: any) => setError(e.response?.data?.error || 'Could not read those photos.'),
   });
@@ -401,7 +409,7 @@ export default function RecipeFormScreen() {
   // the server rewrite the recipe, then repopulate the form from the result.
   // The response arrives with its ingredient-to-step tags already recomputed
   // (edit-with-ai runs the tagger before returning), so applying a change is
-  // also what refreshes the step links. Runs through the FormAssist card, which
+  // also what refreshes the step links. Runs through the Ask Calen sheet, which
   // owns the loading/error presentation (throw = in-card error).
   const applyAiEdit = async (prompt: string) => {
     const res = await recipesApi.editWithAi(
@@ -500,23 +508,24 @@ export default function RecipeFormScreen() {
   const showQuickImport = !isEdit && !isReview && !imported && aiEnabled && !importing;
 
   return (
-    <Screen>
-      {/* Calen, the form assistant (shared card) — describe changes to apply;
-          the result comes back with its ingredient-to-step tags already
-          refreshed. A plain edit opens it collapsed; a just-imported/reviewed
-          recipe opens it expanded, since refining the import is the expected
-          next step. */}
-      {showAssistant ? (
-        <FormAssist
+    <Screen
+      style={showAssistant ? fs.withFloatingPill : undefined}
+      /* Calen, the form assistant — describe changes to apply; the result comes
+         back with its ingredient-to-step tags already refreshed. A
+         just-imported/reviewed recipe pulses the pill once, since refining the
+         import is the expected next step. Unlike the fill-mode forms this one
+         produces no field patch (the whole recipe is rewritten and the form
+         repopulates), so its sheet stays open on success and says so. */
+      floating={showAssistant ? (
+        <FormAssistChat
+          ref={assistChatRef}
           onSubmit={applyAiEdit}
           accent={accent}
-          actionLabel="Apply changes"
-          defaultExpanded={isReview || imported}
+          attention={isReview || imported}
           placeholder="Describe the changes you want, e.g. make it vegan, double the servings, add more spice"
-          restingPlaceholder="Describe the changes you want"
         />
       ) : null}
-
+    >
       {/* Import bar — all three actions (URL, photo, assistant) call the AI provider */}
       {showQuickImport ? (
         <GroupCard style={styles.importCard}>

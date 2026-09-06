@@ -20,6 +20,11 @@ export const CALENDAR_COLORS: Record<string, string> = {
 export const RECIPE_ICON = 'silverware-fork-knife';
 export const GROCERY_ICON = 'cart';
 
+// A shorter-than-default (500ms) hold to trigger create/edit long-presses —
+// tap opens the item, hold edits it. One constant so the month grid and the
+// day view answer the same gesture at the same speed.
+export const LONG_PRESS_MS = 200;
+
 // User color overrides (loaded/persisted by calendarPrefs). `colorOf` resolves
 // the effective color for a calendar id so chips/bars/icons reflect overrides.
 let colorOverrides: Record<string, string> = {};

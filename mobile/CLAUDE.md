@@ -94,6 +94,12 @@ its rule, is drift.
   keyboard via `KeyboardAvoidingView` offset by `useHeaderHeight()`. Selecting
   a result commits and pops. `EventLocation` and `WeatherLocationSearch` are
   the references.
+  Read that rule as **field-on-top / results-below**, which is what puts content
+  behind the keys. The inverse arrangement is fine and is what the Ask Calen
+  sheet uses: the composer is the sheet's **last** child, so `avoidKeyboard`
+  docks it flush *on* the keyboard and everything it produces stays *above* it.
+  A clipped transcript just means scrolling; a clipped results list destroys the
+  interaction, and that difference is the whole reason the rule exists.
   Picking a suggestion in a **single-value** field completes the entry —
   `Keyboard.dismiss()` so the field blurs and shows the value from its start.
   A **multi-add** field (invitees: type, pick, type the next) keeps the
@@ -226,21 +232,37 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
 - **Other header action on a detail screen** (share / print / history) → `<HeaderIconButton icon onPress accessibilityLabel />` in `headerRight`.
 - **Floating action button** (detail screen adds a sub-item) → `<Fab icon onPress bg={accent} />` (or `<Fab>` with a custom glyph child).
 - **The Calen assistant FAB** → `<AssistantButton style={<corner placement>} onPress />`,
-  never a `<Fab>` wearing an assistant glyph. One disc everywhere Calen floats
-  (the calendar month/day canvases, the trip view): elevated fill + light rim,
-  the untinted `CalenGlyph`, the press spring + haptic, and the first-run halo
-  pulse. It is deliberately **not** accent-filled — Calen is the app's, not the
-  section's, and the gradient mark can't sit on a colored disc.
-- **AI assistant on an add/edit form** → `<FormAssist>` at the top of the form;
-  never hand-roll the card. Its header is fixed chrome — CalenChatIcon +
-  "Ask Calen" + a trailing chevron — and it **defaults collapsed** (the form is
-  the screen's job; the assistant is an accelerator). Pass `defaultExpanded`
-  only when the user arrives from a flow whose expected next step *is* the
-  assistant (a just-completed recipe import). In an accented area pass
-  `accent` to tint the action button; the card chrome stays app-primary (it is
-  Calen's, not the section's). `onSubmit` swaps the `/form-assist` fill for a
-  screen-specific AI action (the recipe form's `/edit-with-ai`), with
-  `actionLabel` naming what it does ("Apply changes" vs "Fill in the form").
+  never a `<Fab>` wearing an assistant glyph. One component everywhere Calen
+  floats: elevated fill + light rim, the untinted `CalenGlyph`, the press spring
+  + haptic, and the first-run halo pulse. It is deliberately **not**
+  accent-filled — Calen is the app's, not the section's, and the gradient mark
+  can't sit on a colored disc. Two shapes, and the prop picks:
+  - **Bare = the 56pt disc**, for screens that *lead* with Calen (the calendar
+    month/day canvases, the trip view). The halo carries discovery on its own.
+  - **`label` = the extended pill** (glyph left, words right), for an add/edit
+    **form**, where Calen is an accelerator among many fields and needs naming.
+    An extended pill was once tried on the *calendar canvas* and reverted for
+    colliding with the Today|Calendars pill — that was a crowded-corner problem,
+    not a pill problem, and a form's bottom-right is empty. Don't take the label
+    back to a canvas that already has a pill.
+- **AI assistant on an add/edit form** → `<FormAssistChat>` passed to
+  `<Screen floating>`; never hand-roll it, and never put it back in the form
+  body. It is a floating bottom-right **"Ask Calen" pill** that opens a
+  half-screen chat sheet — the form is the screen's job, so Calen takes a corner
+  rather than permanent vertical space. Give the scroll content
+  `fs.withFloatingPill` so its last row clears the pill. Pass `attention` (a
+  one-shot pill pulse) only when the user arrives from a flow whose expected
+  next step *is* the assistant — a just-imported booking or recipe; do **not**
+  auto-open the sheet, which hijacks a screen they only just landed on. In an
+  accented area pass `accent` to tint the send button; the sheet chrome stays
+  app-primary (it is Calen's, not the section's). `onSubmit` swaps the
+  `/form-assist` fill for a screen-specific AI action (the recipe form's
+  `/edit-with-ai`) — that mode has no patch, so its sheet stays open on success.
+  A form that **re-seeds itself in place** (confirmation import, recipe import)
+  calls `reset()` on its ref: the conversation so far is about a different
+  record. The transcript is otherwise plain component state — it survives a
+  push to a sub-screen and dies with the form on save. Never route it through
+  `lib/chatHistory`, which persists for 7 days and resumes across surfaces.
   Icon vocabulary — three marks, don't cross them:
   - **`<CalenGlyph>`, the gradient "C", means "this is Calen"** — every
     `AssistantButton` FAB and the "Ask Calen" card header wear it. Its blue
@@ -278,7 +300,20 @@ Import-options switch rows) uses the same ⓘ pair — **never an eye**, which m
     instant teardown, so the push isn't swallowed by the dying Modal) and pushes
     a screen; the row wears `chevron-forward` because that is what it does. Text
     input inside a sheet is reserved for short single fields (a password, a
-    label) under `avoidKeyboard` — never a field with results below it.
+    label) under `avoidKeyboard`, or a composer pinned as the sheet's LAST child
+    with its output above it (the Ask Calen sheet) — never a field with results
+    below it.
+  - **A sheet with an explicit height sets it in px and clamps against the
+    keyboard.** `sheetRoot` is `flex:1 / flex-end` and RN's default `flexShrink`
+    is 0, so a fixed-height sheet does not shrink under `avoidKeyboard`'s
+    padding — it overflows off the *top* of the screen and its first content
+    becomes unreachable. A percentage is worse: it resolves against the padded
+    box, so it shrinks exactly when the sheet needs room. Compute
+    `min(winH * fraction, winH - insets.top - keyboardHeight - spacing.lg)` and
+    pass `maxHeight: '100%'`, or `modalSheet`'s own `maxHeight: '80%'` re-clamps
+    what you just computed. Never make the height user-draggable or
+    multi-detent — that is the react-native-screens form sheet already tried and
+    reverted (see the note in `AppNavigator`).
   - **A picker sheet commits on dismissal.** A sheet whose content is a wheel,
     a date/time picker, or a list of options saves what it is showing when the
     user taps the scrim, drags it down, or presses Android back — the same value

@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, StyleProp, ViewStyle } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import CalenGlyph from './CalenGlyph';
-import { colors } from '../theme';
+import { Text } from './Text';
+import { colors, spacing } from '../theme';
 import { useCalenFabIntro } from '../lib/calenFabIntro';
 
 // The standalone Calen FAB — the one primary floating action of the screens
@@ -18,15 +19,30 @@ import { useCalenFabIntro } from '../lib/calenFabIntro';
 // so it must not be tinted flat.
 // Until the first-ever tap (lib/calenFabIntro) a soft primary-blue halo
 // radiates from the disc a few times each app open — the feature-discovery
-// pulse that says "this one is tappable" without taking any layout room (an
-// extended label pill was tried and collided with the Today|Calendars pill on
-// small screens). It never runs under iOS Reduce Motion.
+// pulse that says "this one is tappable" without taking any layout room. It
+// never runs under iOS Reduce Motion.
 // Phone-call outcomes are resolved on the event view (not surfaced here), so
 // this stays a plain launcher with no call-status badge.
+//
+// TWO SHAPES. Bare, it is the 56pt disc above — the float for screens that LEAD
+// with Calen (the calendar canvases, the trip view), where the halo carries
+// discovery on its own. With `label` it is an extended pill (glyph + "Ask
+// Calen"), the float for an add/edit FORM, where Calen is an accelerator rather
+// than the screen's job and needs the word to say so.
+//   An extended pill was tried on the CALENDAR canvas once and reverted — it
+//   collided with the Today|Calendars pill on small screens. That was a
+//   crowded-corner problem, not a pill problem: a form's bottom-right corner is
+//   empty (every form saves from the header, and Delete/Leave sit at the end of
+//   scroll content). Don't take the label to a canvas that already has a pill.
 
 // A bounded run per mount, not an endless loop: enticement, not nagging. An
 // untapped FAB pulses again on the next mount (next app open / screen visit).
 const HALO_PULSES = 6;
+// `attention` is a deliberate nudge at a specific moment (a just-imported
+// booking, where fixing up the result IS the expected next step), not feature
+// discovery — so it's brief, and it runs even for a user who has used Calen
+// before. Two, because a single pulse behind a 900ms delay is easy to miss.
+const ATTENTION_PULSES = 2;
 
 function useReduceMotion() {
   const [reduce, setReduce] = useState(false);
@@ -44,33 +60,51 @@ function useReduceMotion() {
   return reduce;
 }
 
-export default function AssistantButton({ onPress, style }: { onPress: () => void; style?: StyleProp<ViewStyle> }) {
+export default function AssistantButton({
+  onPress,
+  style,
+  // Present ⇒ the extended pill variant (see the note above). Absent ⇒ the disc.
+  label,
+  // Pulse once on mount even for a user who has already used Calen.
+  attention,
+}: {
+  onPress: () => void;
+  style?: StyleProp<ViewStyle>;
+  label?: string;
+  attention?: boolean;
+}) {
   const { intro, markSeen } = useCalenFabIntro();
   const reduceMotion = useReduceMotion();
   const scale = useRef(new Animated.Value(1)).current;
   const halo = useRef(new Animated.Value(0)).current;
+  const pulsing = (intro || !!attention) && !reduceMotion;
 
   useEffect(() => {
-    if (!intro || reduceMotion) return;
+    if (!pulsing) return;
     const loop = Animated.loop(
       Animated.sequence([
         Animated.delay(900),
         Animated.timing(halo, { toValue: 1, duration: 1500, easing: Easing.out(Easing.ease), useNativeDriver: true }),
         Animated.timing(halo, { toValue: 0, duration: 0, useNativeDriver: true }),
       ]),
-      { iterations: HALO_PULSES }
+      { iterations: intro ? HALO_PULSES : ATTENTION_PULSES }
     );
     loop.start();
     return () => loop.stop();
-  }, [intro, reduceMotion, halo]);
+  }, [pulsing, intro, halo]);
 
   return (
     <Animated.View style={[style, { transform: [{ scale }] }]}>
-      {intro && !reduceMotion ? (
+      {pulsing ? (
         <Animated.View
           pointerEvents="none"
           style={[
+            // absoluteFill, not a hard-coded 56pt box: the wrapper hugs the
+            // Pressable, so the glow tracks whichever shape is rendered (it
+            // measures identically to the old fixed box for the disc).
+            StyleSheet.absoluteFill,
             styles.halo,
+            { borderRadius: label ? PILL_RADIUS : 28 },
             {
               opacity: halo.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.4, 0] }),
               transform: [{ scale: halo.interpolate({ inputRange: [0, 1], outputRange: [1, 1.7] }) }],
@@ -79,7 +113,7 @@ export default function AssistantButton({ onPress, style }: { onPress: () => voi
         />
       ) : null}
       <Pressable
-        style={styles.fab}
+        style={label ? styles.pill : styles.fab}
         onPressIn={() =>
           Animated.spring(scale, { toValue: 0.92, speed: 40, bounciness: 0, useNativeDriver: true }).start()
         }
@@ -95,25 +129,52 @@ export default function AssistantButton({ onPress, style }: { onPress: () => voi
         accessibilityLabel="Ask Calen"
         accessibilityHint="Opens the Calen assistant"
       >
-        <CalenGlyph size={28} />
+        <CalenGlyph size={label ? 22 : 28} />
+        {label ? (
+          // Plain `Text`, not `FixedText`: the pill is sized BY its label, so a
+          // larger text size must widen the pill rather than clip inside it.
+          <Text style={styles.label} numberOfLines={1}>{label}</Text>
+        ) : null}
       </Pressable>
     </Animated.View>
   );
 }
 
+const PILL_RADIUS = 24;
+
+// The disc and the pill are the same object at two widths: identical fill, rim
+// and shadow, so they read as one component wherever they appear.
+const surface = {
+  backgroundColor: colors.surfaceElevated,
+  borderWidth: 1,
+  borderColor: colors.outline,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  // One step above the pills' shadow so the FAB reads as the topmost layer.
+  shadowColor: '#000',
+  shadowOpacity: 0.25,
+  shadowRadius: 6,
+  shadowOffset: { width: 0, height: 3 },
+  elevation: 6,
+};
+
 const styles = StyleSheet.create({
-  fab: {
-    width: 56, height: 56, borderRadius: 28, backgroundColor: colors.surfaceElevated,
-    borderWidth: 1, borderColor: colors.outline,
-    alignItems: 'center', justifyContent: 'center',
-    // One step above the pills' shadow so the FAB reads as the topmost layer.
-    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 6,
+  fab: { ...surface, width: 56, height: 56, borderRadius: 28 },
+  pill: {
+    ...surface,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 48,
+    borderRadius: PILL_RADIUS,
+    paddingHorizontal: 14,
+    paddingVertical: spacing.xs,
+    // A big-text user gets a wider pill, up to the point where it would crowd
+    // the screen; past that the label wraps its height instead of running off.
+    maxWidth: 260,
   },
-  // The discovery ripple: the disc's own footprint, scaled up + faded out
+  label: { fontSize: 15, fontWeight: '600', color: colors.text, flexShrink: 1 },
+  // The discovery ripple: the button's own footprint, scaled up + faded out
   // behind it. Primary blue to match the glyph — this is Calen's color, and a
   // tint this soft (peaks at 0.4 opacity) reads as a glow, not a second button.
-  halo: {
-    position: 'absolute', top: 0, left: 0, width: 56, height: 56, borderRadius: 28,
-    backgroundColor: colors.primary,
-  },
+  halo: { backgroundColor: colors.primary },
 });

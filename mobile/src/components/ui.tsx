@@ -604,10 +604,21 @@ export function Screen({
   children,
   scroll = true,
   style,
+  floating,
 }: {
   children: React.ReactNode;
   scroll?: boolean;
   style?: StyleProp<ViewStyle>;
+  // Chrome that floats OVER the content instead of scrolling with it — a FAB,
+  // the Ask Calen pill. Rendered as a sibling of the scroll view, so it must
+  // position itself (`position: 'absolute'` + a corner).
+  //
+  // This exists because Screen's root IS the scroll view: floating chrome can't
+  // be a child without scrolling away, and hand-wrapping each caller in a
+  // `<View style={{flex:1}}>` re-indents the whole form for zero behavior. Give
+  // the content `paddingBottom: 96` (fs.withFloatingPill) so its last row clears
+  // whatever floats.
+  floating?: React.ReactNode;
 }) {
   const scrollRef = useRef<KeyboardAwareScrollViewRef>(null);
   const offsetY = useRef(0);
@@ -636,19 +647,32 @@ export function Screen({
       scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.md), animated });
     },
   }), []);
-  if (!scroll) return <View style={[styles.screen, style]}>{children}</View>;
+  if (!scroll) {
+    return (
+      <View style={[styles.screen, style]}>
+        {children}
+        {floating}
+      </View>
+    );
+  }
   return (
     <ScreenScrollContext.Provider value={revealApi}>
-      <KeyboardAwareScrollView
-        ref={scrollRef}
-        style={styles.screen}
-        contentContainerStyle={[styles.screenContent, style]}
-        bottomOffset={spacing.lg}
-        keyboardShouldPersistTaps="handled"
-        onScroll={(e) => { offsetY.current = e.nativeEvent.contentOffset.y; }}
-      >
-        {children}
-      </KeyboardAwareScrollView>
+      {/* The wrapper carries the background and the flex; the scroll view is
+          plain flex:1 inside it. Without a wrapper there is nowhere for
+          `floating` to sit that doesn't scroll. */}
+      <View style={styles.screen}>
+        <KeyboardAwareScrollView
+          ref={scrollRef}
+          style={styles.flex}
+          contentContainerStyle={[styles.screenContent, style]}
+          bottomOffset={spacing.lg}
+          keyboardShouldPersistTaps="handled"
+          onScroll={(e) => { offsetY.current = e.nativeEvent.contentOffset.y; }}
+        >
+          {children}
+        </KeyboardAwareScrollView>
+        {floating}
+      </View>
     </ScreenScrollContext.Provider>
   );
 }
@@ -1824,6 +1848,7 @@ function DateTimeField({
   hideIcon,
   valueStyle,
   inlineLabel,
+  minuteInterval = 5,
 }: {
   mode: 'date' | 'time';
   label?: string;
@@ -1845,6 +1870,12 @@ function DateTimeField({
   // Label rendered inside the touchable, left of the value — makes the whole
   // row (label included) open the picker. Also titles the iOS modal.
   inlineLabel?: string;
+  // Minutes-wheel step (time mode only). Defaults to 5 — the Apple Calendar
+  // wheel — so every flick snaps to a clean :05 boundary. Pass 1 only where
+  // the real-world value is minute-precise (flight/transit timetables). An
+  // off-grid stored value is unaffected until the wheel itself is spun: the
+  // sheet commits `temp`, which stays the parsed original untouched.
+  minuteInterval?: 1 | 5 | 15 | 30;
 }) {
   const [open, setOpen] = useState(false);
   const [temp, setTemp] = useState<Date>(new Date());
@@ -1919,6 +1950,7 @@ function DateTimeField({
           minimumDate={minimumDate}
           maximumDate={maximumDate}
           is24Hour={false}
+          minuteInterval={isDate ? undefined : minuteInterval}
         />
       ) : null}
 
@@ -1934,6 +1966,7 @@ function DateTimeField({
             onChange={(_, d) => d && setTemp(d)}
             minimumDate={minimumDate}
             maximumDate={maximumDate}
+            minuteInterval={isDate ? undefined : minuteInterval}
             // Force a 12-hour wheel even when the device is set to 24-hour time.
             locale={isDate ? undefined : 'en_US'}
             themeVariant="dark"
@@ -1979,6 +2012,9 @@ export function TimeField(props: {
   hideIcon?: boolean;
   valueStyle?: StyleProp<TextStyle>;
   inlineLabel?: string;
+  // Defaults to 5 (Apple Calendar's wheel). Pass 1 only for minute-precise
+  // real-world times — flight/transit timetables.
+  minuteInterval?: 1 | 5 | 15 | 30;
 }) {
   return <DateTimeField mode="time" {...props} />;
 }
@@ -1986,7 +2022,7 @@ export function TimeField(props: {
 // A phone-number field with a country selector (flag + dial code) and live
 // "as you type" formatting. Emits canonical E.164 via `onChangeText` for
 // storage; seeds itself from an existing stored value (E.164 or legacy digits)
-// and re-derives when `value` changes externally (FormAssist / Places prefill).
+// and re-derives when `value` changes externally (Ask Calen / Places prefill).
 // Same style contract as Input/Select so it drops into a standalone bordered
 // layout (pass `label`) or flush inside a GroupCard (pass fs.headField /
 // fs.headInput via containerStyle / fieldStyle).
@@ -2314,6 +2350,8 @@ const styles = StyleSheet.create({
   accordionSubtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   accordionBody: { marginTop: spacing.md },
   screen: { flex: 1, backgroundColor: colors.background },
+  // The scroll view inside Screen's wrapper: the wrapper owns the background.
+  flex: { flex: 1 },
   screenContent: { padding: spacing.md },
   sectionTitle: {
     fontSize: 15,
@@ -2426,7 +2464,7 @@ const styles = StyleSheet.create({
   listRowSubtitle: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   selectField: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   phoneRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 0, minHeight: 46 },
-  // Tint-only highlight (no border) to match the grouped-card FormAssist look.
+  // Tint-only highlight (no border) marking a field Ask Calen just filled.
   phoneHighlight: { backgroundColor: colors.primary + '22' },
   phoneCountryBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 12, paddingRight: 8 },
   phoneFlag: { fontSize: 18 },

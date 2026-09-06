@@ -37,7 +37,7 @@ import {
 } from '../../components/ui';
 import { MultiValueField, LabelChip } from '../../components/MultiValueField';
 import { form as fs, GroupCard, CardDivider } from '../../components/formStyles';
-import FormAssist from '../../components/FormAssist';
+import FormAssistChat from '../../components/FormAssistChat';
 import { useFormAssist } from '../../hooks/useFormAssist';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import { addContactToDeviceContacts, ContactsPermissionError } from '../../lib/deviceContacts';
@@ -392,9 +392,10 @@ export default function ContactFormScreen() {
   const editorField = fs.headInput;
 
   return (
-    <Screen>
-      {showAssist ? (
-        <FormAssist
+    <Screen
+      style={showAssist ? fs.withFloatingPill : undefined}
+      floating={showAssist ? (
+        <FormAssistChat
           formType="contact / contact"
           placeholder={'Describe the contact, e.g. "my sister Sarah, birthday June 3, lives at 12 Elm St"'}
           fields={assistFields}
@@ -402,7 +403,7 @@ export default function ContactFormScreen() {
           onApply={applyPatch}
         />
       ) : null}
-
+    >
       <GroupCard>
         {isSelf || isService ? (
           // Self ("You", read-only here) + service/business contacts keep a

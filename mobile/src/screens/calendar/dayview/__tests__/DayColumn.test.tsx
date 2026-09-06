@@ -175,4 +175,13 @@ describe('DayColumn — long-press to create', () => {
     fireEvent.press(view.getByText('EarlyON Alfred'));
     expect(mockNavigate).toHaveBeenCalledWith('EventDetail', { eventId: 'e1', date: '2026-08-12' });
   });
+
+  it('holds an event block to edit it — the month grid gesture, not a new-event draft', async () => {
+    const view = await column();
+    // The hold lands on the block, which claims it: the edit form pushes and
+    // the canvas underneath never springs its ghost.
+    fireEvent(view.getByText('EarlyON Alfred'), 'longPress');
+    expect(mockNavigate).toHaveBeenCalledWith('EventForm', { eventId: 'e1', date: '2026-08-12' });
+    expect(view.queryByText('New Event')).toBeNull();
+  });
 });

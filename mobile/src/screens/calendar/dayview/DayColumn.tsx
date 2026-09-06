@@ -7,6 +7,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import { colors, radius } from '../../../theme';
+import { LONG_PRESS_MS } from '../../../lib/calendar';
 import { tintedChip, withAlpha } from '../../../lib/color';
 import { DayNav } from './dayNav';
 import {
@@ -108,6 +109,11 @@ const DayColumn = React.memo(function DayColumn({
             key={b.key}
             activeOpacity={0.75}
             onPress={() => navigation.navigate('EventDetail', { eventId: b.eventId, date })}
+            // Tap to read, hold to edit — the month grid's chip gesture. The
+            // block claims the hold, so it never falls through to the canvas's
+            // new-event draft underneath.
+            onLongPress={() => navigation.navigate('EventForm', { eventId: b.eventId, date })}
+            delayLongPress={LONG_PRESS_MS}
             style={[
               styles.block,
               { top: b.top + 1, height: travelH + bodyHeight, left, width: w },
