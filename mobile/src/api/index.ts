@@ -198,7 +198,10 @@ export const authApi = {
     api.post<AuthResponse>('/auth/login', data),
   register: (data: { email: string; password: string; firstName: string; lastName?: string; passwordless?: boolean }) =>
     api.post<AuthResponse>('/auth/register', data),
-  me: () => api.get<User>('/auth/me'),
+  // `timeout` for the cold-start bootstrap verify only: it must fail fast so an
+  // unreachable server falls back to the cached profile instead of hanging the
+  // splash. No other call passes one (AI requests legitimately run long).
+  me: (config?: { timeout?: number }) => api.get<User>('/auth/me', config),
   // `currentPassword` is omitted on the biometric re-auth path (see AccountScreen);
   // sent only as the no-biometric fallback.
   updateEmail: (data: { email: string; currentPassword?: string }) => api.put('/auth/email', data),

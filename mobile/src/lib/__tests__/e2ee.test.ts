@@ -117,6 +117,7 @@ import {
   publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady, rekeyIdentity,
   currentHouseholdId, unwrapForeignHDKs, openForeignRecord, encryptRecord,
   subscribeHouseholdChanged, getHDK, currentCollection, LEGACY_COLLECTION_PAIRS,
+  unlockFromDeviceCache, setSealAuthor,
 } from '../e2ee';
 
 const PASSWORD = 'correct horse battery staple';
@@ -630,5 +631,55 @@ describe('legacy collection aliases (Person → Contact)', () => {
     expect(currentCollection('Chore')).toBe('Chore');
     // The replica re-bucket reads the same table, so it must not be empty.
     expect(LEGACY_COLLECTION_PAIRS).toContainEqual(['Person', 'Contact']);
+  });
+});
+
+// The biometric device cache now SURVIVES a session-expiry sign-out (store/auth
+// keeps it so re-entry after a weekly token expiry stays one Face ID glance),
+// so the blob is owner-stamped and unlockFromDeviceCache refuses a blob that
+// belongs to a different account — a later sign-in by another user on the same
+// device must never restore the previous account's identity key. Spec:
+// features/auth-identity.md → "Session persistence & restore".
+describe('device-cache owner binding (the cache outlives a session expiry)', () => {
+  // Encode with the same codec unlockFromDeviceCache decodes with (libsodium's
+  // base64 variant — Buffer's padded output is rejected by unb64).
+  const blob = async (owner?: string) => {
+    const crypto = await loadHouseholdCrypto();
+    const pair = crypto.generateIdentityKeyPair();
+    return JSON.stringify({
+      pub: crypto.b64(pair.publicKey),
+      priv: crypto.b64(pair.privateKey),
+      ...(owner ? { owner } : {}),
+    });
+  };
+
+  test('a blob stamped for another account is refused AND dropped', async () => {
+    lock();
+    setSealAuthor('user-b');
+    mockDeviceEnabled = true;
+    mockDeviceKey = await blob('user-a');
+    expect(await unlockFromDeviceCache('user-b')).toBe(false);
+    expect(mockDeviceKey).toBeNull(); // the stale blob is cleared, not left to fail forever
+    expect(isUnlocked()).toBe(false);
+  });
+
+  test('a blob stamped for this account unlocks', async () => {
+    lock();
+    setSealAuthor('user-a');
+    mockDeviceEnabled = true;
+    mockDeviceKey = await blob('user-a');
+    expect(await unlockFromDeviceCache('user-a')).toBe(true);
+    expect(isUnlocked()).toBe(true);
+  });
+
+  test('a legacy owner-less blob is accepted and upgraded in place', async () => {
+    lock();
+    setSealAuthor('user-a');
+    mockDeviceEnabled = true;
+    mockDeviceKey = await blob();
+    expect(await unlockFromDeviceCache('user-a')).toBe(true);
+    // The re-stamp is fire-and-forget; let it flush.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(JSON.parse(mockDeviceKey!)).toMatchObject({ owner: 'user-a' });
   });
 });

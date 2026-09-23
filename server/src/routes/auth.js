@@ -302,7 +302,10 @@ router.put('/email', requireAuth, credChangeLimiter, async (req, res) => {
     const user = await User.findById(req.user._id);
     if (currentPassword) {
       const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-      if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+      // 403, not 401: the SESSION is valid — a credential INPUT failed. The
+      // mobile client signs out on 401 (dead session), so a typo here must
+      // not read as one. See api-reference.md "Conventions".
+      if (!valid) return res.status(403).json({ error: 'Current password is incorrect' });
     }
 
     if (newEmail === user.email) return res.json({ _id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName });
@@ -333,7 +336,8 @@ router.put('/password', requireAuth, credChangeLimiter, async (req, res) => {
     const user = await User.findById(req.user._id);
     if (currentPassword) {
       const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-      if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+      // 403, not 401 — valid session, failed credential input (see PUT /email).
+      if (!valid) return res.status(403).json({ error: 'Current password is incorrect' });
     }
 
     user.passwordHash = await bcrypt.hash(newPassword, 12);
@@ -362,7 +366,8 @@ router.delete('/account', requireAuth, credChangeLimiter, async (req, res) => {
     if (user.hasPassword !== false) {
       if (!password) return res.status(400).json({ error: 'Password is required to delete your account' });
       const valid = await bcrypt.compare(password, user.passwordHash);
-      if (!valid) return res.status(401).json({ error: 'Password is incorrect' });
+      // 403, not 401 — valid session, failed credential input (see PUT /email).
+      if (!valid) return res.status(403).json({ error: 'Password is incorrect' });
     }
 
     await deleteUserAndData(user);

@@ -1,9 +1,11 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { Platform } from 'react-native';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { AppState, Platform } from 'react-native';
 import Constants from 'expo-constants';
+import { AxiosError } from 'axios';
 import { authApi, householdApi, User } from '../api';
 import { setUnauthorizedHandler } from '../api/client';
 import { loadToken, saveToken, clearToken } from '../lib/secureToken';
+import { saveCachedUser, loadCachedUser, clearCachedUser } from '../lib/authCache';
 import {
   ensureEnrolledOnLogin, ensureHouseholdKey, unlockWithPasskey,
   unlockWithPasskeyPrfOutput, rewrapForNewPassword, lock as lockE2EE,
@@ -76,97 +78,199 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [bootstrapping, setBootstrapping] = useState(true);
 
-  const logout = useCallback(async () => {
-    // Leave the authed stack first, in the SAME synchronous tick as the key
-    // lock below. lockE2EE() synchronously notifies lock-state subscribers, and
-    // the first `await` after it would let React flush that update while the
-    // authed screens are still mounted — surfacing ProfileScreen's "data is
-    // locked" prompt over the login screen during teardown. Batching setUser(null)
-    // with lockE2EE() unmounts those screens in the same commit, so the prompt
-    // never arms.
-    setUser(null);
-    lockE2EE(); // drop the in-memory private key
-    await forgetDeviceKey().catch(() => {}); // and the biometric device cache
-    // Retire this install's push token while the session can still authorize
-    // it — a signed-out device must not keep receiving the account's pushes.
-    await unregisterCurrentPushToken().catch(() => {});
-    await clearToken();
-    // The next sign-in may be a different account: query keys aren't scoped by
-    // user, so cached server state and the on-device replica would paint the
-    // previous household's records. Wipe both — and the app-unlock cache, so
-    // another account on this device can't inherit the paywall unlock.
-    queryClient.clear();
-    clearUnlockCache();
-    clearViewerContentCache();
-    await clearReplica().catch(() => {});
-    // Wiping the replica MUST also reset the record-sync cursor: it lives in its
-    // own AsyncStorage key, so without this the next sign-in resumes incremental
-    // sync from the old high-water mark and never re-pulls the records we just
-    // cleared — the whole household's content silently vanishes until a full
-    // pull happens by chance. Reset → the next syncRecords() does a full pull.
-    await resetRecordCursor().catch(() => {});
-    // The calendar prefs cache is ACCOUNT state (which calendars exist, their
-    // sharing, colors, order, visibility) held in unscoped AsyncStorage keys,
-    // so it has to go the same way as the replica: without this the next
-    // sign-in paints the previous account's calendar list until the server
-    // refresh lands — which is why a viewer saw "No shared calendars yet"
-    // (the stale rows were the other account's `mine: true` calendars, and the
-    // shell renders only `mine: false`) and an owner signing back in saw their
-    // built-ins missing. It also leaks calendar names and outside-share
-    // addresses between accounts on a shared device.
-    await resetCalendarPrefs().catch(() => {});
-    // Same doctrine for the owned add-ons mirror (`hc_owned_addons`): it's the
-    // previous ACCOUNT's entitlement set, and every session's billing fetch
-    // overwrites it — so a viewer session (owns nothing) followed by the
-    // owner signing back in booted the owner with all add-on lanes locked:
-    // Occasions/Chores/Meals data zeroed by applyAddonLocks until the next
-    // billing fetch AND a calendar refetch. Cleared → the next session starts
-    // from the safe default (locked) and repaints when its own status lands.
-    await resetOwnedAddons().catch(() => {});
-    // The home-screen widget's App Group snapshot is the account's decrypted
-    // calendar sitting outside the E2EE envelope — it goes the same way as the
-    // replica, or a signed-out device keeps showing the old account's events
-    // on the home screen.
-    await clearWidgetData();
+  // Keep the cached profile (lib/authCache — the offline bootstrap's fallback)
+  // in step with every server-sourced user payload.
+  const adoptUser = useCallback((u: User) => {
+    setUser(u);
+    void saveCachedUser(u);
+  }, []);
+  // The context-exposed setter: screens hand it fresh server payloads (profile
+  // edits), so it persists too; the sign-out paths below own the null case.
+  const setUserPersisted = useCallback((u: User | null) => {
+    setUser(u);
+    if (u) void saveCachedUser(u);
   }, []);
 
+  // Re-entrancy latch: the teardown itself makes API calls whose 401s would
+  // re-fire the unauthorized handler mid-teardown.
+  const signingOutRef = useRef(false);
+
+  const signOut = useCallback(async (reason: 'user' | 'expired') => {
+    if (signingOutRef.current) return;
+    signingOutRef.current = true;
+    try {
+      // Leave the authed stack first, in the SAME synchronous tick as the key
+      // lock below. lockE2EE() synchronously notifies lock-state subscribers, and
+      // the first `await` after it would let React flush that update while the
+      // authed screens are still mounted — surfacing ProfileScreen's "data is
+      // locked" prompt over the login screen during teardown. Batching setUser(null)
+      // with lockE2EE() unmounts those screens in the same commit, so the prompt
+      // never arms.
+      setUser(null);
+      lockE2EE(); // drop the in-memory private key
+      if (reason === 'user') {
+        // Deliberate sign-out: also drop the biometric device cache (the next
+        // account on this device starts clean) and retire the push token while
+        // the session can still authorize it — a signed-out device must not
+        // keep receiving the account's pushes.
+        await forgetDeviceKey().catch(() => {});
+        await unregisterCurrentPushToken().catch(() => {});
+      }
+      // Session EXPIRY keeps the device key: the blob is owner-stamped
+      // (lib/e2ee cacheKeyPairToDevice), so a different account can't inherit
+      // it, and keeping it means the re-sign-in that follows a weekly expiry is
+      // a Face ID glance instead of a typed password. The push unregister is
+      // skipped on expiry because the dead token can't authorize it anyway —
+      // and its own 401 was the re-entrancy loop the latch above closes.
+      await clearToken();
+      await clearCachedUser();
+      // The next sign-in may be a different account: query keys aren't scoped by
+      // user, so cached server state and the on-device replica would paint the
+      // previous household's records. Wipe both — and the app-unlock cache, so
+      // another account on this device can't inherit the paywall unlock.
+      queryClient.clear();
+      clearUnlockCache();
+      clearViewerContentCache();
+      await clearReplica().catch(() => {});
+      // Wiping the replica MUST also reset the record-sync cursor: it lives in its
+      // own AsyncStorage key, so without this the next sign-in resumes incremental
+      // sync from the old high-water mark and never re-pulls the records we just
+      // cleared — the whole household's content silently vanishes until a full
+      // pull happens by chance. Reset → the next syncRecords() does a full pull.
+      await resetRecordCursor().catch(() => {});
+      // The calendar prefs cache is ACCOUNT state (which calendars exist, their
+      // sharing, colors, order, visibility) held in unscoped AsyncStorage keys,
+      // so it has to go the same way as the replica: without this the next
+      // sign-in paints the previous account's calendar list until the server
+      // refresh lands — which is why a viewer saw "No shared calendars yet"
+      // (the stale rows were the other account's `mine: true` calendars, and the
+      // shell renders only `mine: false`) and an owner signing back in saw their
+      // built-ins missing. It also leaks calendar names and outside-share
+      // addresses between accounts on a shared device.
+      await resetCalendarPrefs().catch(() => {});
+      // Same doctrine for the owned add-ons mirror (`hc_owned_addons`): it's the
+      // previous ACCOUNT's entitlement set, and every session's billing fetch
+      // overwrites it — so a viewer session (owns nothing) followed by the
+      // owner signing back in booted the owner with all add-on lanes locked:
+      // Occasions/Chores/Meals data zeroed by applyAddonLocks until the next
+      // billing fetch AND a calendar refetch. Cleared → the next session starts
+      // from the safe default (locked) and repaints when its own status lands.
+      await resetOwnedAddons().catch(() => {});
+      // The home-screen widget's App Group snapshot is the account's decrypted
+      // calendar sitting outside the E2EE envelope — it goes the same way as the
+      // replica, or a signed-out device keeps showing the old account's events
+      // on the home screen.
+      await clearWidgetData();
+    } finally {
+      signingOutRef.current = false;
+    }
+  }, []);
+
+  // The public sign-out (Profile → Sign out, account switches): full teardown.
+  const logout = useCallback(() => signOut('user'), [signOut]);
+
+  // Offline re-verify: armed when a launch entered the app on the cached
+  // profile because /auth/me was unreachable. Retries once after a short beat
+  // (the blip case) and on each return to foreground, until a fetch succeeds —
+  // an actual 401 on any authed call signs out via the unauthorized handler.
+  const reverify = useRef<{ sub: { remove(): void } | null; timer: ReturnType<typeof setTimeout> | null }>({ sub: null, timer: null });
+  const disarmReverify = useCallback(() => {
+    reverify.current.sub?.remove();
+    if (reverify.current.timer) clearTimeout(reverify.current.timer);
+    reverify.current = { sub: null, timer: null };
+  }, []);
+  const armReverify = useCallback(() => {
+    if (reverify.current.sub) return;
+    const attempt = async () => {
+      try {
+        const { data } = await authApi.me();
+        adoptUser(data);
+        disarmReverify();
+      } catch {
+        // still unreachable — the next foreground retries
+      }
+    };
+    reverify.current.sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') void attempt();
+    });
+    reverify.current.timer = setTimeout(() => void attempt(), 20_000);
+  }, [adoptUser, disarmReverify]);
+  useEffect(() => disarmReverify, [disarmReverify]);
+
   // Restore a stored token on launch and verify it against /auth/me.
+  //
+  // The failure split here is the fix for the daily forced re-login: only the
+  // server REJECTING the token (401/403) may clear it. A launch that can't
+  // reach the server at all — offline, a timeout, a mid-deploy 5xx — proves
+  // nothing about the session, so it enters the app on the cached profile and
+  // the replica, and re-verifies when connectivity returns. The old catch-all
+  // deleted a valid token on every cold start with a bad connection.
   useEffect(() => {
     (async () => {
       try {
         const token = await loadToken();
-        if (token) {
-          const { data } = await authApi.me();
-          setUser(data);
-          // A restored session has no password, so E2EE is locked. Try the
-          // no-password unlock paths, best-effort (cancel/failure just leaves it
-          // locked — password unlock still works):
-          //  1. the biometric device-key cache — one Face ID prompt, no network;
-          //  2. a passkey assertion, if this account enrolled one.
-          try {
-            const unlocked =
-              (await unlockFromDeviceCache()) ||
-              (passkeysSupported() && (await unlockWithPasskey()));
-            // Key hygiene (B1/B3 + the D1/D2 owner reconcile) runs from the
-            // keys-ready hook below — ensureHouseholdKey fires it.
-            if (unlocked) await ensureHouseholdKey();
-          } catch {
-            // canceled / unavailable — stay locked
+        if (!token) return;
+        let restored: User | null = null;
+        try {
+          // Fail fast: an unreachable server should fall back to the cached
+          // profile, not hang the splash (this is the only call that sets a
+          // timeout — AI requests legitimately run long).
+          const { data } = await authApi.me({ timeout: 15000 });
+          adoptUser(data);
+          restored = data;
+        } catch (err) {
+          const status = (err as AxiosError).response?.status;
+          if (status === 401 || status === 403) {
+            // The server saw the token and rejected it — the session is over.
+            // The unauthorized handler below runs the expiry teardown; these
+            // two are just belt-and-braces if it beat the handler's arming.
+            await clearToken();
+            await clearCachedUser();
+          } else {
+            const cached = await loadCachedUser();
+            if (cached) {
+              setUser(cached);
+              armReverify();
+              restored = cached;
+            }
+            // No cached profile (a first sign-in whose /auth/me never landed):
+            // fall through to the login screen, but KEEP the token — the next
+            // launch may reach the server and restore the session.
           }
         }
-      } catch {
-        await clearToken();
+        if (!restored) return;
+        // A restored session has no password, so E2EE is locked. Try the
+        // no-password unlock paths, best-effort (cancel/failure just leaves it
+        // locked — password unlock still works):
+        //  1. the biometric device-key cache — one Face ID prompt, no network;
+        //  2. a passkey assertion, if this account enrolled one.
+        // Seal author is set eagerly (as the login paths do) so anything sealed
+        // during the unlock pipeline carries it — and so the device-cache
+        // owner check compares against the right account.
+        setSealAuthor(restored._id);
+        try {
+          const unlocked =
+            (await unlockFromDeviceCache(restored._id)) ||
+            (passkeysSupported() && (await unlockWithPasskey()));
+          // Key hygiene (B1/B3 + the D1/D2 owner reconcile) runs from the
+          // keys-ready hook below — ensureHouseholdKey fires it.
+          if (unlocked) await ensureHouseholdKey();
+        } catch {
+          // canceled / unavailable — stay locked
+        }
       } finally {
         setBootstrapping(false);
       }
     })();
   }, []);
 
-  // Any 401 from the API signs the user out.
+  // A session-death 401 from the API (see client.ts shouldSignOutOn401 for
+  // what qualifies) signs the user out — the EXPIRY teardown, which keeps the
+  // owner-stamped biometric device cache so re-entry stays one glance.
   useEffect(() => {
-    setUnauthorizedHandler(() => { void logout(); });
+    setUnauthorizedHandler(() => { void signOut('expired'); });
     return () => setUnauthorizedHandler(null);
-  }, [logout]);
+  }, [signOut]);
 
   // Signal-parity C4: keep the seal-author id (folded into every HDK record's
   // ciphertext as `author`) in sync with the signed-in user.
@@ -281,7 +385,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // (keys-ready sync, key hygiene) carries the author id.
     setSealAuthor(data.user._id);
     await initE2EE(creds.password);
-    setUser(data.user);
+    adoptUser(data.user);
   }, []);
 
   // Pass an email for the username-first flow (the challenge carries each
@@ -299,7 +403,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!assertion) return false; // user canceled the Face ID sheet
     const { data } = await authApi.passkeyLogin({ challengeId: ch.challengeId, response: assertion.response });
     await saveToken(data.token);
-    setUser(data.user);
+    adoptUser(data.user);
     // Best-effort E2EE unlock (like initE2EE — a crypto failure must not block
     // sign-in). When the assertion evaluated a PRF (username-first salts, or a
     // usernameless hint the picker matched) unlock in the same gesture. If it
@@ -311,7 +415,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let unlocked = assertion.prfOutput
         ? await unlockWithPasskeyPrfOutput(assertion.credentialId, assertion.prfOutput)
         : false;
-      if (!unlocked) unlocked = (await unlockFromDeviceCache()) || (await unlockWithPasskey());
+      if (!unlocked) unlocked = (await unlockFromDeviceCache(data.user._id)) || (await unlockWithPasskey());
       if (unlocked) await ensureHouseholdKey();
     } catch (err) {
       console.warn('[e2ee] passkey unlock skipped:', (err as Error)?.message ?? err);
@@ -328,7 +432,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.status === 202) return { held: (res.data as any).holdUntil as string };
       const { data } = res;
       await saveToken(data.token);
-      setUser(data.user);
+      adoptUser(data.user);
       if (!data.e2eeEnrolled) return 'none' as const;
       // The password envelope is wrapped under the OLD password. Try a silent
       // passkey unlock; if it works, re-wrap under the new password right away.
@@ -366,7 +470,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // viewer shell's recovery screen instead of their shared calendar.
         setSealAuthor(data.user._id);
         await initE2EE(payload.password);
-        setUser(data.user);
+        adoptUser(data.user);
         return;
       }
       // Passwordless signup: mint a high-entropy secret on-device to bootstrap the
@@ -381,7 +485,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await saveToken(data.token);
       setSealAuthor(data.user._id);
       await initE2EE(secret);
-      setUser(data.user);
+      adoptUser(data.user);
     },
     []
   );
@@ -427,7 +531,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           "Face ID / passkey setup didn’t complete on this device. Try again, or choose a password instead.",
         );
       }
-      setUser(data.user); // durable factor in place — enter the app
+      adoptUser(data.user); // durable factor in place — enter the app
       releaseRecoveryCode(); // now surface the recovery code (passkey succeeded)
     },
     []
@@ -435,7 +539,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, bootstrapping, isLoggedIn: !!user, login, loginWithPasskey, resetPassword, register, registerWithPasskey, logout, setUser }}
+      value={{ user, bootstrapping, isLoggedIn: !!user, login, loginWithPasskey, resetPassword, register, registerWithPasskey, logout, setUser: setUserPersisted }}
     >
       {children}
     </AuthContext.Provider>

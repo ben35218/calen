@@ -231,6 +231,12 @@ async function cacheKeyPairToDevice(): Promise<void> {
   const serialized = JSON.stringify({
     pub: crypto.b64(keyPair.publicKey),
     priv: crypto.b64(keyPair.privateKey),
+    // Owner binding: the cache now SURVIVES a session-expiry sign-out
+    // (store/auth keeps it so re-entry after a weekly expiry stays one Face ID
+    // glance), so the blob must say whose key it holds — a later sign-in by a
+    // DIFFERENT account on this device must never restore the previous
+    // account's identity key (unlockFromDeviceCache enforces the match).
+    ...(sealAuthorId ? { owner: sealAuthorId } : {}),
   });
   // Clear-then-add so the write is always a fresh (silent) keychain insert. This
   // (a) avoids the biometric prompt an in-place update would trigger right after
@@ -245,15 +251,27 @@ async function cacheKeyPairToDevice(): Promise<void> {
 // Touch ID prompt, no password. Returns false when the cache is empty, the user
 // cancels, or the stored blob is unreadable (callers fall back to passkey /
 // password / recovery code).
-export async function unlockFromDeviceCache(): Promise<boolean> {
+export async function unlockFromDeviceCache(expectedUserId?: string | null): Promise<boolean> {
   if (keyPair) return true;
   if (!(await isDeviceKeyEnabled())) return false;
   const serialized = await loadDeviceKey();
   if (!serialized) return false;
   try {
     const crypto = await loadHouseholdCrypto();
-    const { pub, priv } = JSON.parse(serialized) as { pub: string; priv: string };
+    const { pub, priv, owner } = JSON.parse(serialized) as { pub: string; priv: string; owner?: string };
+    // Owner check: the cache can outlive a session-expiry sign-out, so it may
+    // hold a PREVIOUS account's key. Refuse (and drop the stale blob) when the
+    // stamped owner isn't the account this unlock is for — the caller falls
+    // back to passkey/password, whose success re-caches for the right owner.
+    // A blob without an owner stamp (written before stamping existed) is
+    // accepted and upgraded in place below.
+    const expected = expectedUserId ?? sealAuthorId;
+    if (owner && expected && owner !== expected) {
+      await clearDeviceKey().catch(() => {});
+      return false;
+    }
     setKeyPair({ publicKey: crypto.unb64(pub), privateKey: crypto.unb64(priv) });
+    if (!owner && expected) void cacheKeyPairToDevice().catch(() => {});
     return true;
   } catch {
     setKeyPair(null);

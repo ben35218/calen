@@ -35,9 +35,30 @@ api.interceptors.request.use(async (config) => {
 type UnauthorizedHandler = () => void;
 let onUnauthorized: UnauthorizedHandler | null = null;
 
-// The auth store registers a callback here so a 401 anywhere triggers logout.
+// The auth store registers a callback here so a session-death 401 triggers
+// sign-out (see shouldSignOutOn401 for what qualifies).
 export function setUnauthorizedHandler(fn: UnauthorizedHandler | null) {
   onUnauthorized = fn;
+}
+
+// Endpoints where an old server build answers a failed CREDENTIAL INPUT check
+// (wrong current password) with 401 instead of 403. The server now sends 403
+// there; this list covers the transition window where a new app meets an old
+// server, so a typo on the change-password screen can't sign the device out.
+const CREDENTIAL_CHECK_PATHS = ['/auth/email', '/auth/password', '/auth/account'];
+
+// Whether a 401 response means "this session is dead" (sign the user out) as
+// opposed to a 401 that says nothing about the stored session. Exported for
+// tests. Two exclusions:
+//   1. Requests that carried no bearer token — a call racing ahead of the
+//      cold-start token load (or a pre-auth endpoint like /auth/login) can't
+//      testify about a token it never presented. Before this guard, such a
+//      race deleted a valid session.
+//   2. The credential-check endpoints above.
+export function shouldSignOutOn401(config?: { url?: string; headers?: Record<string, unknown> }): boolean {
+  if (!config?.headers?.Authorization) return false;
+  const path = String(config.url || '').split('?')[0];
+  return !CREDENTIAL_CHECK_PATHS.includes(path);
 }
 
 api.interceptors.response.use(
@@ -49,7 +70,7 @@ api.interceptors.response.use(
     return res;
   },
   (err) => {
-    if (err.response?.status === 401) onUnauthorized?.();
+    if (err.response?.status === 401 && shouldSignOutOn401(err.config)) onUnauthorized?.();
     return Promise.reject(err);
   }
 );

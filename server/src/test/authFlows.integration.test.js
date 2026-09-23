@@ -128,8 +128,10 @@ test('delete account: password account must confirm its password', async () => {
   const missing = await request().delete('/api/auth/account').set('Authorization', auth).send({});
   assert.equal(missing.status, 400, 'no password → 400');
 
+  // 403, not 401: the session is valid, a credential INPUT failed — the mobile
+  // client signs out the whole device on 401, so a typo must not read as one.
   const wrong = await request().delete('/api/auth/account').set('Authorization', auth).send({ password: 'nope-1234' });
-  assert.equal(wrong.status, 401, 'wrong password → 401');
+  assert.equal(wrong.status, 403, 'wrong password → 403');
   assert.ok(await User.findById(user._id), 'still exists after failed attempts');
 
   const ok = await request().delete('/api/auth/account').set('Authorization', auth).send({ password: 'right-password-1' });
@@ -232,8 +234,8 @@ test('change password: fallback path verifies currentPassword when supplied', as
 
   const wrong = await request().put('/api/auth/password').set('Authorization', auth)
     .send({ currentPassword: 'not-it-1', newPassword: 'brand-new-9' });
-  assert.equal(wrong.status, 401, 'wrong current password → 401');
-  assert.equal((await User.findById(user._id).lean()).passwordHash, before, 'hash unchanged after 401');
+  assert.equal(wrong.status, 403, 'wrong current password → 403 (valid session, failed credential input)');
+  assert.equal((await User.findById(user._id).lean()).passwordHash, before, 'hash unchanged after 403');
 
   const short = await request().put('/api/auth/password').set('Authorization', auth)
     .send({ newPassword: 'short' });
@@ -262,7 +264,7 @@ test('change email: fallback verifies currentPassword; rejects invalid + taken',
 
   const wrong = await request().put('/api/auth/email').set('Authorization', auth)
     .send({ email: 'emailfb-new@example.com', currentPassword: 'not-it-1' });
-  assert.equal(wrong.status, 401, 'wrong current password → 401');
+  assert.equal(wrong.status, 403, 'wrong current password → 403 (valid session, failed credential input)');
   assert.equal((await User.findById(user._id).lean()).email, 'emailfb@example.com', 'unchanged');
 
   const bad = await request().put('/api/auth/email').set('Authorization', auth)
