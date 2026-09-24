@@ -56,7 +56,44 @@ export async function loadDeviceKey(): Promise<string | null> {
   }
 }
 
+// Forget everything this device cached — both tiers. Callers that mean "this
+// device must no longer hold the key" (sign-out, re-key, cache rewrite) always
+// want the silent copy gone too.
 export async function clearDeviceKey(): Promise<void> {
   await SecureStore.deleteItemAsync(DEVICE_KEY).catch(() => {});
   await SecureStore.deleteItemAsync(MARKER).catch(() => {});
+  await SecureStore.deleteItemAsync(SILENT_KEY).catch(() => {});
+}
+
+// ── Silent tier (App Lock "Never") ───────────────────────────────────────────
+// A second copy of the same serialized keypair WITHOUT the user-presence gate,
+// so a cold start can restore keys with zero prompts. It exists only while the
+// App Lock pref is "Never" (the default): lib/e2ee writes it on unlock under
+// that pref and applyAppLockPolicy deletes it the moment a lock window is
+// chosen. Same at-rest class as the record replica beside it (decrypted rows
+// in AsyncStorage/SQLite): protected by the phone's own passcode encryption,
+// still WHEN_UNLOCKED_THIS_DEVICE_ONLY so it never migrates off this phone.
+const SILENT_KEY = 'hc_device_key_silent';
+const SILENT_OPTS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
+
+export async function saveSilentDeviceKey(serialized: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(SILENT_KEY, serialized, SILENT_OPTS);
+  } catch {
+    await clearSilentDeviceKey().catch(() => {});
+  }
+}
+
+export async function loadSilentDeviceKey(): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(SILENT_KEY, SILENT_OPTS);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearSilentDeviceKey(): Promise<void> {
+  await SecureStore.deleteItemAsync(SILENT_KEY).catch(() => {});
 }

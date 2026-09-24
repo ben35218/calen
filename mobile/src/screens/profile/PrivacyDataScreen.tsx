@@ -13,7 +13,7 @@ import { useAuth } from '../../store/auth';
 import {
   isUnlocked, ensureHouseholdKey, unlockWithPassword, unlockWithPasskey,
   unlockWithRecoveryCode, addPasskeyFactor, hasPasskeyFactor, rewrapForNewPassword,
-  reauthWithBiometric, rekeyIdentity, hasSessionPassword,
+  reauthWithBiometric, rekeyIdentity, hasSessionPassword, applyAppLockPolicy,
 } from '../../lib/e2ee';
 import { isDeviceKeyEnabled } from '../../lib/deviceKey';
 import { getRecoveryProgress } from '../../lib/guardianRecovery';
@@ -913,7 +913,8 @@ export default function PrivacyDataScreen() {
         <SectionTitle style={styles.cardTitle}>App lock</SectionTitle>
         <Text style={styles.cardNote}>
           Require Face ID again after the app has been in the background. Protects your data if
-          you hand your phone to someone while signed in.
+          you hand your phone to someone while signed in. With Never, the app opens without any
+          prompt — your phone’s own lock protects it.
         </Text>
         <View style={styles.appLockRow}>
           {([
@@ -926,7 +927,13 @@ export default function PrivacyDataScreen() {
               key={opt.v}
               label={opt.label}
               selected={prefs.appLockMinutes === opt.v}
-              onPress={() => setPref('appLockMinutes', opt.v)}
+              onPress={() => {
+                setPref('appLockMinutes', opt.v);
+                // The silent device-key copy (zero-prompt cold starts) must
+                // track the pref immediately: choosing a lock window deletes
+                // it; back to Never re-arms it. See lib/e2ee applyAppLockPolicy.
+                void applyAppLockPolicy(opt.v);
+              }}
             />
           ))}
         </View>

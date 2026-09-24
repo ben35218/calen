@@ -36,23 +36,34 @@ export const DEFAULT_PRIVACY_PREFS: PrivacyPrefs = {
 // ── In-memory state + subscribers ───────────────────────────────────────────
 let state: PrivacyPrefs | null = null;
 const subs = new Set<() => void>();
-let loaded = false;
+let loadPromise: Promise<void> | null = null;
 
 function current(): PrivacyPrefs {
   return state ?? DEFAULT_PRIVACY_PREFS;
 }
 
-async function ensureLoaded() {
-  if (loaded) return;
-  loaded = true;
-  try {
-    const raw = await AsyncStorage.getItem(KEY);
-    const saved = raw ? JSON.parse(raw) : {};
-    state = { ...DEFAULT_PRIVACY_PREFS, ...saved };
-  } catch {
-    state = { ...DEFAULT_PRIVACY_PREFS };
+function ensureLoaded(): Promise<void> {
+  if (!loadPromise) {
+    loadPromise = (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(KEY);
+        const saved = raw ? JSON.parse(raw) : {};
+        state = { ...DEFAULT_PRIVACY_PREFS, ...saved };
+      } catch {
+        state = { ...DEFAULT_PRIVACY_PREFS };
+      }
+      subs.forEach((fn) => fn());
+    })();
   }
-  subs.forEach((fn) => fn());
+  return loadPromise;
+}
+
+// Awaitable read for callers that must not act on defaults-before-load — the
+// e2ee unlock path gates the silent device-key tier on appLockMinutes, so it
+// needs the SAVED value, not the default a racing early read would return.
+export async function loadPrivacyPrefs(): Promise<PrivacyPrefs> {
+  await ensureLoaded();
+  return current();
 }
 
 function persist(next: PrivacyPrefs) {

@@ -12,11 +12,23 @@ jest.mock('@household/crypto/adapters/native', () => require('@household/crypto/
 // stands in for a successful Face ID prompt (null = the user canceled).
 let mockDeviceKey: string | null = null;
 let mockDeviceEnabled = false;
+// The silent tier (App Lock "Never"): a second copy with no biometric gate.
+let mockSilentKey: string | null = null;
 jest.mock('../deviceKey', () => ({
   saveDeviceKey: async (v: string) => { mockDeviceKey = v; },
   loadDeviceKey: async () => mockDeviceKey,
-  clearDeviceKey: async () => { mockDeviceKey = null; },
+  // Mirrors production: clearDeviceKey forgets BOTH tiers.
+  clearDeviceKey: async () => { mockDeviceKey = null; mockSilentKey = null; },
   isDeviceKeyEnabled: async () => mockDeviceEnabled,
+  saveSilentDeviceKey: async (v: string) => { mockSilentKey = v; },
+  loadSilentDeviceKey: async () => mockSilentKey,
+  clearSilentDeviceKey: async () => { mockSilentKey = null; },
+}));
+
+// App Lock pref, as lib/e2ee reads it (silent tier gated on "Never" = -1).
+let mockAppLockMinutes = -1;
+jest.mock('../privacyPrefs', () => ({
+  loadPrivacyPrefs: async () => ({ appLockMinutes: mockAppLockMinutes }),
 }));
 
 // In-memory "server": stores whatever the client uploads, hands it back —
@@ -117,7 +129,7 @@ import {
   publicKeyFingerprint, reauthWithBiometric, subscribeKeysReady, rekeyIdentity,
   currentHouseholdId, unwrapForeignHDKs, openForeignRecord, encryptRecord,
   subscribeHouseholdChanged, getHDK, currentCollection, LEGACY_COLLECTION_PAIRS,
-  unlockFromDeviceCache, setSealAuthor,
+  unlockFromDeviceCache, setSealAuthor, applyAppLockPolicy,
 } from '../e2ee';
 
 const PASSWORD = 'correct horse battery staple';
@@ -640,18 +652,26 @@ describe('legacy collection aliases (Person → Contact)', () => {
 // belongs to a different account — a later sign-in by another user on the same
 // device must never restore the previous account's identity key. Spec:
 // features/auth-identity.md → "Session persistence & restore".
+// Encode with the same codec unlockFromDeviceCache decodes with (libsodium's
+// base64 variant — Buffer's padded output is rejected by unb64).
+const deviceBlob = async (owner?: string) => {
+  const crypto = await loadHouseholdCrypto();
+  const pair = crypto.generateIdentityKeyPair();
+  return JSON.stringify({
+    pub: crypto.b64(pair.publicKey),
+    priv: crypto.b64(pair.privateKey),
+    ...(owner ? { owner } : {}),
+  });
+};
+
 describe('device-cache owner binding (the cache outlives a session expiry)', () => {
-  // Encode with the same codec unlockFromDeviceCache decodes with (libsodium's
-  // base64 variant — Buffer's padded output is rejected by unb64).
-  const blob = async (owner?: string) => {
-    const crypto = await loadHouseholdCrypto();
-    const pair = crypto.generateIdentityKeyPair();
-    return JSON.stringify({
-      pub: crypto.b64(pair.publicKey),
-      priv: crypto.b64(pair.privateKey),
-      ...(owner ? { owner } : {}),
-    });
-  };
+  const blob = deviceBlob;
+  beforeEach(() => {
+    lock();
+    mockDeviceKey = null;
+    mockSilentKey = null;
+    mockAppLockMinutes = -1;
+  });
 
   test('a blob stamped for another account is refused AND dropped', async () => {
     lock();
@@ -681,5 +701,66 @@ describe('device-cache owner binding (the cache outlives a session expiry)', () 
     // The re-stamp is fire-and-forget; let it flush.
     await new Promise((r) => setTimeout(r, 0));
     expect(JSON.parse(mockDeviceKey!)).toMatchObject({ owner: 'user-a' });
+  });
+});
+
+// The silent tier: while App Lock is "Never" (the default) a second, non-
+// biometric copy of the cached keypair lets a cold start restore keys with
+// ZERO prompts — what the pref promises. Choosing any lock window deletes it
+// (applyAppLockPolicy) and the biometric tier becomes the only path back.
+// Spec: crypto-e2ee.md "The biometric device cache is owner-bound" +
+// auth-identity.md "Device security".
+describe('silent device-key tier (App Lock "Never" → zero-prompt cold start)', () => {
+  beforeEach(() => {
+    lock();
+    setSealAuthor('user-a');
+    mockDeviceKey = null;
+    mockSilentKey = null;
+    mockDeviceEnabled = false; // biometric tier unavailable — proves tier 1 did it
+    mockAppLockMinutes = -1;
+  });
+
+  test('unlocks from the silent copy alone, no biometric tier involved', async () => {
+    mockSilentKey = await deviceBlob('user-a');
+    expect(await unlockFromDeviceCache('user-a')).toBe(true);
+    expect(isUnlocked()).toBe(true);
+  });
+
+  test('with a lock window set, the silent copy is ignored AND cleared', async () => {
+    mockAppLockMinutes = 5;
+    mockSilentKey = await deviceBlob('user-a');
+    expect(await unlockFromDeviceCache('user-a')).toBe(false);
+    await new Promise((r) => setTimeout(r, 0)); // the stale-copy clear is fire-and-forget
+    expect(mockSilentKey).toBeNull();
+  });
+
+  test('a foreign silent copy drops BOTH tiers', async () => {
+    mockSilentKey = await deviceBlob('user-b');
+    mockDeviceKey = await deviceBlob('user-b');
+    mockDeviceEnabled = true;
+    expect(await unlockFromDeviceCache('user-a')).toBe(false);
+    expect(mockSilentKey).toBeNull();
+    expect(mockDeviceKey).toBeNull();
+  });
+
+  test('a biometric-tier unlock self-arms the missing silent copy', async () => {
+    mockDeviceKey = await deviceBlob('user-a');
+    mockDeviceEnabled = true;
+    expect(await unlockFromDeviceCache('user-a')).toBe(true);
+    await new Promise((r) => setTimeout(r, 0)); // fire-and-forget sync
+    expect(JSON.parse(mockSilentKey!)).toMatchObject({ owner: 'user-a' });
+  });
+
+  test('applyAppLockPolicy: a lock window deletes the copy; Never re-arms it while unlocked', async () => {
+    mockSilentKey = await deviceBlob('user-a');
+    expect(await unlockFromDeviceCache('user-a')).toBe(true); // keys now in memory
+
+    mockAppLockMinutes = 5;
+    await applyAppLockPolicy(5);
+    expect(mockSilentKey).toBeNull();
+
+    mockAppLockMinutes = -1;
+    await applyAppLockPolicy(-1);
+    expect(JSON.parse(mockSilentKey!)).toMatchObject({ owner: 'user-a' });
   });
 });

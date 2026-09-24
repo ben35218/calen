@@ -10,7 +10,11 @@
 import { createEnrollment, type StoredKeyMaterial, type IdentityKeyPair, type RecordEnvelope } from '@household/crypto';
 import { loadHouseholdCrypto } from '@household/crypto/adapters/native';
 import { keysApi, householdApi, customCalendarsApi, tripsApi, type HDKEnvelopePayload } from '../api';
-import { saveDeviceKey, loadDeviceKey, clearDeviceKey, isDeviceKeyEnabled } from './deviceKey';
+import {
+  saveDeviceKey, loadDeviceKey, clearDeviceKey, isDeviceKeyEnabled,
+  saveSilentDeviceKey, loadSilentDeviceKey, clearSilentDeviceKey,
+} from './deviceKey';
+import { loadPrivacyPrefs } from './privacyPrefs';
 import { rememberPasskeyHints } from './passkeyHints';
 
 let enrollment: Awaited<ReturnType<typeof buildEnrollment>> | null = null;
@@ -225,19 +229,24 @@ export function hasSessionPassword(): boolean {
 // biometric gate (deviceKey.ts) so the next cold start unlocks with Face ID
 // instead of the account password. The private key never changes across factor
 // changes, so we cache once (guarded by the marker) and never re-write.
-async function cacheKeyPairToDevice(): Promise<void> {
-  if (!keyPair) return;
+async function serializeKeyPair(): Promise<string | null> {
+  if (!keyPair) return null;
   const crypto = await loadHouseholdCrypto();
-  const serialized = JSON.stringify({
+  return JSON.stringify({
     pub: crypto.b64(keyPair.publicKey),
     priv: crypto.b64(keyPair.privateKey),
-    // Owner binding: the cache now SURVIVES a session-expiry sign-out
-    // (store/auth keeps it so re-entry after a weekly expiry stays one Face ID
-    // glance), so the blob must say whose key it holds — a later sign-in by a
-    // DIFFERENT account on this device must never restore the previous
-    // account's identity key (unlockFromDeviceCache enforces the match).
+    // Owner binding: the cache SURVIVES a session-expiry sign-out (store/auth
+    // keeps it so re-entry after a weekly expiry needs no typed password), so
+    // the blob must say whose key it holds — a later sign-in by a DIFFERENT
+    // account on this device must never restore the previous account's
+    // identity key (unlockFromDeviceCache enforces the match, on both tiers).
     ...(sealAuthorId ? { owner: sealAuthorId } : {}),
   });
+}
+
+async function cacheKeyPairToDevice(): Promise<void> {
+  const serialized = await serializeKeyPair();
+  if (!serialized) return;
   // Clear-then-add so the write is always a fresh (silent) keychain insert. This
   // (a) avoids the biometric prompt an in-place update would trigger right after
   // the user just unlocked, and (b) self-heals an item the OS invalidated after
@@ -245,38 +254,124 @@ async function cacheKeyPairToDevice(): Promise<void> {
   // current set instead of leaving a permanently unreadable cache.
   await clearDeviceKey();
   await saveDeviceKey(serialized);
+  await syncSilentCopy(serialized);
+}
+
+// The silent tier: while App Lock is "Never" (the default) a second copy of
+// the same blob is kept WITHOUT the user-presence gate, so a cold start
+// restores keys with zero prompts — matching what the pref promises. The
+// moment any lock window is chosen the copy is deleted and the biometric tier
+// becomes the only path back (see applyAppLockPolicy). At-rest this is the
+// same class as the record replica beside it (decrypted rows in plain
+// storage): phone-passcode-level, never leaving this device.
+async function syncSilentCopy(serialized?: string | null): Promise<void> {
+  try {
+    const prefs = await loadPrivacyPrefs();
+    if (prefs.appLockMinutes >= 0) {
+      await clearSilentDeviceKey();
+      return;
+    }
+    const blob = serialized ?? (await serializeKeyPair());
+    if (blob) await saveSilentDeviceKey(blob);
+  } catch {
+    // best-effort — the biometric tier still covers the next cold start
+  }
+}
+
+// Called by the App Lock pref UI whenever the setting changes. Choosing a lock
+// window must take effect on the NEXT cold start, not the next unlock — so the
+// silent copy dies here, immediately. Back to "Never" re-arms it in place when
+// the session is unlocked (and otherwise at the next unlock, which every
+// unlock path finishes with cacheKeyPairToDevice).
+export async function applyAppLockPolicy(minutes: number): Promise<void> {
+  if (minutes >= 0) {
+    await clearSilentDeviceKey().catch(() => {});
+    return;
+  }
+  await syncSilentCopy();
 }
 
 // Unlock a locked session from the biometric device cache — a single Face ID /
 // Touch ID prompt, no password. Returns false when the cache is empty, the user
 // cancels, or the stored blob is unreadable (callers fall back to passkey /
 // password / recovery code).
-export async function unlockFromDeviceCache(expectedUserId?: string | null): Promise<boolean> {
-  if (keyPair) return true;
-  if (!(await isDeviceKeyEnabled())) return false;
-  const serialized = await loadDeviceKey();
-  if (!serialized) return false;
+// Parse a cached blob and, when it belongs to `expected`, adopt its keypair.
+// 'foreign' = stamped for a different account (never adopt); 'bad' = unreadable.
+// A blob without an owner stamp (written before stamping existed) is accepted;
+// callers upgrade it in place.
+async function adoptSerializedKeyPair(
+  serialized: string,
+  expected: string | null,
+): Promise<'ok' | 'ok-legacy' | 'foreign' | 'bad'> {
   try {
     const crypto = await loadHouseholdCrypto();
     const { pub, priv, owner } = JSON.parse(serialized) as { pub: string; priv: string; owner?: string };
-    // Owner check: the cache can outlive a session-expiry sign-out, so it may
-    // hold a PREVIOUS account's key. Refuse (and drop the stale blob) when the
-    // stamped owner isn't the account this unlock is for — the caller falls
-    // back to passkey/password, whose success re-caches for the right owner.
-    // A blob without an owner stamp (written before stamping existed) is
-    // accepted and upgraded in place below.
-    const expected = expectedUserId ?? sealAuthorId;
-    if (owner && expected && owner !== expected) {
-      await clearDeviceKey().catch(() => {});
-      return false;
-    }
+    if (owner && expected && owner !== expected) return 'foreign';
     setKeyPair({ publicKey: crypto.unb64(pub), privateKey: crypto.unb64(priv) });
-    if (!owner && expected) void cacheKeyPairToDevice().catch(() => {});
-    return true;
+    return owner ? 'ok' : 'ok-legacy';
   } catch {
     setKeyPair(null);
+    return 'bad';
+  }
+}
+
+export async function unlockFromDeviceCache(expectedUserId?: string | null): Promise<boolean> {
+  if (keyPair) return true;
+  // Owner check: the cache can outlive a session-expiry sign-out, so it may
+  // hold a PREVIOUS account's key. Refuse (and drop the stale blobs) when the
+  // stamped owner isn't the account this unlock is for — the caller falls
+  // back to passkey/password, whose success re-caches for the right owner.
+  const expected = expectedUserId ?? sealAuthorId;
+
+  // Tier 1 — the silent copy (App Lock "Never", the default): a plain keychain
+  // read with no user-presence prompt, so a cold start opens straight onto
+  // decryptable data. The copy only exists while the pref is "Never"
+  // (applyAppLockPolicy deletes it when a lock window is chosen); the pref
+  // check here is belt-and-braces against a stale copy surviving a crash
+  // between the pref write and the delete.
+  try {
+    const prefs = await loadPrivacyPrefs();
+    if (prefs.appLockMinutes < 0) {
+      const silent = await loadSilentDeviceKey();
+      if (silent) {
+        const adopted = await adoptSerializedKeyPair(silent, expected);
+        if (adopted === 'ok' || adopted === 'ok-legacy') return true;
+        if (adopted === 'foreign') {
+          // Both tiers were written together, so neither is this account's —
+          // drop them and let the caller fall to the interactive factors.
+          await clearDeviceKey().catch(() => {});
+          return false;
+        }
+        // Unreadable silent copy alone: drop just it and try the biometric
+        // tier below (whose own success rewrites a fresh silent copy).
+        await clearSilentDeviceKey().catch(() => {});
+      }
+    } else {
+      void clearSilentDeviceKey().catch(() => {});
+    }
+  } catch {
+    // pref/keychain hiccup — the biometric tier below still works
+  }
+
+  // Tier 2 — the biometric-gated blob: one Face ID / Touch ID prompt.
+  if (!(await isDeviceKeyEnabled())) return false;
+  const serialized = await loadDeviceKey();
+  if (!serialized) return false;
+  const adopted = await adoptSerializedKeyPair(serialized, expected);
+  if (adopted === 'foreign') {
+    await clearDeviceKey().catch(() => {});
     return false;
   }
+  if (adopted === 'bad') return false;
+  if (adopted === 'ok-legacy' && expected) {
+    void cacheKeyPairToDevice().catch(() => {}); // stamp the owner in place
+  } else {
+    // Self-arm the silent tier for installs that predate it: their biometric
+    // blob is already stamped, so nothing else would ever write the silent
+    // copy and they'd keep paying a prompt per cold start under "Never".
+    void syncSilentCopy(serialized).catch(() => {});
+  }
+  return true;
 }
 
 // Fresh biometric re-authentication for a sensitive change (e.g. changing the

@@ -9,9 +9,13 @@ import { lock, unlockFromDeviceCache, ensureHouseholdKey, isUnlocked } from '../
 // device cache — attempted automatically here; if it fails or is canceled the
 // app stays locked and the existing locked-state UI takes over.
 //
-// This guards the "phone handed over / left on the table" window. The at-rest
-// story is unchanged (replica is ciphertext; keys live behind the biometric
-// gate) — this only shortens how long decrypted keys stay in memory.
+// This guards the "phone handed over / left on the table" window by shortening
+// how long decrypted keys stay in memory. Note the replica stores decrypted
+// rows at rest (phone-passcode-level, like most app data) — the biometric gate
+// protects the KEYS, i.e. the ability to decrypt new ciphertext and write.
+// While this pref is any window (not "Never"), the silent device-key copy is
+// deleted (lib/e2ee applyAppLockPolicy), so the relock below really does
+// require Face ID to come back — cold starts included.
 export function useAppLock(enabled: boolean) {
   const { prefs } = usePrivacyPrefs();
   const backgroundedAt = useRef<number | null>(null);
