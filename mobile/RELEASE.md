@@ -30,11 +30,11 @@ Each item below is external — provide the value, then drop it into the noted f
    - Save the JSON as `mobile/play-service-account.json` (git-ignored) — referenced by `eas.json` → `submit.production.android`.
    - Enables the internal testing track + Play submission.
 
-4. **RevenueCat** — create the project, add the App Store + Play apps, define entitlements **`premium`** and **`unlimited`**, create the matching products in App Store Connect / Play Console, and an Offering.
-   - Public SDK keys → `eas.json` build env `EXPO_PUBLIC_RC_IOS_KEY` / `EXPO_PUBLIC_RC_ANDROID_KEY` (currently `REPLACE_WITH_*`).
+4. **RevenueCat** — create the project, add the App Store + Play apps, define entitlements **`app_unlock`** (the $4.99 one-time unlock), **`calen_ai`** (the monthly AI plan) and **`addon_meals` / `addon_maintenance` / `addon_trips`** (the bundle product attaches to all three), create the matching products in App Store Connect / Play Console (credit packs are consumables matched by product id, no entitlement), and the offerings `current`, `credits`, `addons`, `ai_plan`. The catalog is normative in [specs/features/billing-plans.md](../specs/features/billing-plans.md).
+   - Public SDK keys → `eas.json` build env `EXPO_PUBLIC_RC_IOS_KEY` (set) / `EXPO_PUBLIC_RC_ANDROID_KEY` (empty until the Play app exists — a placeholder key would make purchases report "configured").
    - Configure the **webhook** → `POST {API}/api/billing/webhook`, shared secret → server env `REVENUECAT_WEBHOOK_SECRET` (handler already exists, Phase 0).
 
-5. **Production API URL** — replace `REPLACE_WITH_PROD_API_URL` in `eas.json` (`preview` + `production` env) with the deployed HTTPS API. iOS ATS blocks plain HTTP, so production must be HTTPS. Add the app's origin to the server `CORS_ORIGINS` allowlist if needed (native requests have no Origin, so usually unaffected).
+5. **Production API URL** — `eas.json` (`preview` + `production` env) points `EXPO_PUBLIC_API_URL` at the deployed HTTPS API (`https://household-calendar-api.onrender.com`). iOS ATS blocks plain HTTP, so production must be HTTPS. Add the app's origin to the server `CORS_ORIGINS` allowlist if needed (native requests have no Origin, so usually unaffected).
 
 ## Build / submit commands (once the above are set)
 

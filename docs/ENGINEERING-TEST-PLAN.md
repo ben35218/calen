@@ -51,9 +51,9 @@ Run the **full** plan on one primary device; run the smoke subset (§1, §2, §5
 - [ ] **DEV-01** — iPhone SE 3 (small screen, **Touch ID**, no Dynamic Island) — the layout floor. Every "keep the footer above the fold", sheet-height, and safe-area case lives here.
 - [ ] **DEV-02** — A current Face ID iPhone (Dynamic Island, large screen).
 - [ ] **DEV-03** — A device on the **oldest supported iOS** version; and one on the newest.
-- [ ] **DEV-04** — **iPad.** `app.json` sets `"supportsTablet": true`, so App Review will test on iPad. Either verify every screen on iPad (split-view, rotation, sheet presentation, month grid at width) or set `supportsTablet: false` before submission. **⛔ BLOCKER — decide explicitly.**
+- [x] **DEV-04** — **iPad.** Decided 2026-09-29: the app ships **iPhone-only** — `app.json` sets `"supportsTablet": false`, so the store listing carries no iPad build and App Review runs it in iPhone compatibility mode at most. Revisit only with a real iPad pass (split-view, rotation, sheet presentation, month grid at width).
 - [ ] **DEV-05** — Android: `android.package`, permissions, and the adaptive icon are configured, but `EXPO_PUBLIC_RC_ANDROID_KEY` is **not** in `eas.json` (purchases would render "not configured"). Either exclude Android from this release or run the whole plan on Android too. **⛔ BLOCKER — decide explicitly.**
-- [ ] **DEV-06** — Rotation: portrait lock is declared (`"orientation": "portrait"`); confirm no screen renders rotated on iPhone, and decide iPad behavior.
+- [ ] **DEV-06** — Rotation: portrait lock is declared (`"orientation": "portrait"`); confirm no screen renders rotated on iPhone (iPad is out of scope — §DEV-04).
 
 ### 0.3 Conditions to vary
 
@@ -978,7 +978,7 @@ For each: **not-yet-asked → prompt → granted**, and **denied → the app's r
 - [ ] **PRM-06** — **Location (when in use)** — Weather "My location", "Use my current location" on Account, and the travel-time Current-location shortcut. Confirm it is **never** requested by a passive surface.
 - [ ] **PRM-07** — **Face ID / Touch ID** — unlock, app lock, re-auth for password/email change; denial or unavailable hardware falls back to the password path.
 - [ ] **PRM-08** — **Microphone + speech recognition** — dictation; on-device recognition only (the usage string promises voice isn't sent to Apple — confirm `requiresOnDeviceRecognition: true`).
-- [ ] **PRM-09** — Every iOS usage string in `app.json` is accurate, user-legible, and matches what the app actually does. **⛔ BLOCKER (App Review).**
+- [ ] **PRM-09** — Every iOS usage string in `app.json` is accurate, user-legible, and matches what the app actually does. Confirm via `npx expo config --type introspect` that the generated plist carries **no** `NSLocationAlways*` or `NSMotionUsageDescription` keys (the `expo-location` plugin entry sets them to `false`) and that the when-in-use string names all three uses: home address, weather, travel time. **⛔ BLOCKER (App Review).**
 - [ ] **PRM-10** — Revoke each permission in iOS Settings **while the app is backgrounded**, then return — no crash, correct degraded state.
 
 ---
@@ -993,7 +993,7 @@ For each: **not-yet-asked → prompt → granted**, and **denied → the app's r
 - [ ] **A11Y-06** — Color contrast in **both** light and dark, especially the accent-tinted text on chips, bars, and calendar cells.
 - [ ] **A11Y-07** — **Reduce Motion**: the bottom-sheet slide, the crossfade between calendar layers, and the e-card preview's bobbing art respect it.
 - [ ] **A11Y-08** — State is never conveyed by color alone (dimmed/struck cancelled events also carry the strike; the visibility circle also changes shape).
-- [ ] **A11Y-09** — Keyboard/hardware-keyboard navigation on iPad if iPad ships.
+- [ ] **A11Y-09** — Keyboard/hardware-keyboard navigation on iPad if iPad ships (n/a for 1.0 — iPhone-only, §DEV-04).
 
 ---
 
@@ -1055,7 +1055,7 @@ Seed a **heavy** household first: ≥1000 events (200 recurring), 500 contacts, 
 - [ ] **REV-12** — Screenshots do **not** show real personal data or contradict the shipped UI.
 - [ ] **REV-13** — AI content: the app discloses that AI features send data to Anthropic; there is a report path for AI content (the moderation long-press) — Guideline 1.2 for UGC-adjacent AI.
 - [ ] **REV-14** — The **AI phone-call** feature is described honestly in the metadata and the agent discloses it is an AI — check for any jurisdictional disclosure requirement.
-- [ ] **REV-15** — iPad screenshots + behavior if `supportsTablet` stays true (§DEV-04).
+- [x] **REV-15** — iPad screenshots + behavior: n/a — `supportsTablet` is `false` (§DEV-04); do not upload iPad screenshots.
 - [ ] **REV-16** — Third-party notices/licenses are present if required.
 
 ---

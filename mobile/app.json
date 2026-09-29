@@ -8,7 +8,7 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "app.householdcalendar.mobile",
       "appleTeamId": "RXV5LML9T5",
       "associatedDomains": [
@@ -39,7 +39,7 @@
         "NSCameraUsageDescription": "Take photos of items, receipts, recipes, and booking confirmations to add them automatically.",
         "NSPhotoLibraryUsageDescription": "Attach photos of items, receipts, and confirmations from your library.",
         "NSContactsUsageDescription": "Import family and friends from your contacts so the assistant can suggest activities and remember birthdays.",
-        "NSLocationWhenInUseUsageDescription": "Fill in your home address automatically when you tap “Use my current location”. Your location is never tracked in the background.",
+        "NSLocationWhenInUseUsageDescription": "Calen uses your location only while you use it: to fill in your home address when you tap “Use my current location”, to show the weather where you are, and to estimate travel time to an event. Your location is never tracked in the background.",
         "NSFaceIDUsageDescription": "Use Face ID to sign in and unlock your end-to-end-encrypted data on this device."
       },
       "privacyManifests": {
@@ -161,6 +161,17 @@
       ],
       "expo-sqlite",
       "expo-sharing",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Calen uses your location only while you use it: to fill in your home address when you tap “Use my current location”, to show the weather where you are, and to estimate travel time to an event. Your location is never tracked in the background.",
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false,
+          "motionUsagePermission": false,
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
+        }
+      ],
       [
         "expo-speech-recognition",
         {

@@ -42,7 +42,7 @@ src/
 - **EAS project id** — for push tokens (`app.json` → expo.extra.eas.projectId, or `eas init`).
 - **RevenueCat keys** — `app.json` → expo.extra.revenueCatIosKey / revenueCatAndroidKey
   (or `EXPO_PUBLIC_RC_IOS_KEY` / `EXPO_PUBLIC_RC_ANDROID_KEY`). Set up products +
-  entitlements (`premium`, `unlimited`) in the RevenueCat dashboard and configure the
+  entitlements (`app_unlock`, `calen_ai`, `addon_*`) in the RevenueCat dashboard and configure the
   webhook to `POST {API}/api/billing/webhook` with the shared secret
   (`REVENUECAT_WEBHOOK_SECRET` on the server).
 

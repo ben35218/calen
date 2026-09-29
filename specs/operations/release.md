@@ -1,7 +1,7 @@
 ---
 title: Release & build
 status: current
-last-verified: ddaa21b+ (2026-08-10); the manual pre-release pass moved out of a markdown checklist and into the admin portal — a Release record per build, per-device test runs, and a **sign-off gate that refuses while a blocker case is unexecuted or failing**; `docs/PRE-RELEASE-TEST-PLAN.md` stays the authoring source and is imported (mechanics in [features/release-qa.md](../features/release-qa.md)) (2026-08-10); d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
+last-verified: 7692c79+ (2026-09-29); the store build is **iPhone-only** (`supportsTablet: false`) and iOS usage strings are pinned by an `expo-location` plugin entry — no "Always" location or motion prompts ship, and the when-in-use prompt names all three uses (2026-09-29); ddaa21b+ (2026-08-10); the manual pre-release pass moved out of a markdown checklist and into the admin portal — a Release record per build, per-device test runs, and a **sign-off gate that refuses while a blocker case is unexecuted or failing**; `docs/PRE-RELEASE-TEST-PLAN.md` stays the authoring source and is imported (mechanics in [features/release-qa.md](../features/release-qa.md)) (2026-08-10); d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
 code:
   - mobile/RELEASE.md
   - mobile/eas.json
@@ -32,9 +32,34 @@ blockers; this spec is the current-state overview.
   missing (push, purchases, API URL all have safe fallbacks — see `RELEASE.md`).
 - **Credential blockers** (external, one-time): Expo/EAS project (`eas init`
   writes `projectId`), Apple Developer + App Store Connect record, Google Play
-  Console + service-account JSON, RevenueCat project with the `premium` /
-  `unlimited` entitlements + webhook, and the production HTTPS API URL. Details
-  in `RELEASE.md`.
+  Console + service-account JSON, RevenueCat project with the `app_unlock`,
+  `calen_ai` and `addon_*` entitlements + webhook (see
+  [features/billing-plans.md](../features/billing-plans.md)), and the production
+  HTTPS API URL. Details in `RELEASE.md`.
+
+### Store configuration (`mobile/app.json`)
+
+- **iPhone-only.** `ios.supportsTablet` is `false`: the 1.0 listing carries no
+  iPad build, no iPad screenshots are uploaded, and App Review runs the app in
+  iPhone compatibility mode at most. Every layout is designed and tested against
+  the iPhone SE 3 floor; iPad support is a deliberate future decision that needs
+  its own pass (split view, rotation, sheet presentation, month grid at width),
+  not a flag flip.
+- **Portrait only** (`orientation: portrait`).
+- **Usage strings are the app's, never a library's default.** Every iOS
+  permission prompt names what the app does with the access, in the user's
+  words, and the set of prompts matches the set of uses. Native modules that
+  inject generic defaults are configured explicitly in `plugins` — in
+  particular `expo-location` is entered with `locationWhenInUsePermission` set
+  to the app's copy and `locationAlwaysAndWhenInUsePermission`,
+  `locationAlwaysPermission` and `motionUsagePermission` set to `false`, so the
+  generated `Info.plist` carries **no** `NSLocationAlways*` or
+  `NSMotionUsageDescription` keys (the app never uses background location or
+  motion). The when-in-use prompt names the three real uses: home-address
+  prefill ("Use my current location"), weather at the current location, and
+  travel-time estimates. Verify the generated plist with
+  `npx expo config --type introspect` before a store build (engineering test
+  plan §PRM-09).
 
 ```bash
 cd mobile
