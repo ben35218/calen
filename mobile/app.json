@@ -180,6 +180,7 @@
           "androidSpeechServicePackages": []
         }
       ],
+      "./plugins/withTargetDeviceFamily",
       "@bacons/apple-targets"
     ],
     "extra": {
