@@ -54,7 +54,10 @@ requires it**:
 2. **Event invitations to people without accounts.** The invitation carries a
    readable snapshot of that one event (that's what makes the email + calendar
    attachment work). Revoking the invitation deletes the snapshot.
-3. **AI phone calls.** When Calen calls a business for you, the event's title,
+3. **AI phone calls** *(not available in the current release — the feature is
+   switched off on our servers, so none of the below happens today; this entry
+   stays so the rules are on record for if it is ever turned on).* When Calen
+   calls a business for you, the event's title,
    date, and the business number necessarily leave encryption to make the
    call, and the call's outcome summary is stored so your household can see it.
    Calls are **not recorded and no transcript is kept** — not by us and not by

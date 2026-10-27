@@ -27,6 +27,7 @@ import {
 } from '../../lib/eventAlertOptions';
 import { useCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
+import { useAiCallsEnabled } from '../../hooks/useBilling';
 import { formatDuration } from '../../lib/format';
 import { normalizeTravelMode, travelModeLabel } from '../../lib/travelModes';
 import { RepeatRule, repeatSummary } from '../../lib/eventRepeat';
@@ -394,6 +395,9 @@ export default function EventDetailScreen() {
   const { colors: calColors } = useCalendarColors();
   const { calendars: customCalendars } = useCustomCalendars();
   const aiEnabled = usePrivacyPrefs().prefs.aiEnabled;
+  // Assistant phone calls are a server deployment switch (off in production):
+  // the Cancel/Reschedule card below exists only while it's on.
+  const aiCalls = useAiCallsEnabled();
   const [error, setError] = useState('');
   // Whether the location map imagery loaded — drives the floating "Delete Event"
   // overlay (Apple-style) vs. the plain full-width button fallback.
@@ -813,7 +817,7 @@ export default function EventDetailScreen() {
             On a recurring event the call is scoped to the specific tapped
             occurrence (occurrenceDate + that day's start instant), so it
             cancels/reschedules just that instance — not the whole series. */}
-        {aiEnabled ? (
+        {aiEnabled && aiCalls ? (
           <EventActionCard
             event={event}
             eventId={eventId}

@@ -115,6 +115,9 @@ function baseStatus(overrides: any = {}) {
       { productId: 'credits_1999', label: 'Max', price: 19.99, credits: 2200 },
     ],
     actionCosts: { chat: 5, scan: 3, generation: 3, manualParse: 40, aiHelper: 1, callPerMinute: 20 },
+    // Assistant calls switched on (the server also publishes callPerMinute
+    // only in this state); the production/off case is its own test below.
+    features: { aiCalls: true },
     aiPlan: {
       active: false,
       productId: 'calen_ai_monthly_499',
@@ -235,6 +238,22 @@ describe('CreditsScreen', () => {
     const json = JSON.stringify(view.toJSON());
     const positions = labels.map((n) => json.indexOf(JSON.stringify(n.props.children)));
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  it('assistant calls switched off: no call row, no per-second footnote, no call copy', async () => {
+    // Production: the server withholds callPerMinute and reports features.aiCalls=false.
+    const { callPerMinute: _omit, ...costs } = baseStatus().actionCosts;
+    mockStatus.data = baseStatus({ actionCosts: costs, features: { aiCalls: false } });
+    const view = await render(<CreditsScreen />);
+    expect(view.getByText('What things cost')).toBeTruthy();
+    expect(view.queryByText('Phone call')).toBeNull();
+    expect(view.queryByText(/credits\/min/)).toBeNull();
+    expect(view.queryByText(/billed by the second/)).toBeNull();
+    expect(view.queryByText(/phone calls Calen places/)).toBeNull();
+    expect(view.getByText(/Credits pay for AI features\. Buy a pack/)).toBeTruthy();
+    // The other rows are untouched.
+    expect(view.getByText('Varies with length')).toBeTruthy();
+    expect(view.getByText('Photo scan')).toBeTruthy();
   });
 
   it('history lists purchases & grants only — usage debits are excluded', async () => {

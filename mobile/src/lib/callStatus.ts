@@ -6,15 +6,21 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { callsApi, PhoneCallRecord } from '../api';
+import { useAiCallsEnabled } from '../hooks/useBilling';
 
 const CALL_TERMINAL = ['ended', 'failed'];
 
 // Shared read of the household's recent calls. Keyed identically to the event
 // view so react-query dedupes it; polls only while a call is still running.
+// Disabled entirely while assistant calls are switched off on the server
+// (`features.aiCalls`, the production state): /calls is 404 there, and with no
+// data the status matchers below report nothing resolved.
 export function useCalls() {
+  const enabled = useAiCallsEnabled();
   return useQuery({
     queryKey: ['calls'],
     queryFn: async () => (await callsApi.list()).data,
+    enabled,
     refetchInterval: (query) =>
       (query.state.data ?? []).some((c) => !CALL_TERMINAL.includes(c.status)) ? 10_000 : false,
   });

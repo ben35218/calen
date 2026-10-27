@@ -1,4 +1,5 @@
 const express = require('express');
+const { aiCallsEnabled } = require('../config/features');
 const Anthropic = require('@anthropic-ai/sdk');
 // Signal-parity C3b: calendar/task/contact content lives in the opaque store, so
 // this assistant reads it only from the client's decrypted context. PhoneCall +
@@ -31,6 +32,12 @@ const DEFAULT_TZ = 'America/Toronto'; // matches Household.timezone's default
 // the user's free/busy availability only, never event titles or details, and
 // can't edit, delete, or place calls about specific events. Availability
 // (get_availability), creating brand-new events, weather, and navigation stay.
+// Assistant phone calls are a deployment switch (config/features.js,
+// AI_CALLS_ENABLED — unset in production). When off, the two call tools are
+// never offered and the prompt never mentions calling, so the model can't
+// promise a call it has no way to place.
+const CALL_TOOL_NAMES = new Set(['call_business', 'check_call_status']);
+
 const RECORD_TOOL_NAMES = new Set([
   'list_events', 'get_event_details',
   'open_edit_event_form', 'delete_event',
@@ -457,6 +464,7 @@ async function executeTool(name, input, ctx) {
     }
 
     case 'call_business': {
+      if (!aiCallsEnabled()) return { error: 'Phone calls are not available in this version of the app.' };
       const vapiKey = process.env.VAPI_API_KEY;
       const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
       if (!vapiKey)       return { error: 'VAPI_API_KEY is not configured on the server' };
@@ -522,6 +530,7 @@ async function executeTool(name, input, ctx) {
     }
 
     case 'check_call_status': {
+      if (!aiCallsEnabled()) return { error: 'Phone calls are not available in this version of the app.' };
       const vapiKey = process.env.VAPI_API_KEY;
       if (!vapiKey) return { error: 'VAPI_API_KEY is not configured on the server' };
 
@@ -602,6 +611,7 @@ async function executeTool(name, input, ctx) {
 
 function buildSystemPrompt(req, focusEvent = null, includePersonalInfo = true) {
   const today = new Date().toISOString();
+  const callsOn = aiCallsEnabled();
   const userName = req.user.name || 'the user';
 
   // Coarse home area (city + region/country) so local suggestions match where
@@ -649,7 +659,7 @@ The user opened this chat from a specific event — when they say "this appointm
 - When: ${focusEvent.startDate || 'unknown'}${focusEvent.allDay ? ' (all-day)' : ''}
 - Calendar: ${focusEvent.calendarType || 'unknown'}${focusEvent.location ? `\n- Location: ${focusEvent.location}` : ''}
 - Business phone on file: ${focusEvent.phone ? 'yes' : 'none'}
-You may pass this event id directly to call_business / open_edit_event_form / delete_event without calling list_events first.${focusEvent.phone ? '' : '\nThere is no phone number stored, so before placing any call ask the user to add the business number to the event.'}\n`
+You may pass this event id directly to ${callsOn ? 'call_business / ' : ''}open_edit_event_form / delete_event without calling list_events first.${callsOn && !focusEvent.phone ? '\nThere is no phone number stored, so before placing any call ask the user to add the business number to the event.' : ''}\n`
     : '';
 
   return `You are ${ASSISTANT_NAME}, the friendly assistant in the Calen app, managing a family's home calendar. Today is ${today}. You are assisting ${userName}.
@@ -683,13 +693,14 @@ You never change the calendar silently — every create, edit, and delete is con
 - To edit an event: call list_events to find the event ID, then call open_edit_event_form. This opens the event's edit form on the user's device — in your reply, name what you're suggesting they change and tell them to tap "Open the event to edit"; they make and save the change themselves.
 - To delete event(s): call list_events to find the ID(s), then call delete_event ONCE PER EVENT you want removed — you can stage several in the same turn to clear a range of days ("clear my calendar next week"). This does NOT delete anything yet; it stages the removal(s) behind a single "Delete from my calendar" tap. After staging, list exactly which events will be removed and tell the user to tap to confirm (or "Cancel, keep events"). NEVER claim anything is deleted until they have confirmed — if you're unsure whether a prior turn's deletion went through, check list_events rather than assuming. For a recurring event, pass occurrenceDate (the day to clear) with scope "occurrence" to remove just that one day, or scope "series" to remove the whole repeating event — ask which they mean if it isn't clear.
 
-You can also place AI phone calls (via Vapi) to businesses to cancel or reschedule appointments using call_business. You never see phone numbers — "phoneOnFile" tells you whether one is stored, and the app dials it. Before calling:
+${callsOn ? `You can also place AI phone calls (via Vapi) to businesses to cancel or reschedule appointments using call_business. You never see phone numbers — "phoneOnFile" tells you whether one is stored, and the app dials it. Before calling:
 1. Confirm the appointment has a phone number on file (phoneOnFile from list_events / get_event_details). If not, ask the user to add one.
 2. Use ${userName} as the caller name unless the user specifies otherwise.
 3. For reschedules, confirm the desired new date/time before calling.
 4. Only set shareContactDetails if the user explicitly agreed the business may verify their phone/email.
 After placing a call, tell the user it's in progress and offer to check the status with check_call_status.
-
+` : `You cannot place phone calls. If the user asks you to call, cancel, or reschedule with a business by phone, say that calling isn't available and offer to open the event so they can find the number, or to edit the event's time themselves.
+`}
 Always confirm what you've done. Ask for clarification when dates, names, or intentions are ambiguous.
 ${navPromptSection('calendar')}`;
 }
@@ -738,7 +749,7 @@ function buildContextSummary(contacts, includePersonalInfo = true, homeCity = ''
     can: includePersonalInfo
       ? [
           'Open pre-filled event forms for you to review & save',
-          'Place AI phone calls to cancel or reschedule appointments',
+          ...(aiCallsEnabled() ? ['Place AI phone calls to cancel or reschedule appointments'] : []),
           'Suggest activities and good-weather days',
         ]
       : [
@@ -746,7 +757,7 @@ function buildContextSummary(contacts, includePersonalInfo = true, homeCity = ''
           'Suggest activities and good-weather days around when you’re free',
         ],
     note: includePersonalInfo
-      ? 'Nothing is saved or called without your confirmation.'
+      ? (aiCallsEnabled() ? 'Nothing is saved or called without your confirmation.' : 'Nothing is saved without your confirmation.')
       : 'Personal & contact info is turned off in Privacy, so I can see when you’re free or busy but not your event titles, details, or household. Turn it on to have me read or act on specific events. Nothing is saved without your confirmation.',
   };
 }
@@ -843,7 +854,9 @@ router.post('/', meter('chat', 'calendar'), async (req, res) => {
     // Privacy toggle off: withdraw the record/edit/call tools entirely so the
     // model can't even attempt to read or act on a specific event — only the
     // availability lens (+ create/weather/nav/search) is offered.
-    const activeTools = includePersonalInfo ? TOOLS : TOOLS.filter((t) => !RECORD_TOOL_NAMES.has(t.name));
+    const callsOn = aiCallsEnabled();
+    const activeTools = TOOLS.filter((t) =>
+      (includePersonalInfo || !RECORD_TOOL_NAMES.has(t.name)) && (callsOn || !CALL_TOOL_NAMES.has(t.name)));
 
     await streamChat(res, {
       req,

@@ -13,6 +13,7 @@ import { setLocationDraft } from '../../lib/locationDraft';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
 import { Screen, Input, SectionTitle, Hint, PhoneField, useHeaderCheckButton, CenteredLoader, SetupCallout, Skeleton } from '../../components/ui';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
+import { useAiCallsEnabled } from '../../hooks/useBilling';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { colors, spacing, radius } from '../../theme';
 
@@ -85,6 +86,9 @@ function MapImage({ uri, style }: { uri: string; style: StyleProp<ViewStyle> }) 
 export default function EventLocationScreen() {
   const navigation = useNavigation<Nav>();
   const { eventId, initial, promptPhone } = useRoute<Rt>().params ?? {};
+  // Whether Calen can phone the business (server switch; off in production) —
+  // decides how the phone field explains itself.
+  const aiCalls = useAiCallsEnabled();
   const qc = useQueryClient();
   const { colors: calColors } = useCalendarColors();
   const { calendars: customCalendars } = useCustomCalendars();
@@ -248,7 +252,9 @@ export default function EventLocationScreen() {
           "Add business phone" setup chip — with no number yet: a prominent accent
           callout so the reason the user is here is the first thing they see. */}
       {promptPhone && !phone.trim() ? (
-        <SetupCallout icon="call" accent={accent}>Add a business phone number to activate calling.</SetupCallout>
+        <SetupCallout icon="call" accent={accent}>
+          {aiCalls ? 'Add a business phone number to activate calling.' : 'Add the business phone number.'}
+        </SetupCallout>
       ) : null}
 
       {picked ? (
@@ -327,7 +333,11 @@ export default function EventLocationScreen() {
         // Draw attention to the empty field when we sent the user here to add one.
         highlight={promptPhone && !phone.trim()}
       />
-      <Hint>Calen uses the phone number to call the business — for example to cancel this appointment for you.</Hint>
+      <Hint>
+        {aiCalls
+          ? 'Calen uses the phone number to call the business — for example to cancel this appointment for you.'
+          : 'Saved with the event so the business number is one tap away.'}
+      </Hint>
     </Screen>
   );
 }

@@ -21,6 +21,10 @@ process.env.UPLOAD_DIR = process.env.UPLOAD_DIR || require('os').tmpdir() + '/hc
 process.env.MONGOMS_DOWNLOAD_DIR =
   process.env.MONGOMS_DOWNLOAD_DIR || require('path').join(require('os').homedir(), '.cache', 'mongodb-binaries');
 delete process.env.E2EE_MIN_APP_VERSION; // version gate is exercised explicitly per test
+// Assistant phone calls are OFF by default (AI_CALLS_ENABLED unset in
+// production). The suite exercises the calling paths, so it turns them on;
+// aiCallsSwitch.integration.test.js flips the switch off per test.
+process.env.AI_CALLS_ENABLED = 'true';
 
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const mongoose = require('mongoose');

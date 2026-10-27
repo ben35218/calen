@@ -206,7 +206,9 @@ export default function ProfileScreen() {
               {out ? <Badge label="Out of credits" color={colors.error} /> : null}
             </View>
             <Text style={styles.creditNote}>
-              Pays for AI features and assistant phone calls. Tap to buy more.
+              {data?.features?.aiCalls
+                ? 'Pays for AI features and assistant phone calls. Tap to buy more.'
+                : 'Pays for AI features. Tap to buy more.'}
             </Text>
           </Card>
         </TouchableOpacity>

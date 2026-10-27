@@ -11,6 +11,7 @@ import {
   tripsApi, TripInvitation, householdApi, HouseholdInvitation, JoinRequestForApprover, HouseholdNotice,
   callsApi, PhoneCallRecord,
 } from '../../api';
+import { useAiCallsEnabled } from '../../hooks/useBilling';
 import { refreshCustomCalendars, useCalendarColors } from '../../lib/calendarPrefs';
 import {
   ensureSharedCalendarKeys, listAccessRequests, approveAccessRequest,
@@ -275,10 +276,14 @@ export default function InvitationsScreen() {
     queryKey: ['householdNotices'],
     queryFn: async () => (await householdApi.notices()).data,
   });
-  // Outcome notices for phone calls Calen placed (Call to Cancel / chat).
+  // Outcome notices for phone calls Calen placed (Call to Cancel / chat). Only
+  // while assistant calls are switched on server-side (off in production —
+  // /calls is 404 there and there are no notices to show).
+  const aiCalls = useAiCallsEnabled();
   const callsQ = useQuery({
     queryKey: ['calls'],
     queryFn: async () => (await callsApi.list()).data,
+    enabled: aiCalls,
   });
   // Re-key access requests on calendars I own. Only I can wrap the CalendarKey,
   // so until this is approved the requester sees nothing — worth the same poll

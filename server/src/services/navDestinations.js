@@ -7,6 +7,8 @@
 // maps each `id` to a screen in mobile/src/screens/chat/navDestinations.ts, so the
 // ids here and there must stay in sync.
 
+const { aiCallsEnabled } = require('../config/features');
+
 const SUGGEST_NAV_TOOL_NAME = 'suggest_navigation';
 
 // Regular "go look at / act on this" view shortcuts (kind: 'nav', arrow chip).
@@ -48,7 +50,9 @@ const CONFIG_DESTINATIONS = {
   ],
   calendar: [
     { id: 'setup_home_address', label: 'Add your home address', when: 'the user asks about weather, local suggestions, or travel time but no home area/address is set' },
-    { id: 'setup_event_phone', label: 'Add business phone', when: 'the user wants Calen to phone a business about an event but the event has no phone number on file' },
+    // Only meaningful while assistant phone calls are enabled (config/features.js);
+    // `configDests` drops it otherwise so the prompt never implies Calen can phone.
+    { id: 'setup_event_phone', label: 'Add business phone', when: 'the user wants Calen to phone a business about an event but the event has no phone number on file', requires: 'aiCalls' },
     { id: 'setup_contact', label: 'Add this contact', when: 'the user wants to call or email a professional who is not saved yet, or has no phone/email on file' },
     { id: 'setup_reminders', label: 'Set up reminders', when: 'the user wants reminders or alerts but reminders are turned off or no reminder time is set' },
   ],
@@ -59,7 +63,8 @@ const CONFIG_DESTINATIONS = {
 
 // Every setup destination for a surface = shared `all` gaps + that surface's own.
 function configDests(surface) {
-  return [...(CONFIG_DESTINATIONS.all || []), ...(CONFIG_DESTINATIONS[surface] || [])];
+  return [...(CONFIG_DESTINATIONS.all || []), ...(CONFIG_DESTINATIONS[surface] || [])]
+    .filter((d) => !d.requires || (d.requires === 'aiCalls' && aiCallsEnabled()));
 }
 
 // The tool definition for a given surface — its `view` enum is that surface's

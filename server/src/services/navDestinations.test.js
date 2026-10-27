@@ -1,3 +1,7 @@
+// The "Add business phone" setup shortcut exists only while assistant phone
+// calls are switched on (config/features.js); the suite exercises it on.
+process.env.AI_CALLS_ENABLED = 'true';
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -73,4 +77,20 @@ test('navPromptSection documents the setup shortcuts + the one-chip rule', () =>
   assert.match(section, /Setup shortcuts/);
   assert.match(section, /setup_home_address/);
   assert.match(section, /REPLACES the usual next-step/i);
+});
+
+test('setup_event_phone is withdrawn when assistant phone calls are switched off', () => {
+  const saved = process.env.AI_CALLS_ENABLED;
+  delete process.env.AI_CALLS_ENABLED;
+  try {
+    assert.ok(!configDests('calendar').some((d) => d.id === 'setup_event_phone'), 'not a calendar setup destination');
+    assert.ok(configDests('calendar').some((d) => d.id === 'setup_home_address'), 'the other shortcuts stay');
+    assert.doesNotMatch(navPromptSection('calendar'), /setup_event_phone/);
+    assert.ok(!navTool('calendar').input_schema.properties.view.enum.includes('setup_event_phone'), 'not in the tool enum');
+    const acc = {};
+    collectNav({ name: 'suggest_navigation', input: { view: 'setup_event_phone' } }, acc, 'calendar');
+    assert.equal(acc.navSuggestions, undefined, 'a stray suggestion is ignored');
+  } finally {
+    process.env.AI_CALLS_ENABLED = saved;
+  }
 });

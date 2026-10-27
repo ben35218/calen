@@ -2204,6 +2204,12 @@ export interface BillingStatus {
   // The optional monthly Calen AI plan (subscribe CTA / active state on the
   // Credits screen).
   aiPlan?: AiPlanStatus;
+  // Deployment feature switches. `aiCalls` = assistant phone calls — false in
+  // production (server AI_CALLS_ENABLED unset), and the server then also
+  // withholds `actionCosts.callPerMinute` and answers 404 on /calls. Every
+  // call surface (the event view's Cancel/Reschedule card, call notices, the
+  // rate-card row and copy) hides when this is false or missing.
+  features?: { aiCalls?: boolean };
   // Per-action counts, always this user's own (analytics; enforcement is the
   // credit balance).
   usage: Record<string, number>;

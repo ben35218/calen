@@ -30,7 +30,10 @@ import PackStore from './PackStore';
 // wording).
 
 // Friendly labels for the per-action analytics counters the server tracks.
-// Calls are their own feature (assistant phone calls), kept separate from chat.
+// Calls are their own feature (assistant phone calls), kept separate from chat;
+// the row and its footnote appear only when the server publishes
+// `callPerMinute`, which it withholds while assistant calls are switched off
+// (production).
 const ACTION_LABEL: Record<string, string> = {
   chat: 'Chat & assistants',
   call: 'Assistant calls',
@@ -171,8 +174,9 @@ export default function CreditsScreen() {
           </Text>
         ) : null}
         <Text style={styles.scopeNote}>
-          Credits pay for AI features and the phone calls Calen places for you. Buy a pack
-          below whenever you run low.
+          {data.features?.aiCalls
+            ? 'Credits pay for AI features and the phone calls Calen places for you. Buy a pack below whenever you run low.'
+            : 'Credits pay for AI features. Buy a pack below whenever you run low.'}
         </Text>
       </Card>
 
@@ -315,10 +319,12 @@ export default function CreditsScreen() {
               <Text style={styles.actionCount}>{costValue(key, Number(credits))}</Text>
             </View>
           ))}
-          <Text style={styles.costNote}>
-            Phone calls are billed by the second, so a short call costs less than a
-            full minute.
-          </Text>
+          {costs.some(([key]) => key === 'callPerMinute') ? (
+            <Text style={styles.costNote}>
+              Phone calls are billed by the second, so a short call costs less than a
+              full minute.
+            </Text>
+          ) : null}
         </Card>
       ) : null}
 

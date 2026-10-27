@@ -1,7 +1,7 @@
 ---
 title: Product overview
 status: current
-last-verified: dad7c5a (2026-07-20)
+last-verified: (working tree, 2026-10-27); assistant phone calls noted as a production-off switch
 code:
   - mobile/
   - server/
@@ -14,7 +14,9 @@ code:
 Calen is a **household management app built around a shared family calendar and
 an AI assistant**. A family (a "household") coordinates events, meals, home
 maintenance, trips, and the people in their life, and can ask the assistant
-("Calen") to help plan and even place phone calls on their behalf. All household
+("Calen") to help plan. (Calen can also place phone calls on their behalf, but
+that capability is a server switch that is **off in the production release** —
+see [features/ai-assistant.md](features/ai-assistant.md).) All household
 content is **end-to-end encrypted** — the servers store ciphertext they cannot
 read.
 
@@ -55,7 +57,7 @@ Each has (or will have) a spec under `features/`:
 - **Auth & identity** — registration, login, passkeys, email-OTP, recovery
   codes, device linking.
 - **AI assistant** — Calen's per-area chat surfaces, consent/data minimization,
-  and outbound phone calls.
+  and outbound phone calls (switched off in production).
 - **Billing & plans** — subscription plans (RevenueCat) and AI-usage metering.
 - **Notifications** — Expo push + on-device local reminders.
 

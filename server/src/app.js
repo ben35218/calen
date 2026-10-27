@@ -22,6 +22,7 @@ const customCalendarRoutes = require('./routes/calendars');
 const invitationRoutes = require('./routes/invitations');
 const calendarChatRoutes = require('./routes/calendarChat');
 const callsRoutes = require('./routes/calls');
+const { requireAiCalls } = require('./config/features');
 const maintenanceChatRoutes = require('./routes/maintenanceChat');
 const maintenancePlanChatRoutes = require('./routes/maintenancePlanChat');
 const choresChatRoutes = require('./routes/choresChat');
@@ -116,7 +117,9 @@ app.use('/api/task-templates', taskTemplateRoutes);
 app.use('/api/chores', choreRoutes);
 app.use('/api/chore-templates', choreTemplateRoutes);
 app.use('/api/calendar/chat', calendarChatRoutes);
-app.use('/api/calls', callsRoutes);
+// Assistant phone calls ship behind AI_CALLS_ENABLED (unset in production →
+// every /api/calls path, the Vapi webhook included, answers 404).
+app.use('/api/calls', requireAiCalls, callsRoutes);
 app.use('/api/maintenance/chat', maintenanceChatRoutes);
 app.use('/api/maintenance/plan-chat', maintenancePlanChatRoutes);
 app.use('/api/chores/chat', choresChatRoutes);

@@ -16,6 +16,7 @@ import { assistantDeletePerform } from '../../lib/eventDelete';
 import { loadPassiveForecast } from '../../lib/weatherSource';
 import { usePrivacyPrefs } from '../../lib/privacyPrefs';
 import { useAuth } from '../../store/auth';
+import { useAiCallsEnabled } from '../../hooks/useBilling';
 import { createAliasContext } from '../../lib/aiPayload';
 import { deriveAiWindow, scopeCalendarSources, availabilityForWindow } from '../../lib/aiWindow';
 import type { AssistantId } from '../chat/assistantTabs';
@@ -82,6 +83,10 @@ export default function CalendarAssistantScreen({
 } = {}) {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const qc = useQueryClient();
+  // Chat-placed calls exist only while assistant calls are switched on
+  // server-side (off in production → the call tools aren't offered and /calls
+  // is 404, so the link-back below has nothing to do).
+  const aiCalls = useAiCallsEnabled();
   const { user } = useAuth();
   // Privacy toggle ("Use personal & contact info in prompts"). Read reactively so
   // the assistant's system prompt, its "what I can see" panel, and the decrypt/
@@ -158,6 +163,7 @@ export default function CalendarAssistantScreen({
       // Link-back for chat-placed calls (G1): rows created by call_business hold
       // an aliased event id only this conversation can resolve — patch the real
       // id on so the confirmed-cancel → event-cancelled flow keeps working.
+      if (!aiCalls) return;
       callsApi.list().then(({ data }) => Promise.all(
         data.flatMap((c) => {
           const real = c.eventId ? aliasCtx.fromAlias(c.eventId) : undefined;

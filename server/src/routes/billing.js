@@ -17,6 +17,7 @@
 // the household still only pays once for a feature its members share.
 
 const express = require('express');
+const { aiCallsEnabled } = require('../config/features');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const PhoneCall = require('../models/PhoneCall');
@@ -330,11 +331,20 @@ router.get('/status', async (req, res) => {
     // cost is the per-second credit debit). Period start = one week before the
     // next weekly reset.
     const periodStart = new Date(nextPeriodResetAt().getTime() - 7 * 24 * 60 * 60 * 1000);
-    const callCount = await PhoneCall.countDocuments({
-      userId: req.user._id,
-      createdAt: { $gte: periodStart },
-    }).catch(() => 0);
+    const callsOn = aiCallsEnabled();
+    const callCount = callsOn
+      ? await PhoneCall.countDocuments({
+        userId: req.user._id,
+        createdAt: { $gte: periodStart },
+      }).catch(() => 0)
+      : 0;
     const usageWithCalls = callCount > 0 ? { ...usage, call: callCount } : usage;
+
+    // Published prices. With assistant calls switched off (AI_CALLS_ENABLED
+    // unset — production), the per-minute call price is withheld so no client
+    // rate card, cost hint, or footnote can advertise a feature that isn't there.
+    const actionCosts = { ...(config.credits?.actionCosts || {}) };
+    if (!callsOn) delete actionCosts.callPerMinute;
 
     // Credits SPENT per feature this period, summed from this user's usage-debit
     // ledger rows in the window. This is what the Credits screen's "Where your
@@ -379,7 +389,10 @@ router.get('/status', async (req, res) => {
       // Flat published credit prices per action (whole credits;
       // `callPerMinute` prorates per second) — drives the "What things cost"
       // card and the pre-call cost hint. What the debits actually charge.
-      actionCosts: config.credits?.actionCosts || {},
+      actionCosts,
+      // Deployment feature switches the client mirrors (hide a surface when its
+      // flag is false). `aiCalls` = assistant phone calls (AI_CALLS_ENABLED).
+      features: { aiCalls: callsOn },
       // The optional monthly Calen AI plan (price is a display fallback; the
       // store's localized price is authoritative).
       aiPlan: {

@@ -29,7 +29,7 @@ export default function BuyCreditsSheet() {
   const title = reason === 'out' ? "You're out of AI credits" : "You're running low on AI credits";
   const subtitle =
     reason === 'out'
-      ? 'A credit pack lifts the wall right away — the AI assistants and phone calls pick up where you left off.'
+      ? `A credit pack lifts the wall right away — the AI assistants${billing.data?.features?.aiCalls ? ' and phone calls' : ''} pick up where you left off.`
       : `You have ${humanCredits(billing.data?.creditBalance)} credits left. Top up now so the assistants don't stop mid-task.`;
 
   return (

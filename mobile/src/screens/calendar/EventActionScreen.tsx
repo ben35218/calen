@@ -13,7 +13,7 @@ import {
 import { form as formStyles } from '../../components/formStyles';
 import { DNC_BLOCK_MESSAGE, isCallBlockedBySuppression } from '../../lib/callBlock';
 import { callCostCaption } from '../../lib/callCost';
-import { useBilling } from '../../hooks/useBilling';
+import { useBilling, useAiCallsEnabled } from '../../hooks/useBilling';
 import { ymd } from '../../lib/calendar';
 import { startTimeKeepingDuration, endTimeKeepingDuration } from '../../lib/datetime';
 import { useCalendarColors, useCustomCalendars } from '../../lib/calendarPrefs';
@@ -117,7 +117,8 @@ export default function EventActionScreen() {
 
   // The most recent finished call for this event — a "review the last call"
   // pointer replacing the old card's popup options.
-  const callsQ = useQuery({ queryKey: ['calls'], queryFn: async () => (await callsApi.list()).data });
+  const aiCalls = useAiCallsEnabled();
+  const callsQ = useQuery({ queryKey: ['calls'], queryFn: async () => (await callsApi.list()).data, enabled: aiCalls });
   const lastCall = (callsQ.data ?? []).find(
     (c) =>
       c.eventId === eventId &&

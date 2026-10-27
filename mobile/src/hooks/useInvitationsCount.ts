@@ -4,6 +4,7 @@ import { EVENT_INVITATIONS_KEY, fetchEventInvitations } from '../lib/eventInvita
 import { listAccessRequests } from '../lib/calendarKeys';
 import { listMyHouseholdEventRequests } from '../lib/householdRsvp';
 import { invitationLapsed } from '../lib/inviteAlerts';
+import { useAiCallsEnabled } from './useBilling';
 
 // The Invitations inbox's pending count — everything the inbox's "New" tab
 // surfaces: an invitation — event, calendar, trip, or household — awaiting a
@@ -49,10 +50,14 @@ export function useInvitationsCount(): number {
     queryFn: async () => (await householdApi.notices()).data,
     staleTime: 60_000,
   });
+  // Call-outcome notices exist only while assistant calls are switched on
+  // server-side (off in production → nothing to badge, no request made).
+  const aiCalls = useAiCallsEnabled();
   const callsQ = useQuery({
     queryKey: ['calls'],
     queryFn: async () => (await callsApi.list()).data,
     staleTime: 60_000,
+    enabled: aiCalls,
   });
   // Re-key access requests on calendars this user owns. Badged like a join
   // request: only the owner can wrap the key, so an unnoticed request leaves

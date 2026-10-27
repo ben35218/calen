@@ -24,6 +24,13 @@ export function useBilling() {
   });
 }
 
+// Assistant phone calls are a server deployment switch (`features.aiCalls` on
+// /billing/status; off in production). False until the status has loaded —
+// a call surface is never shown on the strength of a missing answer.
+export function useAiCallsEnabled(): boolean {
+  return useBilling().data?.features?.aiCalls === true;
+}
+
 export type PurchaseActivationState = 'idle' | 'activating' | 'active' | 'timeout';
 
 const POLL_MS = 3_000;

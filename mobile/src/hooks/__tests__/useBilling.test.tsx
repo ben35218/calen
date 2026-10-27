@@ -3,7 +3,7 @@ import { TouchableOpacity } from 'react-native';
 import { Text } from '../../components/Text';
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useCreditsActivation, useAiPlanActivation } from '../useBilling';
+import { useCreditsActivation, useAiPlanActivation, useAiCallsEnabled } from '../useBilling';
 
 // Post-purchase activation-poll contract (billing-plans.md → Billing surfaces):
 // the poll writes the fresh `/billing/status` into cache AND — the moment it
@@ -162,5 +162,51 @@ describe('useAiPlanActivation', () => {
     fireEvent.press(view.getByText('buy'));
 
     await waitFor(() => expect(view.getByText('state:active')).toBeTruthy());
+  });
+});
+
+// Assistant phone calls are a server deployment switch surfaced as
+// `features.aiCalls` on /billing/status (ai-assistant.md → Phone calls →
+// "Production switch"). The hook every call surface gates on must read false
+// until the status says otherwise — a missing answer never shows a call surface.
+function CallsHarness() {
+  const on = useAiCallsEnabled();
+  return <Text>calls:{on ? 'on' : 'off'}</Text>;
+}
+
+describe('useAiCallsEnabled', () => {
+  afterEach(() => {
+    mockStatus.mockReset();
+    cleanup();
+  });
+
+  it('is true only once the status reports features.aiCalls', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockStatus.mockResolvedValue({ data: { unlocked: true, features: { aiCalls: true } } });
+    const view = await render(
+      <QueryClientProvider client={qc}>
+        <CallsHarness />
+      </QueryClientProvider>,
+    );
+    // Before the status lands: off.
+    expect(view.getByText('calls:off')).toBeTruthy();
+    await waitFor(() => expect(view.getByText('calls:on')).toBeTruthy());
+  });
+
+  it('stays false when the status omits the flag (production) or reports it off', async () => {
+    for (const data of [{ unlocked: true }, { unlocked: true, features: { aiCalls: false } }]) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      mockStatus.mockResolvedValue({ data });
+      const view = await render(
+        <QueryClientProvider client={qc}>
+          <CallsHarness />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(mockStatus).toHaveBeenCalled());
+      expect(view.getByText('calls:off')).toBeTruthy();
+      expect(view.queryByText('calls:on')).toBeNull();
+      cleanup();
+      mockStatus.mockReset();
+    }
   });
 });

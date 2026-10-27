@@ -131,7 +131,8 @@ Referenced by the server (`server/src/`). Not exhaustive — see the code:
 | `ANTHROPIC_API_KEY` | For AI | Claude API key for the assistant |
 | `SMTP_URL` *or* `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS` | For email | Invitation + auth-code delivery (Nodemailer). `MAIL_FROM` sets the sender |
 | `EXPO_ACCESS_TOKEN` | For push | Expo push notifications (security alerts) |
-| `VAPI_API_KEY` / `VAPI_PHONE_NUMBER_ID` | For AI calls | Vapi outbound calling |
+| `AI_CALLS_ENABLED` | No | Assistant phone calls — `true` enables the `/api/calls` routes, the chat's call tools and the published call price. **Unset in production** (feature off). |
+| `VAPI_API_KEY` / `VAPI_PHONE_NUMBER_ID` | For AI calls | Vapi outbound calling (inert unless `AI_CALLS_ENABLED=true`) |
 | `REVENUECAT_WEBHOOK_SECRET` | For billing | Verifies `POST /api/billing/webhook` |
 | `PASSKEY_RP_ID` / `PASSKEY_ORIGINS` | For passkeys | WebAuthn relying-party id + allowed origins |
 | `GOOGLE_PLACES_API_KEY` / `BRAVE_SEARCH_KEY` | For places/search | Location autocomplete + web search |
