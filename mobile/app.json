@@ -167,7 +167,7 @@
           "locationWhenInUsePermission": "Calen uses your location only while you use it: to fill in your home address when you tap “Use my current location”, to show the weather where you are, and to estimate travel time to an event. Your location is never tracked in the background.",
           "locationAlwaysAndWhenInUsePermission": false,
           "locationAlwaysPermission": false,
-          "motionUsagePermission": false,
+          "motionUsagePermission": "Calen does not use motion or fitness data and never asks for it. Apple requires this note because the location tools built into the app include motion features that Calen leaves switched off.",
           "isIosBackgroundLocationEnabled": false,
           "isAndroidBackgroundLocationEnabled": false
         }
