@@ -1,7 +1,7 @@
 ---
 title: Release & build
 status: current
-last-verified: (working tree, 2026-10-27); production keeps `AI_CALLS_ENABLED` unset (assistant calls off). Previously e42da28+ (2026-09-29); embedded targets (the widget) now inherit the app's device family via `plugins/withTargetDeviceFamily.js` — a mismatched extension is a silent App Store processing rejection (2026-09-29); the store build is **iPhone-only** (`supportsTablet: false`) and iOS usage strings are pinned by an `expo-location` plugin entry — no "Always" location or motion prompts ship, and the when-in-use prompt names all three uses (2026-09-29); ddaa21b+ (2026-08-10); the manual pre-release pass moved out of a markdown checklist and into the admin portal — a Release record per build, per-device test runs, and a **sign-off gate that refuses while a blocker case is unexecuted or failing**; `docs/PRE-RELEASE-TEST-PLAN.md` stays the authoring source and is imported (mechanics in [features/release-qa.md](../features/release-qa.md)) (2026-08-10); d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
+last-verified: (working tree, 2026-11-13); `NSMotionUsageDescription` is required (expo-location links CoreMotion; its absence silently failed builds 43–46 with ITMS-90683). Previously (2026-10-27); production keeps `AI_CALLS_ENABLED` unset (assistant calls off). Previously e42da28+ (2026-09-29); embedded targets (the widget) now inherit the app's device family via `plugins/withTargetDeviceFamily.js` — a mismatched extension is a silent App Store processing rejection (2026-09-29); the store build is **iPhone-only** (`supportsTablet: false`) and iOS usage strings are pinned by an `expo-location` plugin entry — no "Always" location or motion prompts ship, and the when-in-use prompt names all three uses (2026-09-29); ddaa21b+ (2026-08-10); the manual pre-release pass moved out of a markdown checklist and into the admin portal — a Release record per build, per-device test runs, and a **sign-off gate that refuses while a blocker case is unexecuted or failing**; `docs/PRE-RELEASE-TEST-PLAN.md` stays the authoring source and is imported (mechanics in [features/release-qa.md](../features/release-qa.md)) (2026-08-10); d96d6b3 (2026-07-27); added a "remove development-only surfaces" pre-launch checklist and cleared its first entry — the Reminders → Delivery diagnostics card + test-notification button were removed, leaving the unrendered run log behind (46cd98a+, 2026-08-04)
 code:
   - mobile/RELEASE.md
   - mobile/eas.json
@@ -68,11 +68,17 @@ blockers; this spec is the current-state overview.
   words, and the set of prompts matches the set of uses. Native modules that
   inject generic defaults are configured explicitly in `plugins` — in
   particular `expo-location` is entered with `locationWhenInUsePermission` set
-  to the app's copy and `locationAlwaysAndWhenInUsePermission`,
-  `locationAlwaysPermission` and `motionUsagePermission` set to `false`, so the
-  generated `Info.plist` carries **no** `NSLocationAlways*` or
-  `NSMotionUsageDescription` keys (the app never uses background location or
-  motion). The when-in-use prompt names the three real uses: home-address
+  to the app's copy and `locationAlwaysAndWhenInUsePermission` and
+  `locationAlwaysPermission` set to `false`, so the generated `Info.plist`
+  carries **no** `NSLocationAlways*` keys (the app never uses background
+  location). **`NSMotionUsageDescription` must ship anyway:** expo-location's
+  iOS code links CoreMotion, and App Store processing statically rejects a
+  binary without the key (ITMS-90683) — silently, as far as the builds list
+  is concerned; the failure only shows on the upload's state
+  (`/v1/apps/{id}/buildUploads`). Builds 43–46 were lost this way. So
+  `motionUsagePermission` carries a plain note that Calen never uses or asks
+  for motion data; the app never calls a motion API, so the prompt never
+  appears. The when-in-use prompt names the three real uses: home-address
   prefill ("Use my current location"), weather at the current location, and
   travel-time estimates. Verify the generated plist with
   `npx expo config --type introspect` before a store build (engineering test
