@@ -48,7 +48,7 @@ const RULES = [
 
   // Features.
   { re: /^(server\/src\/routes\/(auth|authPasskey)\.js|server\/src\/services\/sessions\.js|mobile\/src\/screens\/auth\/|mobile\/src\/store\/auth\.tsx|mobile\/src\/api\/client\.ts|mobile\/src\/lib\/(passkeys|secureToken|deviceId|deviceLink|deviceKey)\.ts)/, specs: ['specs/features/auth-identity.md'],
-    tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/(lib\/__tests__\/(passkeys|deviceKey|deviceLink|e2ee)\.|screens\/auth\/__tests__\/))/ },
+    tests: /^(server\/src\/test\/(authFlows|passwordlessRegister|sessions|deviceLink|recoveryMandate)\.|mobile\/src\/(lib\/__tests__\/(passkeys|deviceId|deviceKey|deviceLink|e2ee)\.|screens\/auth\/__tests__\/))/ },
   { re: /^(server\/src\/routes\/(household|keys)\.js|mobile\/src\/screens\/profile\/HouseholdScreen\.tsx|mobile\/src\/lib\/(safetyNumbers|shareInvite|joinCarryover|records)\.ts|mobile\/src\/hooks\/useRosterSuggestions\.ts|mobile\/src\/components\/EmailAppSheet\.tsx)/, specs: ['specs/features/households-sharing.md'],
     tests: /^(server\/src\/test\/(householdInvitations|householdKey|householdLeave|householdCarryover|keyHygiene|recoveryMandate|rekeyRecovery)\.|mobile\/src\/(lib\/__tests__\/(safetyNumbers|guardianRecovery|shareInvite|joinCarryover|records)|hooks\/__tests__\/useRosterSuggestions)\.)/ },
   { re: /^(server\/src\/routes\/(calendars|calendarChat|eventAttachments|invitations)\.js|mobile\/src\/screens\/calendar\/|mobile\/src\/lib\/(calendar|calendarData|eventRepeat|calendarKeys|holidays|householdRsvp|widgetSnapshot)\.ts|mobile\/src\/hooks\/useWidgetSnapshot\.ts|mobile\/(modules\/calen-widget|targets\/widget)\/|shared\/calendar\/)/, specs: ['specs/features/calendar.md'],

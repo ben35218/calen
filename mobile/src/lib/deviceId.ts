@@ -8,15 +8,28 @@ import * as SecureStore from 'expo-secure-store';
 // Like the name header it is a label/dedup key that never grants a session; its
 // one security role is letting a previously-signed-in (now signed-out) install
 // skip the F1 password-reset hold (server routes/auth isKnownDevice).
-const DEVICE_ID_KEY = 'hc_device_id';
+//
+// THIS_DEVICE_ONLY so the id never rides an encrypted backup or Quick Start
+// onto a second phone. The original key used the default (WHEN_UNLOCKED, which
+// migrates): a phone set up from another's backup inherited its id, and since
+// a sign-in replaces the session row with the same id, the two phones revoked
+// each other's sessions on every sign-in. The new key name makes every install
+// mint a fresh id once; the old, possibly-shared one is deleted.
+const DEVICE_ID_KEY = 'hc_device_id_v2';
+const LEGACY_DEVICE_ID_KEY = 'hc_device_id';
+const KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
 
 let loadPromise: Promise<string> | null = null;
 
 async function mintUuid(): Promise<string> {
   // Lazy: api/client.ts imports this module, so a static adapter import would
   // drag the native libsodium binding into every consumer (and every Jest
-  // suite touching the api). Loaded only when an id is actually minted.
-  const { loadHouseholdCrypto } = await import('@household/crypto/adapters/native');
+  // suite touching the api). Loaded only when an id is actually minted — an
+  // inline require rather than import() so Jest can run it without VM modules.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { loadHouseholdCrypto } = require('@household/crypto/adapters/native') as typeof import('@household/crypto/adapters/native');
   const crypto = await loadHouseholdCrypto();
   const b = crypto.randomBytes(16);
   // RFC 4122 v4 shape (version/variant bits set) so the value reads as a UUID.
@@ -28,10 +41,11 @@ async function mintUuid(): Promise<string> {
 
 async function loadOrCreate(): Promise<string> {
   try {
-    const existing = await SecureStore.getItemAsync(DEVICE_ID_KEY);
+    const existing = await SecureStore.getItemAsync(DEVICE_ID_KEY, KEYCHAIN_OPTS);
     if (existing) return existing;
     const id = await mintUuid();
-    await SecureStore.setItemAsync(DEVICE_ID_KEY, id);
+    await SecureStore.setItemAsync(DEVICE_ID_KEY, id, KEYCHAIN_OPTS);
+    SecureStore.deleteItemAsync(LEGACY_DEVICE_ID_KEY).catch(() => {});
     return id;
   } catch {
     // Keychain unavailable — fall back to a run-scoped random id (sessions
