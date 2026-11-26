@@ -19,9 +19,25 @@ function signToken(userId, sid) {
 // A client that signs out on 401 is only debuggable with this — Render's request
 // log carries no path or status.
 function logAuthReject(req, reason, source, token) {
+  // Unverified decode, numbers only: how long the token was minted to live,
+  // how old it is, and whether it carries a session id — the three facts that
+  // separate "the server mints short tokens" from "the client sent a stale one".
+  let lifetimeSec = null; let ageSec = null; let hasSid = null;
+  try {
+    const claims = jwt.decode(token);
+    if (claims && typeof claims === 'object') {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (claims.iat && claims.exp) lifetimeSec = claims.exp - claims.iat;
+      if (claims.iat) ageSec = nowSec - claims.iat;
+      hasSid = Boolean(claims.sid);
+    }
+  } catch { /* undecodable — the reason field already says so */ }
   console.warn(JSON.stringify({
     msg: 'auth_reject',
     reason,
+    lifetimeSec,
+    ageSec,
+    hasSid,
     method: req.method,
     path: (req.originalUrl || req.url || '').split('?')[0],
     source,
