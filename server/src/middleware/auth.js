@@ -13,6 +13,24 @@ function signToken(userId, sid) {
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 }
 
+// One structured line per rejected token (never the token itself): which route,
+// why (jwt expired / malformed / invalid signature / revoked session / any other
+// error the try block caught), and whether it came from the header or ?token=.
+// A client that signs out on 401 is only debuggable with this — Render's request
+// log carries no path or status.
+function logAuthReject(req, reason, source, token) {
+  console.warn(JSON.stringify({
+    msg: 'auth_reject',
+    reason,
+    method: req.method,
+    path: (req.originalUrl || req.url || '').split('?')[0],
+    source,
+    tokenLen: token ? token.length : 0,
+    tokenParts: token ? token.split('.').length : 0,
+    ua: (req.get('user-agent') || '').slice(0, 60),
+  }));
+}
+
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   // Also accept token as a query param for browser-native requests (iframes, download links)
@@ -23,13 +41,19 @@ async function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(payload.userId).select('-passwordHash');
-    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!user) {
+      logAuthReject(req, 'user_not_found', header ? 'header' : 'query', token);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     // Session revocation (F2): a sid-carrying token is only valid while its
     // session row exists. "Sign out device" deletes the row → instant 401 here.
     let session = null;
     if (payload.sid) {
       session = (user.sessions || []).find((s) => String(s._id) === String(payload.sid));
-      if (!session) return res.status(401).json({ error: 'Session revoked' });
+      if (!session) {
+        logAuthReject(req, 'session_revoked', header ? 'header' : 'query', token);
+        return res.status(401).json({ error: 'Session revoked' });
+      }
     }
     req.user = user;
     req.sessionId = payload.sid || null;
@@ -89,7 +113,13 @@ async function requireAuth(req, res, next) {
     // See the §C4 decision doc in docs/SIGNAL-PARITY-PLAN.md.
     req.scopeFilter = scopeClause(req.scopeIds, req.household?._id);
     next();
-  } catch {
+  } catch (err) {
+    logAuthReject(
+      req,
+      `${err?.name || 'Error'}: ${String(err?.message || err).slice(0, 120)}`,
+      header?.startsWith('Bearer ') ? 'header' : 'query',
+      token,
+    );
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
