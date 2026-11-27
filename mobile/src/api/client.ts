@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import * as Device from 'expo-device';
 import { API_URL } from '../config';
 import { getCachedToken, saveToken } from '../lib/secureToken';
+import { tokenExpiry } from '../lib/jwtClaims';
 import { getDeviceId } from '../lib/deviceId';
 
 // Device identity headers (Signal-parity F2/F3): X-Device-Id is the stable
@@ -61,12 +62,34 @@ export function shouldSignOutOn401(config?: { url?: string; headers?: Record<str
   return !CREDENTIAL_CHECK_PATHS.includes(path);
 }
 
+// Whether an `X-Refreshed-Token` the server handed back may replace the token
+// the device holds. Only a token that outlives the current one is adopted, and
+// only while a current one exists. Exported for tests. Two failure modes this
+// closes:
+//   1. A replayed response. iOS's URL cache kept a week-old GET and, on a 304,
+//      handed the app that cached response's headers — an `X-Refreshed-Token`
+//      minted (and since expired) in a previous session. Adopting it swapped a
+//      seconds-old token for a dead one and signed the device out on the next
+//      call: the TestFlight 47–49 login loop. The server now sends `no-store`
+//      and no ETags; this guard means a stale header can never do that again.
+//   2. A response landing after sign-out: with no current token there is
+//      nothing to slide, and resurrecting one would re-arm a dead session.
+export function shouldAdoptRefreshedToken(refreshed: unknown, current: string | null): boolean {
+  if (typeof refreshed !== 'string' || !refreshed || !current) return false;
+  const next = tokenExpiry(refreshed);
+  const now = tokenExpiry(current);
+  if (next === null) return false;
+  // An undecodable current token can't be compared; let a well-formed refresh
+  // replace it rather than pin the device to something the server can't read.
+  return now === null || next > now;
+}
+
 api.interceptors.response.use(
   (res) => {
     // Sliding session: past the token's half-life the server hands back a fresh
     // one in this header; storing it keeps an active user signed in forever.
     const refreshed = res.headers['x-refreshed-token'];
-    if (refreshed) void saveToken(refreshed);
+    if (shouldAdoptRefreshedToken(refreshed, getCachedToken())) void saveToken(refreshed as string);
     return res;
   },
   (err) => {

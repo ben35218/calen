@@ -12,7 +12,25 @@ jest.mock('../../lib/secureToken', () => ({
 }));
 jest.mock('../../lib/deviceId', () => ({ getDeviceId: async () => 'device-1' }));
 
-import { shouldSignOutOn401 } from '../client';
+import { shouldAdoptRefreshedToken, shouldSignOutOn401 } from '../client';
+import { jwtClaims, tokenExpiry } from '../../lib/jwtClaims';
+
+// An unsigned JWT-shaped token (header.payload.signature) carrying the given
+// claims — the device only ever reads claims, never checks signatures.
+const B64U = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function b64u(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i += 3) {
+    const a = s.charCodeAt(i), b = s.charCodeAt(i + 1), c = s.charCodeAt(i + 2);
+    out += B64U[a >> 2] + B64U[((a & 3) << 4) | ((b || 0) >> 4)];
+    out += i + 1 < s.length ? B64U[((b & 15) << 2) | ((c || 0) >> 6)] : '';
+    out += i + 2 < s.length ? B64U[c & 63] : '';
+  }
+  return out;
+}
+function fakeJwt(claims: Record<string, unknown>): string {
+  return `${b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))}.${b64u(JSON.stringify(claims))}.sig`;
+}
 
 const authed = { Authorization: 'Bearer tok' };
 
@@ -34,5 +52,55 @@ describe('shouldSignOutOn401', () => {
     expect(shouldSignOutOn401({ url: '/auth/account', headers: authed })).toBe(false);
     // Query strings don't defeat the match.
     expect(shouldSignOutOn401({ url: '/auth/password?x=1', headers: authed })).toBe(false);
+  });
+});
+
+describe('jwtClaims / tokenExpiry', () => {
+  test('reads the payload of a well-formed token without atob', () => {
+    const tok = fakeJwt({ userId: 'u1', sid: 's1', iat: 1_700_000_000, exp: 1_700_604_800 });
+    expect(jwtClaims(tok)).toEqual({ userId: 'u1', sid: 's1', iat: 1_700_000_000, exp: 1_700_604_800 });
+    expect(tokenExpiry(tok)).toBe(1_700_604_800);
+  });
+
+  test('anything that is not a three-part JWT with a numeric exp yields null', () => {
+    expect(jwtClaims('not-a-jwt')).toBeNull();
+    expect(jwtClaims('a.b')).toBeNull();
+    expect(jwtClaims('a.!!!.c')).toBeNull();
+    expect(tokenExpiry(fakeJwt({ userId: 'u1' }))).toBeNull();
+    expect(tokenExpiry(fakeJwt({ exp: 'soon' }))).toBeNull();
+  });
+});
+
+// The sliding-refresh adoption rule: a replayed response (iOS URL cache serving a
+// week-old X-Refreshed-Token on a 304) must never replace a live token — that was
+// the TestFlight 47–49 sign-in loop. Spec: features/auth-identity.md →
+// "Session persistence & restore".
+describe('shouldAdoptRefreshedToken', () => {
+  const now = 1_700_000_000;
+  const current = fakeJwt({ userId: 'u1', iat: now, exp: now + 7 * 86400 });
+
+  test('a refreshed token that outlives the current one is adopted', () => {
+    const newer = fakeJwt({ userId: 'u1', iat: now + 4 * 86400, exp: now + 11 * 86400 });
+    expect(shouldAdoptRefreshedToken(newer, current)).toBe(true);
+  });
+
+  test('a stale (replayed) refreshed token that expires before the current one is ignored', () => {
+    const stale = fakeJwt({ userId: 'u1', iat: now - 8 * 86400, exp: now - 86400 });
+    expect(shouldAdoptRefreshedToken(stale, current)).toBe(false);
+    // Same lifetime as what we hold is not an improvement either.
+    expect(shouldAdoptRefreshedToken(current, current)).toBe(false);
+  });
+
+  test('with no current token (signed out mid-flight) nothing is adopted', () => {
+    const newer = fakeJwt({ userId: 'u1', iat: now, exp: now + 11 * 86400 });
+    expect(shouldAdoptRefreshedToken(newer, null)).toBe(false);
+  });
+
+  test('an undecodable refreshed value is ignored; an undecodable current token is replaced', () => {
+    expect(shouldAdoptRefreshedToken('garbage', current)).toBe(false);
+    expect(shouldAdoptRefreshedToken(undefined, current)).toBe(false);
+    expect(shouldAdoptRefreshedToken(123, current)).toBe(false);
+    const newer = fakeJwt({ userId: 'u1', iat: now, exp: now + 11 * 86400 });
+    expect(shouldAdoptRefreshedToken(newer, 'legacy-opaque-token')).toBe(true);
   });
 });

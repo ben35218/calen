@@ -63,6 +63,22 @@ app.set('trust proxy', 1);
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
+// Nothing the API answers may be stored by an HTTP cache, and it never answers
+// 304. Express's default weak ETag let iOS's URL cache (NSURLCache, which React
+// Native's networking rides) keep a GET's response for weeks and revalidate it
+// with If-None-Match; on the 304 the app was handed the CACHED response's
+// headers — including an `X-Refreshed-Token` minted in a previous session. The
+// client dutifully swapped its just-issued token for that expired one, the
+// next calls 401'd, and every sign-in on TestFlight build 47–49 bounced back to
+// the login screen within seconds. `no-store` stops new entries being written
+// and evicts the stale one on the first 200 that replaces it; disabling ETags
+// means a device still holding a stale entry can never get a 304 for it.
+app.set('etag', false);
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // CORS allowlist. The admin web app sends an Origin and must be allowed
 // explicitly; the native mobile app sends no Origin and is allowed through
 // (the `!origin` case). Set CORS_ORIGINS (comma-separated) for production;
