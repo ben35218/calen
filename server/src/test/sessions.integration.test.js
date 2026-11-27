@@ -218,3 +218,37 @@ test('held reset completes after the window elapses', async () => {
     .send({ email: u.user.email, password: 'later-pass-11' });
   assert.equal(login.status, 200);
 });
+
+// Diagnostics (2026-11-27): a login logs `session_issued` and a rejected token
+// logs `auth_reject`, both naming the install (device name + first 8 chars of
+// X-Device-Id, never the token), so a stale token seen seconds after a login
+// can be matched to — or ruled out as — the install that just signed in.
+test('session_issued and auth_reject name the sending install, never the token', async () => {
+  const u = await registerUser({ firstName: 'Log', password: 'test-password-1' });
+  const lines = [];
+  const origWarn = console.warn;
+  console.warn = (msg) => { lines.push(String(msg)); };
+  try {
+    const login = await request().post('/api/auth/login')
+      .set('X-Device-Name', 'Log iPhone').set('X-Device-Id', 'abcdef12-3456-7890')
+      .send({ email: u.user.email, password: 'test-password-1' });
+    assert.equal(login.status, 200);
+    const dead = await request().get('/api/auth/me')
+      .set('Authorization', 'Bearer not.a.token')
+      .set('X-Device-Name', 'Log iPhone').set('X-Device-Id', 'abcdef12-3456-7890');
+    assert.equal(dead.status, 401);
+  } finally {
+    console.warn = origWarn;
+  }
+  const issued = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .find((j) => j && j.msg === 'session_issued');
+  assert.ok(issued, 'session_issued logged');
+  assert.equal(issued.deviceName, 'Log iPhone');
+  assert.equal(issued.deviceId8, 'abcdef12');
+  const reject = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .find((j) => j && j.msg === 'auth_reject' && j.deviceName === 'Log iPhone');
+  assert.ok(reject, 'auth_reject logged with device name');
+  assert.equal(reject.deviceId8, 'abcdef12');
+  assert.equal(reject.path, '/api/auth/me');
+  for (const l of lines) assert.ok(!l.includes('not.a.token'), 'token never logged');
+});
