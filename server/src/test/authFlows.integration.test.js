@@ -302,6 +302,28 @@ test('requireAuth: token past half-life gets X-Refreshed-Token; fresh token does
   assert.equal(again.headers['x-refreshed-token'], undefined, 'and is itself fresh');
 });
 
+// ── Nothing the API answers is cacheable ─────────────────────────────────────
+
+test('API responses carry Cache-Control: no-store and no ETag, and never answer 304', async () => {
+  // The iOS URL cache kept a GET's response (Express's default weak ETag made it
+  // revalidatable) and on a 304 handed the app the CACHED headers — a stale
+  // X-Refreshed-Token from a previous session, which the client adopted and was
+  // promptly signed out by. Every /api response is now uncacheable and ETag-less,
+  // so a conditional request can never be answered from a stale entry.
+  const { token } = await registerUser();
+  const res = await request().get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['cache-control'], 'no-store');
+  assert.equal(res.headers.etag, undefined, 'no ETag on API responses');
+
+  const conditional = await request()
+    .get('/api/auth/me')
+    .set('Authorization', `Bearer ${token}`)
+    .set('If-None-Match', 'W/"anything-a-client-still-holds"');
+  assert.equal(conditional.status, 200, 'a conditional GET gets a full response, never 304');
+  assert.equal(conditional.headers['cache-control'], 'no-store');
+});
+
 // ── Passkey sign-in ceremonies ───────────────────────────────────────────────
 
 test('passkey challenge: username-first with no account or no passkeys → 404', async () => {
