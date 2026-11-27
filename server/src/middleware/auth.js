@@ -44,6 +44,10 @@ function logAuthReject(req, reason, source, token) {
     tokenLen: token ? token.length : 0,
     tokenParts: token ? token.split('.').length : 0,
     ua: (req.get('user-agent') || '').slice(0, 60),
+    // Which install sent it: the device-name label and the first 8 chars of the
+    // per-install id (enough to tell two installs apart, not enough to spoof).
+    deviceName: (req.get('x-device-name') || '').slice(0, 40) || null,
+    deviceId8: (req.get('x-device-id') || '').slice(0, 8) || null,
   }));
 }
 

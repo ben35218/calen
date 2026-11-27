@@ -34,6 +34,15 @@ router.use('/passkey', require('./authPasskey'));
 // (registration — the account is seconds old).
 async function sessionResponse(user, req, { quiet = false } = {}) {
   const sid = await createSession(user._id, req, { quiet });
+  // Pairs with middleware/auth's auth_reject line: which install just got a
+  // fresh token, so a stale token seen seconds later can be matched to (or
+  // ruled out as) the same install. No token, no email.
+  console.warn(JSON.stringify({
+    msg: 'session_issued',
+    deviceName: (req.get('x-device-name') || '').slice(0, 40) || null,
+    deviceId8: (req.get('x-device-id') || '').slice(0, 8) || null,
+    ua: (req.get('user-agent') || '').slice(0, 60),
+  }));
   return {
     token: signToken(String(user._id), sid),
     user: {
